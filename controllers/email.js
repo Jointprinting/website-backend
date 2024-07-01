@@ -11,7 +11,7 @@ exports.sendContactEmail = async (req, res) => {
     <p>${message}</p>`;
     try {
         await sendEmail({
-            to: 'adr7310@gmail.com',//process.env.EMAIL_FROM,
+            to: process.env.EMAIL_FROM,
             subject: "Get In Touch Request",
             text: messageBody,
         });
