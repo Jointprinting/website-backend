@@ -22,7 +22,7 @@ exports.sendContactEmail = async (req, res) => {
     }
 }
 
-exports.sendMockupRequest = (req, res) => {
+exports.sendMockupRequest = async (req, res) => {
     const { name, businessName, email, phone, quantity, title, instructions } = req.body;
     const logo = req.file ? req.file.path : null;
 
@@ -42,7 +42,10 @@ exports.sendMockupRequest = (req, res) => {
         path: logo
     }] : [];
 
-    sendEmail({ text: htmlContent, attachments });
+    await sendEmail({ to: process.env.EMAIL_FROM, 
+        subject: "New Mockup Request", 
+        text: htmlContent, 
+        attachments: attachments });
 
     // Clean up uploaded file after sending email
     if (logo) {
