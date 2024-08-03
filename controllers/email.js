@@ -1,6 +1,8 @@
 //get the sendgrid api key from the .env file outside this folder
 require('dotenv').config({ path: '../.env' });
 const sendEmail = require("../utils/sendEmail");
+const fs = require('fs').promises;
+const path = require('path');
 
 exports.sendContactEmail = async (req, res) => {
     const {name, email, phone, message} = req.body;
@@ -23,11 +25,15 @@ exports.sendContactEmail = async (req, res) => {
 }
 
 exports.sendMockupRequest = async (req, res) => {
-    const { name, businessName, email, phone, quantity, title, instructions } = req.body;
+    console.log('running')
+    const { name, businessName, email, phone, quantity, title, instructions, styleCode } = req.body;
     const logo = req.file ? req.file.path : null;
+    console.log('logo', logo)
+    console.log('req.file', req.file)
 
     const htmlContent = `
         <h1>Mockup Request</h1>
+        <p><strong>Product Style Code:</strong> ${styleCode}</p>
         <p><strong>Name:</strong> ${name}</p>
         <p><strong>Business Name:</strong> ${businessName}</p>
         <p><strong>Email:</strong> ${email}</p>
@@ -42,17 +48,29 @@ exports.sendMockupRequest = async (req, res) => {
         path: logo
     }] : [];
 
-    await sendEmail({ to: process.env.EMAIL_FROM, 
-        subject: "New Mockup Request", 
-        text: htmlContent, 
-        attachments: attachments });
+    try {
+        // Ensure file exists before sending email
+        if (logo) {
+            await fs.access(logo);
+            console.log('File exists:', logo);
+        }
 
-    // Clean up uploaded file after sending email
-    if (logo) {
-        fs.unlink(logo, (err) => {
-            if (err) console.log(err);
+        await sendEmail({ 
+            to: process.env.EMAIL_FROM,
+            subject: "New Mockup Request", 
+            text: htmlContent, 
+            attachments: attachments
         });
-    }
 
-    res.status(200).send('Email sent successfully');
+        // Clean up uploaded file after sending email
+        if (logo) {
+            await fs.unlink(logo);
+            console.log('File deleted:', logo);
+        }
+
+        res.status(200).send('Email sent successfully');
+    } catch (error) {
+        console.error('Error:', error);
+        res.status(500).send('Error sending email');
+    }
 };
