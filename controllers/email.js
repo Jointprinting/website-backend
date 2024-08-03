@@ -21,3 +21,35 @@ exports.sendContactEmail = async (req, res) => {
         return next(new ErrorResponse("Email could not be sent", 500));
     }
 }
+
+exports.sendMockupRequest = (req, res) => {
+    const { name, businessName, email, phone, quantity, title, instructions } = req.body;
+    const logo = req.file ? req.file.path : null;
+
+    const htmlContent = `
+        <h1>Mockup Request</h1>
+        <p><strong>Name:</strong> ${name}</p>
+        <p><strong>Business Name:</strong> ${businessName}</p>
+        <p><strong>Email:</strong> ${email}</p>
+        <p><strong>Phone:</strong> ${phone}</p>
+        <p><strong>Approximate Quantity:</strong> ${quantity}</p>
+        <p><strong>Title:</strong> ${title}</p>
+        <p><strong>Design Instructions:</strong> ${instructions}</p>
+    `;
+
+    const attachments = logo ? [{
+        filename: path.basename(logo),
+        path: logo
+    }] : [];
+
+    sendEmail({ text: htmlContent, attachments });
+
+    // Clean up uploaded file after sending email
+    if (logo) {
+        fs.unlink(logo, (err) => {
+            if (err) console.log(err);
+        });
+    }
+
+    res.status(200).send('Email sent successfully');
+};
