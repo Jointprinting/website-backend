@@ -45,7 +45,7 @@ if (!fs.existsSync('uploads')) {
 }
 
 app.listen(PORT, () => {
-  console.log(`Mongoose server is running on port ${PORT}`);
+  console.log(`Server up & running on port ${PORT}`);
 });
 
 

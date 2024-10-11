@@ -1,3 +1,6 @@
+require('dotenv').config();
+const xml2js = require('xml2js');
+const axios = require('axios');
 const Product = require('../models/Product');
 
 //get all products in db
@@ -34,8 +37,22 @@ exports.getProductByStyleCode = async (req, res, next) => {
 //create a new product
 exports.createProduct = async (req, res, next) => {
     console.log('adding product')
+
     try {
-        const newProduct = new Product({
+        // Create the basic auth header
+        //console.log(`https://dev.alphabroder.com/cgi-bin/online/xml/prod-detail-request.w?sr=${req.body.styleCode}&userName=${process.env.AB_USER}&password=${process.env.AB_PASSWORD}&rg=y`)
+        //return
+        // Make the GET request
+        const {data} = await axios.get(`https://dev.alphabroder.com/cgi-bin/online/xml/prod-detail-request.w?sr=${req.body.styleCode}&userName=${process.env.AB_USER}&password=${process.env.AB_PASSWORD}&rg=y`, {
+            auth: {
+                username: process.env.AB_BASIC_AUTH_USER,
+                password: process.env.AB_BASIC_AUTH_PASSWORD
+            }
+        });
+        
+        const product = await parseProductXML(data, req);
+        res.status(201).json(product);
+        /*const newProduct = new Product({
             name: req.body.name,
             vendor: req.body.vendor,
             style: req.body.style,
@@ -54,9 +71,138 @@ exports.createProduct = async (req, res, next) => {
             type: req.body.type,
         });
         await newProduct.save();
-        res.status(201).json(newProduct);
+        res.status(201).json(newProduct);*/
     } catch (err) {
         res.status(400).json({ message: err.message });
         console.error(err);
     }
 }
+
+function capitalizeFirstLetters(sentence) {
+    return sentence.split(' ').map(word => {
+        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    }).join(' ');
+}
+
+
+async function parseProductXML(xmlString, req) {
+    const parser = new xml2js.Parser({ explicitArray: false, mergeAttrs: true });
+  
+    let productData;
+    try {
+      productData = await parser.parseStringPromise(xmlString);
+    } catch (err) {
+      console.error('Error parsing XML:', err);
+      return;
+    }
+  
+    // Check if product data exists
+    const products = productData.products;
+    if (!products || !products.item) {
+      console.error('No product data found in XML');
+      return;
+    }
+  
+    const item = products.item;
+  
+    // Map fields from XML to Mongoose schema
+    let name = item.shortdescription || '';
+    const vendor = item.brand || 'Joint Printing';
+    const style = item.stylecode || '';
+    let description = item.catalogdescription || '';
+    // Split the string into an array based on spaces
+
+    // Filter out items that contain # or &
+    let filteredArr = description.split(" ").filter(item => !item.includes("#") && !item.includes("&"));
+
+    // Join the array back into a string with spaces
+    description = filteredArr.join(" ");
+
+    // Escape special characters in vendor name (like the + symbol)
+    const escapedVendor = vendor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // Remove vendor and style from name
+    name = name.replace(new RegExp(escapedVendor, 'g'), '').replace(/\s+/g, ' ').trim();
+    name = name.replace(new RegExp(style, 'g'), '').replace(/\s+/g, ' ').trim();
+    // Sizes
+    let sizeNames = [];
+    if (item.sizes && item.sizes.size) {
+      const sizes = Array.isArray(item.sizes.size) ? item.sizes.size : [item.sizes.size];
+      sizeNames = sizes.map(size => size.sizename);
+    }
+    const sizeRangeBottom = sizeNames[0] || 'S';
+    const sizeRangeTop = sizeNames[sizeNames.length - 1] || 'XL';
+  
+    // Colors, Color Codes, Images
+    let colors = [];
+    let colorCodes = [];
+    let productFrontImages = [];
+    let productBackImages = [];
+    
+    if (item.colors && item.colors.color) {
+        const colorArray = Array.isArray(item.colors.color) ? item.colors.color : [item.colors.color];
+        colorArray.forEach(color => {
+            colors.push(capitalizeFirstLetters(color?.colorname));
+            // Use the hexcode instead of colorcode
+            if (color.hexcode) {
+                let hex = color.hexcode;
+                // Ensure the hex code starts with '#'
+                if (!hex.startsWith('#')) {
+                    hex = '#' + hex;
+            }
+                colorCodes.push(hex.toUpperCase()); // Optional: convert to uppercase for consistency
+            }
+
+            if (color['image-front']) {
+                productFrontImages.push(color['image-front']);
+            } else {
+                productFrontImages.push('');
+            }
+            if (color['image-back']) {
+                productBackImages.push(color['image-back']);
+            } else {
+                productBackImages.push('');
+            }
+        });
+    }
+  
+    // Category
+    let category = 'Shirts'; // Default value
+    if (item.categories && item.categories.category) {
+      category = item.categories.category.mktcategorydesc || 'Shirts';
+    }
+  
+    // Create the product document
+    const product = new Product({
+      name,
+      vendor,
+      style,
+      description,
+      sizeRangeBottom,
+      sizeRangeTop,
+      colors,
+      colorCodes,
+      productFrontImages,
+      productBackImages,
+      category: req.body.category,
+      priceRangeBottom: req.body.priceRangeBottom,
+      priceRangeTop: req.body.priceRangeTop,
+      rating: req.body.rating,
+      tag: req.body.tag,
+      type: req.body.type,
+      // Other fields will use default values from the schema
+    });
+  
+    // Save the product to the database
+    try {
+      console.log('Saving product...');
+      console.log(product);
+      await product.save();
+      console.log('Product saved successfully');
+      return product
+    } catch (err) {
+      console.error('Error saving product:', err);
+    }
+  }
+
+  const xmlString = ``

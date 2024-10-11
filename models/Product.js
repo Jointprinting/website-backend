@@ -75,7 +75,7 @@ const ProductSchema = new mongoose.Schema({
         default: Date.now()
     },
 });
-
+/*
 ProductSchema.pre("save", async function(next) {
     // Function to generate a random 4-character style code
     function generateStyleCode() {
@@ -103,7 +103,7 @@ ProductSchema.pre("save", async function(next) {
     this.style = style;
     next();
 });
-
+*/
 const Product = mongoose.model("Product", ProductSchema);
 
 module.exports = Product;
