@@ -49,29 +49,16 @@ exports.createProduct = async (req, res, next) => {
                 password: process.env.AB_BASIC_AUTH_PASSWORD
             }
         });
+        //console.log('auth', process.env.AB_BASIC_AUTH_USER, process.env.AB_BASIC_AUTH_PASSWORD, process.env.AB_USER, process.env.AB_PASSWORD)
+        console.log('data', data)
         
         const product = await parseProductXML(data, req);
+        //if product is a string send as error message
+        if (typeof product === 'string') {
+            console.log('Error:', product);
+            return res.status(400).json({ message: product });
+        }
         res.status(201).json(product);
-        /*const newProduct = new Product({
-            name: req.body.name,
-            vendor: req.body.vendor,
-            style: req.body.style,
-            description: req.body.description,
-            sizeRangeBottom: req.body.sizeRangeBottom,
-            sizeRangeTop: req.body.sizeRangeTop,
-            priceRangeBottom: req.body.priceRangeBottom,
-            priceRangeTop: req.body.priceRangeTop,
-            colors: req.body.colors,
-            colorCodes: req.body.colorCodes,
-            productFrontImages: req.body.productFrontImages,
-            productBackImages: req.body.productBackImages,
-            rating: req.body.rating,
-            tag: req.body.tag,
-            category: req.body.category,
-            type: req.body.type,
-        });
-        await newProduct.save();
-        res.status(201).json(newProduct);*/
     } catch (err) {
         res.status(400).json({ message: err.message });
         console.error(err);
@@ -99,6 +86,11 @@ async function parseProductXML(xmlString, req) {
     // Check if product data exists
     const products = productData.products;
     if (!products || !products.item) {
+        //check if error exists in products
+        if (products.error) {
+            console.log('XML error:', products.error);
+            return products.error;
+        }
       console.error('No product data found in XML');
       return;
     }
