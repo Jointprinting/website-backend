@@ -1,6 +1,7 @@
 require('dotenv').config();
 const xml2js = require('xml2js');
 const axios = require('axios');
+const qs = require('qs');
 const Product = require('../models/Product');
 
 //get all products in db
@@ -133,30 +134,41 @@ async function parseProductXML(xmlString, req) {
     
     if (item.colors && item.colors.color) {
         const colorArray = Array.isArray(item.colors.color) ? item.colors.color : [item.colors.color];
-        colorArray.forEach(color => {
+    
+        for (const color of colorArray) {
             colors.push(capitalizeFirstLetters(color?.colorname));
-            // Use the hexcode instead of colorcode
+            console.log('color', color?.colorname)
+
             if (color.hexcode) {
                 let hex = color.hexcode;
                 // Ensure the hex code starts with '#'
                 if (!hex.startsWith('#')) {
                     hex = '#' + hex;
-            }
+                }
                 colorCodes.push(hex.toUpperCase()); // Optional: convert to uppercase for consistency
             }
-
-            if (color['image-front']) {
-                productFrontImages.push(color['image-front']);
-            } else {
-                productFrontImages.push('');
-            }
-            if (color['image-back']) {
-                productBackImages.push(color['image-back']);
-            } else {
-                productBackImages.push('');
-            }
-        });
-    }
+          // ... processing color ...
+    
+          if (color['image-front']) {
+            /*let frontImage = await convertToImgur(color['image-front']);
+            if (!frontImage || frontImage === 'Error processing image')*/
+            frontImage = color['image-front']
+            productFrontImages.push(frontImage);
+          } else {
+            productFrontImages.push('');
+          }
+    
+          if (color['image-back']) {
+            /*let backImage = await convertToImgur(color['image-back']);
+            if (!backImage || backImage === 'Error processing image')*/
+            backImage = color['image-back']
+            productBackImages.push(backImage);
+            await delay(3000);
+          } else {
+            productBackImages.push('');
+          }
+        }
+      }
   
     // Category
     let category = 'Shirts'; // Default value
@@ -197,4 +209,39 @@ async function parseProductXML(xmlString, req) {
     }
   }
 
-  const xmlString = ``
+  async function convertToImgur(imageUrl) {
+    const data = qs.stringify({
+      image: imageUrl,
+      type: 'URL',
+      title: 'Simple upload',
+      description: 'This is a simple image upload to Imgur',
+    });
+  
+    const config = {
+      method: 'post',
+      url: 'https://api.imgur.com/3/image',
+      headers: {
+        'Authorization': `Client-ID ${process.env.IMGUR_CLIENT_ID}`,
+        //'Authorization': `Bearer ${process.env.IMGUR_ACCESS_TOKEN}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      data: data,
+    };
+  
+    try {
+      const res = await axios(config);
+      if (res.data && res.data.data && res.data.data.link) {
+        console.log(res.data.data.link);
+        return res.data.data.link;
+      } else {
+        return 'Error processing image';
+      }
+    } catch (error) {
+      console.error('Upload failed:', error.response ? error.response.data : error.message?.data?.error);
+      return 'Error processing image';
+    }
+  }
+  
+  function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
