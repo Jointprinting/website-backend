@@ -163,7 +163,7 @@ async function parseProductXML(xmlString, req) {
             if (!backImage || backImage === 'Error processing image')*/
             backImage = color['image-back']
             productBackImages.push(backImage);
-            await delay(3000);
+            //await delay(3000);
           } else {
             productBackImages.push('');
           }
