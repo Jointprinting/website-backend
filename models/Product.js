@@ -46,12 +46,12 @@ const ProductSchema = new mongoose.Schema({
     ],
     productFrontImages: [
         {
-            type: String
+            type: Buffer
         }
     ],
     productBackImages: [
         {
-            type: String
+            type: Buffer
         }
     ],
     rating: {
