@@ -206,7 +206,7 @@ async function convertImageToBuffer(imageUrl) {
                 // Add other headers from Postman if necessary, like 'Accept' or 'Cookie'
             }
         });
-        console.log('Image fetched:', imageUrl, response.data);
+        //console.log('Image fetched:', imageUrl, response.data);
         return Buffer.from(response.data);
     } catch (err) {
         if (err.response && err.response.data) {
