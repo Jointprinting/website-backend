@@ -45,7 +45,15 @@ exports.getProductById = async (req, res, next) => {
 exports.getProductByStyleCode = async (req, res, next) => {
     try {
         const product = await Product.findOne({ style: req.params.style });
-        res.status(200).json(product);
+        if (!product) return res.status(404).json({ message: 'Product not found' });
+         // Convert image buffers to Base64
+         const productWithImages = {
+            ...product.toObject(),
+            productFrontImages: product.productFrontImages.map(img => img ? `data:image/jpeg;base64,${img.toString('base64')}` : null),
+            productBackImages: product.productBackImages.map(img => img ? `data:image/jpeg;base64,${img.toString('base64')}` : null)
+        };
+        
+        res.status(200).json(productWithImages);
     } catch (err) {
         res.status(404).json({ message: err.message });
         console.error(err);
@@ -198,6 +206,7 @@ async function convertImageToBuffer(imageUrl) {
                 // Add other headers from Postman if necessary, like 'Accept' or 'Cookie'
             }
         });
+        console.log('Image fetched:', imageUrl, response.data);
         return Buffer.from(response.data);
     } catch (err) {
         if (err.response && err.response.data) {
