@@ -44,16 +44,8 @@ const ProductSchema = new mongoose.Schema({
             type: String
         }
     ],
-    productFrontImages: [
-        {
-            type: Buffer
-        }
-    ],
-    productBackImages: [
-        {
-            type: Buffer
-        }
-    ],
+    productFrontImages: [mongoose.Schema.Types.ObjectId], // Store GridFS image IDs
+    productBackImages: [mongoose.Schema.Types.ObjectId],  // Store GridFS image IDs
     rating: {
         type: Number,
         default: 5

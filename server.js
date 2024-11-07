@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const fs = require('fs');
+const { GridFSBucket } = require('mongodb');
 
 const app = express();
 
@@ -27,11 +28,18 @@ const upload = multer({ storage });
 const mongoose = require('mongoose');
 
 mongoose.connect(process.env.MONGO_URI);
+require('./gridfs'); // Initialize GridFS by importing gridfs.js
 
+let gfs;
 const db = mongoose.connection;
 db.on('error', console.error.bind(console, 'MongoDB connection error:'));
 db.once('open', () => {
   console.log('Connected to MongoDB');
+  //gfs = new GridFSBucket(db, { bucketName: 'images' }); // Initialize GridFS bucket
+  /*gfs = new mongoose.mongo.GridFSBucket(db, {
+    bucketName: "images",
+  });
+  module.exports.gfs = gfs; // Export gfs once it is initialized*/
 });
 
 const productRoutes = require('./routes/productRoutes');
