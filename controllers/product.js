@@ -138,7 +138,7 @@ async function parseProductXML(xmlString, req) {
 
     let sizeNames = [];
     if (item.sizes && item.sizes[0] && item.sizes[0].size) {
-        const sizes = Array.isArray(item.sizes[0].size) ? item.sizes[0].size : [iitem.sizes[0].size];
+        const sizes = Array.isArray(item.sizes[0].size) ? item.sizes[0].size : [item.sizes[0].size];
         //console.log('sizes:', sizes);
         sizeNames = sizes.map(size => size.sizename);
     }
@@ -165,11 +165,15 @@ async function parseProductXML(xmlString, req) {
             if (color['image-front']) {
                 const frontImageId = await uploadImageToGridFS(color['image-front'].replace('dev-wam.', ''));
                 productFrontImages.push(frontImageId);
+            } else {
+                productFrontImages.push(null);
             }
 
             if (color['image-back']) {
                 const backImageId = await uploadImageToGridFS(color['image-back'].replace('dev-wam.', ''));
                 productBackImages.push(backImageId);
+            } else {
+                productBackImages.push(null);
             }
         }
     }
