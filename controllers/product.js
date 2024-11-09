@@ -12,9 +12,17 @@ exports.getProducts = async (req, res, next) => {
         const limit = parseInt(req.query.limit) || 12;
         const skip = (page - 1) * limit;
 
-        const products = await Product.find().skip(skip).limit(limit);
+        // Extract category and type from query parameters
+        const { category, type } = req.query;
+
+        // Build the query object based on the provided filters
+        const query = {};
+        if (category) query.category = category;
+        if (type) query.type = type;
+ 
+        const products = await Product.find(query).skip(skip).limit(limit);
         if (!products.length) return res.status(404).json({ products: [], totalPages: 0 });
-        const totalProducts = await Product.countDocuments();
+        const totalProducts = await Product.countDocuments(query);
 
         // Fetch and convert images for each product
         const productsWithImages = await Promise.all(
@@ -85,6 +93,26 @@ exports.getProductByStyleCode = async (req, res, next) => {
     }
 }
 
+exports.getCategories = async (req, res, next) => {
+    try {
+        const categories = await Product.distinct('category');
+        res.status(200).json({ categories });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Failed to fetch categories' });
+    }
+}
+
+exports.getTypes = async (req, res, next) => {
+    try {
+        const types = await Product.distinct('type');
+        res.status(200).json({ types });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Failed to fetch types' });
+    }
+}
+
 exports.createProduct = async (req, res, next) => {
     console.log('adding product');
 
@@ -134,7 +162,8 @@ async function parseProductXML(xmlString, req) {
 
     name = name.replace(new RegExp(vendor, 'g'), '').replace(/\s+/g, ' ').trim();
     name = name.replace(new RegExp(style, 'g'), '').replace(/\s+/g, ' ').trim();
-
+    //replace all extra spaces with one space
+    name = name.replace(/\s+/g, ' ').trim();
 
     let sizeNames = [];
     if (item.sizes && item.sizes[0] && item.sizes[0].size) {
