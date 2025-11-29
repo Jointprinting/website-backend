@@ -2,8 +2,9 @@
   "name": "website-backend",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
+    "start": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -20,9 +21,8 @@
     "mongodb": "^6.6.1",
     "mongoose": "^8.3.4",
     "multer": "^1.4.5-lts.1",
-    "nodemailer": "^6.9.14",
+    "nodemailer": "^6.9.15",
     "sharp": "^0.33.5",
     "xml2js": "^0.6.2"
-    "nodemailer": "^6.9.15"
   }
 }
