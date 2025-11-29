@@ -1,17 +1,11 @@
 // controllers/email.js
-require('dotenv').config();
 const nodemailer = require('nodemailer');
+const fs = require('fs');
+const path = require('path');
 
-/**
- * Create a reusable transporter using SMTP settings from .env
- * Required env vars:
- *   SMTP_HOST
- *   SMTP_PORT
- *   SMTP_USER
- *   SMTP_PASS
- *   CONTACT_TO        -> where contact form emails should go
- *   CONTACT_FROM      -> optional, defaults to SMTP_USER
- */
+// ---- Transporter setup ----
+// Make sure these are set in Render:
+// SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_FROM, EMAIL_TO
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port: Number(process.env.SMTP_PORT) || 587,
@@ -22,43 +16,50 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-/**
- * Helper to normalize attachments from multer
- * Works with upload.single(...) and upload.array(...)
- */
-function getAttachments(req) {
-  const files = [];
-
-  if (Array.isArray(req.files) && req.files.length > 0) {
-    req.files.forEach((file) => {
-      files.push({
-        filename: file.originalname,
-        path: file.path,
-      });
-    });
-  } else if (req.file) {
-    files.push({
-      filename: req.file.originalname,
-      path: req.file.path,
-    });
+// Optional: log if SMTP is misconfigured
+transporter.verify((err, success) => {
+  if (err) {
+    console.error('❌ SMTP configuration error:', err.message);
+  } else {
+    console.log('✅ SMTP server is ready to take messages');
   }
+});
 
-  return files;
+// Helper: turn uploaded files into Nodemailer attachments
+function getAttachments(req) {
+  if (!req.files || !Array.isArray(req.files)) return [];
+
+  return req.files.map((file) => ({
+    filename: file.originalname,
+    path: file.path, // Nodemailer will read the file from disk
+    contentType: file.mimetype,
+  }));
 }
 
-/**
- * Contact form handler
- * Expects (from your React form / Contact.js):
- *   name
- *   companyName
- *   email
- *   phone
- *   quantity
- *   inHandDate
- *   anythingElse
- *   selectedProducts (JSON string or array)
- *   + optional uploaded design files via multer
- */
+// Helper: parse selectedProducts if it is JSON
+function parseSelectedProducts(raw) {
+  if (!raw) return [];
+  try {
+    if (Array.isArray(raw)) return raw;
+    return JSON.parse(raw);
+  } catch (_) {
+    return [];
+  }
+}
+
+// Optional: delete temp upload files after sending
+function cleanupFiles(req) {
+  if (!req.files || !Array.isArray(req.files)) return;
+  req.files.forEach((file) => {
+    fs.unlink(file.path, (err) => {
+      if (err) {
+        console.error('Error deleting temp file:', file.path, err.message);
+      }
+    });
+  });
+}
+
+// ------------------- CONTACT FORM -------------------
 exports.sendContactEmail = async (req, res) => {
   try {
     const {
@@ -68,135 +69,178 @@ exports.sendContactEmail = async (req, res) => {
       phone,
       quantity,
       inHandDate,
+      notes,
       anythingElse,
       selectedProducts,
     } = req.body;
 
-    // Parse selectedProducts whether it comes as JSON string or already as array
-    let products = [];
-    if (selectedProducts) {
-      try {
-        products =
-          typeof selectedProducts === 'string'
-            ? JSON.parse(selectedProducts)
-            : selectedProducts;
-      } catch (e) {
-        console.warn('Could not parse selectedProducts, raw value:', selectedProducts);
-      }
-    }
+    const products = parseSelectedProducts(selectedProducts);
 
-    const attachments = getAttachments(req);
+    const toAddress = process.env.EMAIL_TO;
+    const fromAddress = process.env.EMAIL_FROM || process.env.SMTP_USER;
 
-    const toAddress = process.env.CONTACT_TO;
-    const fromAddress = process.env.CONTACT_FROM || process.env.SMTP_USER;
+    const subject = `New contact form – ${companyName || 'Unknown company'}`;
 
-    if (!toAddress) {
-      console.error('CONTACT_TO is not set in environment variables');
-      return res
-        .status(500)
-        .json({ message: 'Email configuration error (CONTACT_TO not set).' });
-    }
+    const productsHtml =
+      products && products.length
+        ? `<h3>Selected Products</h3>
+           <ul>
+             ${products
+               .map(
+                 (p) =>
+                   `<li><strong>${p.vendor || ''} ${p.name || ''}</strong> (style: ${
+                     p.style || 'n/a'
+                   })</li>`
+               )
+               .join('')}
+           </ul>`
+        : '<p><em>No products were selected.</em></p>';
 
-    const productLines =
-      Array.isArray(products) && products.length > 0
-        ? products
-            .map(
-              (p, idx) =>
-                `${idx + 1}. ${p.name || 'Product'} (Style ${
-                  p.style || 'N/A'
-                })${p.vendor ? ` — ${p.vendor}` : ''}`
-            )
-            .join('\n')
-        : 'No specific products selected.';
+    const html = `
+      <h2>New Contact Form Submission</h2>
+      <p><strong>Name:</strong> ${name || '-'}</p>
+      <p><strong>Company:</strong> ${companyName || '-'}</p>
+      <p><strong>Email:</strong> ${email || '-'}</p>
+      <p><strong>Phone:</strong> ${phone || '-'}</p>
+      <p><strong>Quantity (for each item):</strong> ${quantity || '-'}</p>
+      <p><strong>In-hand date:</strong> ${inHandDate || '-'}</p>
+      <p><strong>Anything else:</strong> ${anythingElse || notes || '-'}</p>
+      ${productsHtml}
+    `;
 
-    const textBody = `
-New contact form submission from Joint Printing
+    const text = `
+New contact form submission
 
 Name: ${name || '-'}
 Company: ${companyName || '-'}
 Email: ${email || '-'}
 Phone: ${phone || '-'}
-
 Quantity (for each item): ${quantity || '-'}
 In-hand date: ${inHandDate || '-'}
+Anything else: ${anythingElse || notes || '-'}
 
 Selected products:
-${productLines}
+${(products || [])
+  .map((p) => `- ${p.vendor || ''} ${p.name || ''} (style: ${p.style || 'n/a'})`)
+  .join('\n')}
+    `.trim();
 
-Anything else:
-${anythingElse || '-'}
-`;
-
-    const htmlBody = `
-  <h2>New contact form submission from Joint Printing</h2>
-  <p><strong>Name:</strong> ${name || '-'}</p>
-  <p><strong>Company:</strong> ${companyName || '-'}</p>
-  <p><strong>Email:</strong> ${email || '-'}</p>
-  <p><strong>Phone:</strong> ${phone || '-'}</p>
-  <p><strong>Quantity (for each item):</strong> ${quantity || '-'}</p>
-  <p><strong>In-hand date:</strong> ${inHandDate || '-'}</p>
-  <h3>Selected products</h3>
-  <pre style="font-family: monospace; white-space: pre-wrap;">${productLines}</pre>
-  <h3>Anything else</h3>
-  <p>${(anythingElse || '-').replace(/\n/g, '<br/>')}</p>
-  <p><em>Attached design files are included if the customer uploaded any.</em></p>
-`;
+    const attachments = getAttachments(req);
 
     const mailOptions = {
       from: fromAddress,
       to: toAddress,
-      subject: `New mockup & quote request from ${name || 'Joint Printing site'}`,
-      text: textBody,
-      html: htmlBody,
+      replyTo: email || fromAddress,
+      subject,
+      text,
+      html,
       attachments,
     };
 
     await transporter.sendMail(mailOptions);
 
-    return res.status(200).json({ message: 'Email sent successfully' });
+    // clean up uploaded files
+    cleanupFiles(req);
+
+    return res.status(200).json({ message: 'Contact email sent successfully' });
   } catch (err) {
-    console.error('Error in sendContactEmail:', err);
-    return res
-      .status(500)
-      .json({ message: 'Failed to send contact email', error: err.message });
+    console.error('❌ Error in sendContactEmail:', err);
+    return res.status(500).json({
+      message: 'Failed to send contact email',
+      error: err.message,
+    });
   }
 };
 
-/**
- * Mockup request handler (if you use it separately from the main contact form)
- * For now this just forwards the payload similarly.
- */
+// ------------------- PRODUCT MOCKUP REQUEST -------------------
 exports.sendMockupRequest = async (req, res) => {
   try {
-    const { name, email, details } = req.body || {};
-    const attachments = getAttachments(req);
+    const {
+      name,
+      companyName,
+      email,
+      phone,
+      quantity,
+      inHandDate,
+      notes,
+      anythingElse,
+      selectedProducts,
+    } = req.body;
 
-    const toAddress = process.env.CONTACT_TO;
-    const fromAddress = process.env.CONTACT_FROM || process.env.SMTP_USER;
+    const products = parseSelectedProducts(selectedProducts);
 
-    const textBody = `
-New mockup request
+    const toAddress = process.env.EMAIL_TO;
+    const fromAddress = process.env.EMAIL_FROM || process.env.SMTP_USER;
+
+    const subject = `New mockup/quote request – ${companyName || 'Unknown company'}`;
+
+    const productsHtml =
+      products && products.length
+        ? `<h3>Requested Products</h3>
+           <ul>
+             ${products
+               .map(
+                 (p) =>
+                   `<li><strong>${p.vendor || ''} ${p.name || ''}</strong> (style: ${
+                     p.style || 'n/a'
+                   })</li>`
+               )
+               .join('')}
+           </ul>`
+        : '<p><em>No specific products were sent in the payload.</em></p>';
+
+    const html = `
+      <h2>New Mockup / Quote Request</h2>
+      <p><strong>Name:</strong> ${name || '-'}</p>
+      <p><strong>Company:</strong> ${companyName || '-'}</p>
+      <p><strong>Email:</strong> ${email || '-'}</p>
+      <p><strong>Phone:</strong> ${phone || '-'}</p>
+      <p><strong>Quantity (for each item):</strong> ${quantity || '-'}</p>
+      <p><strong>In-hand date:</strong> ${inHandDate || '-'}</p>
+      <p><strong>Anything else:</strong> ${anythingElse || notes || '-'}</p>
+      ${productsHtml}
+    `;
+
+    const text = `
+New mockup / quote request
 
 Name: ${name || '-'}
+Company: ${companyName || '-'}
 Email: ${email || '-'}
+Phone: ${phone || '-'}
+Quantity (for each item): ${quantity || '-'}
+In-hand date: ${inHandDate || '-'}
+Anything else: ${anythingElse || notes || '-'}
 
-Details:
-${details || '-'}
-`;
+Requested products:
+${(products || [])
+  .map((p) => `- ${p.vendor || ''} ${p.name || ''} (style: ${p.style || 'n/a'})`)
+  .join('\n')}
+    `.trim();
 
-    await transporter.sendMail({
+    const attachments = getAttachments(req);
+
+    const mailOptions = {
       from: fromAddress,
       to: toAddress,
-      subject: `New mockup request from ${name || 'Joint Printing site'}`,
-      text: textBody,
+      replyTo: email || fromAddress,
+      subject,
+      text,
+      html,
       attachments,
-    });
+    };
 
-    return res.status(200).json({ message: 'Mockup request sent successfully' });
-  } catch (err) {
-    console.error('Error in sendMockupRequest:', err);
+    await transporter.sendMail(mailOptions);
+    cleanupFiles(req);
+
     return res
-      .status(500)
-      .json({ message: 'Failed to send mockup request', error: err.message });
+      .status(200)
+      .json({ message: 'Mockup / quote email sent successfully' });
+  } catch (err) {
+    console.error('❌ Error in sendMockupRequest:', err);
+    return res.status(500).json({
+      message: 'Failed to send mockup request email',
+      error: err.message,
+    });
   }
 };
