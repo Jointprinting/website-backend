@@ -1,20 +1,17 @@
-// controllers/email.js
 const nodemailer = require('nodemailer');
 const fs = require('fs');
 const path = require('path');
 
-// ---- Transporter setup ----
-// Make sure these are set in Render:
-// SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_FROM, EMAIL_TO
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT) || 587,
-  secure: Number(process.env.SMTP_PORT) === 465, // true for 465, false otherwise
+  host: process.env.SMTP_HOST,              // smtp-pulse.com
+  port: Number(process.env.SMTP_PORT) || 2525, // 2525
+  secure: false,                            // 2525 is STARTTLS, not SSL
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
 });
+
 
 // Optional: log if SMTP is misconfigured
 transporter.verify((err, success) => {
