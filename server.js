@@ -7,7 +7,6 @@ const fs = require('fs');
 const mongoose = require('mongoose');
 
 const app = express();
-
 const PORT = process.env.PORT || 8080;
 
 app.use(cors());
@@ -18,7 +17,7 @@ if (!fs.existsSync('uploads')) {
   fs.mkdirSync('uploads');
 }
 
-// Multer storage
+// Multer storage for uploaded design files
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, 'uploads/');
@@ -30,7 +29,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
-// Mongo
+// Mongo connection
 mongoose.connect(process.env.MONGO_URI);
 require('./gridfs'); // Initialize GridFS by importing gridfs.js
 
@@ -46,7 +45,7 @@ const emailRoutes = require('./routes/emailRoutes');
 
 app.use('/api/products', productRoutes);
 
-// Accept up to 10 files from the "files" field on any /api/email route
+// IMPORTANT: field name "files" must match FormData.append('files', ...)
 app.use('/api/email', upload.array('files', 10), emailRoutes);
 
 app.listen(PORT, () => {
