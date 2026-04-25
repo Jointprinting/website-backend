@@ -1,101 +1,42 @@
+// models/Product.js
 const mongoose = require('mongoose');
 
-const ProductSchema = new mongoose.Schema({ 
-    name: {
-        type: String,
-        // required: true
-    },
-    vendor: {
-        type: String,
-        default: 'Joint Printing',
-    },
-    style: {
-        type: String,
-        unique: true,
-        // required: true
-    },
-    description: {
-        type: String,
-        // required: true
-    },
-    sizeRangeBottom: {
-        type: String,
-        default: 'S'
-    },
-    sizeRangeTop: {
-        type: String,
-        default: 'XL'
-    },
-    priceRangeBottom: {
-        type: Number,
-        default: 20
-    },
-    priceRangeTop: {
-        type: Number,
-        default: 28
-    },
-    colors: [
-        {
-            type: String
-        }
-    ],
-    colorCodes: [
-        {
-            type: String
-        }
-    ],
-    productFrontImages: [mongoose.Schema.Types.ObjectId], // Store GridFS image IDs
-    productBackImages: [mongoose.Schema.Types.ObjectId],  // Store GridFS image IDs
-    rating: {
-        type: Number,
-        default: 5
-    },
-    tag: {
-        type: String,
-        default: 'New Arrival'
-    },
-    category: {
-        type: String,
-        default: 'Shirts'
-    },
-    type: {
-        type: String,
-        default: 'Unisex'
-    },
-    createdAt: {
-        type: Date,
-        default: Date.now()
-    },
+const ProductSchema = new mongoose.Schema({
+  name:         { type: String },
+  vendor:       { type: String, default: 'Joint Printing' },
+  style:        { type: String, unique: true },
+  description:  { type: String },
+
+  sizeRangeBottom: { type: String, default: 'S' },
+  sizeRangeTop:    { type: String, default: 'XL' },
+  priceRangeBottom:{ type: Number, default: 20 },
+  priceRangeTop:   { type: Number, default: 28 },
+
+  colors:     [{ type: String }],
+  colorCodes: [{ type: String }],
+
+  productFrontImages: [mongoose.Schema.Types.ObjectId], // GridFS image IDs
+  productBackImages:  [mongoose.Schema.Types.ObjectId],
+
+  rating:   { type: Number, default: 5 },
+  tag:      { type: String, default: 'New Arrival' },
+  category: { type: String, default: 'Shirts' },
+  type:     { type: String, default: 'Unisex' },
+
+  // ── New: S&S Activewear integration metadata ──
+  source:       { type: String, enum: ['manual', 'alphabroder', 'ssactivewear'], default: 'manual' },
+  ssStyleID:    { type: Number },           // S&S internal styleID
+  brandName:    { type: String },           // S&S brandName (Gildan, Bella+Canvas, etc.)
+  basePrice:    { type: Number },           // Lowest piecePrice we found from S&S
+  // ───────────────────────────────────────────────
+
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now },
 });
-/*
-ProductSchema.pre("save", async function(next) {
-    // Function to generate a random 4-character style code
-    function generateStyleCode() {
-        const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-        const numbers = "0123456789";
-        let style = "";
-        for (let i = 0; i < 2; i++) {
-            style += letters.charAt(Math.floor(Math.random() * letters.length));
-        }
-        for (let i = 0; i < 2; i++) {
-            style += numbers.charAt(Math.floor(Math.random() * numbers.length));
-        }
-        return style;
-    }
 
-    let style = generateStyleCode();
-    let product = await this.constructor.findOne({ style });
-
-    // Keep generating a new style code until a unique one is found
-    while (product) {
-        style = generateStyleCode();
-        product = await this.constructor.findOne({ style });
-    }
-
-    this.style = style;
-    next();
+ProductSchema.pre('save', function (next) {
+  this.updatedAt = new Date();
+  next();
 });
-*/
-const Product = mongoose.model("Product", ProductSchema);
 
-module.exports = Product;
+module.exports = mongoose.model('Product', ProductSchema);
