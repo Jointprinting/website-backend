@@ -1,13 +1,28 @@
+// routes/productRoutes.js
 const express = require('express');
 const router = express.Router();
 
-const { getProducts, getProductById, getProductByStyleCode, createProduct, getCategories, getTypes } = require('../controllers/product');
+const {
+  getProducts,
+  getProductById,
+  getProductByStyleCode,
+  createProduct,
+  syncFromSS,
+  getCategories,
+  getTypes,
+} = require('../controllers/product');
 
-router.get("/", getProducts);
-router.get("/:id", getProductById);
-router.get("/style/:style", getProductByStyleCode);
-router.post("/add", createProduct);
-router.get("/categories", getCategories);
-router.get("/types", getTypes);
+const { requireAdmin } = require('../middleware/auth');
+
+// Public reads
+router.get('/', getProducts);
+router.get('/categories', getCategories);
+router.get('/types', getTypes);
+router.get('/style/:style', getProductByStyleCode);
+router.get('/:id', getProductById);
+
+// Admin writes — require studio token
+router.post('/add', requireAdmin, createProduct);          // Alpha Broder fallback
+router.post('/ss/sync', requireAdmin, syncFromSS);         // S&S Activewear smart sync
 
 module.exports = router;
