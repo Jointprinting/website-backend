@@ -1,39 +1,46 @@
+// controllers/email.js
 const nodemailer = require('nodemailer');
 const fs = require('fs');
-const path = require('path');
+const validator = require('validator');
+const ContactSubmission = require('../models/ContactSubmission');
 
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,              // smtp-pulse.com
-  port: Number(process.env.SMTP_PORT) || 2525, // 2525
-  secure: false,                            // 2525 is STARTTLS, not SSL
+  host:   process.env.SMTP_HOST,             // e.g. smtp-pulse.com
+  port:   Number(process.env.SMTP_PORT) || 2525,
+  secure: false,
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
 });
 
-
-// Optional: log if SMTP is misconfigured
-transporter.verify((err, success) => {
-  if (err) {
-    console.error('❌ SMTP configuration error:', err.message);
-  } else {
-    console.log('✅ SMTP server is ready to take messages');
-  }
+transporter.verify((err) => {
+  if (err) console.error('❌ SMTP configuration error:', err.message);
+  else      console.log('✅ SMTP server is ready to take messages');
 });
 
-// Helper: turn uploaded files into Nodemailer attachments
+// ─────────────────────────────────────────────────────────────────────────────
+//  Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
 function getAttachments(req) {
   if (!req.files || !Array.isArray(req.files)) return [];
-
   return req.files.map((file) => ({
     filename: file.originalname,
-    path: file.path, // Nodemailer will read the file from disk
+    path: file.path,
     contentType: file.mimetype,
   }));
 }
 
-// Helper: parse selectedProducts if it is JSON
+function describeAttachments(req) {
+  if (!req.files || !Array.isArray(req.files)) return [];
+  return req.files.map((f) => ({
+    filename: f.originalname,
+    contentType: f.mimetype,
+    sizeBytes: f.size,
+  }));
+}
+
 function parseSelectedProducts(raw) {
   if (!raw) return [];
   try {
@@ -44,200 +51,212 @@ function parseSelectedProducts(raw) {
   }
 }
 
-// Optional: delete temp upload files after sending
 function cleanupFiles(req) {
   if (!req.files || !Array.isArray(req.files)) return;
   req.files.forEach((file) => {
     fs.unlink(file.path, (err) => {
-      if (err) {
-        console.error('Error deleting temp file:', file.path, err.message);
-      }
+      if (err) console.error('Error deleting temp file:', file.path, err.message);
     });
   });
 }
 
-// ------------------- CONTACT FORM -------------------
+function escapeHtml(s = '') {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function validatePayload(body) {
+  const errors = [];
+  const name        = (body.name || '').trim();
+  const companyName = (body.companyName || '').trim();
+  const email       = (body.email || '').trim();
+  const phone       = (body.phone || '').trim();
+  const quantity    = (body.quantity || '').trim();
+  const inHandDate  = (body.inHandDate || '').trim();
+  const notes       = (body.notes || body.anythingElse || '').toString();
+
+  if (!name)        errors.push('name is required');
+  if (!companyName) errors.push('companyName is required');
+  if (!email)       errors.push('email is required');
+  if (email && !validator.isEmail(email)) errors.push('email is invalid');
+  if (!phone) errors.push('phone is required');
+  if (phone && !/^\+?[0-9 \-().]{7,20}$/.test(phone)) errors.push('phone format is invalid');
+  if (!quantity)   errors.push('quantity is required');
+  if (!inHandDate) errors.push('inHandDate is required');
+  if (notes.length > 5000) errors.push('notes is too long');
+
+  return {
+    errors,
+    cleaned: { name, companyName, email, phone, quantity, inHandDate, notes },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Contact / mockup form
+// ─────────────────────────────────────────────────────────────────────────────
+
 exports.sendContactEmail = async (req, res) => {
+  let submission = null;
+
   try {
-    const {
-      name,
-      companyName,
-      email,
-      phone,
-      quantity,
-      inHandDate,
-      notes,
-      anythingElse,
-      selectedProducts,
-    } = req.body;
+    // Honeypot — anything in `website` or `_hp` means it's a bot.
+    const honeypotTriggered = !!(req.body.website || req.body._hp);
 
-    const products = parseSelectedProducts(selectedProducts);
+    const { errors, cleaned } = validatePayload(req.body);
+    if (errors.length) {
+      cleanupFiles(req);
+      return res.status(400).json({ message: 'Validation failed', errors });
+    }
 
-    const toAddress = process.env.EMAIL_TO;
+    const products = parseSelectedProducts(req.body.selectedProducts);
+
+    // Persist first — even if email fails we still have the lead.
+    submission = await ContactSubmission.create({
+      ...cleaned,
+      selectedProducts: products,
+      attachments: describeAttachments(req),
+      ipAddress: req.ip,
+      userAgent: (req.headers['user-agent'] || '').slice(0, 500),
+      honeypot: honeypotTriggered,
+    });
+
+    // If the honeypot fired, accept silently (don't tip off the bot).
+    if (honeypotTriggered) {
+      cleanupFiles(req);
+      return res.status(200).json({ message: 'OK' });
+    }
+
+    const toAddress  = process.env.EMAIL_TO;
     const fromAddress = process.env.EMAIL_FROM || process.env.SMTP_USER;
+    const subject = `New contact form – ${cleaned.companyName}`;
 
-    const subject = `New contact form – ${companyName || 'Unknown company'}`;
-
-    const productsHtml =
-      products && products.length
-        ? `<h3>Selected Products</h3>
-           <ul>
-             ${products
-               .map(
-                 (p) =>
-                   `<li><strong>${p.vendor || ''} ${p.name || ''}</strong> (style: ${
-                     p.style || 'n/a'
-                   })</li>`
-               )
-               .join('')}
-           </ul>`
-        : '<p><em>No products were selected.</em></p>';
+    const productsHtml = products.length
+      ? `<h3>Selected Products</h3><ul>${products
+          .map(p => `<li><strong>${escapeHtml(p.vendor || '')} ${escapeHtml(p.name || '')}</strong> (style: ${escapeHtml(p.style || 'n/a')})</li>`)
+          .join('')}</ul>`
+      : '<p><em>No products were selected.</em></p>';
 
     const html = `
       <h2>New Contact Form Submission</h2>
-      <p><strong>Name:</strong> ${name || '-'}</p>
-      <p><strong>Company:</strong> ${companyName || '-'}</p>
-      <p><strong>Email:</strong> ${email || '-'}</p>
-      <p><strong>Phone:</strong> ${phone || '-'}</p>
-      <p><strong>Quantity (for each item):</strong> ${quantity || '-'}</p>
-      <p><strong>In-hand date:</strong> ${inHandDate || '-'}</p>
-      <p><strong>Anything else:</strong> ${anythingElse || notes || '-'}</p>
+      <p><strong>Name:</strong> ${escapeHtml(cleaned.name)}</p>
+      <p><strong>Company:</strong> ${escapeHtml(cleaned.companyName)}</p>
+      <p><strong>Email:</strong> <a href="mailto:${escapeHtml(cleaned.email)}">${escapeHtml(cleaned.email)}</a></p>
+      <p><strong>Phone:</strong> ${escapeHtml(cleaned.phone)}</p>
+      <p><strong>Quantity:</strong> ${escapeHtml(cleaned.quantity)}</p>
+      <p><strong>In-hand date:</strong> ${escapeHtml(cleaned.inHandDate)}</p>
+      <p><strong>Notes:</strong><br>${escapeHtml(cleaned.notes).replace(/\n/g, '<br>') || '-'}</p>
       ${productsHtml}
+      <hr>
+      <p style="color:#666;font-size:12px">Submission ID: ${submission._id}</p>
     `;
 
-    const text = `
-New contact form submission
+    const text = [
+      'New contact form submission',
+      '',
+      `Name: ${cleaned.name}`,
+      `Company: ${cleaned.companyName}`,
+      `Email: ${cleaned.email}`,
+      `Phone: ${cleaned.phone}`,
+      `Quantity: ${cleaned.quantity}`,
+      `In-hand: ${cleaned.inHandDate}`,
+      `Notes: ${cleaned.notes || '-'}`,
+      '',
+      'Products:',
+      ...products.map(p => `- ${p.vendor || ''} ${p.name || ''} (style: ${p.style || 'n/a'})`),
+      '',
+      `Submission ID: ${submission._id}`,
+    ].join('\n');
 
-Name: ${name || '-'}
-Company: ${companyName || '-'}
-Email: ${email || '-'}
-Phone: ${phone || '-'}
-Quantity (for each item): ${quantity || '-'}
-In-hand date: ${inHandDate || '-'}
-Anything else: ${anythingElse || notes || '-'}
-
-Selected products:
-${(products || [])
-  .map((p) => `- ${p.vendor || ''} ${p.name || ''} (style: ${p.style || 'n/a'})`)
-  .join('\n')}
-    `.trim();
-
-    const attachments = getAttachments(req);
-
-    const mailOptions = {
+    await transporter.sendMail({
       from: fromAddress,
       to: toAddress,
-      replyTo: email || fromAddress,
+      replyTo: cleaned.email,
       subject,
       text,
       html,
-      attachments,
-    };
+      attachments: getAttachments(req),
+    });
 
-    await transporter.sendMail(mailOptions);
+    // Also send an auto-reply to the customer so they know we got it.
+    try {
+      await transporter.sendMail({
+        from: fromAddress,
+        to: cleaned.email,
+        subject: `We got your request — Joint Printing`,
+        text: customerAutoReplyText(cleaned, products),
+        html: customerAutoReplyHtml(cleaned, products),
+      });
+    } catch (autoErr) {
+      console.warn('Auto-reply failed (continuing):', autoErr.message);
+    }
 
-    // clean up uploaded files
+    submission.emailStatus = 'sent';
+    await submission.save();
+
     cleanupFiles(req);
-
-    return res.status(200).json({ message: 'Contact email sent successfully' });
+    return res.status(200).json({ message: 'Contact email sent successfully', id: submission._id });
   } catch (err) {
     console.error('❌ Error in sendContactEmail:', err);
+    if (submission) {
+      submission.emailStatus = 'failed';
+      submission.emailError = String(err.message || err).slice(0, 500);
+      try { await submission.save(); } catch (_) {}
+    }
+    cleanupFiles(req);
     return res.status(500).json({
-      message: 'Failed to send contact email',
+      message: "We couldn't send the email, but we saved your request — Nate will reach out shortly.",
       error: err.message,
     });
   }
 };
 
-// ------------------- PRODUCT MOCKUP REQUEST -------------------
+function customerAutoReplyHtml(c, products) {
+  const list = products.length
+    ? `<p><strong>What you're asking about:</strong></p>
+       <ul>${products.map(p => `<li>${escapeHtml(p.vendor || '')} ${escapeHtml(p.name || '')} (style ${escapeHtml(p.style || 'n/a')})</li>`).join('')}</ul>`
+    : '';
+  return `
+    <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;color:#1a1a1a;line-height:1.6">
+      <h2 style="color:#1a3d2b;margin-bottom:6px">Got it, ${escapeHtml(c.name.split(' ')[0])} 👋</h2>
+      <p>Thanks for reaching out about merch for <strong>${escapeHtml(c.companyName)}</strong>.</p>
+      <p>We just got your request and will get back to you with a mockup and quote — usually within 24 hours.</p>
+      ${list}
+      <p style="margin-top:24px">In the meantime, you can also book a free 30-minute call:
+        <br><a href="https://calendly.com/nate-jointprinting/30min" style="color:#1a3d2b;font-weight:700">calendly.com/nate-jointprinting/30min</a>
+      </p>
+      <p style="margin-top:24px">— Nate<br><span style="color:#888;font-size:13px">Joint Printing</span></p>
+      <hr style="border:none;border-top:1px solid #eee;margin:24px 0">
+      <p style="color:#888;font-size:12px">P.S. New customer? Use code <strong>WELCOME10</strong> for 10% off your first order (up to $100).</p>
+    </div>
+  `;
+}
+
+function customerAutoReplyText(c, products) {
+  const list = products.length
+    ? '\nYou asked about:\n' + products.map(p => `- ${p.vendor || ''} ${p.name || ''} (style ${p.style || 'n/a'})`).join('\n') + '\n'
+    : '';
+  return [
+    `Got it, ${c.name.split(' ')[0]} —`,
+    '',
+    `Thanks for reaching out about merch for ${c.companyName}. We just got your request and will get back to you with a mockup and quote, usually within 24 hours.`,
+    list,
+    'You can also book a free 30-minute call: https://calendly.com/nate-jointprinting/30min',
+    '',
+    '— Nate',
+    'Joint Printing',
+    '',
+    'P.S. New customer? Use code WELCOME10 for 10% off your first order (up to $100).',
+  ].join('\n');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Mockup request — same shape, kept separate in case Nate wants different copy
+// ─────────────────────────────────────────────────────────────────────────────
+
 exports.sendMockupRequest = async (req, res) => {
-  try {
-    const {
-      name,
-      companyName,
-      email,
-      phone,
-      quantity,
-      inHandDate,
-      notes,
-      anythingElse,
-      selectedProducts,
-    } = req.body;
-
-    const products = parseSelectedProducts(selectedProducts);
-
-    const toAddress = process.env.EMAIL_TO;
-    const fromAddress = process.env.EMAIL_FROM || process.env.SMTP_USER;
-
-    const subject = `New mockup/quote request – ${companyName || 'Unknown company'}`;
-
-    const productsHtml =
-      products && products.length
-        ? `<h3>Requested Products</h3>
-           <ul>
-             ${products
-               .map(
-                 (p) =>
-                   `<li><strong>${p.vendor || ''} ${p.name || ''}</strong> (style: ${
-                     p.style || 'n/a'
-                   })</li>`
-               )
-               .join('')}
-           </ul>`
-        : '<p><em>No specific products were sent in the payload.</em></p>';
-
-    const html = `
-      <h2>New Mockup / Quote Request</h2>
-      <p><strong>Name:</strong> ${name || '-'}</p>
-      <p><strong>Company:</strong> ${companyName || '-'}</p>
-      <p><strong>Email:</strong> ${email || '-'}</p>
-      <p><strong>Phone:</strong> ${phone || '-'}</p>
-      <p><strong>Quantity (for each item):</strong> ${quantity || '-'}</p>
-      <p><strong>In-hand date:</strong> ${inHandDate || '-'}</p>
-      <p><strong>Anything else:</strong> ${anythingElse || notes || '-'}</p>
-      ${productsHtml}
-    `;
-
-    const text = `
-New mockup / quote request
-
-Name: ${name || '-'}
-Company: ${companyName || '-'}
-Email: ${email || '-'}
-Phone: ${phone || '-'}
-Quantity (for each item): ${quantity || '-'}
-In-hand date: ${inHandDate || '-'}
-Anything else: ${anythingElse || notes || '-'}
-
-Requested products:
-${(products || [])
-  .map((p) => `- ${p.vendor || ''} ${p.name || ''} (style: ${p.style || 'n/a'})`)
-  .join('\n')}
-    `.trim();
-
-    const attachments = getAttachments(req);
-
-    const mailOptions = {
-      from: fromAddress,
-      to: toAddress,
-      replyTo: email || fromAddress,
-      subject,
-      text,
-      html,
-      attachments,
-    };
-
-    await transporter.sendMail(mailOptions);
-    cleanupFiles(req);
-
-    return res
-      .status(200)
-      .json({ message: 'Mockup / quote email sent successfully' });
-  } catch (err) {
-    console.error('❌ Error in sendMockupRequest:', err);
-    return res.status(500).json({
-      message: 'Failed to send mockup request email',
-      error: err.message,
-    });
-  }
+  return exports.sendContactEmail(req, res);
 };
