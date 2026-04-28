@@ -4,10 +4,15 @@ const fs = require('fs');
 const validator = require('validator');
 const ContactSubmission = require('../models/ContactSubmission');
 
+// SMTP transport. Auto-picks `secure` based on port:
+//   - Gmail (port 465) → secure: true
+//   - SendPulse / others (port 587 or 2525) → secure: false (uses STARTTLS)
+const SMTP_PORT = Number(process.env.SMTP_PORT) || 465;
+
 const transporter = nodemailer.createTransport({
-  host:   process.env.SMTP_HOST,             // e.g. smtp-pulse.com
-  port:   Number(process.env.SMTP_PORT) || 2525,
-  secure: false,
+  host: process.env.SMTP_HOST,
+  port: SMTP_PORT,
+  secure: SMTP_PORT === 465,
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
@@ -18,10 +23,6 @@ transporter.verify((err) => {
   if (err) console.error('❌ SMTP configuration error:', err.message);
   else      console.log('✅ SMTP server is ready to take messages');
 });
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 function getAttachments(req) {
   if (!req.files || !Array.isArray(req.files)) return [];
@@ -69,6 +70,12 @@ function escapeHtml(s = '') {
     .replace(/'/g, '&#39;');
 }
 
+// Permissive phone check: 7-15 digits in any format
+function isPlausiblePhone(s) {
+  const digits = String(s || '').replace(/\D/g, '');
+  return digits.length >= 7 && digits.length <= 15;
+}
+
 function validatePayload(body) {
   const errors = [];
   const name        = (body.name || '').trim();
@@ -84,7 +91,7 @@ function validatePayload(body) {
   if (!email)       errors.push('email is required');
   if (email && !validator.isEmail(email)) errors.push('email is invalid');
   if (!phone) errors.push('phone is required');
-  if (phone && !/^\+?[0-9 \-().]{7,20}$/.test(phone)) errors.push('phone format is invalid');
+  if (phone && !isPlausiblePhone(phone)) errors.push('phone format is invalid');
   if (!quantity)   errors.push('quantity is required');
   if (!inHandDate) errors.push('inHandDate is required');
   if (notes.length > 5000) errors.push('notes is too long');
@@ -95,15 +102,10 @@ function validatePayload(body) {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Contact / mockup form
-// ─────────────────────────────────────────────────────────────────────────────
-
 exports.sendContactEmail = async (req, res) => {
   let submission = null;
 
   try {
-    // Honeypot — anything in `website` or `_hp` means it's a bot.
     const honeypotTriggered = !!(req.body.website || req.body._hp);
 
     const { errors, cleaned } = validatePayload(req.body);
@@ -114,7 +116,6 @@ exports.sendContactEmail = async (req, res) => {
 
     const products = parseSelectedProducts(req.body.selectedProducts);
 
-    // Persist first — even if email fails we still have the lead.
     submission = await ContactSubmission.create({
       ...cleaned,
       selectedProducts: products,
@@ -124,7 +125,6 @@ exports.sendContactEmail = async (req, res) => {
       honeypot: honeypotTriggered,
     });
 
-    // If the honeypot fired, accept silently (don't tip off the bot).
     if (honeypotTriggered) {
       cleanupFiles(req);
       return res.status(200).json({ message: 'OK' });
@@ -172,7 +172,7 @@ exports.sendContactEmail = async (req, res) => {
     ].join('\n');
 
     await transporter.sendMail({
-      from: fromAddress,
+      from: `"Joint Printing" <${fromAddress}>`,
       to: toAddress,
       replyTo: cleaned.email,
       subject,
@@ -181,10 +181,9 @@ exports.sendContactEmail = async (req, res) => {
       attachments: getAttachments(req),
     });
 
-    // Also send an auto-reply to the customer so they know we got it.
     try {
       await transporter.sendMail({
-        from: fromAddress,
+        from: `"Joint Printing" <${fromAddress}>`,
         to: cleaned.email,
         subject: `We got your request — Joint Printing`,
         text: customerAutoReplyText(cleaned, products),
@@ -252,10 +251,6 @@ function customerAutoReplyText(c, products) {
     'P.S. New customer? Use code WELCOME10 for 10% off your first order (up to $100).',
   ].join('\n');
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Mockup request — same shape, kept separate in case Nate wants different copy
-// ─────────────────────────────────────────────────────────────────────────────
 
 exports.sendMockupRequest = async (req, res) => {
   return exports.sendContactEmail(req, res);
