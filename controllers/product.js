@@ -471,3 +471,161 @@ function capitalizeWords(s = '') {
 
 // Backward-compat alias for the existing /add endpoint.
 exports.createProduct = exports.createProductFromAlphaBroder;
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  importFromJson — bulk-import products from a JSON array (ChatGPT/PDF flow)
+//
+//  POST /api/products/import-json
+//  Body: { products: [...], defaultTag?, defaultCategory? }
+//  Auth: requireAdmin
+//
+//  The studio's "PDF Catalog Import" tab calls this. We accept a flexible JSON
+//  shape (since ChatGPT might miss fields) and fill in sensible defaults.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ALLOWED_CATEGORIES = ['Shirts', 'Pants', 'Hoodies', 'Hats', 'Promo'];
+const ALLOWED_TYPES = ['Unisex', 'Male', 'Female', 'Kids'];
+const ALLOWED_TAGS = ['Best Seller', 'New Arrival', 'Clearance', 'Our Favorite', 'Exclusive'];
+
+function safeNumber(v, fallback) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function safeString(v, fallback = '') {
+  if (typeof v !== 'string') return fallback;
+  return v.trim() || fallback;
+}
+
+function pickFromList(v, list, fallback) {
+  if (typeof v !== 'string') return fallback;
+  const match = list.find((x) => x.toLowerCase() === v.trim().toLowerCase());
+  return match || fallback;
+}
+
+function safeArray(v) {
+  return Array.isArray(v) ? v.filter(Boolean) : [];
+}
+
+exports.importFromJson = async (req, res) => {
+  try {
+    const { products: rawProducts, defaultTag, defaultCategory } = req.body || {};
+    if (!Array.isArray(rawProducts) || rawProducts.length === 0) {
+      return res.status(400).json({ message: 'Provide a non-empty `products` array.' });
+    }
+    if (rawProducts.length > 200) {
+      return res.status(400).json({ message: 'Import at most 200 products per request.' });
+    }
+
+    const fallbackTag = pickFromList(defaultTag, ALLOWED_TAGS, 'New Arrival');
+    const fallbackCategory = pickFromList(defaultCategory, ALLOWED_CATEGORIES, 'Promo');
+
+    let created = 0;
+    let updated = 0;
+    const products = [];
+    const failed = [];
+
+    for (let i = 0; i < rawProducts.length; i++) {
+      const raw = rawProducts[i] || {};
+      try {
+        const style = safeString(raw.style || raw.styleCode || raw.sku);
+        if (!style) {
+          failed.push({ style: `item #${i + 1}`, reason: 'Missing required field "style"' });
+          continue;
+        }
+
+        const name = safeString(raw.name || raw.title, `Product ${style}`);
+        const vendor = safeString(raw.vendor || raw.brand || raw.brandName, 'Joint Printing');
+        const description = safeString(raw.description, `${vendor} ${name}`);
+        const category = pickFromList(raw.category, ALLOWED_CATEGORIES, fallbackCategory);
+        const type = pickFromList(raw.type || raw.fit, ALLOWED_TYPES, 'Unisex');
+        const tag = pickFromList(raw.tag, ALLOWED_TAGS, fallbackTag);
+        const rating = Math.max(1, Math.min(5, Math.round(safeNumber(raw.rating, 5))));
+
+        const priceRangeBottom = safeNumber(raw.priceRangeBottom || raw.priceMin || raw.minPrice, 5);
+        const priceRangeTop = safeNumber(raw.priceRangeTop || raw.priceMax || raw.maxPrice, Math.max(priceRangeBottom + 5, 15));
+
+        const sizeRangeBottom = safeString(raw.sizeRangeBottom || raw.sizeMin, 'OS');
+        const sizeRangeTop = safeString(raw.sizeRangeTop || raw.sizeMax, sizeRangeBottom);
+
+        const colors = safeArray(raw.colors).map((c) => String(c)).filter(Boolean);
+        const colorCodes = safeArray(raw.colorCodes).map((c) => {
+          let s = String(c).trim();
+          if (s && !s.startsWith('#')) s = '#' + s;
+          return s.toUpperCase();
+        });
+
+        // Pad colorCodes to match colors length (default to gray)
+        while (colorCodes.length < colors.length) colorCodes.push('#CCCCCC');
+        if (colors.length === 0) {
+          colors.push('Black');
+          colorCodes.push('#000000');
+        }
+
+        // Optional image URLs from the JSON. We attempt to upload each one,
+        // but DON'T fail the whole product if images can't be fetched (they
+        // can be added manually later).
+        const imageUrls = safeArray(raw.imageUrls || raw.images);
+        const productFrontImages = [];
+        for (const url of imageUrls.slice(0, colors.length || 1)) {
+          try {
+            const id = await uploadImageToGridFS(url);
+            productFrontImages.push(id);
+          } catch (_) {
+            productFrontImages.push(null);
+          }
+        }
+        // Pad with nulls so the array length matches colors length
+        while (productFrontImages.length < colors.length) productFrontImages.push(null);
+        const productBackImages = colors.map(() => null);
+
+        const update = {
+          name,
+          vendor,
+          style,
+          description,
+          source: 'manual',
+          sizeRangeBottom,
+          sizeRangeTop,
+          colors,
+          colorCodes,
+          productFrontImages,
+          productBackImages,
+          rating,
+          tag,
+          category,
+          type,
+          priceRangeBottom,
+          priceRangeTop,
+        };
+
+        const existing = await Product.findOne({ style });
+        let saved;
+        if (existing) {
+          Object.assign(existing, update);
+          saved = await existing.save();
+          updated++;
+        } else {
+          saved = await Product.create(update);
+          created++;
+        }
+
+        products.push({
+          style: saved.style,
+          name: saved.name,
+          vendor: saved.vendor,
+          category: saved.category,
+          type: saved.type,
+        });
+      } catch (e) {
+        console.error(`[JSON import] failed for item ${i}:`, e.message);
+        failed.push({ style: raw?.style || `item #${i + 1}`, reason: e.message || 'Unknown error' });
+      }
+    }
+
+    return res.status(200).json({ created, updated, products, failed });
+  } catch (err) {
+    console.error('importFromJson error:', err);
+    return res.status(500).json({ message: err.message || 'JSON import failed.' });
+  }
+};
