@@ -2,8 +2,13 @@
 //
 // We persist every contact submission to Mongo, then send the email.
 // That way you never lose a lead because SMTP hiccupped.
+//
+// Adds CRM-style fields: `status` (lifecycle of a lead) and `notesAdmin`
+// (internal notes only visible in the studio).
 
 const mongoose = require('mongoose');
+
+const STATUSES = ['new', 'contacted', 'quoted', 'won', 'lost', 'spam'];
 
 const ContactSubmissionSchema = new mongoose.Schema({
   name:         { type: String, required: true, trim: true, maxlength: 200 },
@@ -31,13 +36,24 @@ const ContactSubmissionSchema = new mongoose.Schema({
   // Spam/abuse signals
   ipAddress:    String,
   userAgent:    String,
-  honeypot:     { type: Boolean, default: false }, // true if a hidden field was filled
+  honeypot:     { type: Boolean, default: false },
 
   // Email pipeline status
   emailStatus:  { type: String, enum: ['queued', 'sent', 'failed'], default: 'queued' },
   emailError:   String,
 
+  // ── NEW: CRM fields ──
+  status:       { type: String, enum: STATUSES, default: 'new', index: true },
+  notesAdmin:   { type: String, trim: true, maxlength: 10000, default: '' },
+
   createdAt:    { type: Date, default: Date.now, index: true },
+  updatedAt:    { type: Date, default: Date.now },
+});
+
+ContactSubmissionSchema.pre('save', function (next) {
+  this.updatedAt = new Date();
+  next();
 });
 
 module.exports = mongoose.model('ContactSubmission', ContactSubmissionSchema);
+module.exports.STATUSES = STATUSES;
