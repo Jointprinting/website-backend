@@ -93,14 +93,16 @@ app.use('/api', generalApiLimiter);
 app.get('/healthz', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
 // ── Routes ──
-const productRoutes     = require('./routes/productRoutes');
-const emailRoutes       = require('./routes/emailRoutes');
-const authRoutes        = require('./routes/authRoutes');
-const submissionRoutes  = require('./routes/submissionRoutes');
+const productRoutes        = require('./routes/productRoutes');
+const emailRoutes          = require('./routes/emailRoutes');
+const authRoutes           = require('./routes/authRoutes');
+const submissionRoutes     = require('./routes/submissionRoutes');
+const scriptVersionRoutes  = require('./routes/scriptVersionRoutes');
 
 app.use('/api/products', productRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/submissions', submissionRoutes);
+app.use('/api/script-versions', scriptVersionRoutes);
 
 // IMPORTANT: field name "files" must match FormData.append('files', ...)
 app.use('/api/email', contactLimiter, upload.array('files', 10), emailRoutes);
