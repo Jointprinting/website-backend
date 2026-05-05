@@ -8,6 +8,62 @@ const Product = require('../models/Product');
 const { getGfs } = require('../gridfs');
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  Pricing config — single source of truth, shared by AlphaBroder and S&S.
+//
+//  Logic: lowest blank piece-price × markup, then a spread for the high end
+//  (which represents bigger sizes / lower run quantities), then round to the
+//  nearest $0.50 with a $5 floor. Locked across all product imports.
+// ─────────────────────────────────────────────────────────────────────────────
+const PRICE_MARKUP = 2.5;
+const PRICE_SPREAD = 1.4;
+const round50c = (n) => Math.max(5, Math.round(n * 2) / 2);
+
+function deriveRange(basePrice) {
+  // If we couldn't find a price, fall back to $8 base — yields $20–$28 final,
+  // which roughly matches your most common shirt range.
+  const safeBase = (typeof basePrice === 'number' && basePrice > 0) ? basePrice : 8;
+  const lo = safeBase * PRICE_MARKUP;
+  const hi = lo * PRICE_SPREAD;
+  return { priceRangeBottom: round50c(lo), priceRangeTop: round50c(hi) };
+}
+
+// AlphaBroder XML can report price either at the item level or per-size. We
+// look in both spots and keep the lowest piece-price we find. Field names vary
+// across their feeds, so we try a handful of common ones before giving up.
+function extractAlphaBroderMinPrice(item) {
+  const PRICE_FIELDS = [
+    'piecePrice', 'pieceprice', 'priceperpiece',
+    'basepriceperpiece', 'basePricePerPiece', 'baseprice', 'basePrice',
+    'piecedirectprice', 'price',
+  ];
+  const readPrice = (obj) => {
+    if (!obj || typeof obj !== 'object') return null;
+    for (const f of PRICE_FIELDS) {
+      const v = parseFloat(obj[f]);
+      if (Number.isFinite(v) && v > 0) return v;
+    }
+    return null;
+  };
+
+  let min = readPrice(item);
+
+  // Per-size pricing — each <size> element may have its own piecePrice.
+  if (item?.sizes) {
+    const sizesNode = Array.isArray(item.sizes) ? item.sizes[0] : item.sizes;
+    let sizes = sizesNode?.size;
+    if (sizes && !Array.isArray(sizes)) sizes = [sizes];
+    if (Array.isArray(sizes)) {
+      for (const s of sizes) {
+        const p = readPrice(s);
+        if (p !== null) min = (min === null) ? p : Math.min(min, p);
+      }
+    }
+  }
+
+  return min; // null if nothing found — caller falls back to default
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  S&S Activewear constants
 // ─────────────────────────────────────────────────────────────────────────────
 const SS_API_BASE = process.env.SS_API_BASE || 'https://api.ssactivewear.com/V2';
@@ -173,7 +229,7 @@ exports.getTypes = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Existing Alpha Broder XML add (kept as fallback for manual entry)
+//  AlphaBroder XML add — manual entry path used by Studio
 // ─────────────────────────────────────────────────────────────────────────────
 exports.createProductFromAlphaBroder = async (req, res) => {
   try {
@@ -248,6 +304,20 @@ async function parseAlphaBroderXML(xmlString, req) {
     }
   }
 
+  // ── Auto pricing: pull blank cost from the XML, mark it up, derive a range.
+  // If the request body still passes priceRangeBottom/Top (legacy callers),
+  // honor them; otherwise compute from XML. Same for rating/tag — defaults
+  // applied when not provided.
+  const xmlMinPrice = extractAlphaBroderMinPrice(item);
+  const derived = deriveRange(xmlMinPrice);
+
+  const priceRangeBottom = req.body.priceRangeBottom != null && req.body.priceRangeBottom !== ''
+    ? Number(req.body.priceRangeBottom)
+    : derived.priceRangeBottom;
+  const priceRangeTop = req.body.priceRangeTop != null && req.body.priceRangeTop !== ''
+    ? Number(req.body.priceRangeTop)
+    : derived.priceRangeTop;
+
   const product = new Product({
     name, vendor, style, description,
     sizeRangeBottom: sizeNames[0] || 'S',
@@ -257,10 +327,11 @@ async function parseAlphaBroderXML(xmlString, req) {
     productFrontImages,
     productBackImages,
     category: req.body.category,
-    priceRangeBottom: req.body.priceRangeBottom,
-    priceRangeTop: req.body.priceRangeTop,
-    rating: req.body.rating,
-    tag: req.body.tag,
+    priceRangeBottom,
+    priceRangeTop,
+    basePrice: xmlMinPrice || undefined,
+    rating: req.body.rating || 5,
+    tag: req.body.tag || 'New Arrival',
     type: req.body.type,
     source: 'alphabroder',
   });
@@ -368,7 +439,7 @@ exports.syncFromSS = async (req, res) => {
       return res.status(400).json({ message: 'Sync at most 50 styles per request.' });
     }
 
-    const markupNum = Number.isFinite(Number(markup)) && Number(markup) > 0 ? Number(markup) : 2.5;
+    const markupNum = Number.isFinite(Number(markup)) && Number(markup) > 0 ? Number(markup) : PRICE_MARKUP;
     const tagToUse = typeof tag === 'string' && tag ? tag : 'New Arrival';
 
     let created = 0;
@@ -384,12 +455,12 @@ exports.syncFromSS = async (req, res) => {
         const category = overrideCategory || detectCategory(summary.title);
         const type     = overrideType     || detectType(summary.title);
 
-        // Pricing: floor at $5, round to nearest $0.50
-        let lo = (summary.minPrice || 8) * markupNum;
-        let hi = lo * 1.4; // typical spread for printed-apparel orders
-        const round50c = (n) => Math.max(5, Math.round(n * 2) / 2);
-        const priceRangeBottom = round50c(lo);
-        const priceRangeTop    = round50c(hi);
+        // Pricing — same shape as deriveRange() but with the caller's markup
+        // override (default already === PRICE_MARKUP) and the locked spread.
+        const baseLo = (summary.minPrice || 8) * markupNum;
+        const baseHi = baseLo * PRICE_SPREAD;
+        const priceRangeBottom = round50c(baseLo);
+        const priceRangeTop    = round50c(baseHi);
 
         // Upload one front/back image per color (in order)
         const productFrontImages = [];
