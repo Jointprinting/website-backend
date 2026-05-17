@@ -18,6 +18,7 @@ const {
   replaceCatalogPdf,
   reorderCatalogs,
   deleteCatalog,
+  seedDefaults,
 } = require('../controllers/catalog');
 
 const { requireAdmin } = require('../middleware/auth');
@@ -46,6 +47,7 @@ router.get('/:id/pdf', streamPdf);
 router.get('/:id', getCatalog);
 
 // ── Admin writes ─────────────────────────────────────────────────────────────
+router.post('/seed',       requireAdmin, seedDefaults);
 router.post('/',           requireAdmin, pdfUpload.single('pdf'), createCatalog);
 router.put('/reorder',     requireAdmin, reorderCatalogs);
 router.put('/:id',         requireAdmin, updateCatalog);
