@@ -98,11 +98,15 @@ const emailRoutes          = require('./routes/emailRoutes');
 const authRoutes           = require('./routes/authRoutes');
 const submissionRoutes     = require('./routes/submissionRoutes');
 const scriptVersionRoutes  = require('./routes/scriptVersionRoutes');
+const catalogRoutes        = require('./routes/catalogRoutes');
+const siteSettingRoutes    = require('./routes/siteSettingRoutes');
 
 app.use('/api/products', productRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/submissions', submissionRoutes);
 app.use('/api/script-versions', scriptVersionRoutes);
+app.use('/api/catalogs', catalogRoutes);
+app.use('/api/site-settings', siteSettingRoutes);
 
 // IMPORTANT: field name "files" must match FormData.append('files', ...)
 app.use('/api/email', contactLimiter, upload.array('files', 10), emailRoutes);
