@@ -10,6 +10,7 @@
 // through requireAdmin via the route file.
 
 const mongoose = require('mongoose');
+const axios = require('axios');
 const Catalog = require('../models/Catalog');
 const { getGfs } = require('../gridfs');
 
@@ -307,6 +308,121 @@ async function deleteCatalog(req, res) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// One-shot import for the four catalogs that used to live as a hardcoded
+// array in src/screens/Catalogs.js. Triggered by a button in Studio so the
+// admin doesn't have to run anything locally. Refuses to run if any catalogs
+// already exist — they have to delete them from the manager first.
+//
+// Pulls each PDF from the live site (or SITE_BASE_URL if set) and writes
+// to GridFS. Returns a per-catalog result list so partial failures are
+// visible in the UI rather than crashing the whole import.
+// ─────────────────────────────────────────────────────────────────────────────
+const SEED_CATALOGS = [
+  {
+    title:       'Prototype → Production',
+    description: 'Custom wood display plaques, 3D-printed mascots and tap handles, slate coasters and trays. Unique products for brands that want something nobody else has.',
+    tags:        ['Wood', '3D Printing', 'Slate', 'Retail Display'],
+    stylePreset: 'default',
+    accentColor: '#2e7d32',
+    emoji:       '🪵',
+    pdfPath:     '/catalogs/prototype-to-production.pdf',
+    pdfFileName: 'prototype-to-production.pdf',
+    sortOrder:   0,
+  },
+  {
+    title:       "USA's 250th Anniversary Promo Collection",
+    description: "Patriotic promo products timed for America's 250th anniversary in 2026. Sunglasses, drinkware, bags, apparel, stickers, and more — all customizable.",
+    tags:        ['Drinkware', 'Bags', 'Apparel', 'Promos'],
+    stylePreset: 'patriotic',
+    accentColor: '#B22234',
+    emoji:       '🇺🇸',
+    pdfPath:     '/catalogs/usa-250-promos.pdf',
+    pdfFileName: 'usa-250-promos.pdf',
+    sortOrder:   1,
+  },
+  {
+    title:       'JP × Dispensary',
+    description: 'Apparel and merch built specifically for cannabis dispensaries — branded tees, hoodies, headgear, and giveaway items. Staff uniforms to customer gifts.',
+    tags:        ['Apparel', 'Dispensary', 'Staff Uniforms', 'Giveaways'],
+    stylePreset: 'canopy',
+    accentColor: '#1b5e20',
+    emoji:       '🌿',
+    pdfPath:     '/catalogs/dispensary-catalog.pdf',
+    pdfFileName: 'dispensary-catalog.pdf',
+    sortOrder:   2,
+  },
+  {
+    title:       'Dispensary Promos',
+    description: 'Promotional add-ons for dispensary retail — stickers, accessories, and branded items designed to drive loyalty and repeat visits.',
+    tags:        ['Promos', 'Dispensary', 'Accessories'],
+    stylePreset: 'canopy',
+    accentColor: '#004d40',
+    emoji:       '🎁',
+    pdfPath:     '/catalogs/dispo-promos.pdf',
+    pdfFileName: 'dispo-promos.pdf',
+    sortOrder:   3,
+  },
+];
+
+async function seedDefaults(_req, res) {
+  try {
+    const existing = await Catalog.countDocuments({});
+    if (existing > 0) {
+      return res.status(409).json({
+        message: `Already have ${existing} catalog(s). Delete them first if you want to re-import.`,
+        count: existing,
+      });
+    }
+
+    const siteBase = process.env.SITE_BASE_URL || 'https://jointprinting.com';
+    const results = { created: [], failed: [] };
+
+    for (const entry of SEED_CATALOGS) {
+      const pdfUrl = `${siteBase}${entry.pdfPath}`;
+      try {
+        const response = await axios.get(pdfUrl, {
+          responseType: 'arraybuffer',
+          timeout: 60_000,
+          maxContentLength: 100 * 1024 * 1024,
+        });
+        const buffer = Buffer.from(response.data);
+        const fileId = await streamBufferToGridfs(
+          buffer,
+          entry.pdfFileName,
+          'application/pdf'
+        );
+        const doc = await Catalog.create({
+          title:       entry.title,
+          description: entry.description,
+          tags:        entry.tags,
+          stylePreset: entry.stylePreset,
+          accentColor: entry.accentColor,
+          emoji:       entry.emoji,
+          pdfFileId:   fileId,
+          pdfFileName: entry.pdfFileName,
+          pdfFileSize: buffer.length,
+          sortOrder:   entry.sortOrder,
+          isPublished: true,
+        });
+        results.created.push({ id: doc._id, title: doc.title });
+      } catch (err) {
+        console.error(`[catalog] seed failed for ${entry.title}:`, err.message);
+        results.failed.push({
+          title: entry.title,
+          url:   pdfUrl,
+          error: err.message,
+        });
+      }
+    }
+
+    res.json(results);
+  } catch (err) {
+    console.error('[catalog] seedDefaults error:', err);
+    res.status(500).json({ message: 'Seed failed.' });
+  }
+}
+
 module.exports = {
   listCatalogs,
   listAllCatalogs,
@@ -317,4 +433,5 @@ module.exports = {
   replaceCatalogPdf,
   reorderCatalogs,
   deleteCatalog,
+  seedDefaults,
 };
