@@ -65,6 +65,49 @@ const looksLikeSmokeShop = (name = '') =>
   SMOKE_SHOP_KEYWORDS.some((rx) => rx.test(name));
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Known multi-state operator (MSO) detection.
+//
+// Each entry pairs a regex (case-insensitive) with the canonical brand name.
+// When a dispensary's name matches, we tag the result so the frontend can
+// render chains differently — same trip, different sales approach.
+//
+// False negatives are fine (an unmatched name shows as a one-off, which is
+// the safer default). The first match wins; broader patterns last.
+// ─────────────────────────────────────────────────────────────────────────────
+const DISPENSARY_CHAINS = [
+  // Big east-coast MSOs first
+  [/curaleaf/i,                                 'Curaleaf'],
+  [/trulieve/i,                                 'Trulieve'],
+  [/\brise\b\s*dispens/i,                       'RISE (GTI)'],
+  [/sunnyside/i,                                'Sunnyside (Cresco)'],
+  [/verilife|pharmacann/i,                      'Verilife (Pharmacann)'],
+  [/cannabist|columbia\s+care/i,                'Cannabist (Columbia Care)'],
+  [/liberty\s+health\s+sciences|\bLHS\b/i,      'Liberty Health Sciences'],
+  [/ayr\s*wellness|\bayr\b/i,                   'AYR Wellness'],
+  [/beyond[\s/-]*hello|\bjushi\b/i,             'Beyond/Hello (Jushi)'],
+  [/ascend\s+wellness|ascend\s+dispens/i,       'Ascend'],
+  [/the\s+botanist|acreage/i,                   'The Botanist (Acreage)'],
+  [/apothecarium|terrascend|\bgage\b/i,         'TerrAscend (Apothecarium/Gage)'],
+  [/zen\s+leaf|verano|\bmüv\b|\bmuv\b/i,        'Zen Leaf (Verano)'],
+  [/theory\s+wellness/i,                        'Theory Wellness'],
+  [/\bneta\b/i,                                 'NETA'],
+  [/harvest\s+of\s+md|harvest\s+hoc|harvest\s+dispens/i, 'Harvest'],
+  [/\bmedmen\b/i,                               'MedMen'],
+  [/cookies\s+(retail|dispens)/i,               'Cookies'],
+  [/\binsa\b/i,                                 'Insa'],
+  [/\betain\b/i,                                'Etain'],
+  [/cresco\s+labs?/i,                           'Cresco Labs'],
+  [/green\s+thumb\s+industries|\bGTI\b/i,       'Green Thumb Industries'],
+];
+
+function detectChain(name = '') {
+  for (const [rx, label] of DISPENSARY_CHAINS) {
+    if (rx.test(name)) return label;
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Google Places (New) — Text Search and Nearby Search
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -183,7 +226,11 @@ async function searchDispensaries(req, res) {
       const name = p.displayName?.text || '';
       if (looksLikeSmokeShop(name)) continue;
       seen.add(p.id);
-      merged.push(normalizeGoogle(p, 'dispensary'));
+      const normalized = normalizeGoogle(p, 'dispensary');
+      const chainName = detectChain(name);
+      normalized.isChain   = !!chainName;
+      normalized.chainName = chainName; // null for one-offs
+      merged.push(normalized);
     }
 
     res.json({ count: merged.length, results: merged });
@@ -196,17 +243,41 @@ async function searchDispensaries(req, res) {
   }
 }
 
-// ── Endpoint: coffee shops ───────────────────────────────────────────────────
+// ── Endpoint: coffee shops (sit-down places to work, not gas-station coffee) ─
+//
+// `cafe` as a Google Places type is overbroad — it returns Wawa, 7-Eleven,
+// Sheetz, etc. The user wants actual sit-down places with wifi where they
+// can work. Two-pronged fix:
+//   1. Use text search for "coffee shop" / "cafe wifi" — better intent match.
+//   2. Filter out any result tagged gas_station or convenience_store.
+const SIT_DOWN_BLOCKED_TYPES = new Set(['gas_station', 'convenience_store']);
+const SIT_DOWN_NAME_BLOCKLIST = [
+  /\bwawa\b/i, /\b7[- ]?eleven\b/i, /\bsheetz\b/i, /\bsunoco\b/i,
+  /\bshell\b/i, /\bmobil\b/i, /\bexxon\b/i, /\bbp\b/i, /\bchevron\b/i,
+  /\bcumberland farms\b/i, /\bquiktrip\b/i, /\bspeedway\b/i, /\bgas station\b/i,
+];
+
 async function searchCoffee(req, res) {
   try {
     const { lat, lng, radius } = parseGeoQuery(req);
-    const raw = await googleNearbySearch({
-      includedTypes: ['cafe', 'coffee_shop'],
-      lat, lng, radius,
-    });
-    const results = raw
-      .filter((p) => p.id)
-      .map((p) => normalizeGoogle(p, 'coffee'));
+
+    const [a, b] = await Promise.all([
+      googleTextSearch({ textQuery: 'coffee shop',         lat, lng, radius }),
+      googleTextSearch({ textQuery: 'cafe with wifi',      lat, lng, radius }),
+    ]);
+
+    const seen = new Set();
+    const results = [];
+    for (const p of [...a, ...b]) {
+      if (!p.id || seen.has(p.id)) continue;
+      const name = p.displayName?.text || '';
+      const types = p.types || [];
+      if (types.some((t) => SIT_DOWN_BLOCKED_TYPES.has(t))) continue;
+      if (SIT_DOWN_NAME_BLOCKLIST.some((rx) => rx.test(name))) continue;
+      seen.add(p.id);
+      results.push(normalizeGoogle(p, 'coffee'));
+    }
+
     res.json({ count: results.length, results });
   } catch (err) {
     console.error('[placeSearch] coffee error:', err.response?.data || err.message);
