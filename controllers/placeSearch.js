@@ -333,46 +333,98 @@ function approxStateFromLatLng(lat, lng) {
 async function searchNpsParks(req, res) {
   try {
     const { lat, lng, radius } = parseGeoQuery(req);
-    const key = process.env.NPS_KEY;
-    if (!key) throw new Error('NPS_KEY env var not set on the backend.');
 
-    const state = approxStateFromLatLng(lat, lng);
-    const params = { limit: 100, api_key: key };
-    if (state) params.stateCode = state;
+    // Three sources in parallel — NPS for authoritative federal sites, plus
+    // two Google text searches for state parks (which NPS doesn't cover)
+    // and additional national-park results.
+    const npsPromise = (async () => {
+      const key = process.env.NPS_KEY;
+      if (!key) return [];
+      try {
+        const state = approxStateFromLatLng(lat, lng);
+        const params = { limit: 100, api_key: key };
+        if (state) params.stateCode = state;
+        const { data } = await axios.get('https://developer.nps.gov/api/v1/parks', {
+          params, timeout: 15_000,
+        });
+        return (data.data || [])
+          .map((p) => ({
+            source: 'nps',
+            externalId: p.parkCode || '',
+            name: p.fullName || p.name || '',
+            address: (p.addresses && p.addresses[0]?.line1) || '',
+            phone:   (p.contacts?.phoneNumbers && p.contacts.phoneNumbers[0]?.phoneNumber) || '',
+            website: p.url || '',
+            lat:     parseFloat(p.latitude),
+            lng:     parseFloat(p.longitude),
+            type:    'park_national',
+            rating:  null,
+            extras: {
+              designation: p.designation,
+              description: p.description,
+              activities:  (p.activities || []).map((a) => a.name),
+              states:      p.states,
+              subSource:   'nps_federal',
+            },
+          }))
+          .filter((p) => isFinite(p.lat) && isFinite(p.lng))
+          .filter((p) => haversineMeters(lat, lng, p.lat, p.lng) <= radius);
+      } catch (e) {
+        console.warn('[placeSearch] NPS failed (continuing with Google):', e.message);
+        return [];
+      }
+    })();
 
-    const { data } = await axios.get('https://developer.nps.gov/api/v1/parks', {
-      params, timeout: 15_000,
-    });
+    const statePark = (async () => {
+      try {
+        const raw = await googleTextSearch({ textQuery: 'state park', lat, lng, radius });
+        return raw.filter((p) => p.id).map((p) => {
+          const norm = normalizeGoogle(p, 'park_state');
+          norm.extras.subSource = 'google_state_park';
+          return norm;
+        });
+      } catch (e) {
+        console.warn('[placeSearch] Google state park failed:', e.message);
+        return [];
+      }
+    })();
 
-    const results = (data.data || [])
-      .map((p) => ({
-        source: 'nps',
-        externalId: p.parkCode || '',
-        name: p.fullName || p.name || '',
-        address: (p.addresses && p.addresses[0]?.line1) || '',
-        phone:   (p.contacts?.phoneNumbers && p.contacts.phoneNumbers[0]?.phoneNumber) || '',
-        website: p.url || '',
-        lat:     parseFloat(p.latitude),
-        lng:     parseFloat(p.longitude),
-        type:    'park_national',
-        rating:  null,
-        extras: {
-          designation: p.designation,
-          description: p.description,
-          activities:  (p.activities || []).map((a) => a.name),
-          states:      p.states,
-        },
-      }))
-      .filter((p) => isFinite(p.lat) && isFinite(p.lng))
-      .filter((p) => haversineMeters(lat, lng, p.lat, p.lng) <= radius)
-      .sort((a, b) => haversineMeters(lat, lng, a.lat, a.lng)
-                    - haversineMeters(lat, lng, b.lat, b.lng));
+    const natlPark = (async () => {
+      try {
+        const raw = await googleTextSearch({ textQuery: 'national park', lat, lng, radius });
+        return raw.filter((p) => p.id).map((p) => {
+          const norm = normalizeGoogle(p, 'park_national');
+          norm.extras.subSource = 'google_national_park';
+          return norm;
+        });
+      } catch (e) {
+        console.warn('[placeSearch] Google national park failed:', e.message);
+        return [];
+      }
+    })();
 
-    res.json({ count: results.length, results });
+    const [nps, statePks, natPks] = await Promise.all([npsPromise, statePark, natlPark]);
+
+    // NPS first (authoritative federal), then Google. Dedupe by externalId
+    // and proximity (~250m) so the same site isn't returned twice.
+    const merged = [...nps];
+    const seenIds = new Set(nps.map((n) => n.externalId).filter(Boolean));
+    for (const candidate of [...natPks, ...statePks]) {
+      if (seenIds.has(candidate.externalId)) continue;
+      if (merged.some((existing) => haversineMeters(existing.lat, existing.lng, candidate.lat, candidate.lng) < 250)) continue;
+      seenIds.add(candidate.externalId);
+      merged.push(candidate);
+    }
+
+    // Sort closest-first
+    merged.sort((a, b) => haversineMeters(lat, lng, a.lat, a.lng)
+                       - haversineMeters(lat, lng, b.lat, b.lng));
+
+    res.json({ count: merged.length, results: merged });
   } catch (err) {
-    console.error('[placeSearch] NPS error:', err.response?.data || err.message);
+    console.error('[placeSearch] parks error:', err.response?.data || err.message);
     res.status(err.statusCode || 500).json({
-      message: err.message || 'NPS search failed.',
+      message: err.message || 'Park search failed.',
       detail:  err.response?.data || null,
     });
   }
