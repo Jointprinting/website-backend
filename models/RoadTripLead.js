@@ -12,6 +12,7 @@
 const mongoose = require('mongoose');
 
 const LEAD_TYPES = ['dispensary', 'coffee', 'park_national', 'park_state', 'campground', 'other'];
+const LEAD_KINDS = ['lead', 'stop'];   // 'lead' = sales prospect, 'stop' = trip waypoint
 const LEAD_STATUSES = [
   'planned',     // saved but not yet visited
   'visited',     // stopped by, didn't pitch
@@ -38,6 +39,9 @@ const RoadTripLeadSchema = new mongoose.Schema({
 
   // Taxonomy
   type:   { type: String, enum: LEAD_TYPES, default: 'other' },
+  // 'lead' = something I might pitch merch to (dispensaries)
+  // 'stop' = a waypoint on my route (coffee, parks, camping, etc.)
+  kind:   { type: String, enum: LEAD_KINDS, default: 'lead' },
   status: { type: String, enum: LEAD_STATUSES, default: 'planned' },
 
   // Field notes
@@ -60,6 +64,7 @@ RoadTripLeadSchema.pre('save', function (next) {
 });
 
 RoadTripLeadSchema.statics.TYPES = LEAD_TYPES;
+RoadTripLeadSchema.statics.KINDS = LEAD_KINDS;
 RoadTripLeadSchema.statics.STATUSES = LEAD_STATUSES;
 
 module.exports = mongoose.model('RoadTripLead', RoadTripLeadSchema);
