@@ -14,7 +14,8 @@ const ALLOWED_LEAD_FIELDS = [
   'name', 'address', 'phone', 'website',
   'lat', 'lng',
   'type', 'kind', 'status',
-  'contactName', 'notes', 'visitedAt', 'tripLabel',
+  'contactName', 'notes', 'visitedAt',
+  'tripLabel', 'dayLabel', 'sortOrder',
 ];
 
 function pickAllowed(body) {
@@ -22,9 +23,9 @@ function pickAllowed(body) {
   for (const k of ALLOWED_LEAD_FIELDS) {
     if (body[k] !== undefined) out[k] = body[k];
   }
-  // Coerce numerics
   if (out.lat !== undefined) out.lat = parseFloat(out.lat);
   if (out.lng !== undefined) out.lng = parseFloat(out.lng);
+  if (out.sortOrder !== undefined) out.sortOrder = parseInt(out.sortOrder, 10) || 0;
   return out;
 }
 
