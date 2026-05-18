@@ -13,7 +13,7 @@ const ALLOWED_LEAD_FIELDS = [
   'source', 'externalId',
   'name', 'address', 'phone', 'website',
   'lat', 'lng',
-  'type', 'status',
+  'type', 'kind', 'status',
   'contactName', 'notes', 'visitedAt', 'tripLabel',
 ];
 
@@ -33,6 +33,7 @@ async function listLeads(req, res) {
     const filter = {};
     if (req.query.tripLabel) filter.tripLabel = req.query.tripLabel;
     if (req.query.type)      filter.type      = req.query.type;
+    if (req.query.kind)      filter.kind      = req.query.kind;
     if (req.query.status)    filter.status    = req.query.status;
     const leads = await RoadTripLead.find(filter).sort({ createdAt: -1 }).lean();
     res.json(leads);
