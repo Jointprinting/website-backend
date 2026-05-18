@@ -379,54 +379,123 @@ async function searchNpsParks(req, res) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RIDB — Federal campgrounds (Recreation.gov), distance-filtered
+// Campgrounds — combined: RIDB (federal facilities) + Google Places (state
+// parks, KOAs, private RV parks, etc.). RIDB alone misses everything that
+// isn't on federal land, which leaves big gaps in places like Vermont where
+// most camping is state-owned. The two sources together get much better
+// coverage, with results merged and deduped by name+location proximity.
+//
+// Note for the user: even this combined search won't find every free
+// "boondocking" / overnight parking spot (Walmart lots, BLM dispersed
+// camping, Cracker Barrel, etc.). No public API covers those reliably —
+// apps like Park4Night and iOverlander aggregate that community knowledge.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Two campgrounds near each other are probably the same place. Crude but
+ * effective duplicate filter — within ~250m, treat as the same site.
+ */
+function approxSameLocation(a, b) {
+  return haversineMeters(a.lat, a.lng, b.lat, b.lng) < 250;
+}
 
 async function searchCampgrounds(req, res) {
   try {
     const { lat, lng, radius } = parseGeoQuery(req);
-    const key = process.env.RIDB_KEY;
-    if (!key) throw new Error('RIDB_KEY env var not set on the backend.');
 
-    // RIDB's /facilities endpoint supports lat/lng/radius (radius in miles,
-    // max 50). Convert our meters to miles.
-    const radiusMiles = Math.min(Math.round(radius / 1609.34), 50);
+    // Kick off all three in parallel so the user doesn't wait for them
+    // sequentially. Each is wrapped to ignore individual failures — if
+    // Google times out we still want RIDB results, and vice versa.
+    const ridbPromise = (async () => {
+      const key = process.env.RIDB_KEY;
+      if (!key) return [];
+      try {
+        const radiusMiles = Math.min(Math.round(radius / 1609.34), 50);
+        const { data } = await axios.get('https://ridb.recreation.gov/api/v1/facilities', {
+          params: {
+            latitude: lat, longitude: lng, radius: radiusMiles, limit: 50,
+            activity: 'CAMPING',
+          },
+          headers: { apikey: key, accept: 'application/json' },
+          timeout: 15_000,
+        });
+        return (data.RECDATA || [])
+          .map((f) => ({
+            source: 'ridb',
+            externalId: String(f.FacilityID || ''),
+            name:    f.FacilityName || '',
+            address: '',
+            phone:   f.FacilityPhone || '',
+            website: f.FacilityReservationURL || '',
+            lat:     parseFloat(f.FacilityLatitude),
+            lng:     parseFloat(f.FacilityLongitude),
+            type:    'campground',
+            rating:  null,
+            extras: {
+              description:    f.FacilityDescription,
+              reservable:     f.Reservable,
+              typeDescription: f.FacilityTypeDescription,
+              subSource:      'federal',
+            },
+          }))
+          .filter((p) => isFinite(p.lat) && isFinite(p.lng) && (p.lat !== 0 || p.lng !== 0));
+      } catch (e) {
+        console.warn('[placeSearch] RIDB failed (continuing with Google):', e.message);
+        return [];
+      }
+    })();
 
-    const { data } = await axios.get('https://ridb.recreation.gov/api/v1/facilities', {
-      params: {
-        latitude:  lat,
-        longitude: lng,
-        radius:    radiusMiles,
-        limit:     50,
-        activity:  'CAMPING',  // restrict to facilities that have camping
-      },
-      headers: { apikey: key, accept: 'application/json' },
-      timeout: 20_000,
-    });
+    const googleCampPromise = (async () => {
+      try {
+        const raw = await googleTextSearch({ textQuery: 'campground', lat, lng, radius });
+        return raw
+          .filter((p) => p.id)
+          .map((p) => {
+            const norm = normalizeGoogle(p, 'campground');
+            norm.extras.subSource = 'google_campground';
+            return norm;
+          });
+      } catch (e) {
+        console.warn('[placeSearch] Google campground search failed:', e.message);
+        return [];
+      }
+    })();
 
-    const results = (data.RECDATA || [])
-      .map((f) => ({
-        source: 'ridb',
-        externalId: String(f.FacilityID || ''),
-        name:    f.FacilityName || '',
-        address: '', // RIDB has it nested separately — skip for v1
-        phone:   f.FacilityPhone || '',
-        website: f.FacilityReservationURL || '',
-        lat:     parseFloat(f.FacilityLatitude),
-        lng:     parseFloat(f.FacilityLongitude),
-        type:    'campground',
-        rating:  null,
-        extras: {
-          description: f.FacilityDescription,
-          reservable:  f.Reservable,
-          typeDescription: f.FacilityTypeDescription,
-        },
-      }))
-      .filter((p) => isFinite(p.lat) && isFinite(p.lng) && (p.lat !== 0 || p.lng !== 0));
+    const googleRvPromise = (async () => {
+      try {
+        const raw = await googleTextSearch({ textQuery: 'RV park', lat, lng, radius });
+        return raw
+          .filter((p) => p.id)
+          .map((p) => {
+            const norm = normalizeGoogle(p, 'campground');
+            norm.extras.subSource = 'google_rv_park';
+            return norm;
+          });
+      } catch (e) {
+        console.warn('[placeSearch] Google RV park search failed:', e.message);
+        return [];
+      }
+    })();
 
-    res.json({ count: results.length, results });
+    const [ridb, googleCamp, googleRv] = await Promise.all([
+      ridbPromise, googleCampPromise, googleRvPromise,
+    ]);
+
+    // Dedupe: RIDB takes priority (it's authoritative for federal sites),
+    // then unique Google results (by externalId AND by location proximity
+    // to anything already kept).
+    const merged = [...ridb];
+    const seenIds = new Set(ridb.map((r) => r.externalId).filter(Boolean));
+    for (const candidate of [...googleCamp, ...googleRv]) {
+      if (seenIds.has(candidate.externalId)) continue;
+      if (merged.some((existing) => approxSameLocation(existing, candidate))) continue;
+      seenIds.add(candidate.externalId);
+      merged.push(candidate);
+    }
+
+    res.json({ count: merged.length, results: merged });
   } catch (err) {
-    console.error('[placeSearch] RIDB error:', err.response?.data || err.message);
+    console.error('[placeSearch] campgrounds error:', err.response?.data || err.message);
     res.status(err.statusCode || 500).json({
       message: err.message || 'Campground search failed.',
       detail:  err.response?.data || null,
