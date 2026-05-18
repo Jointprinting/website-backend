@@ -49,10 +49,13 @@ const RoadTripLeadSchema = new mongoose.Schema({
   notes:       { type: String, default: '' },
   visitedAt:   { type: Date },                // when you actually showed up
 
-  // Trip tagging — free-text label so multi-trip planning isn't blocked on
-  // a separate RoadTrip model. Defaults to '' meaning "ungrouped". Phase 4
-  // adds proper trip objects.
+  // Trip planning — items are grouped by day inside the itinerary panel.
+  // `dayLabel` is a free-text day name (default "Day 1"). Items with no
+  // dayLabel show under "Unassigned" until the user moves them.
+  // `sortOrder` controls position within the day.
   tripLabel: { type: String, default: '' },
+  dayLabel:  { type: String, default: '' },
+  sortOrder: { type: Number, default: 0 },
 
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
