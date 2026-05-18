@@ -53,13 +53,19 @@ function haversineMeters(lat1, lng1, lat2, lng2) {
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
-// Crude heuristic to weed out obvious smoke shops / vape stores from a
-// dispensary search. Conservative — false-negative is better than
-// false-positive here. The denylist catches stragglers the admin manually
-// flags from the UI.
+// Crude heuristic to weed out non-dispensaries from a dispensary search —
+// smoke shops, vape stores, AND medical-card doctor referrals and the like
+// that show up under "marijuana" search terms but aren't places to pitch
+// merch. Conservative — false-negative is better than false-positive.
+// The denylist catches stragglers the admin manually flags from the UI.
 const SMOKE_SHOP_KEYWORDS = [
   /\bsmoke\s*shop/i, /\bvape\b/i, /\bhookah\b/i, /\btobacco\b/i,
   /\bcigar/i, /\bhead\s*shop/i, /\bglass\s*gallery/i, /\bcbd\s+only\b/i,
+  // Non-dispensary services that show up under "marijuana" queries:
+  /marijuana\s+certifications?/i,      // medical card doctor referrals
+  /marijuana\s+(doctors?|md|physicians?|evaluations?|clinic)/i,
+  /marijuana\s+display/i,              // display-case manufacturers
+  /dispensary\s+doctor/i,
 ];
 const looksLikeSmokeShop = (name = '') =>
   SMOKE_SHOP_KEYWORDS.some((rx) => rx.test(name));
@@ -75,29 +81,32 @@ const looksLikeSmokeShop = (name = '') =>
 // the safer default). The first match wins; broader patterns last.
 // ─────────────────────────────────────────────────────────────────────────────
 const DISPENSARY_CHAINS = [
-  // Big east-coast MSOs first
-  [/curaleaf/i,                                 'Curaleaf'],
-  [/trulieve/i,                                 'Trulieve'],
-  [/\brise\b\s*dispens/i,                       'RISE (GTI)'],
-  [/sunnyside/i,                                'Sunnyside (Cresco)'],
-  [/verilife|pharmacann/i,                      'Verilife (Pharmacann)'],
-  [/cannabist|columbia\s+care/i,                'Cannabist (Columbia Care)'],
-  [/liberty\s+health\s+sciences|\bLHS\b/i,      'Liberty Health Sciences'],
-  [/ayr\s*wellness|\bayr\b/i,                   'AYR Wellness'],
-  [/beyond[\s/-]*hello|\bjushi\b/i,             'Beyond/Hello (Jushi)'],
-  [/ascend\s+wellness|ascend\s+dispens/i,       'Ascend'],
-  [/the\s+botanist|acreage/i,                   'The Botanist (Acreage)'],
-  [/apothecarium|terrascend|\bgage\b/i,         'TerrAscend (Apothecarium/Gage)'],
-  [/zen\s+leaf|verano|\bmüv\b|\bmuv\b/i,        'Zen Leaf (Verano)'],
-  [/theory\s+wellness/i,                        'Theory Wellness'],
-  [/\bneta\b/i,                                 'NETA'],
-  [/harvest\s+of\s+md|harvest\s+hoc|harvest\s+dispens/i, 'Harvest'],
-  [/\bmedmen\b/i,                               'MedMen'],
-  [/cookies\s+(retail|dispens)/i,               'Cookies'],
-  [/\binsa\b/i,                                 'Insa'],
-  [/\betain\b/i,                                'Etain'],
-  [/cresco\s+labs?/i,                           'Cresco Labs'],
-  [/green\s+thumb\s+industries|\bGTI\b/i,       'Green Thumb Industries'],
+  // Big east-coast MSOs first. Patterns are intentionally loose enough to
+  // match the actual Google Places names you see in the wild, which often
+  // include qualifiers like "Medical and Adult Use" rather than the brand's
+  // own word "Dispensary".
+  [/curaleaf/i,                                  'Curaleaf'],
+  [/trulieve/i,                                  'Trulieve'],
+  [/\brise\s+(medical|adult|dispens|cannabis|recreational|marijuana)/i, 'RISE (GTI)'],
+  [/sunnyside/i,                                 'Sunnyside (Cresco)'],
+  [/verilife|pharmacann/i,                       'Verilife (Pharmacann)'],
+  [/cannabist|columbia\s+care/i,                 'Cannabist (Columbia Care)'],
+  [/liberty\s+health\s+sciences|\bLHS\b/i,       'Liberty Health Sciences'],
+  [/ayr\s*wellness|\bayr\b\s+(medical|cannabis|dispens|recreational|marijuana)/i, 'AYR Wellness'],
+  [/beyond[\s/-]*hello|\bjushi\b/i,              'Beyond/Hello (Jushi)'],
+  [/ascend\s+(wellness|dispens|medical|cannabis|recreational|marijuana)/i, 'Ascend'],
+  [/the\s+botanist|acreage/i,                    'The Botanist (Acreage)'],
+  [/apothecarium|terrascend|\bgage\b/i,          'TerrAscend (Apothecarium/Gage)'],
+  [/zen\s+leaf|verano|\bmüv\b|\bmuv\b/i,         'Zen Leaf (Verano)'],
+  [/theory\s+wellness/i,                         'Theory Wellness'],
+  [/\bneta\b/i,                                  'NETA'],
+  [/harvest\s+(of|hoc|dispens|cannabis|medical|marijuana)/i, 'Harvest'],
+  [/\bmedmen\b/i,                                'MedMen'],
+  [/cookies\s+(retail|dispens|cannabis|on\b)/i,  'Cookies'],
+  [/\binsa\b/i,                                  'Insa'],
+  [/\betain\b/i,                                 'Etain'],
+  [/cresco\s+labs?/i,                            'Cresco Labs'],
+  [/green\s+thumb\s+industries|\bGTI\b/i,        'Green Thumb Industries'],
 ];
 
 function detectChain(name = '') {
