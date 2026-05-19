@@ -16,6 +16,10 @@ const ALLOWED_LEAD_FIELDS = [
   'type', 'kind', 'status',
   'contactName', 'notes', 'visitedAt',
   'tripLabel', 'dayLabel', 'sortOrder',
+  // New sales fields:
+  'score', 'contactEmail', 'followUpDate',
+  'visitOutcome', 'itemInterests',
+  'existingVendor', 'referredBy', 'customType',
 ];
 
 function pickAllowed(body) {
@@ -26,6 +30,14 @@ function pickAllowed(body) {
   if (out.lat !== undefined) out.lat = parseFloat(out.lat);
   if (out.lng !== undefined) out.lng = parseFloat(out.lng);
   if (out.sortOrder !== undefined) out.sortOrder = parseInt(out.sortOrder, 10) || 0;
+  // itemInterests must stay an array, not be coerced to a number
+  if (out.itemInterests !== undefined && !Array.isArray(out.itemInterests)) {
+    out.itemInterests = [out.itemInterests];
+  }
+  // existingVendor is a boolean; coerce string 'true'/'false' from form bodies
+  if (out.existingVendor !== undefined) {
+    out.existingVendor = out.existingVendor === true || out.existingVendor === 'true';
+  }
   return out;
 }
 
