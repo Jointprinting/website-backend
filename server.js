@@ -105,6 +105,7 @@ const catalogRoutes        = require('./routes/catalogRoutes');
 const siteSettingRoutes    = require('./routes/siteSettingRoutes');
 const roadTripRoutes       = require('./routes/roadTripRoutes');
 const studioRoutes         = require('./routes/studioRoutes');
+const quoterRoutes         = require('./routes/quoterRoutes');
 
 app.use('/api/products', productRoutes);
 app.use('/api/auth', authRoutes);
@@ -114,6 +115,7 @@ app.use('/api/catalogs', catalogRoutes);
 app.use('/api/site-settings', siteSettingRoutes);
 app.use('/api/roadtrip', roadTripRoutes);
 app.use('/api/studio', studioRoutes);
+app.use('/api/quoter', quoterRoutes);
 
 // IMPORTANT: field name "files" must match FormData.append('files', ...)
 app.use('/api/email', contactLimiter, upload.array('files', 10), emailRoutes);
