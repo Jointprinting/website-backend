@@ -11,6 +11,7 @@ const {
   listLeads, getLead, createLead, updateLead, deleteLead,
   rescoreLeads, importCsv, getDashboardStats, getReferenceData,
   exportCsv, bulkStatus,
+  searchPlaces, auditOneLead, auditBatch, getUsage,
 } = require('../controllers/jpwLead');
 
 router.use(requireAdmin);
@@ -20,20 +21,24 @@ router.get('/reference', getReferenceData);
 
 // Dashboard counts
 router.get('/stats', getDashboardStats);
+router.get('/usage', getUsage);
 
 // CSV export (must come before /:id catch-all)
 router.get('/export.csv', exportCsv);
 
 // Batch operations
-router.post('/import', importCsv);
-router.post('/rescore', rescoreLeads);
-router.post('/bulk-status', bulkStatus);
+router.post('/import',       importCsv);
+router.post('/rescore',      rescoreLeads);
+router.post('/bulk-status',  bulkStatus);
+router.post('/audit-batch',  auditBatch);
+router.post('/search/places', searchPlaces);
 
-// CRUD
-router.get('/leads',         listLeads);
-router.post('/leads',        createLead);
-router.get('/leads/:id',     getLead);
-router.put('/leads/:id',     updateLead);
-router.delete('/leads/:id',  deleteLead);
+// CRUD + per-lead actions
+router.get('/leads',           listLeads);
+router.post('/leads',          createLead);
+router.get('/leads/:id',       getLead);
+router.put('/leads/:id',       updateLead);
+router.delete('/leads/:id',    deleteLead);
+router.post('/leads/:id/audit', auditOneLead);
 
 module.exports = router;

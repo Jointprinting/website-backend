@@ -6,6 +6,7 @@
 // source of truth (the doc) than a stale field that diverges from reality.
 
 const JpwLead = require('../models/JpwLead');
+const JpwApiUsage = require('../models/JpwApiUsage');
 const { scoreLead } = require('../services/jpwScoring');
 const {
   buildDedupeKeys, buildDedupeFilter,
@@ -15,6 +16,8 @@ const {
   SOUTH_JERSEY_TOWNS, SOUTH_JERSEY_COUNTIES, CATEGORIES,
   guessCategory, SCORE_CAPS, SCORE_TOTAL_CAP,
 } = require('../services/jpwConstants');
+const { runSearch, getTodayUsage, PLACES_DAILY_CAP } = require('../services/jpwPlacesIngest');
+const { auditLead, auditLeadsConcurrent } = require('../services/jpwAuditor');
 
 // ── Field whitelist ───────────────────────────────────────────────────────
 // Only these fields can be set from the request body. Everything else (dedupe
@@ -485,8 +488,130 @@ async function bulkStatus(req, res) {
   }
 }
 
+// ── Places discovery ──────────────────────────────────────────────────────
+//
+// POST /api/jpw/search/places
+//   body: { category, town?, county?, extra_query?, max_results? }
+//
+// Runs a Google Places Text Search via services/jpwPlacesIngest, dedupes
+// against existing leads, scores each, and returns counts + new IDs.
+async function searchPlaces(req, res) {
+  try {
+    const { category, town = '', county = '', extra_query = '', max_results } = req.body || {};
+    if (!category) return res.status(400).json({ message: 'category is required.' });
+    const result = await runSearch({
+      category, town, county, extraQuery: extra_query,
+      maxResults: parseInt(max_results, 10) || 20,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error('[jpwLead] searchPlaces error:', err.response?.data || err.message);
+    res.status(err.statusCode || 500).json({
+      message: err.message || 'Places search failed.',
+      detail:  err.response?.data || null,
+    });
+  }
+}
+
+// ── Audit one lead's website ─────────────────────────────────────────────
+//
+// POST /api/jpw/leads/:id/audit
+// Fetches the lead's website, runs the auditor, stores into website_audit,
+// re-runs scoreLead, saves, and returns the updated lead.
+async function auditOneLead(req, res) {
+  try {
+    const lead = await JpwLead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ message: 'Lead not found.' });
+    if (!lead.website_url) {
+      return res.status(400).json({ message: 'Lead has no website URL to audit.' });
+    }
+    const audit = await auditLead(lead, { cityHints: SOUTH_JERSEY_TOWNS });
+    lead.website_audit = audit;
+    lead.lead_score = scoreLead(lead.toObject());
+    await JpwApiUsage.updateOne({ date: new Date().toISOString().slice(0, 10) },
+      { $inc: { audits_run: 1 } }, { upsert: true });
+    const saved = await lead.save();
+    res.json(saved);
+  } catch (err) {
+    console.error('[jpwLead] auditOne error:', err);
+    res.status(500).json({ message: err.message || 'Audit failed.' });
+  }
+}
+
+// ── Audit a batch ────────────────────────────────────────────────────────
+//
+// POST /api/jpw/audit-batch
+//   body: { ids?, only_unaudited?, only_grade?, limit?, concurrency? }
+//
+// Either pass an explicit array of ids, or filter by grade / only_unaudited.
+// Runs auditor with bounded concurrency, scores each result, saves them.
+// Returns counts; the frontend can refetch to see updated audit data.
+async function auditBatch(req, res) {
+  try {
+    const {
+      ids,
+      only_unaudited = false,
+      only_grade,
+      limit = 50,
+      concurrency = 4,
+    } = req.body || {};
+
+    const filter = { website_url: { $ne: '' } };
+    if (Array.isArray(ids) && ids.length) filter._id = { $in: ids };
+    if (only_grade) filter['lead_score.grade'] = only_grade;
+    if (only_unaudited) {
+      filter.$or = [
+        { 'website_audit.audited_at': { $exists: false } },
+        { 'website_audit.audited_at': null },
+      ];
+    }
+
+    const leads = await JpwLead.find(filter).limit(Math.min(parseInt(limit, 10) || 50, 250));
+    if (!leads.length) return res.json({ audited: 0, errors: 0, message: 'No leads matched the filter.' });
+
+    const results = await auditLeadsConcurrent(leads, {
+      concurrency: Math.min(parseInt(concurrency, 10) || 4, 8),
+      cityHints: SOUTH_JERSEY_TOWNS,
+    });
+
+    let audited = 0, errors = 0;
+    for (const { lead, audit, error } of results) {
+      if (error || !audit) { errors += 1; continue; }
+      lead.website_audit = audit;
+      lead.lead_score = scoreLead(lead.toObject());
+      try { await lead.save(); audited += 1; }
+      catch (err) { errors += 1; console.error('[jpwLead] audit save error:', err.message); }
+    }
+    await JpwApiUsage.updateOne({ date: new Date().toISOString().slice(0, 10) },
+      { $inc: { audits_run: audited } }, { upsert: true });
+
+    res.json({ requested: leads.length, audited, errors });
+  } catch (err) {
+    console.error('[jpwLead] auditBatch error:', err);
+    res.status(500).json({ message: err.message || 'Batch audit failed.' });
+  }
+}
+
+// ── Usage snapshot for the dashboard ─────────────────────────────────────
+async function getUsage(_req, res) {
+  try {
+    const today = await getTodayUsage();
+    res.json({
+      date: today.date,
+      places_calls_today: today.places_calls,
+      audits_run_today:   today.audits_run,
+      daily_cap:          PLACES_DAILY_CAP,
+      places_key_configured: !!process.env.GOOGLE_PLACES_KEY,
+    });
+  } catch (err) {
+    console.error('[jpwLead] getUsage error:', err);
+    res.status(500).json({ message: 'Failed to fetch usage.' });
+  }
+}
+
 module.exports = {
   listLeads, getLead, createLead, updateLead, deleteLead,
   rescoreLeads, importCsv, getDashboardStats, getReferenceData,
   exportCsv, bulkStatus,
+  searchPlaces, auditOneLead, auditBatch, getUsage,
 };
