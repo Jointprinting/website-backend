@@ -72,7 +72,13 @@ mongoose.connect(process.env.MONGO_URI);
 require('./gridfs');
 const db = mongoose.connection;
 db.on('error', console.error.bind(console, 'MongoDB connection error:'));
-db.once('open', () => console.log('Connected to MongoDB'));
+db.once('open', () => {
+  console.log('Connected to MongoDB');
+  // Start the nightly S&S price refresh only if credentials are present
+  if (process.env.SS_ACCOUNT && process.env.SS_API_KEY) {
+    require('./services/ssAutoSync').startSSAutoSync();
+  }
+});
 
 // ── Rate limiters ──
 const contactLimiter = rateLimit({
