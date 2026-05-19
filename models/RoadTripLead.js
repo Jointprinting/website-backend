@@ -14,12 +14,17 @@ const mongoose = require('mongoose');
 const LEAD_TYPES = ['dispensary', 'coffee', 'park_national', 'park_state', 'campground', 'other'];
 const LEAD_KINDS = ['lead', 'stop'];   // 'lead' = sales prospect, 'stop' = trip waypoint
 const LEAD_STATUSES = [
-  'planned',     // saved but not yet visited
-  'visited',     // stopped by, didn't pitch
-  'pitched',     // pitched merch, awaiting reply
-  'lead',        // real interest, follow up
-  'customer',    // converted
-  'dead',        // not interested / closed
+  'planned',          // saved, not yet visited
+  'pre_called',       // called ahead before showing up
+  'visited',          // stopped by
+  'buyer_identified', // found buyer/manager name
+  'pitched',          // gave the pitch in person
+  'catalog_sent',     // sent catalog/follow-up
+  'mockup_needed',    // they want to see designs
+  'quote_needed',     // need to price something
+  'follow_up',        // warm lead, nurturing
+  'won',              // closed / got an order
+  'dead',             // not interested
 ];
 
 const RoadTripLeadSchema = new mongoose.Schema({
@@ -49,6 +54,16 @@ const RoadTripLeadSchema = new mongoose.Schema({
   notes:       { type: String, default: '' },
   visitedAt:   { type: Date },                // when you actually showed up
 
+  // Sales pipeline fields
+  score:          { type: String, enum: ['A', 'B', 'C', ''], default: '' }, // A=high value, B=ok, C=low priority
+  contactEmail:   { type: String, default: '' },
+  followUpDate:   { type: Date },
+  visitOutcome:   { type: String, default: '' }, // brief outcome from visit
+  itemInterests:  { type: [String], default: [] }, // e.g. ['T-shirts', 'Lighters', 'Hats']
+  existingVendor: { type: Boolean, default: false }, // already has a merch vendor
+  referredBy:     { type: String, default: '' }, // who sent you there
+  customType:     { type: String, default: '' }, // for 'other' pins: 'friend' | 'client' | 'printer' | ''
+
   // Trip planning — items are grouped by day inside the itinerary panel.
   // `dayLabel` is a free-text day name (default "Day 1"). Items with no
   // dayLabel show under "Unassigned" until the user moves them.
@@ -66,8 +81,11 @@ RoadTripLeadSchema.pre('save', function (next) {
   next();
 });
 
-RoadTripLeadSchema.statics.TYPES = LEAD_TYPES;
-RoadTripLeadSchema.statics.KINDS = LEAD_KINDS;
+RoadTripLeadSchema.statics.TYPES    = LEAD_TYPES;
+RoadTripLeadSchema.statics.KINDS    = LEAD_KINDS;
 RoadTripLeadSchema.statics.STATUSES = LEAD_STATUSES;
 
-module.exports = mongoose.model('RoadTripLead', RoadTripLeadSchema);
+const RoadTripLead = mongoose.model('RoadTripLead', RoadTripLeadSchema);
+RoadTripLead.LEAD_STATUSES = LEAD_STATUSES;
+
+module.exports = RoadTripLead;

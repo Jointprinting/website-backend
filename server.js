@@ -41,6 +41,9 @@ app.use(cors({
 
 app.use(express.json({ limit: '1mb' }));
 
+// Studio library routes need larger JSON body (base64 images can be several MB)
+app.use('/api/studio', express.json({ limit: '20mb' }));
+
 // Ensure the uploads directory exists
 if (!fs.existsSync('uploads')) fs.mkdirSync('uploads');
 
@@ -69,7 +72,13 @@ mongoose.connect(process.env.MONGO_URI);
 require('./gridfs');
 const db = mongoose.connection;
 db.on('error', console.error.bind(console, 'MongoDB connection error:'));
-db.once('open', () => console.log('Connected to MongoDB'));
+db.once('open', () => {
+  console.log('Connected to MongoDB');
+  // Start the nightly S&S price refresh only if credentials are present
+  if (process.env.SS_ACCOUNT && process.env.SS_API_KEY) {
+    require('./services/ssAutoSync').startSSAutoSync();
+  }
+});
 
 // ── Rate limiters ──
 const contactLimiter = rateLimit({
@@ -101,6 +110,7 @@ const scriptVersionRoutes  = require('./routes/scriptVersionRoutes');
 const catalogRoutes        = require('./routes/catalogRoutes');
 const siteSettingRoutes    = require('./routes/siteSettingRoutes');
 const roadTripRoutes       = require('./routes/roadTripRoutes');
+const studioRoutes         = require('./routes/studioRoutes');
 
 app.use('/api/products', productRoutes);
 app.use('/api/auth', authRoutes);
@@ -109,6 +119,7 @@ app.use('/api/script-versions', scriptVersionRoutes);
 app.use('/api/catalogs', catalogRoutes);
 app.use('/api/site-settings', siteSettingRoutes);
 app.use('/api/roadtrip', roadTripRoutes);
+app.use('/api/studio', studioRoutes);
 
 // IMPORTANT: field name "files" must match FormData.append('files', ...)
 app.use('/api/email', contactLimiter, upload.array('files', 10), emailRoutes);

@@ -8,6 +8,7 @@ const {
   getProductByStyleCode,
   createProduct,
   syncFromSS,
+  refreshAllSSProductsHandler,
   importFromJson,
   getCategories,
   getTypes,
@@ -23,8 +24,9 @@ router.get('/style/:style', getProductByStyleCode);
 router.get('/:id', getProductById);
 
 // Admin writes — require studio token
-router.post('/add', requireAdmin, createProduct);              // Alpha Broder fallback
-router.post('/ss/sync', requireAdmin, syncFromSS);             // S&S Activewear smart sync
-router.post('/import-json', requireAdmin, importFromJson);     // PDF/ChatGPT JSON bulk import
+router.post('/add', requireAdmin, createProduct);                          // Alpha Broder fallback
+router.post('/ss/sync', requireAdmin, syncFromSS);                         // S&S Activewear smart sync
+router.post('/ss/refresh-all', requireAdmin, refreshAllSSProductsHandler); // Nightly price+size refresh
+router.post('/import-json', requireAdmin, importFromJson);                 // PDF/ChatGPT JSON bulk import
 
 module.exports = router;

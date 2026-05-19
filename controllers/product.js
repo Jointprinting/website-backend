@@ -422,6 +422,66 @@ function summarizeSsStyle(skus) {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Light nightly refresh — updates prices & sizes for all S&S-sourced products
+//  without re-downloading images (too expensive for an automated nightly job).
+// ─────────────────────────────────────────────────────────────────────────────
+async function refreshAllSSProducts() {
+  ensureSsCredentials();
+  const ssProducts = await Product.find({ source: 'ssactivewear' }).select('style').lean();
+
+  let updated = 0;
+  const failed = [];
+
+  for (const p of ssProducts) {
+    try {
+      const skus = await fetchSSProducts(p.style);
+      const summary = summarizeSsStyle(skus);
+      const { priceRangeBottom, priceRangeTop } = deriveRange(summary.minPrice);
+
+      await Product.updateOne(
+        { style: p.style },
+        {
+          $set: {
+            basePrice: summary.minPrice,
+            priceRangeBottom,
+            priceRangeTop,
+            sizeRangeBottom: summary.sizeRangeBottom,
+            sizeRangeTop: summary.sizeRangeTop,
+            updatedAt: new Date(),
+          },
+        }
+      );
+      updated++;
+    } catch (e) {
+      console.error(`[SS refresh] "${p.style}":`, e.message);
+      failed.push({ style: p.style, reason: e.message });
+    }
+    // Small pause to avoid hammering the S&S API
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  return { updated, total: ssProducts.length, failed };
+}
+
+// Exposed for the cron service (not an HTTP handler itself)
+exports._refreshAllSSProducts = refreshAllSSProducts;
+
+/**
+ * POST /api/products/ss/refresh-all
+ * Manually trigger a price+size refresh for all S&S-sourced products.
+ * Auth: requireAdmin
+ */
+exports.refreshAllSSProductsHandler = async (req, res) => {
+  try {
+    const results = await refreshAllSSProducts();
+    return res.status(200).json(results);
+  } catch (err) {
+    console.error('refreshAllSS error:', err);
+    return res.status(500).json({ message: err.message || 'Refresh failed.' });
+  }
+};
+
 /**
  * POST /api/products/ss/sync
  * Body: { styles: [string], tag?, markup?, overrideCategory?, overrideType? }
