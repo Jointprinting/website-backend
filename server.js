@@ -56,15 +56,10 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10 MB per file
+    fileSize: 25 * 1024 * 1024, // 25 MB per file
     files: 10,
   },
-  fileFilter: (_req, file, cb) => {
-    // Allow common design + image + doc types
-    const ok = /^(image\/(jpe?g|png|webp|gif|svg\+xml)|application\/(pdf|illustrator|postscript|zip|x-zip-compressed)|application\/vnd\.adobe\.photoshop|application\/octet-stream)$/i.test(file.mimetype);
-    if (!ok) return cb(new Error('File type not supported.'));
-    cb(null, true);
-  },
+  // No fileFilter — accept any file type; uploads go directly to the business owner
 });
 
 // ── Mongo ──
@@ -126,11 +121,11 @@ app.use('/api/email', contactLimiter, upload.array('files', 10), emailRoutes);
 
 // Multer error handler
 app.use((err, _req, res, next) => {
-  if (err && err.message && (err.message.includes('File type') || err.message.includes('CORS'))) {
+  if (err && err.message && err.message.includes('CORS')) {
     return res.status(400).json({ message: err.message });
   }
   if (err && err.code === 'LIMIT_FILE_SIZE') {
-    return res.status(400).json({ message: 'File too large (max 10 MB).' });
+    return res.status(400).json({ message: 'File too large (max 25 MB per file).' });
   }
   if (err) {
     console.error('Unhandled error:', err);
