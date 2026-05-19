@@ -18,6 +18,25 @@ const PRICE_MARKUP = 2.5;
 const PRICE_SPREAD = 1.4;
 const round50c = (n) => Math.max(5, Math.round(n * 2) / 2);
 
+// Deterministic pseudo-rating: 4.0–5.0 based on style string hash.
+// Gives variety without being random on every sync.
+function deriveRating(styleName = '') {
+  let h = 0;
+  for (let i = 0; i < styleName.length; i++) h = (h * 31 + styleName.charCodeAt(i)) | 0;
+  const r = ((Math.abs(h) % 11) / 10) + 4; // 4.0 – 5.0
+  return Math.round(r * 2) / 2; // round to nearest 0.5
+}
+
+// Auto-tag based on brand recognition and position
+const PREMIUM_BRANDS = ['bella', 'canvas', 'next level', 'alternative', 'district', 'american apparel'];
+const POPULAR_BRANDS = ['gildan', 'port', 'hanes', 'jerzees', 'sport-tek', 'carhartt'];
+function deriveTag(brand = '', styleName = '') {
+  const b = brand.toLowerCase();
+  if (PREMIUM_BRANDS.some(p => b.includes(p))) return 'Our Favorite';
+  if (POPULAR_BRANDS.some(p => b.includes(p))) return 'Best Seller';
+  return 'New Arrival';
+}
+
 function deriveRange(basePrice) {
   // If we couldn't find a price, fall back to $8 base — yields $20–$28 final,
   // which roughly matches your most common shirt range.
@@ -165,10 +184,11 @@ exports.getProducts = async (req, res) => {
     const limit = parseInt(req.query.limit) || 12;
     const skip = (page - 1) * limit;
 
-    const { category, type } = req.query;
+    const { category, type, search } = req.query;
     const query = {};
     if (category) query.category = category;
     if (type)     query.type = type;
+    if (search)   query.name = { $regex: search, $options: 'i' };
 
     const products = await Product.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit);
     if (!products.length) return res.status(200).json({ products: [], totalPages: 0 });
@@ -448,6 +468,7 @@ async function refreshAllSSProducts() {
             priceRangeTop,
             sizeRangeBottom: summary.sizeRangeBottom,
             sizeRangeTop: summary.sizeRangeTop,
+            rating: deriveRating(p.style),
             updatedAt: new Date(),
           },
         }
@@ -550,7 +571,7 @@ exports.syncFromSS = async (req, res) => {
           colorCodes,
           productFrontImages,
           productBackImages,
-          rating: 5,
+          rating: deriveRating(summary.styleName),
           tag: tagToUse,
           category,
           type,
@@ -759,4 +780,99 @@ exports.importFromJson = async (req, res) => {
     console.error('importFromJson error:', err);
     return res.status(500).json({ message: err.message || 'JSON import failed.' });
   }
+};
+
+// ─── S&S Live Browse ───────────────────────────────────────────────────────────
+// Simple in-memory cache: key → { data, expiresAt }
+const _ssCache = new Map();
+const SS_CACHE_TTL = 4 * 60 * 60 * 1000; // 4 hours
+
+async function fetchAndGroupSSBrand(brand) {
+  const cacheKey = `brand:${brand}`;
+  const cached = _ssCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.data;
+
+  const { data } = await ssClient.get('/Products.aspx', {
+    params: { brand, mediatype: 'json' },
+    timeout: 60_000,
+  });
+  if (!Array.isArray(data)) throw new Error('Unexpected S&S response');
+
+  // Group SKUs → styles
+  const byStyle = new Map();
+  for (const sku of data) {
+    if (!sku.styleName) continue;
+    if (!byStyle.has(sku.styleName)) byStyle.set(sku.styleName, []);
+    byStyle.get(sku.styleName).push(sku);
+  }
+
+  const styles = [];
+  for (const skus of byStyle.values()) {
+    const s = summarizeSsStyle(skus);
+    const { priceRangeBottom, priceRangeTop } = deriveRange(s.minPrice);
+    styles.push({
+      style: s.styleName,
+      name: s.title,
+      vendor: s.brand,
+      category: detectCategory(s.title),
+      type: detectType(s.title),
+      priceRangeBottom,
+      priceRangeTop,
+      sizeRangeBottom: s.sizeRangeBottom,
+      sizeRangeTop: s.sizeRangeTop,
+      colorCount: s.colors.length,
+      rating: deriveRating(s.styleName),
+      tag: deriveTag(s.brand, s.styleName),
+      image: s.colors[0]?.front ? ssImageUrl(s.colors[0].front) : null,
+    });
+  }
+
+  styles.sort((a, b) => a.style.localeCompare(b.style));
+  const result = { styles, total: styles.length };
+  _ssCache.set(cacheKey, { data: result, expiresAt: Date.now() + SS_CACHE_TTL });
+  return result;
+}
+
+exports.browseSS = async (req, res) => {
+  try {
+    ensureSsCredentials();
+    const { brand, page = 1, limit = 24, search = '' } = req.query;
+    if (!brand) return res.status(400).json({ message: '`brand` query param is required.' });
+
+    let { styles, total } = await fetchAndGroupSSBrand(brand);
+
+    if (search) {
+      const q = search.toLowerCase();
+      styles = styles.filter(s =>
+        s.name.toLowerCase().includes(q) || s.style.toLowerCase().includes(q)
+      );
+      total = styles.length;
+    }
+
+    const p = Math.max(1, parseInt(page, 10));
+    const l = Math.min(48, Math.max(1, parseInt(limit, 10)));
+    const start = (p - 1) * l;
+
+    return res.json({
+      products: styles.slice(start, start + l),
+      total,
+      page: p,
+      totalPages: Math.ceil(total / l),
+    });
+  } catch (err) {
+    console.error('browseSS error:', err.message);
+    return res.status(500).json({ message: err.message || 'Browse failed.' });
+  }
+};
+
+// Hardcoded list of popular S&S brands (avoids a live brands API call on every page load)
+const SS_POPULAR_BRANDS = [
+  'Bella + Canvas', 'Gildan', 'Port & Company', 'Port Authority',
+  'Sport-Tek', 'Next Level', 'Alternative Apparel', 'Hanes',
+  'District', 'Carhartt', 'Jerzees', 'Champion',
+  'Independent Trading Co.', 'Comfort Colors', 'LAT Apparel',
+];
+
+exports.getSSBrands = (_req, res) => {
+  res.json({ brands: SS_POPULAR_BRANDS });
 };

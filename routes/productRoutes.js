@@ -12,6 +12,8 @@ const {
   importFromJson,
   getCategories,
   getTypes,
+  browseSS,
+  getSSBrands,
 } = require('../controllers/product');
 
 const { requireAdmin } = require('../middleware/auth');
@@ -20,6 +22,8 @@ const { requireAdmin } = require('../middleware/auth');
 router.get('/', getProducts);
 router.get('/categories', getCategories);
 router.get('/types', getTypes);
+router.get('/ss/brands', getSSBrands);
+router.get('/ss/browse', browseSS);
 router.get('/style/:style', getProductByStyleCode);
 router.get('/:id', getProductById);
 

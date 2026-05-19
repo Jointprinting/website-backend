@@ -85,6 +85,7 @@ function validatePayload(body) {
   const quantity    = (body.quantity || '').trim();
   const inHandDate  = (body.inHandDate || '').trim();
   const notes       = (body.notes || body.anythingElse || '').toString();
+  const shipToState = (body.shipToState || '').trim();
 
   if (!name)        errors.push('name is required');
   if (!companyName) errors.push('companyName is required');
@@ -94,11 +95,12 @@ function validatePayload(body) {
   if (phone && !isPlausiblePhone(phone)) errors.push('phone format is invalid');
   if (!quantity)   errors.push('quantity is required');
   if (!inHandDate) errors.push('inHandDate is required');
+  if (!shipToState) errors.push('shipToState is required');
   if (notes.length > 5000) errors.push('notes is too long');
 
   return {
     errors,
-    cleaned: { name, companyName, email, phone, quantity, inHandDate, notes },
+    cleaned: { name, companyName, email, phone, quantity, inHandDate, notes, shipToState },
   };
 }
 
@@ -149,6 +151,7 @@ exports.sendContactEmail = async (req, res) => {
       <p><strong>Quantity:</strong> ${escapeHtml(cleaned.quantity)}</p>
       <p><strong>In-hand date:</strong> ${escapeHtml(cleaned.inHandDate)}</p>
       <p><strong>Notes:</strong><br>${escapeHtml(cleaned.notes).replace(/\n/g, '<br>') || '-'}</p>
+      <p><strong>Ship-to state / province:</strong> ${escapeHtml(cleaned.shipToState) || '-'}</p>
       ${productsHtml}
       <hr>
       <p style="color:#666;font-size:12px">Submission ID: ${submission._id}</p>
@@ -164,6 +167,7 @@ exports.sendContactEmail = async (req, res) => {
       `Quantity: ${cleaned.quantity}`,
       `In-hand: ${cleaned.inHandDate}`,
       `Notes: ${cleaned.notes || '-'}`,
+      `Ship-to state: ${cleaned.shipToState || '-'}`,
       '',
       'Products:',
       ...products.map(p => `- ${p.vendor || ''} ${p.name || ''} (style: ${p.style || 'n/a'})`),

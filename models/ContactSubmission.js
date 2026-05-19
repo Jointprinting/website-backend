@@ -18,6 +18,8 @@ const ContactSubmissionSchema = new mongoose.Schema({
   quantity:     { type: String, trim: true, maxlength: 80 },
   inHandDate:   { type: String, trim: true, maxlength: 40 },
   notes:        { type: String, trim: true, maxlength: 5000 },
+  shipToState:  { type: String, trim: true, maxlength: 100, default: '' },
+  seenByAdmin:  { type: Boolean, default: false, index: true },
 
   selectedProducts: [{
     style:     String,

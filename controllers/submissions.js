@@ -90,3 +90,26 @@ exports.deleteSubmission = async (req, res) => {
     return res.status(400).json({ message: 'Invalid ID' });
   }
 };
+
+exports.getUnseenCount = async (_req, res) => {
+  try {
+    const count = await ContactSubmission.countDocuments({
+      status: 'new', seenByAdmin: { $ne: true }, honeypot: { $ne: true },
+    });
+    return res.json({ count });
+  } catch (err) {
+    return res.status(500).json({ count: 0 });
+  }
+};
+
+exports.markAllSeen = async (_req, res) => {
+  try {
+    await ContactSubmission.updateMany(
+      { seenByAdmin: { $ne: true } },
+      { $set: { seenByAdmin: true } }
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ message: 'Failed' });
+  }
+};
