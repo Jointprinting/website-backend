@@ -15,8 +15,10 @@ const LEAD_TYPES = ['dispensary', 'coffee', 'park_national', 'park_state', 'camp
 const LEAD_KINDS = ['lead', 'stop'];   // 'lead' = sales prospect, 'stop' = trip waypoint
 const LEAD_STATUSES = [
   'planned',          // saved, not yet visited
+  'pre_called',       // called ahead before showing up
   'visited',          // stopped by
   'buyer_identified', // found buyer/manager name
+  'pitched',          // gave the pitch in person
   'catalog_sent',     // sent catalog/follow-up
   'mockup_needed',    // they want to see designs
   'quote_needed',     // need to price something
