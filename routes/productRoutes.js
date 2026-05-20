@@ -14,6 +14,7 @@ const {
   getTypes,
   browseSS,
   getSSBrands,
+  getSSStyleDetail,
 } = require('../controllers/product');
 
 const { requireAdmin } = require('../middleware/auth');
@@ -24,6 +25,7 @@ router.get('/categories', getCategories);
 router.get('/types', getTypes);
 router.get('/ss/brands', getSSBrands);
 router.get('/ss/browse', browseSS);
+router.get('/ss/style/:style', getSSStyleDetail);  // live S&S detail for Product page
 router.get('/style/:style', getProductByStyleCode);
 router.get('/:id', getProductById);
 
