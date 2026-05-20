@@ -1,5 +1,118 @@
 const Order = require('../models/Order');
 
+// ─── Historical seed data ─────────────────────────────────────────────────────
+
+const CLIENT_COMPANIES = {
+  'Ryan Jotkoff':               'Jotkoff Financial Services',
+  'Mike Woods':                 'Electric Starship Arcade',
+  'Rita Tsalyuk':               'Stadium Gardens',
+  'Alex Gelman':                '',
+  'Nicole Romero':              "Earl and Tom's",
+  'Jocelyn Melo':               'Cannapi',
+  'Daequan Langhorn':           'OS NYC',
+  'Elizabeth Brockmann':        'Point in Time Studios',
+  'Jill Cohen':                 'The Cannaboss Lady',
+  'Keegan Lapointe':            "Shaggy's Baggy",
+  'Thomas Calmese':             'Green Gold',
+  'Jason Grandizio':            'Sauce Me A Fry',
+  'Shawn Hill / Amber Theurer': 'Human AF',
+  "Ma'or Hemo":                 '',
+  'Logan Davis':                '',
+  'Maji':                       'M4JI',
+  'Dredo':                      'Lean Gang Merch',
+};
+
+function _parseMockupNumbers(raw) {
+  if (!raw || ['N/A (Tekweld)', 'N/A (Cannabis Promotions)', 'N/A (RedTupid)', 'N/A', ''].includes(raw)) return [];
+  const parts = raw.replace(/\s/g, '').split(/[+,]/);
+  const m = parts[0].match(/^(\d+)([A-Za-z]*)$/);
+  if (!m) return [];
+  const base = m[1].padStart(6, '0');
+  const letters = [m[2], ...parts.slice(1)].filter(Boolean);
+  return letters.map(l => `#${base}${l}`);
+}
+
+function _parseDate(str) {
+  if (!str || str === 'N/A' || str === '') return null;
+  const d = new Date(str);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function _statusFromPaid(paidStr, invoiceNum) {
+  const s = (paidStr || '').toLowerCase();
+  if (s === 'paid') return 'delivered';
+  if (s === 'voided') return 'cancelled';
+  if (s === 'unpaid') return 'approved';
+  if (!paidStr) return invoiceNum === '0000114' ? 'in_production' : 'placed';
+  return 'placed';
+}
+
+const HISTORICAL_ORDERS = [
+  { invoiceNum: '1001',    clientName: 'Ryan Jotkoff',              items: '50 polos, pocket embroidery',                         mockup: '000001B',           dateOfSale: '6/5/2024',   cogs: 844.21,  invoiced: 1682.86, paid: 'Paid',   printer: 'Apollo East' },
+  { invoiceNum: '1002',    clientName: 'Mike Woods',                items: '100 shirts, chest screen print',                      mockup: '000005A+B',         dateOfSale: '7/4/2024',   cogs: 776.58,  invoiced: 1338.87, paid: 'Paid',   printer: 'Apollo East' },
+  { invoiceNum: '1003',    clientName: 'Ryan Jotkoff',              items: "24 women's polos, pocket embroidery",                 mockup: '000010A',           dateOfSale: '9/12/2024',  cogs: 248.88,  invoiced: 416.49,  paid: 'Paid',   printer: 'Apollo East' },
+  { invoiceNum: '1004',    clientName: 'Rita Tsalyuk',              items: '30,000 paper bags',                                   mockup: '000019C',           dateOfSale: '10/31/2024', cogs: 3984.94, invoiced: 4545.00, paid: 'Paid',   printer: '' },
+  { invoiceNum: '1005',    clientName: 'Alex Gelman',               items: '500 toothbrushes',                                    mockup: '',                  dateOfSale: '11/20/2024', cogs: 443.24,  invoiced: 841.69,  paid: 'Paid',   printer: 'Tekweld' },
+  { invoiceNum: '1009',    clientName: 'Nicole Romero',             items: '250 glass pipes (chillums)',                          mockup: '',                  dateOfSale: '',           cogs: 362.93,  invoiced: 551.00,  paid: 'Voided', printer: 'Cannabis Promotions' },
+  { invoiceNum: '1012',    clientName: 'Jocelyn Melo',              items: '50 beanies embroidery + 50 hoodies screen print',     mockup: '000024F+D+E+H+I',   dateOfSale: '12/13/2024', cogs: 1454.79, invoiced: 1906.34, paid: 'Paid',   printer: 'Apollo East' },
+  { invoiceNum: '1014',    clientName: 'Daequan Langhorn',          items: '54 hoodies + long sleeves, screen print',             mockup: '000023A+B',         dateOfSale: '1/19/2025',  cogs: 942.78,  invoiced: 1117.14, paid: 'Paid',   printer: 'Apollo East' },
+  { invoiceNum: '1015',    clientName: 'Elizabeth Brockmann',       items: '20 shirts + 20 hats, screen print',                   mockup: '000029D+E',         dateOfSale: '2/20/2025',  cogs: 716.58,  invoiced: 1065.53, paid: 'Paid',   printer: 'Ace Screen Printing' },
+  { invoiceNum: '1016',    clientName: 'Jill Cohen',                items: '300 lighters + 2 buttermint cases',                   mockup: '',                  dateOfSale: '2/24/2025',  cogs: 820.56,  invoiced: 907.05,  paid: 'Paid',   printer: 'Cannabis Promotions' },
+  { invoiceNum: '1018',    clientName: 'Keegan Lapointe',           items: '300 lighters',                                        mockup: '',                  dateOfSale: '3/11/2025',  cogs: 564.91,  invoiced: 689.00,  paid: 'Paid',   printer: 'Cannabis Promotions' },
+  { invoiceNum: '1020',    clientName: 'Keegan Lapointe',           items: '30 hoodies',                                          mockup: '000021H',           dateOfSale: '3/27/2025',  cogs: 846.58,  invoiced: 918.57,  paid: 'Paid',   printer: 'Ace Screen Printing' },
+  { invoiceNum: '1019',    clientName: 'Nicole Romero',             items: '250 glass pipes (chillums)',                          mockup: '',                  dateOfSale: '3/27/2025',  cogs: 347.93,  invoiced: 545.85,  paid: 'Paid',   printer: 'Cannabis Promotions' },
+  { invoiceNum: '1021',    clientName: 'Thomas Calmese',            items: '1,100 T-shirts',                                      mockup: '000033L',           dateOfSale: '3/28/2025',  cogs: 7714.24, invoiced: 8321.39, paid: 'Paid',   printer: 'Ace Screen Printing' },
+  { invoiceNum: '1022',    clientName: 'Jason Grandizio',           items: '100 T-shirts',                                        mockup: '000040E+F',         dateOfSale: '5/14/2025',  cogs: 1191.48, invoiced: 1875.26, paid: 'Paid',   printer: 'Heritage Screen Printing' },
+  { invoiceNum: '1023',    clientName: 'Jill Cohen',                items: '200 T-shirts, 250 lip balm',                          mockup: '000041C,K,M,G',     dateOfSale: '5/30/2025',  cogs: 2466.04, invoiced: 3318.34, paid: 'Paid',   printer: 'Contract-DTG' },
+  { invoiceNum: '1025',    clientName: 'Jill Cohen',                items: '250 totes, 600 Bic lighters',                         mockup: '000043A,B',         dateOfSale: '6/30/2025',  cogs: 2194.98, invoiced: 2756.30, paid: 'Paid',   printer: 'Heritage Screen Printing' },
+  { invoiceNum: '1023B',   clientName: 'Jill Cohen',                items: '200 T-shirts, 250 lip balm (add-on)',                 mockup: '000041C,K,M,G',     dateOfSale: '7/2/2025',   cogs: 107.55,  invoiced: 143.51,  paid: 'Paid',   printer: 'Contract-DTG' },
+  { invoiceNum: '1027',    clientName: 'Daequan Langhorn',          items: '25 jerseys + 25 T-shirts',                            mockup: '000049A,B',         dateOfSale: '7/9/2025',   cogs: 698.93,  invoiced: 913.01,  paid: 'Paid',   printer: 'Heritage Screen Printing' },
+  { invoiceNum: '1030',    clientName: 'Shawn Hill / Amber Theurer', items: '1 hoodie + 1 hat',                                   mockup: '000055B,D',         dateOfSale: '9/17/2025',  cogs: 0,       invoiced: 218.53,  paid: 'Paid',   printer: 'Heritage Screen Printing' },
+  { invoiceNum: '1029',    clientName: 'Rita Tsalyuk',              items: '40,000 paper bags',                                   mockup: '000056A',           dateOfSale: '9/17/2025',  cogs: 4758.14, invoiced: 5600.00, paid: 'Paid',   printer: '' },
+  { invoiceNum: '1031',    clientName: 'Alex Gelman',               items: '500 toothbrushes',                                    mockup: '',                  dateOfSale: '10/1/2025',  cogs: 374.00,  invoiced: 642.41,  paid: 'Paid',   printer: 'Tekweld' },
+  { invoiceNum: '1032',    clientName: "Ma'or Hemo",                items: '20 linen kippahs',                                    mockup: '',                  dateOfSale: '11/3/2025',  cogs: 142.21,  invoiced: 180.65,  paid: 'Paid',   printer: 'RedTupid' },
+  { invoiceNum: '1034',    clientName: 'Logan Davis',               items: 'Brand consulting',                                    mockup: '',                  dateOfSale: '12/3/2025',  cogs: 0,       invoiced: 4289.70, paid: 'Paid',   printer: '' },
+  { invoiceNum: '1035',    clientName: 'Logan Davis',               items: 'Brand consulting',                                    mockup: '',                  dateOfSale: '',           cogs: 0,       invoiced: 2101.00, paid: 'Unpaid', printer: '' },
+  { invoiceNum: '1036',    clientName: 'Jill Cohen',                items: '200 hoodies',                                         mockup: '000062A,B,C,D,E,F,G,H', dateOfSale: '12/6/2025', cogs: 3262.08, invoiced: 4852.89, paid: '', printer: 'Contract-DTG' },
+  { invoiceNum: 'UNK-111', clientName: 'Maji',                      items: '25 hoodies + 25 T-shirts',                            mockup: '000060A+B',         dateOfSale: '',           cogs: 0,       invoiced: 1070.58, paid: '', printer: '' },
+  // Lean Gang / Dredo — historical
+  { invoiceNum: 'LG-2025-1', clientName: 'Dredo', items: '25 CC C1717 shirts (Graphite, DTG), 25 CC C1717 shirts (Grape, DTG), 15 BC 3727 sweatpants (DTG), 15 TT11SH shorts (DTF), 25 snapback hats (embroidery), 25 beanies (embroidery)', mockup: '000028D,E,F,G,H,I', dateOfSale: '2/25/2025', cogs: 0, invoiced: 3099.43, paid: 'Paid', printer: 'Cole Apparel' },
+  { invoiceNum: 'LG-2025-2', clientName: 'Dredo', items: '15 BC 3727 sweatpants (DTG), 15 TT11SH shorts (DTF)', mockup: '000028H,I', dateOfSale: '2/26/2025', cogs: 0, invoiced: 724.58, paid: 'Paid', printer: 'Cole Apparel' },
+  // Lean Gang / Dredo — new order May 2026
+  { invoiceNum: 'LG-2026-1', clientName: 'Dredo', items: '25 Paragon 500 polos (Screen Printing, Turquoise), 25 Bella Canvas 3001 tees (Screen Printing, Clay), 25 SS3000 crewnecks (Screen Printing)', mockup: '', dateOfSale: '5/20/2026', cogs: 0, invoiced: 1651.19, paid: 'Unpaid', printer: '' },
+];
+
+// POST /api/orders/seed-historical — idempotent, skips existing orderNumbers
+const seedHistorical = async (req, res) => {
+  try {
+    let created = 0, skipped = 0;
+    for (const raw of HISTORICAL_ORDERS) {
+      const exists = await Order.findOne({ orderNumber: raw.invoiceNum });
+      if (exists) { skipped++; continue; }
+      const companyName = CLIENT_COMPANIES[raw.clientName] ?? '';
+      const status = _statusFromPaid(raw.paid, raw.invoiceNum);
+      const mockupNumbers = _parseMockupNumbers(raw.mockup);
+      await Order.create({
+        orderNumber:  raw.invoiceNum,
+        clientName:   raw.clientName,
+        companyName,
+        status,
+        totalValue:   raw.invoiced,
+        cogs:         raw.cogs,
+        printerName:  raw.printer || '',
+        mockupNumbers,
+        items: [{ description: raw.items, qty: 0, unitPrice: 0 }],
+        orderDate:    _parseDate(raw.dateOfSale),
+        importedFrom: 'order_tracker',
+      });
+      created++;
+    }
+    res.json({ created, skipped, total: HISTORICAL_ORDERS.length });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 // GET /api/orders?search=&status=&page=&limit=
 const listOrders = async (req, res) => {
   try {
@@ -105,4 +218,4 @@ const listByCompany = async (req, res) => {
   }
 };
 
-module.exports = { listOrders, listClients, getOrder, createOrder, updateOrder, deleteOrder, listByCompany };
+module.exports = { listOrders, listClients, getOrder, createOrder, updateOrder, deleteOrder, listByCompany, seedHistorical };
