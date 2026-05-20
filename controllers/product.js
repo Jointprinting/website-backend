@@ -113,15 +113,25 @@ function ssImageUrl(relPath) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Smart category/type detection from product name
+//  Granular category/type detection from product name.
+//  Order matters — more-specific patterns must come before broader ones.
 // ─────────────────────────────────────────────────────────────────────────────
 function detectCategory(name = '') {
   const n = name.toLowerCase();
-  if (/(hoodie|hooded|pullover|zip[-\s]?up|fleece)/.test(n)) return 'Hoodies';
-  if (/(pant|jogger|sweatpant|short[s]?|legging|trouser)/.test(n)) return 'Pants';
-  if (/(cap|hat|beanie|trucker|snapback|bucket|visor)/.test(n)) return 'Hats';
-  if (/(tee|shirt|tank|polo|jersey|long[-\s]?sleeve|crewneck|crew[-\s]?neck|sweater|sweatshirt)/.test(n)) return 'Shirts';
-  return 'Shirts'; // safest default
+  // Zip-ups before hoodies — a "zip-up hoodie" should land in Zip-Ups
+  if (/(full[-\s]?zip|zip[-\s]?up)/.test(n))                                      return 'Zip-Ups';
+  if (/(hoodie|hooded)/.test(n))                                                   return 'Hoodies';
+  // Crewneck sweatshirts / fleece (no hood implied)
+  if (/(crewneck|crew[-\s]?neck|sweatshirt|fleece|sherpa)/.test(n))               return 'Crewnecks';
+  if (/(tank|sleeveless|muscle)/.test(n))                                          return 'Tanks';
+  if (/\bpolo\b/.test(n))                                                          return 'Polos';
+  if (/(jacket|windbreaker|softshell|anorak|parka|vest|bomber|rain)/.test(n))     return 'Jackets';
+  if (/(long[-\s]?sleeve|ls\b)/.test(n))                                          return 'Long Sleeve';
+  // Shorts before pants so "gym shorts" doesn't match the pants pattern
+  if (/\bshort[s]?\b/.test(n))                                                     return 'Shorts';
+  if (/(pant|jogger|sweatpant|legging|trouser)/.test(n))                          return 'Pants';
+  if (/(cap|hat|beanie|trucker|snapback|bucket|visor)/.test(n))                   return 'Hats';
+  return 'T-Shirts'; // default — basic tee, jersey, etc.
 }
 
 function detectType(name = '') {
@@ -642,7 +652,7 @@ exports.createProduct = exports.createProductFromAlphaBroder;
 //  shape (since ChatGPT might miss fields) and fill in sensible defaults.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const ALLOWED_CATEGORIES = ['Shirts', 'Pants', 'Hoodies', 'Hats', 'Promo'];
+const ALLOWED_CATEGORIES = ['T-Shirts', 'Long Sleeve', 'Hoodies', 'Crewnecks', 'Zip-Ups', 'Tanks', 'Polos', 'Jackets', 'Pants', 'Shorts', 'Hats', 'Promo'];
 const ALLOWED_TYPES = ['Unisex', 'Male', 'Female', 'Kids'];
 const ALLOWED_TAGS = ['Best Seller', 'New Arrival', 'Clearance', 'Our Favorite', 'Exclusive'];
 
@@ -847,27 +857,64 @@ async function fetchAndGroupSSBrand(brand) {
   return result;
 }
 
+// Fetches all popular brands in parallel and merges into a single deduplicated
+// catalog. Results are cached under the 'all-brands' key for 4 hours — the
+// same TTL as individual brand caches so they expire together.
+async function fetchAllSSBrands() {
+  const cacheKey = 'all-brands';
+  const cached = _ssCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.data;
+
+  const results = await Promise.allSettled(
+    SS_POPULAR_BRANDS.map((brand) => fetchAndGroupSSBrand(brand))
+  );
+
+  const seenStyles = new Set();
+  const allStyles = [];
+  for (const r of results) {
+    if (r.status === 'fulfilled') {
+      for (const s of r.value.styles) {
+        if (!seenStyles.has(s.style)) {
+          seenStyles.add(s.style);
+          allStyles.push(s);
+        }
+      }
+    }
+  }
+
+  // Sort alphabetically by product name for a consistent browsing experience
+  allStyles.sort((a, b) => a.name.localeCompare(b.name));
+  const data = { styles: allStyles, total: allStyles.length };
+  _ssCache.set(cacheKey, { data, expiresAt: Date.now() + SS_CACHE_TTL });
+  return data;
+}
+
+/**
+ * GET /api/products/ss/browse
+ * Query: brand? (omit for all popular brands), category?, type?, search?, page?, limit?
+ */
 exports.browseSS = async (req, res) => {
   try {
     ensureSsCredentials();
-    const { brand, page = 1, limit = 24, search = '', category = '' } = req.query;
-    if (!brand) return res.status(400).json({ message: '`brand` query param is required.' });
+    const { brand, page = 1, limit = 24, search = '', category = '', type = '' } = req.query;
 
-    let { styles, total } = await fetchAndGroupSSBrand(brand);
+    // When no brand is specified, serve the merged catalog across all popular brands.
+    const result = brand
+      ? await fetchAndGroupSSBrand(brand)
+      : await fetchAllSSBrands();
 
-    if (category) {
-      styles = styles.filter(s => s.category === category);
-    }
+    let { styles } = result;
 
+    if (category) styles = styles.filter((s) => s.category === category);
+    if (type)     styles = styles.filter((s) => s.type === type);
     if (search) {
       const q = search.toLowerCase();
-      styles = styles.filter(s =>
+      styles = styles.filter((s) =>
         s.name.toLowerCase().includes(q) || s.style.toLowerCase().includes(q)
       );
     }
 
-    total = styles.length;
-
+    const total = styles.length;
     const p = Math.max(1, parseInt(page, 10));
     const l = Math.min(48, Math.max(1, parseInt(limit, 10)));
     const start = (p - 1) * l;
@@ -894,4 +941,40 @@ const SS_POPULAR_BRANDS = [
 
 exports.getSSBrands = (_req, res) => {
   res.json({ brands: SS_POPULAR_BRANDS });
+};
+
+/**
+ * GET /api/products/ss/style/:style
+ * Returns full detail for a single S&S style (all colors + images) from the
+ * live S&S API.  Used by the Product detail page when the style isn't in the DB.
+ */
+exports.getSSStyleDetail = async (req, res) => {
+  try {
+    ensureSsCredentials();
+    const skus = await fetchSSProducts(req.params.style);
+    const summary = summarizeSsStyle(skus);
+    const { priceRangeBottom, priceRangeTop } = deriveRange(summary.minPrice);
+
+    return res.json({
+      style: summary.styleName,
+      name: summary.title,
+      vendor: summary.brand,
+      category: detectCategory(summary.title),
+      type: detectType(summary.title),
+      priceRangeBottom,
+      priceRangeTop,
+      sizeRangeBottom: summary.sizeRangeBottom,
+      sizeRangeTop: summary.sizeRangeTop,
+      colors: summary.colors.map((c) => c.name),
+      colorCodes: summary.colors.map((c) => (c.hex || '#CCCCCC').toUpperCase()),
+      productFrontImages: summary.colors.map((c) => c.front || null),
+      productBackImages: summary.colors.map((c) => c.back || null),
+      rating: deriveRating(summary.styleName),
+      tag: deriveTag(summary.brand, summary.title),
+      description: `${summary.brand} ${summary.styleName} — ${summary.title}`,
+    });
+  } catch (err) {
+    console.error('getSSStyleDetail error:', err.message);
+    return res.status(500).json({ message: err.message || 'Could not fetch style detail.' });
+  }
 };
