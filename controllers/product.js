@@ -580,7 +580,7 @@ exports.importFromJson = async (req, res) => {
   }
 };
 
-// ─── S&S Live Browse ───────────────────────────────────────────────────────────
+// ─── S&S Live Browse ──────────────────────────────────────────────────────────
 const _ssCache   = new Map();
 const SS_CACHE_TTL = 4 * 60 * 60 * 1000; // 4 hours
 
@@ -591,13 +591,12 @@ const SS_POPULAR_BRANDS = [
   'Independent Trading Co.', 'Comfort Colors', 'LAT Apparel',
 ];
 
+// Two brands only for the "browse all" cold-start fetch.
+// These two cover the full garment spectrum and are the fastest to load.
+// Additional brands are available via the ?brand= filter.
 const SS_FEATURED_BRANDS = [
-  'Bella + Canvas',
   'Gildan',
-  'Port & Company',
-  'Sport-Tek',
-  'Comfort Colors',
-  'Independent Trading Co.',
+  'Bella + Canvas',
 ];
 
 async function fetchAndGroupSSBrand(brand) {
@@ -607,7 +606,7 @@ async function fetchAndGroupSSBrand(brand) {
 
   const { data } = await ssClient.get('/products/', {
     params: { brand },
-    timeout: 90_000,
+    timeout: 55_000,
   });
 
   if (!Array.isArray(data)) {
@@ -684,6 +683,15 @@ async function fetchAllSSBrands() {
   return data;
 }
 
+// Called on server startup to pre-warm the cache in the background.
+exports.warmSSCache = () => {
+  if (!SS_ACCOUNT || !SS_API_KEY) return;
+  console.log('[SS] Starting background cache warm-up…');
+  fetchAllSSBrands()
+    .then((d) => console.log(`[SS] Cache warm-up done — ${d.total} styles cached.`))
+    .catch((e) => console.warn('[SS] Cache warm-up failed:', e.message));
+};
+
 exports.browseSS = async (req, res) => {
   try {
     ensureSsCredentials();
@@ -715,10 +723,6 @@ exports.getSSBrands = (_req, res) => {
   res.json({ brands: SS_POPULAR_BRANDS });
 };
 
-/**
- * GET /api/products/ss/test
- * Quick connectivity check — hits S&S with Gildan and reports the result.
- */
 exports.testSSConnection = async (req, res) => {
   const account = SS_ACCOUNT ? `${SS_ACCOUNT.slice(0, 3)}***` : '(not set)';
   const keySet  = !!SS_API_KEY;

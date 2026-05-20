@@ -11,19 +11,13 @@ const rateLimit = require('express-rate-limit');
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// ── Trust the platform's reverse proxy so req.ip is the real client IP
-//    (Render, Vercel functions, etc. set X-Forwarded-For). ──
 app.set('trust proxy', 1);
 
-// ── Security headers (with permissive CORS so the SPA can still talk to us) ──
 app.use(helmet({
-  // The frontend is on a different origin so don't enable strict CORP defaults.
   crossOriginResourcePolicy: false,
-  // We're an API, so disable HSTS via helmet (let the platform handle TLS).
   contentSecurityPolicy: false,
 }));
 
-// CORS — restrict to known origins via env, fall back to permissive.
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
   .map((s) => s.trim())
@@ -31,7 +25,6 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
 
 app.use(cors({
   origin: (origin, cb) => {
-    // Allow no-origin (curl, server-to-server, mobile webviews)
     if (!origin) return cb(null, true);
     if (allowedOrigins.length === 0) return cb(null, true);
     if (allowedOrigins.includes(origin)) return cb(null, true);
@@ -40,14 +33,10 @@ app.use(cors({
 }));
 
 app.use(express.json({ limit: '1mb' }));
-
-// Studio library routes need larger JSON body (base64 images can be several MB)
 app.use('/api/studio', express.json({ limit: '20mb' }));
 
-// Ensure the uploads directory exists
 if (!fs.existsSync('uploads')) fs.mkdirSync('uploads');
 
-// Multer storage with size + count caps
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, 'uploads/'),
   filename:    (_req, file, cb) => cb(null, Date.now() + '-' + file.originalname.replace(/[^\w.\-]/g, '_')),
@@ -55,11 +44,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: {
-    fileSize: 25 * 1024 * 1024, // 25 MB per file
-    files: 10,
-  },
-  // No fileFilter — accept any file type; uploads go directly to the business owner
+  limits: { fileSize: 25 * 1024 * 1024, files: 10 },
 });
 
 // ── Mongo ──
@@ -69,11 +54,14 @@ const db = mongoose.connection;
 db.on('error', console.error.bind(console, 'MongoDB connection error:'));
 db.once('open', () => {
   console.log('Connected to MongoDB');
-  // Start the nightly S&S price refresh only if credentials are present
+
+  // Nightly S&S price refresh
   if (process.env.SS_ACCOUNT && process.env.SS_API_KEY) {
     require('./services/ssAutoSync').startSSAutoSync();
+    // Pre-warm the S&S product catalog cache so the first visitor doesn't wait
+    setTimeout(() => require('./controllers/product').warmSSCache(), 5_000);
   }
-  // Start the JPW recon nightly jobs (re-score + stale-audit refresh)
+
   require('./services/jpwScheduler').startJpwScheduler();
 });
 
@@ -95,7 +83,6 @@ const generalApiLimiter = rateLimit({
 
 app.use('/api', generalApiLimiter);
 
-// Health check
 app.get('/healthz', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
 // ── Routes ──
@@ -122,14 +109,9 @@ app.use('/api/roadtrip', roadTripRoutes);
 app.use('/api/studio', studioRoutes);
 app.use('/api/quoter', quoterRoutes);
 app.use('/api/orders', orderRoutes);
-// JPW lead recon endpoint accepts CSV imports of up to 5k rows; bump the JSON
-// body limit so Apify/OutScraper exports don't get rejected at the parser.
 app.use('/api/jpw', express.json({ limit: '20mb' }), jpwRoutes);
-
-// IMPORTANT: field name "files" must match FormData.append('files', ...)
 app.use('/api/email', contactLimiter, upload.array('files', 10), emailRoutes);
 
-// Multer error handler
 app.use((err, _req, res, next) => {
   if (err && err.message && err.message.includes('CORS')) {
     return res.status(400).json({ message: err.message });
