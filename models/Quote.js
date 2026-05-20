@@ -21,6 +21,7 @@ const RowSchema = new mongoose.Schema({
 
 const GroupSchema = new mongoose.Schema({
   garmentType: { type: String, default: '' },
+  qtyTiers:    [{ type: Number }],
   rows: [RowSchema],
 }, { _id: false });
 
