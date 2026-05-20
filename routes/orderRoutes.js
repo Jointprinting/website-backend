@@ -2,11 +2,12 @@ const express = require('express');
 const router  = express.Router();
 const { requireAdmin } = require('../middleware/auth');
 const {
-  listOrders, listClients, getOrder, createOrder, updateOrder, deleteOrder, listByCompany,
+  listOrders, listClients, getOrder, createOrder, updateOrder, deleteOrder, listByCompany, seedHistorical,
 } = require('../controllers/orders');
 
 router.use(requireAdmin);
 
+router.post('/seed-historical',  seedHistorical);
 router.get('/clients',          listClients);
 router.get('/company/:name',    listByCompany);
 router.get('/',                 listOrders);
