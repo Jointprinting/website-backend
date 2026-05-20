@@ -73,6 +73,8 @@ db.once('open', () => {
   if (process.env.SS_ACCOUNT && process.env.SS_API_KEY) {
     require('./services/ssAutoSync').startSSAutoSync();
   }
+  // Start the JPW recon nightly jobs (re-score + stale-audit refresh)
+  require('./services/jpwScheduler').startJpwScheduler();
 });
 
 // ── Rate limiters ──
@@ -107,6 +109,7 @@ const siteSettingRoutes    = require('./routes/siteSettingRoutes');
 const roadTripRoutes       = require('./routes/roadTripRoutes');
 const studioRoutes         = require('./routes/studioRoutes');
 const quoterRoutes         = require('./routes/quoterRoutes');
+const jpwRoutes            = require('./routes/jpwRoutes');
 
 app.use('/api/products', productRoutes);
 app.use('/api/auth', authRoutes);
@@ -117,6 +120,9 @@ app.use('/api/site-settings', siteSettingRoutes);
 app.use('/api/roadtrip', roadTripRoutes);
 app.use('/api/studio', studioRoutes);
 app.use('/api/quoter', quoterRoutes);
+// JPW lead recon endpoint accepts CSV imports of up to 5k rows; bump the JSON
+// body limit so Apify/OutScraper exports don't get rejected at the parser.
+app.use('/api/jpw', express.json({ limit: '20mb' }), jpwRoutes);
 
 // IMPORTANT: field name "files" must match FormData.append('files', ...)
 app.use('/api/email', contactLimiter, upload.array('files', 10), emailRoutes);
