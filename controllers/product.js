@@ -338,8 +338,8 @@ async function parseAlphaBroderXML(xmlString, req) {
 // ─────────────────────────────────────────────────────────────────────────────
 async function fetchSSProducts(styleName) {
   ensureSsCredentials();
-  const { data } = await ssClient.get('/Products.aspx', {
-    params: { style: styleName, mediatype: 'json' },
+  const { data } = await ssClient.get('/products/', {
+    params: { style: styleName },
   });
   if (!Array.isArray(data) || data.length === 0) {
     throw new Error(`No SKUs found for style "${styleName}".`);
@@ -584,7 +584,6 @@ exports.importFromJson = async (req, res) => {
 const _ssCache   = new Map();
 const SS_CACHE_TTL = 4 * 60 * 60 * 1000; // 4 hours
 
-// Full list exposed via /brands endpoint
 const SS_POPULAR_BRANDS = [
   'Bella + Canvas', 'Gildan', 'Port & Company', 'Port Authority',
   'Sport-Tek', 'Next Level', 'Alternative Apparel', 'Hanes',
@@ -592,7 +591,6 @@ const SS_POPULAR_BRANDS = [
   'Independent Trading Co.', 'Comfort Colors', 'LAT Apparel',
 ];
 
-// Smaller curated set used for the no-brand "browse all" view.
 const SS_FEATURED_BRANDS = [
   'Bella + Canvas',
   'Gildan',
@@ -607,10 +605,10 @@ async function fetchAndGroupSSBrand(brand) {
   const cached   = _ssCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.data;
 
-  const { data } = await ssClient.get(
-    `/Products.aspx?brand=${encodeURIComponent(brand)}&mediatype=json`,
-    { timeout: 90_000 }
-  );
+  const { data } = await ssClient.get('/products/', {
+    params: { brand },
+    timeout: 90_000,
+  });
 
   if (!Array.isArray(data)) {
     const detail = data?.Message || data?.message || JSON.stringify(data).slice(0, 200);
@@ -618,7 +616,6 @@ async function fetchAndGroupSSBrand(brand) {
     throw new Error(`S&S catalog unavailable for brand "${brand}". (${detail})`);
   }
 
-  // Empty array likely means bad credentials or rate-limit — don't cache, force retry
   if (data.length === 0) {
     console.warn(`[fetchAndGroupSSBrand] S&S returned 0 SKUs for brand "${brand}" — not caching`);
     throw new Error(`S&S returned no products for brand "${brand}". Check SS_ACCOUNT / SS_API_KEY env vars.`);
@@ -676,8 +673,6 @@ async function fetchAllSSBrands() {
     }
   }
 
-  // Don't cache empty results — throw so browseSS returns a real error message
-  // and the frontend shows a retry button rather than a misleading "No styles found"
   if (allStyles.length === 0) {
     const detail = errors.length ? errors[0] : 'All brand requests failed.';
     throw new Error(`Could not load the product catalog. ${detail}`);
@@ -689,10 +684,6 @@ async function fetchAllSSBrands() {
   return data;
 }
 
-/**
- * GET /api/products/ss/browse
- * Query: brand? (omit for featured catalog), category?, type?, search?, page?, limit?
- */
 exports.browseSS = async (req, res) => {
   try {
     ensureSsCredentials();
@@ -726,8 +717,7 @@ exports.getSSBrands = (_req, res) => {
 
 /**
  * GET /api/products/ss/test
- * Quick connectivity check — returns credential status and a sample API call result.
- * Useful for diagnosing "No styles found" issues without reading server logs.
+ * Quick connectivity check — hits S&S with Gildan and reports the result.
  */
 exports.testSSConnection = async (req, res) => {
   const account = SS_ACCOUNT ? `${SS_ACCOUNT.slice(0, 3)}***` : '(not set)';
@@ -736,10 +726,10 @@ exports.testSSConnection = async (req, res) => {
     return res.status(200).json({ ok: false, account, keySet, error: 'Credentials missing' });
   }
   try {
-    const { data } = await ssClient.get(
-      `/Products.aspx?brand=${encodeURIComponent('Gildan')}&mediatype=json`,
-      { timeout: 15_000 }
-    );
+    const { data } = await ssClient.get('/products/', {
+      params: { brand: 'Gildan' },
+      timeout: 15_000,
+    });
     if (!Array.isArray(data)) {
       return res.status(200).json({ ok: false, account, keySet, error: 'S&S returned non-array', sample: JSON.stringify(data).slice(0, 300) });
     }
@@ -749,11 +739,6 @@ exports.testSSConnection = async (req, res) => {
   }
 };
 
-/**
- * GET /api/products/ss/style/:style
- * Returns full detail for a single S&S style live (colors, images, sizes).
- * Used by the Product detail page when the style isn't in MongoDB.
- */
 exports.getSSStyleDetail = async (req, res) => {
   try {
     ensureSsCredentials();

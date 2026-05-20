@@ -28,7 +28,7 @@ const GARMENT_CATEGORY = {
   'Other':              'Promo',
 };
 
-// ── S&S live price helpers ────────────────────────────────────────────────────
+// ── S&S live price helpers ────────────────────────────────────────────
 
 function getSsClient() {
   const account = process.env.SS_ACCOUNT;
@@ -42,13 +42,12 @@ function getSsClient() {
 }
 
 // Average piece price for sizes S–3XL, skipping 4XL and above.
-// Returns null when the S&S API is unavailable or returns no data.
 async function fetchAvgPrice(styleCode) {
   const client = getSsClient();
   if (!client || !styleCode) return null;
   try {
-    const { data: skus } = await client.get('/Products.aspx', {
-      params: { style: styleCode, mediatype: 'json' },
+    const { data: skus } = await client.get('/products/', {
+      params: { style: styleCode },
     });
     if (!Array.isArray(skus) || skus.length === 0) return null;
 
@@ -69,9 +68,8 @@ async function fetchAvgPrice(styleCode) {
   }
 }
 
-// ── CRUD ─────────────────────────────────────────────────────────────────────
+// ── CRUD ────────────────────────────────────────────────────────────────────────
 
-// GET /api/quoter/quotes
 exports.listQuotes = async (req, res) => {
   try {
     const { search } = req.query;
@@ -91,7 +89,6 @@ exports.listQuotes = async (req, res) => {
   }
 };
 
-// GET /api/quoter/quotes/:id
 exports.getQuote = async (req, res) => {
   try {
     const quote = await Quote.findById(req.params.id).lean();
@@ -102,7 +99,6 @@ exports.getQuote = async (req, res) => {
   }
 };
 
-// POST /api/quoter/quotes
 exports.createQuote = async (req, res) => {
   try {
     const quote = new Quote(req.body);
@@ -113,7 +109,6 @@ exports.createQuote = async (req, res) => {
   }
 };
 
-// PUT /api/quoter/quotes/:id
 exports.updateQuote = async (req, res) => {
   try {
     const quote = await Quote.findById(req.params.id);
@@ -127,7 +122,6 @@ exports.updateQuote = async (req, res) => {
   }
 };
 
-// DELETE /api/quoter/quotes/:id
 exports.deleteQuote = async (req, res) => {
   try {
     await Quote.findByIdAndDelete(req.params.id);
@@ -137,7 +131,6 @@ exports.deleteQuote = async (req, res) => {
   }
 };
 
-// GET /api/quoter/clients  — unique client/company names for autocomplete
 exports.getClients = async (req, res) => {
   try {
     const [clients, companies] = await Promise.all([
@@ -153,8 +146,6 @@ exports.getClients = async (req, res) => {
   }
 };
 
-// GET /api/quoter/suggest?garmentType=Hoodie
-// Returns budget/mid/premium suggestions with live S&S avgPrice (avg S–3XL).
 exports.suggestTiers = async (req, res) => {
   try {
     const { garmentType } = req.query;
@@ -173,7 +164,6 @@ exports.suggestTiers = async (req, res) => {
     const premium = products[products.length - 1];
     const mid     = products[Math.floor(products.length / 2)];
 
-    // Live-fetch avg prices (3 concurrent S&S calls — takes ~500ms but always fresh)
     const [budgetAvg, midAvg, premiumAvg] = await Promise.all([
       fetchAvgPrice(budget.style),
       fetchAvgPrice(mid.style),
@@ -193,7 +183,6 @@ exports.suggestTiers = async (req, res) => {
   }
 };
 
-// GET /api/quoter/style/:styleCode  — blank price + info for a style
 exports.lookupStyle = async (req, res) => {
   try {
     const product = await Product.findOne({ style: req.params.styleCode })
@@ -208,9 +197,6 @@ exports.lookupStyle = async (req, res) => {
   }
 };
 
-// POST /api/quoter/notion-order
-// Creates a row in the Notion Orders database from a finalized quote.
-// Requires NOTION_API_KEY env var. Returns { notionUrl } on success.
 exports.createNotionOrder = async (req, res) => {
   const notion = getNotionClient();
   if (!notion) {
@@ -223,7 +209,6 @@ exports.createNotionOrder = async (req, res) => {
       items, cogs, clientInvoiced, mockupNumber, notes,
     } = req.body;
 
-    // Try to find a matching CRM page by company name
     let crmPageUrl = null;
     try {
       const search = await notion.databases.query({
