@@ -523,13 +523,26 @@ async function _setSweepState(patch) {
   );
 }
 
-async function startSweepInBackground({ maxSearches = 30, pairs = null, pagesPerPhrase = 2 } = {}) {
+async function startSweepInBackground({ maxSearches = null, pairs = null, pagesPerPhrase = 2 } = {}) {
   const existing = await _getSweepState();
   if (existing && existing.status === 'running') {
     return { ok: false, message: 'A sweep is already running.', state: existing };
   }
 
-  const cap = Math.min(Math.max(parseInt(maxSearches, 10) || 30, 1), 100);
+  // If `maxSearches` isn't specified, max out whatever Places API budget is
+  // left for today. Each pair uses ~6 API calls (3 phrasings × 2 pages), so
+  // remaining_budget / 6 ≈ pairs we can fit. Hard cap at 100 for safety.
+  // This way Nate doesn't have to think about "how many" — sweep just uses
+  // whatever's left.
+  let cap;
+  if (maxSearches === null || maxSearches === undefined) {
+    const usage = await getTodayUsage();
+    const remainingCalls = Math.max(0, PLACES_DAILY_CAP - usage.places_calls);
+    const callsPerPair = (pagesPerPhrase * 3); // ~3 phrases × pagesPerPhrase pages
+    cap = Math.min(Math.max(Math.floor(remainingCalls / callsPerPair), 1), 100);
+  } else {
+    cap = Math.min(Math.max(parseInt(maxSearches, 10) || 30, 1), 100);
+  }
   const queue = (Array.isArray(pairs) && pairs.length) ? pairs.slice(0, cap) : await getNextSweepPairs(cap);
 
   const started_at = new Date();

@@ -195,15 +195,14 @@ function scoreAbilityToPay(lead) {
     reasons.push(`${lead.category} is a high-ticket category`);
   }
 
-  // Reviews = revenue proxy. Peaked curve: established small biz pays best.
-  // Same band as Buying Intent but weighted slightly differently — caps at
-  // the band's positive points, doesn't apply the 300+ negative (revenue
-  // exists either way; the displacement risk is what we penalize in Buying
-  // Intent only).
+  // Reviews = revenue proxy. We award the same band points as Buying Intent
+  // but suppress the reason text so it doesn't appear twice in the UI —
+  // Buying Intent already shows "X reviews — sweet spot" and repeating
+  // "Revenue band: X reviews — sweet spot" right below it is just noise.
   const band = reviewCountBand(rc);
   if (band.points > 0) {
     s += band.points;
-    reasons.push(`Revenue band: ${band.label}`);
+    // Intentionally NOT pushing a reason here.
   }
 
   // Rating + reviews quality cross-check.
