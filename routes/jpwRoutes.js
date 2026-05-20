@@ -10,9 +10,10 @@ const { requireAdmin } = require('../middleware/auth');
 const {
   listLeads, getLead, createLead, updateLead, deleteLead,
   rescoreLeads, importCsv, getDashboardStats, getReferenceData,
-  exportCsv, bulkStatus,
+  exportCsv, bulkStatus, bulkDelete,
   searchPlaces, auditOneLead, auditBatch, getUsage,
   pushOneToSpider, pushBatchToSpider, updateAdSignal,
+  runScheduledJob,
 } = require('../controllers/jpwLead');
 
 router.use(requireAdmin);
@@ -34,6 +35,8 @@ router.post('/bulk-status',  bulkStatus);
 router.post('/audit-batch',           auditBatch);
 router.post('/search/places',         searchPlaces);
 router.post('/push-to-spider-batch',  pushBatchToSpider);
+router.post('/bulk-delete',           bulkDelete);
+router.post('/scheduler/:job/run',    runScheduledJob);
 
 // CRUD + per-lead actions
 router.get('/leads',                    listLeads);

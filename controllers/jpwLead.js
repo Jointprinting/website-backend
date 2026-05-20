@@ -19,6 +19,8 @@ const {
 const { runSearch, getTodayUsage, PLACES_DAILY_CAP } = require('../services/jpwPlacesIngest');
 const { auditLead, auditLeadsConcurrent } = require('../services/jpwAuditor');
 const { pushLead, pushLeadsBatch, dedupeKeyFor, isConfigured: isSpiderConfigured } = require('../services/jpwSpiderPush');
+const { runRescoreAll, runStaleAudit } = require('../services/jpwScheduler');
+const JpwSchedulerState = require('../models/JpwSchedulerState');
 
 // ── Field whitelist ───────────────────────────────────────────────────────
 // Only these fields can be set from the request body. Everything else (dedupe
@@ -597,18 +599,68 @@ async function auditBatch(req, res) {
 async function getUsage(_req, res) {
   try {
     const today = await getTodayUsage();
+    const schedulerRuns = await JpwSchedulerState.find({}).lean();
+    const lastByJob = {};
+    for (const r of schedulerRuns) lastByJob[r.job] = r;
     res.json({
       date: today.date,
-      places_calls_today: today.places_calls,
-      audits_run_today:   today.audits_run,
-      daily_cap:          PLACES_DAILY_CAP,
-      places_key_configured: !!process.env.GOOGLE_PLACES_KEY,
-      spider_configured:     isSpiderConfigured(),
+      places_calls_today:     today.places_calls,
+      audits_run_today:       today.audits_run,
+      daily_cap:              PLACES_DAILY_CAP,
+      places_key_configured:  !!process.env.GOOGLE_PLACES_KEY,
+      pagespeed_configured:   !!process.env.PAGESPEED_KEY,
+      spider_configured:      isSpiderConfigured(),
+      scheduler:              lastByJob,
     });
   } catch (err) {
     console.error('[jpwLead] getUsage error:', err);
     res.status(500).json({ message: 'Failed to fetch usage.' });
   }
+}
+
+// ── Bulk delete — cleanup tool ───────────────────────────────────────────
+//
+// POST /api/jpw/bulk-delete
+//   body: { ids?: string[], grade?, call_status?, has_website?: 'false' }
+//
+// Either explicit ids OR a filter combination. Refuses to run with no
+// filter at all (would wipe the whole collection).
+async function bulkDelete(req, res) {
+  try {
+    const { ids, grade, call_status, has_website } = req.body || {};
+    const filter = {};
+    if (Array.isArray(ids) && ids.length) {
+      filter._id = { $in: ids };
+    } else {
+      if (grade)       filter['lead_score.grade'] = grade;
+      if (call_status) filter.call_status = call_status;
+      if (has_website === 'false') {
+        filter.$or = [{ website_url: '' }, { website_url: { $exists: false } }];
+      }
+      if (!Object.keys(filter).length) {
+        return res.status(400).json({ message: 'Refusing to delete with no filter. Provide ids[], or grade/call_status/has_website.' });
+      }
+    }
+    const r = await JpwLead.deleteMany(filter);
+    res.json({ deleted: r.deletedCount });
+  } catch (err) {
+    console.error('[jpwLead] bulkDelete error:', err);
+    res.status(500).json({ message: 'Bulk delete failed.' });
+  }
+}
+
+// ── Manually trigger a scheduled job (admin-only) ────────────────────────
+async function runScheduledJob(req, res) {
+  const { job } = req.params;
+  if (job === 'rescore') {
+    runRescoreAll(); // fire and forget; UI polls /usage to see result
+    return res.json({ ok: true, message: 'Rescore started in background.' });
+  }
+  if (job === 'stale_audit') {
+    runStaleAudit();
+    return res.json({ ok: true, message: 'Stale-audit refresh started in background.' });
+  }
+  return res.status(400).json({ message: `Unknown job: ${job}. Try 'rescore' or 'stale_audit'.` });
 }
 
 // ── Push to Spider (one) ──────────────────────────────────────────────────
@@ -735,7 +787,8 @@ async function updateAdSignal(req, res) {
 module.exports = {
   listLeads, getLead, createLead, updateLead, deleteLead,
   rescoreLeads, importCsv, getDashboardStats, getReferenceData,
-  exportCsv, bulkStatus,
+  exportCsv, bulkStatus, bulkDelete,
   searchPlaces, auditOneLead, auditBatch, getUsage,
   pushOneToSpider, pushBatchToSpider, updateAdSignal,
+  runScheduledJob,
 };

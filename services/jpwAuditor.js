@@ -27,6 +27,7 @@ const cheerio = require('cheerio');
 
 const FETCH_TIMEOUT_MS = 15000;
 const MAX_CONTENT_BYTES = 1.5 * 1024 * 1024; // 1.5MB — anything bigger is junk
+const PAGESPEED_TIMEOUT_MS = 25000; // PSI is slow, 20s tail latency is normal
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 function normalizeUrlForFetch(raw = '') {
@@ -122,7 +123,28 @@ async function fetchOnce(url) {
 // `cityHints` is an optional list of strings to look for as service-area
 // terms (we pass the SJ town list so a roofer in Camden mentioning Voorhees
 // gets credit for it).
-async function auditUrl(rawUrl, { cityHints = [] } = {}) {
+// PageSpeed Insights — free Google API. Returns 0-100 perf scores for both
+// strategies. Optional: only called when PAGESPEED_KEY is set. The auditor
+// falls back to silent skip on any failure so PSI being slow or down never
+// blocks an HTML audit from succeeding.
+async function fetchPageSpeed(url, strategy = 'mobile') {
+  const key = process.env.PAGESPEED_KEY;
+  if (!key) return null;
+  try {
+    const { data } = await axios.get('https://www.googleapis.com/pagespeedonline/v5/runPagespeed', {
+      params: { url, strategy, category: 'performance', key },
+      timeout: PAGESPEED_TIMEOUT_MS,
+    });
+    const score = data?.lighthouseResult?.categories?.performance?.score;
+    return typeof score === 'number' ? Math.round(score * 100) : null;
+  } catch (err) {
+    // PSI fails commonly on slow / blocked sites — just log and skip.
+    console.warn(`[jpwAuditor] PageSpeed ${strategy} failed for ${url}: ${err.message}`);
+    return null;
+  }
+}
+
+async function auditUrl(rawUrl, { cityHints = [], usePageSpeed = true } = {}) {
   const audited_url = normalizeUrlForFetch(rawUrl);
   const audited_at = new Date();
   if (!audited_url) {
@@ -282,9 +304,20 @@ async function auditUrl(rawUrl, { cityHints = [] } = {}) {
     return href.startsWith('/') || href.startsWith('#')
         || (href.includes(extractHost(out.final_url || audited_url)) && !href.startsWith('mailto:'));
   }).length;
-  out.broken_link_count = 0; // Reserved for Phase 4 — we don't actually probe links yet
+  out.broken_link_count = 0; // Reserved — we don't probe individual links
   if (internalLinks === 0 && fetched.html.length > 200) {
     out.notes = (out.notes ? out.notes + '; ' : '') + 'No internal links found';
+  }
+
+  // PageSpeed Insights — runs both strategies in parallel when configured.
+  // Caller can disable (e.g. batch audits skip PSI to stay under daily quota).
+  if (usePageSpeed && process.env.PAGESPEED_KEY) {
+    const [mobile, desktop] = await Promise.all([
+      fetchPageSpeed(out.final_url || audited_url, 'mobile'),
+      fetchPageSpeed(out.final_url || audited_url, 'desktop'),
+    ]);
+    if (mobile !== null)  out.mobile_speed_score  = mobile;
+    if (desktop !== null) out.desktop_speed_score = desktop;
   }
 
   return out;
@@ -308,12 +341,20 @@ async function auditLead(lead, options = {}) {
       notes: 'No website URL on lead.',
     };
   }
-  return auditUrl(lead.website_url, options);
+  // Single-lead audit triggered from the UI gets PSI by default.
+  // Bulk audits override usePageSpeed=false for speed/quota reasons.
+  const opts = { usePageSpeed: true, ...options };
+  return auditUrl(lead.website_url, opts);
 }
 
 // Run audits in parallel with a concurrency limit. Avoids hammering remote
 // hosts and avoids blowing up our outbound socket budget on Render.
-async function auditLeadsConcurrent(leads, { concurrency = 4, cityHints = [], onProgress } = {}) {
+// `usePageSpeed` defaults to false here — PSI adds 20s+ per call and would
+// turn a batch of 50 into a 15-minute job. Single-lead audits run PSI by
+// default; bulk runs only do HTML.
+async function auditLeadsConcurrent(leads, {
+  concurrency = 4, cityHints = [], usePageSpeed = false, onProgress,
+} = {}) {
   const results = [];
   let cursor = 0;
   let done = 0;
@@ -322,7 +363,7 @@ async function auditLeadsConcurrent(leads, { concurrency = 4, cityHints = [], on
       const i = cursor++;
       const lead = leads[i];
       try {
-        const audit = await auditLead(lead, { cityHints });
+        const audit = await auditLead(lead, { cityHints, usePageSpeed });
         results.push({ lead, audit, error: null });
       } catch (err) {
         results.push({ lead, audit: null, error: err.message });

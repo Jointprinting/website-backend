@@ -73,6 +73,8 @@ db.once('open', () => {
   if (process.env.SS_ACCOUNT && process.env.SS_API_KEY) {
     require('./services/ssAutoSync').startSSAutoSync();
   }
+  // Start the JPW recon nightly jobs (re-score + stale-audit refresh)
+  require('./services/jpwScheduler').startJpwScheduler();
 });
 
 // ── Rate limiters ──
