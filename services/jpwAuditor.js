@@ -81,9 +81,6 @@ const CMS_FINGERPRINTS = [
   { rx: /\/cdn-cgi\/scripts\/.+\/cloudflare-static/i, cms: 'Static + Cloudflare' },
 ];
 
-// Try the URL as-given; if that fails, fall back to https variant of the
-// host. Returns { response, error, finalUrl } — we never throw past this.
-async function fetchOnce(url) {
 // Two-pass fetch:
 //  1. "Polite" identifying User-Agent. Most sites accept it; we'd rather be
 //     honest about being a bot when nobody's blocking us.
