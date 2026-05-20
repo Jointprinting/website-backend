@@ -25,6 +25,14 @@ const OrderSchema = new mongoose.Schema({
   shipDate:      { type: Date },
   deliveredDate: { type: Date },
   importedFrom:  { type: String, default: '' },
+  files: [{
+    filename:     { type: String },
+    originalName: { type: String },
+    mimetype:     { type: String },
+    size:         { type: Number },
+    uploadedAt:   { type: Date, default: Date.now },
+    _id: false,
+  }],
 }, { timestamps: true });
 
 module.exports = mongoose.model('Order', OrderSchema);

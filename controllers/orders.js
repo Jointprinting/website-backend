@@ -135,24 +135,36 @@ const listOrders = async (req, res) => {
   }
 };
 
-// GET /api/orders/clients — distinct companies with stats
+// GET /api/orders/clients — distinct companies with stats (cancelled excluded from counts/revenue)
 const listClients = async (req, res) => {
   try {
     const pipeline = [
       { $group: {
         _id: { $toLower: { $ifNull: ['$companyName', '$clientName'] } },
-        companyName:   { $first: '$companyName' },
-        clientName:    { $first: '$clientName' },
-        orderCount:    { $sum: 1 },
-        totalRevenue:  { $sum: '$totalValue' },
-        lastOrderDate: { $max: '$orderDate' },
-        lastActivity:  { $max: '$createdAt' },
-        statuses:      { $addToSet: '$status' },
+        companyName:    { $first: '$companyName' },
+        clientName:     { $first: '$clientName' },
+        orderCount:     { $sum: { $cond: [{ $ne: ['$status', 'cancelled'] }, 1, 0] } },
+        allOrderCount:  { $sum: 1 },
+        totalRevenue:   { $sum: { $cond: [{ $ne: ['$status', 'cancelled'] }, '$totalValue', 0] } },
+        lastOrderDate:  { $max: '$orderDate' },
+        lastActivity:   { $max: '$createdAt' },
+        statuses:       { $addToSet: '$status' },
       }},
       { $sort: { lastActivity: -1 } },
     ];
     const clients = await Order.aggregate(pipeline);
     res.json({ clients });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+// GET /api/orders/next-number — returns next available numeric invoice number
+const nextOrderNumber = async (req, res) => {
+  try {
+    const orders = await Order.find({ orderNumber: /^\d+$/ }).select('orderNumber').lean();
+    const max = orders.reduce((m, o) => Math.max(m, parseInt(o.orderNumber, 10) || 0), 1036);
+    res.json({ next: String(max + 1) });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -218,4 +230,57 @@ const listByCompany = async (req, res) => {
   }
 };
 
-module.exports = { listOrders, listClients, getOrder, createOrder, updateOrder, deleteOrder, listByCompany, seedHistorical };
+// POST /api/orders/:id/files — upload a design file (multer applied in route)
+const uploadFile = async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'No file provided' });
+    const meta = {
+      filename:     req.file.filename,
+      originalName: req.file.originalname,
+      mimetype:     req.file.mimetype,
+      size:         req.file.size,
+      uploadedAt:   new Date(),
+    };
+    const order = await Order.findByIdAndUpdate(
+      req.params.id,
+      { $push: { files: meta } },
+      { new: true },
+    ).lean();
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+    res.json(meta);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+// DELETE /api/orders/:id/files/:filename
+const deleteFile = async (req, res) => {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const filepath = path.join(__dirname, '..', 'uploads', req.params.filename);
+    if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
+    await Order.findByIdAndUpdate(req.params.id, {
+      $pull: { files: { filename: req.params.filename } },
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+// GET /api/orders/:id/files/:filename — serve file with auth
+const serveFile = async (req, res) => {
+  try {
+    const path = require('path');
+    const filepath = path.join(__dirname, '..', 'uploads', req.params.filename);
+    res.sendFile(filepath);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+module.exports = {
+  listOrders, listClients, getOrder, createOrder, updateOrder, deleteOrder,
+  listByCompany, seedHistorical, nextOrderNumber, uploadFile, deleteFile, serveFile,
+};
