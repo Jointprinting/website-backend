@@ -1,6 +1,17 @@
 const axios   = require('axios');
+const { Client: NotionClient } = require('@notionhq/client');
 const Quote   = require('../models/Quote');
 const Product = require('../models/Product');
+
+// Notion DB IDs (from the connected workspace)
+const NOTION_ORDERS_DB = '417a4357-a804-4af7-be4d-b44059f8dea0';
+const NOTION_CRM_DB    = '1fe560df-aaa4-8067-b042-c8f7b0e1fa24';
+
+function getNotionClient() {
+  const key = process.env.NOTION_API_KEY;
+  if (!key) return null;
+  return new NotionClient({ auth: key });
+}
 
 const GARMENT_CATEGORY = {
   'T-Shirt':            'Shirts',
@@ -192,6 +203,68 @@ exports.lookupStyle = async (req, res) => {
 
     const avgPrice = await fetchAvgPrice(product.style);
     res.json({ ...product, avgPrice: avgPrice ?? product.basePrice });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+// POST /api/quoter/notion-order
+// Creates a row in the Notion Orders database from a finalized quote.
+// Requires NOTION_API_KEY env var. Returns { notionUrl } on success.
+exports.createNotionOrder = async (req, res) => {
+  const notion = getNotionClient();
+  if (!notion) {
+    return res.status(503).json({ message: 'NOTION_API_KEY not configured on server.' });
+  }
+
+  try {
+    const {
+      orderNumber, clientName, companyName, printer,
+      items, cogs, clientInvoiced, mockupNumber, notes,
+    } = req.body;
+
+    // Try to find a matching CRM page by company name
+    let crmPageUrl = null;
+    try {
+      const search = await notion.databases.query({
+        database_id: NOTION_CRM_DB,
+        filter: {
+          property: 'Company Name',
+          title: { contains: companyName || clientName || '' },
+        },
+        page_size: 1,
+      });
+      if (search.results.length > 0) {
+        crmPageUrl = search.results[0].url;
+      }
+    } catch {
+      // CRM lookup is best-effort
+    }
+
+    const properties = {
+      'Order #':        { title:  [{ text: { content: orderNumber || '' } }] },
+      'Printer':        { rich_text: [{ text: { content: printer || '' } }] },
+      'Items':          { rich_text: [{ text: { content: items || '' } }] },
+      'Mockup #':       { rich_text: [{ text: { content: mockupNumber || '' } }] },
+      'Notes':          { rich_text: [{ text: { content: notes || '' } }] },
+      'date:Date of Sale:start': { date: { start: new Date().toISOString().slice(0, 10) } },
+      'Payment Status': { select: { name: 'Unpaid' } },
+      'Shipment Status':{ select: { name: 'Not Started' } },
+    };
+
+    if (typeof cogs === 'number')          properties['COGS']            = { number: cogs };
+    if (typeof clientInvoiced === 'number') properties['Client Invoiced'] = { number: clientInvoiced };
+
+    if (crmPageUrl) {
+      properties['Client'] = { relation: [{ url: crmPageUrl }] };
+    }
+
+    const page = await notion.pages.create({
+      parent: { database_id: NOTION_ORDERS_DB },
+      properties,
+    });
+
+    res.json({ notionUrl: page.url });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
