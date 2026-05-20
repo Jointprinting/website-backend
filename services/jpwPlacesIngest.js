@@ -101,6 +101,28 @@ function pickAddressComponents(components = []) {
 // or there are no more results. Returns the merged places array AND the
 // number of API calls actually used (the caller writes this to the API
 // usage counter).
+// Google's `searchText` accepts:
+//   - locationBias:  { circle: { center, radius } } OR { rectangle: { low, high } }
+//   - locationRestriction:  { rectangle: { low, high } } ONLY — no circle!
+//
+// We want HARD restriction (no leakage to Worcestershire UK / North NJ /
+// etc.), so we must use locationRestriction with rectangle. We convert the
+// circle into a square bounding box that contains it. The resulting square
+// covers ~27% more area than the inscribed circle, but it's still tightly
+// bounded to South Jersey — the alternative (soft locationBias) routinely
+// returns results outside the area.
+function circleToRectangle({ lat, lng, radius }) {
+  const KM_PER_DEG_LAT = 111.32; // approximately constant
+  const radiusKm = radius / 1000;
+  const latDelta = radiusKm / KM_PER_DEG_LAT;
+  // Longitude shrinks with latitude — use cos to scale.
+  const lngDelta = radiusKm / (KM_PER_DEG_LAT * Math.cos(lat * Math.PI / 180));
+  return {
+    low:  { latitude: lat - latDelta, longitude: lng - lngDelta },
+    high: { latitude: lat + latDelta, longitude: lng + lngDelta },
+  };
+}
+
 async function googlePlacesTextSearch(textQuery, {
   lat, lng,
   radius = 25000,
@@ -122,11 +144,13 @@ async function googlePlacesTextSearch(textQuery, {
     };
     if (pageToken) body.pageToken = pageToken;
     if (isFinite(lat) && isFinite(lng) && !pageToken) {
-      // Google requires the restriction only on the first page; subsequent
-      // pageToken requests already carry the original query context.
-      const circle = { center: { latitude: lat, longitude: lng }, radius };
-      if (useRestriction) body.locationRestriction = { circle };
-      else                body.locationBias        = { circle };
+      // First page only — Google carries the location context across pages
+      // automatically via the pageToken.
+      if (useRestriction) {
+        body.locationRestriction = { rectangle: circleToRectangle({ lat, lng, radius }) };
+      } else {
+        body.locationBias = { circle: { center: { latitude: lat, longitude: lng }, radius } };
+      }
     }
 
     const { data } = await axios.post(
