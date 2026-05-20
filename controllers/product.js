@@ -795,11 +795,18 @@ async function fetchAndGroupSSBrand(brand) {
   const cached = _ssCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.data;
 
-  const { data } = await ssClient.get('/Products.aspx', {
-    params: { brand, mediatype: 'json' },
-    timeout: 60_000,
-  });
-  if (!Array.isArray(data)) throw new Error('Unexpected S&S response');
+  // Build URL manually so brand name is encoded exactly once by encodeURIComponent
+  const { data } = await ssClient.get(
+    `/Products.aspx?brand=${encodeURIComponent(brand)}&mediatype=json`,
+    { timeout: 90_000 }
+  );
+
+  if (!Array.isArray(data)) {
+    // S&S returned an error object — surface its message if present
+    const detail = data?.Message || data?.message || JSON.stringify(data).slice(0, 200);
+    console.error(`[browseSS] S&S returned non-array for brand "${brand}":`, detail);
+    throw new Error(`S&S catalog unavailable for this brand. (${detail})`);
+  }
 
   // Group SKUs → styles
   const byStyle = new Map();
@@ -839,18 +846,23 @@ async function fetchAndGroupSSBrand(brand) {
 exports.browseSS = async (req, res) => {
   try {
     ensureSsCredentials();
-    const { brand, page = 1, limit = 24, search = '' } = req.query;
+    const { brand, page = 1, limit = 24, search = '', category = '' } = req.query;
     if (!brand) return res.status(400).json({ message: '`brand` query param is required.' });
 
     let { styles, total } = await fetchAndGroupSSBrand(brand);
+
+    if (category) {
+      styles = styles.filter(s => s.category === category);
+    }
 
     if (search) {
       const q = search.toLowerCase();
       styles = styles.filter(s =>
         s.name.toLowerCase().includes(q) || s.style.toLowerCase().includes(q)
       );
-      total = styles.length;
     }
+
+    total = styles.length;
 
     const p = Math.max(1, parseInt(page, 10));
     const l = Math.min(48, Math.max(1, parseInt(limit, 10)));
