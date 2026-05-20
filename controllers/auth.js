@@ -9,7 +9,7 @@ const jwt = require('jsonwebtoken');
 const AdminUser = require('../models/AdminUser');
 
 const JWT_SECRET = process.env.JWT_SECRET;
-const TOKEN_TTL = process.env.STUDIO_TOKEN_TTL || '8h';
+const TOKEN_TTL = process.env.STUDIO_TOKEN_TTL || '30d';
 const MAX_FAILED = 5;
 const LOCKOUT_MINUTES = 15;
 
