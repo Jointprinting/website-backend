@@ -38,6 +38,24 @@ const AD_INTENT_PHRASES = [
   /\blimited time\b/i, /\bsame[- ]day\b/i, /\bno obligation\b/i,
 ];
 
+// Review count is a peaked curve, not linear. Nate's insight: the *more*
+// successful a business is, the *less* likely they switch marketing —
+// 500-review roofers already have an agency and won't take his call. Sweet
+// spot is real-but-not-dominant: enough reviews to prove demand, not so many
+// that they've outgrown his service.
+//
+// Returns { points, label }. Points apply to both Buying Intent and Ability
+// to Pay, but each caller weights them slightly differently.
+function reviewCountBand(rc) {
+  if (rc <= 0)        return { points: 0, label: 'No Google reviews — no demand proof' };
+  if (rc < 10)        return { points: 2, label: `${rc} reviews — too small to confirm demand` };
+  if (rc < 25)        return { points: 6, label: `${rc} reviews — early traction, accessible` };
+  if (rc < 80)        return { points: 8, label: `${rc} reviews — sweet spot (proven, not polished)` };
+  if (rc < 150)       return { points: 5, label: `${rc} reviews — established, may be harder to win` };
+  if (rc < 300)       return { points: 2, label: `${rc} reviews — large business, likely has an agency` };
+  return { points: -2, label: `${rc} reviews — almost certainly has an agency, hard to displace` };
+}
+
 // ── A. Buying Intent (0–30) ──────────────────────────────────────────────
 function scoreBuyingIntent(lead) {
   const reasons = [];
@@ -67,11 +85,22 @@ function scoreBuyingIntent(lead) {
     reasons.push('Ad copy uses high-intent language');
   }
 
-  // Review count tiers (Google reviews — strong demand signal)
+  // Review count — peaked curve (not linear). Real demand without
+  // success-bias means leads are still pitchable.
   const rc = lead.review_count || 0;
-  if (rc >= 150)      { s += 7; reasons.push(`${rc} Google reviews — proven demand`); }
-  else if (rc >= 50)  { s += 5; reasons.push(`${rc} Google reviews — solid demand`); }
-  else if (rc >= 25)  { s += 3; reasons.push(`${rc} Google reviews — modest demand`); }
+  const band = reviewCountBand(rc);
+  if (band.points !== 0) {
+    s += band.points;
+    reasons.push(band.label);
+  }
+
+  // No-website + decent review count = your dream lead. They have proven
+  // demand AND an obvious gap to sell into.
+  const hasWebsite = !!(lead.website_url || lead.domain);
+  if (!hasWebsite && rc >= 10 && (lead.rating || 0) >= 4.0) {
+    s += 5;
+    reasons.push('No website + proven reviews = ideal Foundation lead');
+  }
 
   // Website signals
   if (audit.has_tracking_pixels) {
@@ -166,13 +195,23 @@ function scoreAbilityToPay(lead) {
     reasons.push(`${lead.category} is a high-ticket category`);
   }
 
-  // Review-count band (mutually exclusive — higher band only)
-  if (rc >= 150)      { s += 7; reasons.push('150+ reviews — proven revenue'); }
-  else if (rc >= 50)  { s += 5; reasons.push('50+ reviews — established'); }
+  // Reviews = revenue proxy. Peaked curve: established small biz pays best.
+  // Same band as Buying Intent but weighted slightly differently — caps at
+  // the band's positive points, doesn't apply the 300+ negative (revenue
+  // exists either way; the displacement risk is what we penalize in Buying
+  // Intent only).
+  const band = reviewCountBand(rc);
+  if (band.points > 0) {
+    s += band.points;
+    reasons.push(`Revenue band: ${band.label}`);
+  }
 
-  if (rating >= 4.2 && rc >= 25) {
+  // Rating + reviews quality cross-check.
+  // 4.0–4.7 with real review count = good business, room to grow → bonus
+  // 4.8+ with 200+ reviews = too polished / family-tight-knit → no bonus
+  if (rc >= 10 && rating >= 4.0 && rating <= 4.79) {
     s += 3;
-    reasons.push(`${rating.toFixed(1)}★ across ${rc} reviews`);
+    reasons.push(`${rating.toFixed(1)}★ across ${rc} reviews — healthy reputation`);
   }
 
   if (lead.website_url && (
@@ -279,8 +318,21 @@ function evaluatePenalties(lead) {
   const disqualifiers = [];
   let delta = 0;
 
+  const audit = lead.website_audit || {};
+  const ad = lead.ad_signal || {};
+  const rc = lead.review_count || 0;
+  const rating = lead.rating || 0;
+  const meta = categoryMeta(lead.category);
+
   if (lead.business_status === 'CLOSED_PERMANENTLY') {
     disqualifiers.push('Permanently closed');
+  }
+  // Temporarily closed (storm damage, owner sick, etc.) — operational
+  // uncertainty. Not an exclusion but worth dropping the score so it doesn't
+  // surface in the call queue today.
+  if (lead.business_status === 'CLOSED_TEMPORARILY') {
+    delta -= 10;
+    penalties.push('Temporarily closed (-10)');
   }
   if (!lead.phone || !lead.normalized_phone) {
     delta -= 20;
@@ -300,29 +352,54 @@ function evaluatePenalties(lead) {
     delta -= 25;
     penalties.push('National franchise (-25)');
   }
-  const meta = categoryMeta(lead.category);
   if (meta?.tier === 'disqualify') {
     delta -= 15;
     penalties.push(`Low-ticket category: ${lead.category} (-15)`);
   }
 
-  // "Too polished" — strong site + ads + 4.5+ rating with massive review count =
-  // they already have an agency, hard to displace
-  const audit = lead.website_audit || {};
-  const ad = lead.ad_signal || {};
-  if (audit.has_click_to_call && audit.has_quote_cta && audit.has_localbusiness_schema
-      && audit.mobile_speed_score >= 80
-      && ad.active_ads_found === true && (lead.review_count || 0) >= 200) {
-    delta -= 20;
-    penalties.push('Already polished — likely has an agency (-20)');
+  // Reputation gate — a 2.8★ business with 30 reviews is bleeding customers.
+  // Nate's services can't fix a fundamentally bad operation; he'd sell them
+  // a site that points at a sinking ship. Exclude.
+  if (rc >= 20 && rating > 0 && rating < 3.5) {
+    disqualifiers.push(`Low rating (${rating.toFixed(1)}★ across ${rc} reviews) — operational issues JPW can't fix`);
   }
-  if ((lead.review_count || 0) < 10 && !ad.active_ads_found) {
-    delta -= 20;
-    penalties.push('Under 10 reviews and no ad signal (-20)');
+
+  // Already-polished penalty — drop the `ad_signal` gate. The combination of
+  // a competent site + heavy review momentum is itself the signal that
+  // they're working with an agency, regardless of whether we caught their
+  // Meta ads. (Old version required active_ads_found which is almost never
+  // set, so this penalty never fired.)
+  const polishedSite = audit.has_click_to_call && audit.has_quote_cta
+                    && audit.has_localbusiness_schema && audit.has_gallery;
+  if (polishedSite && rc >= 150) {
+    delta -= 15;
+    penalties.push(`Polished site + ${rc} reviews — likely has an agency (-15)`);
   }
-  if (!lead.website_url && (lead.review_count || 0) < 10 && !ad.active_ads_found) {
-    delta -= 25;
-    penalties.push('No website, no reviews, no demand signals (-25)');
+  // Even without the polish check: 300+ reviews is so much momentum they
+  // almost certainly already have help. Buying Intent already deducts -2 for
+  // this band; here we add a structural penalty on top.
+  if (rc >= 300) {
+    delta -= 10;
+    penalties.push(`${rc} reviews — too big to switch marketing easily (-10)`);
+  }
+
+  // Suspiciously perfect: 4.9-5.0 stars across 100+ reviews almost always
+  // means reputation curation by an agency.
+  if (rating >= 4.9 && rc >= 100) {
+    delta -= 5;
+    penalties.push(`${rating.toFixed(1)}★ across ${rc} reviews — suspiciously curated, agency likely (-5)`);
+  }
+
+  // Soft penalty for unproven leads — but not as harsh as before. The Fit
+  // bonus + category match can still pull these into C/B range if the
+  // category is right.
+  if (rc < 10 && !ad.active_ads_found && !audit.has_tracking_pixels) {
+    delta -= 10;
+    penalties.push('Under 10 reviews, no ad signals — unproven (-10)');
+  }
+  if (!lead.website_url && rc < 5 && !ad.active_ads_found) {
+    delta -= 15;
+    penalties.push('No website, no reviews, no demand signals (-15)');
   }
   if (lead.address_residential_only) {
     delta -= 15;
