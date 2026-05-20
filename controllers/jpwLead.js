@@ -16,7 +16,7 @@ const {
   SOUTH_JERSEY_TOWNS, SOUTH_JERSEY_COUNTIES, CATEGORIES,
   guessCategory, SCORE_CAPS, SCORE_TOTAL_CAP,
 } = require('../services/jpwConstants');
-const { runSearch, getTodayUsage, PLACES_DAILY_CAP } = require('../services/jpwPlacesIngest');
+const { runSearch, runSweep, getTodayUsage, PLACES_DAILY_CAP } = require('../services/jpwPlacesIngest');
 const { auditLead, auditLeadsConcurrent } = require('../services/jpwAuditor');
 const { pushLead, pushLeadsBatch, dedupeKeyFor, isConfigured: isSpiderConfigured } = require('../services/jpwSpiderPush');
 const { runRescoreAll, runStaleAudit } = require('../services/jpwScheduler');
@@ -518,6 +518,52 @@ async function searchPlaces(req, res) {
   }
 }
 
+// ── Bulk sweep — N × (category, town) in one shot ─────────────────────────
+//
+// POST /api/jpw/search/sweep
+//   body: { categories?, towns?, counties?, max? }
+//
+// Builds the cross-product of (categories × towns) or (categories × counties)
+// and runs each through runSearch with throttling. Auto-audit kicks off in
+// the background per search just like a one-off. Respects the daily Places
+// cap and halts early when hit.
+async function sweepPlaces(req, res) {
+  try {
+    const {
+      categories,
+      towns,
+      counties,
+      max,
+    } = req.body || {};
+
+    // Default to all high-ticket categories if none specified
+    const defaultCats = CATEGORIES.filter((c) => c.tier === 'high').map((c) => c.name);
+    const cats = (Array.isArray(categories) && categories.length) ? categories : defaultCats;
+
+    // Default to all SJ towns if neither towns nor counties specified
+    const useTowns = Array.isArray(towns) && towns.length;
+    const useCounties = Array.isArray(counties) && counties.length;
+    const targets = useTowns ? towns : (useCounties ? counties : SOUTH_JERSEY_TOWNS);
+
+    const pairs = [];
+    for (const cat of cats) {
+      for (const t of targets) {
+        if (useCounties) pairs.push({ category: cat, county: t });
+        else             pairs.push({ category: cat, town: t });
+      }
+    }
+
+    const result = await runSweep({
+      pairs,
+      maxSearches: parseInt(max, 10) || 30,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error('[jpwLead] sweepPlaces error:', err.message);
+    res.status(err.statusCode || 500).json({ message: err.message || 'Sweep failed.' });
+  }
+}
+
 // ── Audit one lead's website ─────────────────────────────────────────────
 //
 // POST /api/jpw/leads/:id/audit
@@ -790,7 +836,7 @@ module.exports = {
   listLeads, getLead, createLead, updateLead, deleteLead,
   rescoreLeads, importCsv, getDashboardStats, getReferenceData,
   exportCsv, bulkStatus, bulkDelete,
-  searchPlaces, auditOneLead, auditBatch, getUsage,
+  searchPlaces, sweepPlaces, auditOneLead, auditBatch, getUsage,
   pushOneToSpider, pushBatchToSpider, updateAdSignal,
   runScheduledJob,
 };

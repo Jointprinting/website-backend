@@ -150,14 +150,49 @@ test('Penalty: no phone number costs 20 points', () => {
   assert.ok(sa.score - sb.score >= 10, `expected ≥10pt drop, got ${sa.score - sb.score}`);
 });
 
-test('Out-of-SJ county is penalized', () => {
+test('In-NJ but outside-SJ is NOT penalized (still sellable, just no Fit bonus)', () => {
+  // Pre-Round-3 this was a -25 penalty that dragged Bergen/Essex/Middlesex
+  // leads into D grade. Nate can sell to them — county only earns the Fit
+  // bonus when it's in SJ, but it shouldn't punish otherwise.
   const lead = {
     business_name: 'Newark Tree', phone: '9735551234', normalized_phone: '9735551234',
     category: 'Tree Service', county: 'Essex', state: 'NJ',
     rating: 4.5, review_count: 50,
   };
   const s = scoreLead(lead);
-  assert.ok(s.penalties.some((p) => /Outside South Jersey/.test(p)));
+  assert.ok(!s.penalties.some((p) => /South Jersey|Outside NJ/.test(p)),
+    'no geographic penalty should fire for an in-NJ lead');
+});
+
+test('Outside-NJ IS still penalized (Nate does not sell outside NJ)', () => {
+  const lead = {
+    business_name: 'Philly Tree', phone: '2155551234', normalized_phone: '2155551234',
+    category: 'Tree Service', county: 'Philadelphia', state: 'PA',
+    rating: 4.5, review_count: 50,
+  };
+  const s = scoreLead(lead);
+  assert.ok(s.penalties.some((p) => /Outside NJ/.test(p)));
+});
+
+test('Tracking pixels alone unlock Meta Ads recommendation', () => {
+  // Round-3 change: if the auditor finds gtag / fbq / GTM / etc., that's
+  // enough proof of advertising activity to recommend Meta Ads — without
+  // requiring a manual ad_signal entry, which Nate said he'd never do.
+  const lead = {
+    business_name: 'Acme Roofing', phone: '6095551234', normalized_phone: '6095551234',
+    website_url: 'https://acmeroofing.com',
+    category: 'Roofing', county: 'Camden', state: 'NJ',
+    rating: 4.6, review_count: 40,
+    website_audit: {
+      loads_successfully: true,
+      has_tracking_pixels: true,
+      has_click_to_call: false,
+      has_quote_cta: false,
+    },
+    // NOTE: no ad_signal at all — proves the offer fires from pixels alone
+  };
+  const s = scoreLead(lead);
+  assert.equal(s.recommendedOffer, 'Meta Ads Management');
 });
 
 test('Low-ticket category (restaurant) is penalized + offered Foundation', () => {

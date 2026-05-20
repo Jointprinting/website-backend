@@ -19,8 +19,19 @@
 // ── CONFIG ──────────────────────────────────────────────────────────────────
 const SHARED_SECRET = 'CHANGE_ME_TO_A_LONG_RANDOM_STRING';
 const DEDUPE_COLUMN_HEADER = '_dedupe_key'; // hidden column we manage
+
+// Status dropdown values applied to the "Status" column via data validation.
+// Adjust here if Nate wants different working states later.
+const STATUS_OPTIONS = ['cold', 'warm', 'hot', 'client', 'dead'];
+
 // ── COLUMN ORDER ───────────────────────────────────────────────────────────
 // MUST match services/jpwSpiderPush.js leadToRow() in the backend.
+//
+// First 15 columns are auto-filled by Lead Recon (factual data + score).
+// Last 4 columns (status, last_contact, next_contact, notes) ship blank —
+// they are Nate's working columns that he fills in by hand. Spider sheet
+// applies dropdown validation to status and date validation to the two
+// contact-date columns when the tab is first created.
 const COLUMNS = [
   ['business_name',     'Business Name'],
   ['category',          'Category'],
@@ -37,11 +48,10 @@ const COLUMNS = [
   ['recommended_offer', 'Recommended Offer'],
   ['main_pain_point',   'Main Pain Point'],
   ['buying_signal',     'Buying Signal'],
-  ['pitch_angle',       'Pitch Angle'],
-  ['opener',            'Opener'],
-  ['call_status',       'Status'],
-  ['last_checked',      'Last Checked'],
-  ['source',            'Source'],
+  // Working columns (blank on push):
+  ['status',            'Status'],
+  ['last_contact',      'Last Contact'],
+  ['next_contact',      'Next Contact'],
   ['notes',             'Notes'],
 ];
 
@@ -161,7 +171,9 @@ function getOrCreateSheet(name) {
 }
 
 // Make sure the header row exists and the dedupe column is present. Returns
-// the 1-based column index of the dedupe column.
+// the 1-based column index of the dedupe column. On first creation also
+// applies data validation rules to the working columns so Nate gets a
+// dropdown for status and date pickers for the two contact-date columns.
 function ensureSchema(sheet) {
   const lastCol = sheet.getLastColumn();
   const lastRow = sheet.getLastRow();
@@ -173,6 +185,7 @@ function ensureSchema(sheet) {
     sheet.setFrozenRows(1);
     sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
     sheet.hideColumns(headers.length); // hide the dedupe column
+    applyWorkingColumnValidation(sheet);
     return headers.length;
   }
   // Existing sheet — verify dedupe column, add it at the end if missing
@@ -184,6 +197,39 @@ function ensureSchema(sheet) {
     sheet.hideColumns(idx);
   }
   return idx;
+}
+
+// Apply data validation rules to the working columns. Called only on first
+// sheet creation — Google's API is fine re-applying, but no need to do it
+// every push. Rules cover up to 1000 rows; pushing more than that and we'd
+// reset this in a future maintenance pass.
+function applyWorkingColumnValidation(sheet) {
+  function colIndex(key) {
+    for (let i = 0; i < COLUMNS.length; i++) {
+      if (COLUMNS[i][0] === key) return i + 1;
+    }
+    return -1;
+  }
+  const statusCol = colIndex('status');
+  const lastCol   = colIndex('last_contact');
+  const nextCol   = colIndex('next_contact');
+
+  if (statusCol > 0) {
+    const rule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(STATUS_OPTIONS, true)
+      .setAllowInvalid(true)
+      .setHelpText('Working state: cold → warm → hot → client. "dead" for lost.')
+      .build();
+    sheet.getRange(2, statusCol, 1000, 1).setDataValidation(rule);
+  }
+  if (lastCol > 0 || nextCol > 0) {
+    const dateRule = SpreadsheetApp.newDataValidation()
+      .requireDate()
+      .setAllowInvalid(true)
+      .build();
+    if (lastCol > 0) sheet.getRange(2, lastCol, 1000, 1).setDataValidation(dateRule);
+    if (nextCol > 0) sheet.getRange(2, nextCol, 1000, 1).setDataValidation(dateRule);
+  }
 }
 
 function readDedupeKeys(sheet, dedupeColIdx) {

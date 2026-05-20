@@ -286,16 +286,15 @@ function evaluatePenalties(lead) {
     delta -= 20;
     penalties.push('No phone number (-20)');
   }
-  // South Jersey check — only penalize when we KNOW the state/county is wrong,
-  // not when it's unset (manual entries often skip state).
+  // Geographic gating. Only outside-NJ is a real penalty — Nate doesn't
+  // sell outside New Jersey. Being IN NJ but outside the South Jersey
+  // counties is fine: he can still close that deal, the county just doesn't
+  // earn the Fit-score bonus. (Pre-Round-3 the in-NJ/out-of-SJ case was
+  // also -25, which dragged many sellable Bergen/Mercer/Middlesex leads
+  // into grade D for no real reason.)
   if (lead.state && lead.state !== 'NJ') {
     delta -= 25;
     penalties.push('Outside NJ (-25)');
-  } else if (lead.county && !SOUTH_JERSEY_COUNTIES.some(
-    (c) => lead.county.toLowerCase().includes(c.toLowerCase())
-  )) {
-    delta -= 25;
-    penalties.push('Outside South Jersey (-25)');
   }
   if (lead.is_franchise) {
     delta -= 25;
@@ -348,17 +347,26 @@ function recommendOffer(lead) {
                        || isExplicitlyFalsy(audit.has_quote_cta)
                        || isExplicitlyFalsy(audit.has_contact_form);
 
-  // Full Growth: ads + high-ticket + reviews + weak site
-  if ((ad.active_ads_found === true || ad.active_ads_found === 'possible')
-      && meta?.tier === 'high' && rc >= 50 && weakConversion) {
+  // "Is this business already paying to drive traffic somewhere?"
+  // Explicit Meta ad signal is best, but most leads will never have one
+  // (we don't auto-detect Meta Ad Library and Nate isn't entering them by
+  // hand). Tracking pixels in the page source — gtag / fbq / GTM / Clarity
+  // / Hotjar — are nearly as reliable a tell: if they're installed,
+  // someone is buying ads somewhere. Use either signal to unlock the
+  // Meta Ads / Full Growth recommendations.
+  const isLikelyAdvertising = ad.active_ads_found === true
+                            || ad.active_ads_found === 'possible'
+                            || audit.has_tracking_pixels === true;
+
+  // Full Growth: paying-for-traffic + high-ticket + reviews + weak site
+  if (isLikelyAdvertising && meta?.tier === 'high' && rc >= 50 && weakConversion) {
     return {
       offer: OFFERS.fullGrowth,
       pitch: 'You do not need one random fix. You need the site, Google, and ads working together as one lead system.',
     };
   }
   // Meta Ads: they're paying for clicks, funnel is weak
-  if ((ad.active_ads_found === true || ad.active_ads_found === 'possible')
-      && (weakConversion || hasWebsite)) {
+  if (isLikelyAdvertising && (weakConversion || hasWebsite)) {
     return {
       offer: OFFERS.metaAds,
       pitch: "You're already paying for attention. The question is whether the clicks are being turned into calls.",

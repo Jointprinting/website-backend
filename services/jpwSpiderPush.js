@@ -23,9 +23,15 @@ function isConfigured() {
   return !!(WEBHOOK_URL && SHARED_SECRET);
 }
 
-// Shape one lead into the row the Apps Script expects. Column order matches
-// the header the script writes the first time it creates the tab — keep
-// these two in sync.
+// Shape one lead into the row the Apps Script expects. Column order MUST
+// match the COLUMNS array in apps-script/JpwSpiderEndpoint.gs.
+//
+// Nate's CRM is Spider — Lead Recon just pre-fills the factual columns
+// (business + score + recommendation) and leaves the working columns
+// (status / contact dates / notes) blank for him to fill in by hand.
+// Dropped from the previous version: source, last_checked, opener,
+// pitch_angle, call_status — they were noise duplicating what Spider does
+// or what Cold Call Tree handles.
 function leadToRow(lead) {
   const score = lead.lead_score || {};
   return {
@@ -44,12 +50,13 @@ function leadToRow(lead) {
     recommended_offer: score.recommendedOffer || '',
     main_pain_point:   score.mainPainPoints?.[0] || '',
     buying_signal:     score.buyingSignals?.[0] || '',
-    pitch_angle:       score.pitchAngle || '',
-    opener:            score.opener || '',
-    call_status:       lead.call_status || 'new',
-    last_checked:      new Date().toISOString().slice(0, 10),
-    source:            lead.source || '',
-    notes:             lead.call_notes || '',
+    // Working columns — blank on push, Nate fills in via the sheet's
+    // dropdowns / date pickers. The Apps Script sets data validation on
+    // these columns when first creating the tab.
+    status:            '',
+    last_contact:      '',
+    next_contact:      '',
+    notes:             '',
     // Dedupe key sent to the Apps Script so it can refuse double-append.
     dedupe_key:        dedupeKeyFor(lead),
   };

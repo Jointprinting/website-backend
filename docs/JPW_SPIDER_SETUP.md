@@ -79,6 +79,26 @@ Dedupe key priority:
 If you want a lead re-pushed with updated data, delete its row from the
 sheet first.
 
+## ⚠️ Round-3 (May 2026) column overhaul — one-time migration
+
+The Apps Script column layout changed in Round 3. The Lead Recon tool now
+sends 19 columns (down from 21) and the LAST 4 columns (`Status`,
+`Last Contact`, `Next Contact`, `Notes`) ship **blank** for you to fill in
+by hand inside Spider. The `Status` column gets a dropdown (cold / warm /
+hot / client / dead) and the contact-date columns get date pickers when the
+tab is first created.
+
+To migrate:
+
+1. In Spider, **delete** the existing **JPW Recon** tab entirely
+   (right-click the tab → Delete sheet). The dedupe key column survives
+   this — you'll re-push the leads. Nate had 1 row pushed before this
+   change, so no real data loss.
+2. Re-deploy the Apps Script (instructions in section 5 below) so the new
+   `COLUMNS` array + data validation take effect.
+3. Back in Lead Recon, click **Push A+/A → Spider** to repopulate the tab.
+   The new tab will be created with the new schema + dropdowns.
+
 ## 5. Re-deploying after Apps Script changes
 
 If the Apps Script file in this repo (`apps-script/JpwSpiderEndpoint.gs`)
