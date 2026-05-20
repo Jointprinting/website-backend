@@ -84,26 +84,49 @@ const CMS_FINGERPRINTS = [
 // Try the URL as-given; if that fails, fall back to https variant of the
 // host. Returns { response, error, finalUrl } — we never throw past this.
 async function fetchOnce(url) {
+// Two-pass fetch:
+//  1. "Polite" identifying User-Agent. Most sites accept it; we'd rather be
+//     honest about being a bot when nobody's blocking us.
+//  2. If the polite pass returns 4xx (typically 403/409 from Cloudflare/Akamai
+//     bot protection), retry with a realistic Chrome User-Agent. Less polite,
+//     but a fair number of sites only block obviously-named bots and let
+//     anything that looks like a browser through.
+// If BOTH passes fail with non-2xx, we return ok:false with the second
+// response's status. The caller treats that as "couldn't audit" and the UI
+// shows a clean "site blocked" message instead of a misleading checklist.
+const POLITE_UA   = 'Mozilla/5.0 (compatible; JPWebworksBot/1.0; +https://jointprinting.com)';
+const REALISTIC_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
+
+async function _attemptFetch(url, userAgent) {
+  const res = await axios.get(url, {
+    timeout: FETCH_TIMEOUT_MS,
+    maxRedirects: 5,
+    maxContentLength: MAX_CONTENT_BYTES,
+    validateStatus: () => true,
+    responseType: 'text',
+    headers: {
+      'User-Agent': userAgent,
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+  });
+  return res;
+}
+
+async function fetchOnce(url) {
   const start = Date.now();
   try {
-    const res = await axios.get(url, {
-      timeout: FETCH_TIMEOUT_MS,
-      maxRedirects: 5,
-      maxContentLength: MAX_CONTENT_BYTES,
-      validateStatus: () => true, // we want to record 4xx/5xx, not throw
-      responseType: 'text',
-      headers: {
-        // Some sites block default axios UA — masquerade as a generic browser.
-        'User-Agent': 'Mozilla/5.0 (compatible; JPWebworksBot/1.0; +https://jointprinting.com)',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-      },
-    });
+    let res = await _attemptFetch(url, POLITE_UA);
+    if (res.status >= 400 && res.status < 600) {
+      // Polite UA got blocked. Retry as a regular Chrome browser.
+      res = await _attemptFetch(url, REALISTIC_UA);
+    }
+    const isOk = res.status >= 200 && res.status < 400;
     return {
-      ok: true,
+      ok: isOk,
       status: res.status,
       finalUrl: res.request?.res?.responseUrl || url,
-      html: typeof res.data === 'string' ? res.data : '',
+      html: isOk && typeof res.data === 'string' ? res.data : '',
       duration: Date.now() - start,
     };
   } catch (err) {
