@@ -188,7 +188,10 @@ exports.getProducts = async (req, res) => {
     const query = {};
     if (category) query.category = category;
     if (type)     query.type = type;
-    if (search)   query.name = { $regex: search, $options: 'i' };
+    if (search) {
+      const re = { $regex: `\\b${search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, $options: 'i' };
+      query.$or = [{ name: re }, { vendor: re }];
+    }
 
     const products = await Product.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit);
     if (!products.length) return res.status(200).json({ products: [], totalPages: 0 });
