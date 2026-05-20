@@ -79,7 +79,21 @@ Dedupe key priority:
 If you want a lead re-pushed with updated data, delete its row from the
 sheet first.
 
-## 5. Rotating the secret
+## 5. Re-deploying after Apps Script changes
+
+If the Apps Script file in this repo (`apps-script/JpwSpiderEndpoint.gs`)
+changes — e.g. when the backend adds new features like the cross-tab phone
+dedupe — you need to re-deploy your copy of the script in Spider for the new
+behavior to take effect.
+
+1. Open Spider → **Extensions → Apps Script**
+2. Replace the contents of `Code.gs` with the latest version from this repo
+   (keep your `SHARED_SECRET` value — don't paste over it with the placeholder)
+3. **Deploy → Manage deployments → pencil-edit the existing deployment →
+   Version: New version → Deploy.**
+   The Web app URL stays the same, so no backend env update is needed.
+
+## 6. Rotating the secret
 
 Change `SHARED_SECRET` in the Apps Script + the backend env var to the same
 new value, save+deploy the script, redeploy the backend. The old secret stops

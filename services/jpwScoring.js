@@ -435,7 +435,10 @@ function scoreLead(lead) {
   const offerRec = recommendOffer(lead);
   const opener = generateOpener(lead);
 
-  // Top 3 pain points and top 2 buying signals get surfaced on the lead card.
+  // Reasons live inside the breakdown so the UI can show "why did this
+  // bar score X" right next to each progress bar. Top-level mainPainPoints
+  // / buyingSignals retained for backwards compatibility with older clients
+  // and exports.
   const mainPainPoints = pain.reasons.slice(0, 3);
   const buyingSignals = buying.reasons.slice(0, 2);
 
@@ -449,11 +452,11 @@ function scoreLead(lead) {
     score: displayTotal,
     grade,
     breakdown: {
-      buyingIntent: buying.value,
-      pain: pain.value,
-      abilityToPay: ability.value,
-      fit: fit.value,
-      urgency: urgency.value,
+      buyingIntent: { value: buying.value,  reasons: buying.reasons },
+      pain:         { value: pain.value,    reasons: pain.reasons },
+      abilityToPay: { value: ability.value, reasons: ability.reasons },
+      fit:          { value: fit.value,     reasons: fit.reasons },
+      urgency:      { value: urgency.value, reasons: urgency.reasons },
       rawTotal,
       penaltyDelta: penaltyResult.delta,
     },

@@ -164,7 +164,7 @@ async function auditUrl(rawUrl, { cityHints = [], usePageSpeed = true } = {}) {
     status_code: fetched.status,
     loads_successfully: fetched.ok && fetched.status >= 200 && fetched.status < 400,
     ssl_valid: (fetched.finalUrl || audited_url).startsWith('https://'),
-    notes: fetched.ok ? '' : `Fetch error: ${fetched.error}`,
+    notes: fetched.ok ? '' : humanizeFetchError(fetched.error),
   };
 
   if (!fetched.html) {
@@ -328,6 +328,25 @@ function extractHost(u) {
 }
 function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Translate Node / OpenSSL error codes into something the user can act on.
+// fetchOnce stores either `err.code` (e.g. 'ENOTFOUND') or `err.message`, so
+// we match both. Anything we don't recognize falls through with "Fetch
+// failed:" as a prefix so the raw signal is still visible.
+function humanizeFetchError(raw = '') {
+  const s = String(raw || '').toUpperCase();
+  if (s.includes('ENOTFOUND'))       return "Domain doesn't resolve (likely typo or expired)";
+  if (s.includes('ECONNREFUSED'))    return 'Server refused the connection';
+  if (s.includes('ETIMEDOUT') || s.includes('ECONNABORTED'))
+                                     return "Server didn't respond in 15 seconds";
+  if (s.includes('CERT_HAS_EXPIRED'))                 return 'SSL certificate expired';
+  if (s.includes('UNABLE_TO_VERIFY_LEAF_SIGNATURE'))  return 'SSL certificate not trusted';
+  if (s.includes('SELF_SIGNED_CERT_IN_CHAIN'))        return 'Self-signed SSL certificate';
+  if (s.includes('EHOSTUNREACH') || s.includes('ENETUNREACH'))
+                                     return 'Host unreachable';
+  if (s.includes('ECONNRESET'))      return 'Connection reset by the server';
+  return `Fetch failed: ${raw}`;
 }
 
 // Audit one lead in place: mutates and returns the updated audit subdoc.

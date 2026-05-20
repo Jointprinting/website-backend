@@ -72,15 +72,23 @@ const AdSignalSchema = new mongoose.Schema({
   manual_notes:       String,
 }, { _id: false });
 
+// Sub-shape for one bucket of the 100-pt score. `reasons` is the list of
+// human-readable strings the scoring engine produced for that bucket — they
+// power the inline "why" the UI shows under each progress bar.
+const ScoreBucketSchema = new mongoose.Schema({
+  value:   { type: Number, default: 0 },
+  reasons: { type: [String], default: [] },
+}, { _id: false });
+
 const LeadScoreSchema = new mongoose.Schema({
   score:             { type: Number, default: 0 },
   grade:             { type: String, default: 'D' },
   breakdown: {
-    buyingIntent:    { type: Number, default: 0 },
-    pain:            { type: Number, default: 0 },
-    abilityToPay:    { type: Number, default: 0 },
-    fit:             { type: Number, default: 0 },
-    urgency:         { type: Number, default: 0 },
+    buyingIntent:    { type: ScoreBucketSchema, default: () => ({}) },
+    pain:            { type: ScoreBucketSchema, default: () => ({}) },
+    abilityToPay:    { type: ScoreBucketSchema, default: () => ({}) },
+    fit:             { type: ScoreBucketSchema, default: () => ({}) },
+    urgency:         { type: ScoreBucketSchema, default: () => ({}) },
     rawTotal:        { type: Number, default: 0 },
     penaltyDelta:    { type: Number, default: 0 },
   },

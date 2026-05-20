@@ -366,6 +366,7 @@ async function getDashboardStats(_req, res) {
                               { 'website_audit.loads_successfully': false },
                             ]},
                           ]}}, { $count: 'n' }],
+          pushedToSpider: [{ $match: { pushed_to_spider_at: { $exists: true, $ne: null } } }, { $count: 'n' }],
         },
       },
     ]);
@@ -380,6 +381,7 @@ async function getDashboardStats(_req, res) {
       activeAds: facet.activeAds?.[0]?.n || 0,
       noWebsite: facet.noWebsite?.[0]?.n || 0,
       weakSite:  facet.weakSite?.[0]?.n || 0,
+      pushedToSpider: facet.pushedToSpider?.[0]?.n || 0,
     });
   } catch (err) {
     console.error('[jpwLead] stats error:', err);

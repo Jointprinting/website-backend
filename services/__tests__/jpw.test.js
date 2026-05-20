@@ -74,6 +74,30 @@ test('buildDedupeKeys derives all keys from raw input', () => {
 });
 
 // ── Scoring ───────────────────────────────────────────────────────────────
+test('Score breakdown exposes per-bucket reasons for UI display', () => {
+  const lead = {
+    business_name: 'Acme Tree Service',
+    phone: '6095551234', normalized_phone: '6095551234',
+    website_url: 'https://acmetree.com',
+    category: 'Tree Service', county: 'Camden', state: 'NJ',
+    rating: 4.7, review_count: 87,
+    ad_signal: { active_ads_found: true, active_ad_count: 3 },
+    website_audit: { has_click_to_call: false, has_quote_cta: false },
+  };
+  const s = scoreLead(lead);
+  // Each bucket is now { value, reasons[] } not a bare number
+  for (const bucket of ['buyingIntent', 'pain', 'abilityToPay', 'fit', 'urgency']) {
+    assert.ok(typeof s.breakdown[bucket].value === 'number',
+      `${bucket}.value should be a number`);
+    assert.ok(Array.isArray(s.breakdown[bucket].reasons),
+      `${bucket}.reasons should be an array`);
+  }
+  // High-ticket lead with ads should have non-empty reasons in both
+  // buyingIntent and abilityToPay
+  assert.ok(s.breakdown.buyingIntent.reasons.length > 0);
+  assert.ok(s.breakdown.abilityToPay.reasons.length > 0);
+});
+
 test('A+ lead: high-ticket + ads + reviews + weak conversion', () => {
   const lead = {
     business_name: 'Acme Tree Service',
