@@ -591,22 +591,25 @@ const SS_POPULAR_BRANDS = [
   'Independent Trading Co.', 'Comfort Colors', 'LAT Apparel',
 ];
 
-// Two brands only for the "browse all" cold-start fetch.
-// These two cover the full garment spectrum and are the fastest to load.
-// Additional brands are available via the ?brand= filter.
+// Brands pre-fetched on startup and for the default "all" view.
 const SS_FEATURED_BRANDS = [
   'Gildan',
   'Bella + Canvas',
+  'Next Level',
+  'Hanes',
 ];
 
+// Fetch style-level data using /styles/ — returns one row per style (~100-500)
+// instead of /products/ which returns one row per SKU (10,000+ for large brands).
+// This is the critical fix that prevents the browse endpoint from timing out.
 async function fetchAndGroupSSBrand(brand) {
   const cacheKey = `brand:${brand}`;
   const cached   = _ssCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.data;
 
-  const { data } = await ssClient.get('/products/', {
+  const { data } = await ssClient.get('/styles/', {
     params: { brand },
-    timeout: 55_000,
+    timeout: 30_000,
   });
 
   if (!Array.isArray(data)) {
@@ -616,30 +619,33 @@ async function fetchAndGroupSSBrand(brand) {
   }
 
   if (data.length === 0) {
-    console.warn(`[fetchAndGroupSSBrand] S&S returned 0 SKUs for brand "${brand}" — not caching`);
-    throw new Error(`S&S returned no products for brand "${brand}". Check SS_ACCOUNT / SS_API_KEY env vars.`);
-  }
-
-  const byStyle = new Map();
-  for (const sku of data) {
-    if (!sku.styleName) continue;
-    if (!byStyle.has(sku.styleName)) byStyle.set(sku.styleName, []);
-    byStyle.get(sku.styleName).push(sku);
+    console.warn(`[fetchAndGroupSSBrand] S&S returned 0 styles for brand "${brand}" — not caching`);
+    throw new Error(`S&S returned no styles for brand "${brand}". Check SS_ACCOUNT / SS_API_KEY env vars.`);
   }
 
   const styles = [];
-  for (const skus of byStyle.values()) {
-    const s = summarizeSsStyle(skus);
-    const { priceRangeBottom, priceRangeTop } = deriveRange(s.minPrice);
+  for (const style of data) {
+    const title = style.title || style.styleTitle || style.styleDescription
+      || `${style.brandName || brand} ${style.styleName}`;
+    // piecePrice may not exist at style level — deriveRange handles null with an $8 default
+    const minPrice = typeof style.piecePrice === 'number' && style.piecePrice > 0
+      ? style.piecePrice : null;
+    const { priceRangeBottom, priceRangeTop } = deriveRange(minPrice);
+
     styles.push({
-      style: s.styleName, name: s.title, vendor: s.brand,
-      category: detectCategory(s.title), type: detectType(s.title),
-      priceRangeBottom, priceRangeTop,
-      sizeRangeBottom: s.sizeRangeBottom, sizeRangeTop: s.sizeRangeTop,
-      colorCount: s.colors.length,
-      rating: deriveRating(s.styleName),
-      tag: deriveTag(s.brand, s.styleName),
-      image: s.colors[0]?.front ? ssImageUrl(s.colors[0].front) : null,
+      style: style.styleName,
+      name: title,
+      vendor: style.brandName || brand,
+      category: detectCategory(title),
+      type: detectType(title),
+      priceRangeBottom,
+      priceRangeTop,
+      sizeRangeBottom: style.sizeRangeBottom || 'S',
+      sizeRangeTop: style.sizeRangeTop || 'XL',
+      colorCount: style.colorCount || 0,
+      rating: deriveRating(style.styleName),
+      tag: deriveTag(style.brandName || brand, title),
+      image: style.colorFrontImage ? ssImageUrl(style.colorFrontImage) : null,
     });
   }
 
@@ -683,7 +689,6 @@ async function fetchAllSSBrands() {
   return data;
 }
 
-// Called on server startup to pre-warm the cache in the background.
 exports.warmSSCache = () => {
   if (!SS_ACCOUNT || !SS_API_KEY) return;
   console.log('[SS] Starting background cache warm-up…');
@@ -723,6 +728,7 @@ exports.getSSBrands = (_req, res) => {
   res.json({ brands: SS_POPULAR_BRANDS });
 };
 
+// Credential + connectivity check using the fast /styles/ endpoint
 exports.testSSConnection = async (req, res) => {
   const account = SS_ACCOUNT ? `${SS_ACCOUNT.slice(0, 3)}***` : '(not set)';
   const keySet  = !!SS_API_KEY;
@@ -730,14 +736,19 @@ exports.testSSConnection = async (req, res) => {
     return res.status(200).json({ ok: false, account, keySet, error: 'Credentials missing' });
   }
   try {
-    const { data } = await ssClient.get('/products/', {
+    const { data } = await ssClient.get('/styles/', {
       params: { brand: 'Gildan' },
       timeout: 15_000,
     });
     if (!Array.isArray(data)) {
       return res.status(200).json({ ok: false, account, keySet, error: 'S&S returned non-array', sample: JSON.stringify(data).slice(0, 300) });
     }
-    return res.status(200).json({ ok: true, account, keySet, skuCount: data.length, sampleStyle: data[0]?.styleName || null });
+    return res.status(200).json({
+      ok: true, account, keySet,
+      styleCount: data.length,
+      sampleStyle: data[0]?.styleName || null,
+      sampleFields: data[0] ? Object.keys(data[0]).slice(0, 15) : [],
+    });
   } catch (err) {
     return res.status(200).json({ ok: false, account, keySet, error: err.message });
   }
