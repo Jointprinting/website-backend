@@ -16,7 +16,11 @@ const {
   SOUTH_JERSEY_TOWNS, SOUTH_JERSEY_COUNTIES, CATEGORIES,
   guessCategory, SCORE_CAPS, SCORE_TOTAL_CAP,
 } = require('../services/jpwConstants');
-const { runSearch, runSweep, getTodayUsage, PLACES_DAILY_CAP } = require('../services/jpwPlacesIngest');
+const {
+  runSearch, runSweep,
+  startSweepInBackground, getSweepStatus, requestSweepStop,
+  getTodayUsage, PLACES_DAILY_CAP,
+} = require('../services/jpwPlacesIngest');
 const { auditLead, auditLeadsConcurrent } = require('../services/jpwAuditor');
 const { pushLead, pushLeadsBatch, dedupeKeyFor, isConfigured: isSpiderConfigured } = require('../services/jpwSpiderPush');
 const { runRescoreAll, runStaleAudit } = require('../services/jpwScheduler');
@@ -536,31 +540,63 @@ async function sweepPlaces(req, res) {
       max,
     } = req.body || {};
 
-    // Default to all high-ticket categories if none specified
-    const defaultCats = CATEGORIES.filter((c) => c.tier === 'high').map((c) => c.name);
-    const cats = (Array.isArray(categories) && categories.length) ? categories : defaultCats;
+    // When the caller provides explicit categories/towns/counties, honor
+    // them — that's the "advanced override" path from the frontend. When
+    // nothing is provided, defer to the smart queue (least-recently-run
+    // pairs across the full cross-product, zero-yield pairs deprioritized).
+    const hasOverride = (Array.isArray(categories) && categories.length)
+                     || (Array.isArray(towns) && towns.length)
+                     || (Array.isArray(counties) && counties.length);
 
-    // Default to all SJ towns if neither towns nor counties specified
-    const useTowns = Array.isArray(towns) && towns.length;
-    const useCounties = Array.isArray(counties) && counties.length;
-    const targets = useTowns ? towns : (useCounties ? counties : SOUTH_JERSEY_TOWNS);
-
-    const pairs = [];
-    for (const cat of cats) {
-      for (const t of targets) {
-        if (useCounties) pairs.push({ category: cat, county: t });
-        else             pairs.push({ category: cat, town: t });
+    let pairs = null;
+    if (hasOverride) {
+      const defaultCats = CATEGORIES.filter((c) => c.tier === 'high').map((c) => c.name);
+      const cats = (Array.isArray(categories) && categories.length) ? categories : defaultCats;
+      const useTowns = Array.isArray(towns) && towns.length;
+      const useCounties = Array.isArray(counties) && counties.length;
+      const targets = useTowns ? towns : (useCounties ? counties : SOUTH_JERSEY_TOWNS);
+      pairs = [];
+      for (const cat of cats) {
+        for (const t of targets) {
+          if (useCounties) pairs.push({ category: cat, county: t });
+          else             pairs.push({ category: cat, town: t });
+        }
       }
     }
 
-    const result = await runSweep({
-      pairs,
+    // Async — returns immediately with the queued pair count. The actual
+    // work runs via setImmediate; the frontend polls /search/sweep/status
+    // to render live progress.
+    const result = await startSweepInBackground({
       maxSearches: parseInt(max, 10) || 30,
+      pairs,
     });
     res.json(result);
   } catch (err) {
     console.error('[jpwLead] sweepPlaces error:', err.message);
     res.status(err.statusCode || 500).json({ message: err.message || 'Sweep failed.' });
+  }
+}
+
+// ── Sweep status (polled by the frontend progress bar) ───────────────────
+async function sweepStatus(_req, res) {
+  try {
+    const state = await getSweepStatus();
+    res.json(state);
+  } catch (err) {
+    console.error('[jpwLead] sweepStatus error:', err.message);
+    res.status(500).json({ message: 'Failed to fetch sweep status.' });
+  }
+}
+
+// ── Stop a running sweep ─────────────────────────────────────────────────
+async function sweepStop(_req, res) {
+  try {
+    const result = await requestSweepStop();
+    res.json(result);
+  } catch (err) {
+    console.error('[jpwLead] sweepStop error:', err.message);
+    res.status(500).json({ message: 'Failed to stop sweep.' });
   }
 }
 
@@ -836,7 +872,8 @@ module.exports = {
   listLeads, getLead, createLead, updateLead, deleteLead,
   rescoreLeads, importCsv, getDashboardStats, getReferenceData,
   exportCsv, bulkStatus, bulkDelete,
-  searchPlaces, sweepPlaces, auditOneLead, auditBatch, getUsage,
+  searchPlaces, sweepPlaces, sweepStatus, sweepStop,
+  auditOneLead, auditBatch, getUsage,
   pushOneToSpider, pushBatchToSpider, updateAdSignal,
   runScheduledJob,
 };

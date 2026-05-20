@@ -74,6 +74,102 @@ test('buildDedupeKeys derives all keys from raw input', () => {
 });
 
 // ── Scoring ───────────────────────────────────────────────────────────────
+test('Review-count peaked curve: sweet spot beats mega-reviewed', () => {
+  // Same lead, two review counts. The 50-review version should score higher
+  // than the 800-review version because the latter has aged out of the
+  // pitchable zone — they have an agency.
+  const base = {
+    business_name: 'X', phone: '6095551234', normalized_phone: '6095551234',
+    website_url: 'https://x.com', category: 'Roofing',
+    county: 'Camden', state: 'NJ', rating: 4.5,
+    website_audit: { has_click_to_call: true, has_quote_cta: true },
+  };
+  const sweet = scoreLead({ ...base, review_count: 50 });
+  const mega  = scoreLead({ ...base, review_count: 800 });
+  assert.ok(sweet.score > mega.score,
+    `sweet-spot ${sweet.score} should beat mega-reviewed ${mega.score}`);
+});
+
+test('No-website + decent reviews + 4+ rating gets the dream-lead bonus', () => {
+  const lead = {
+    business_name: 'Old School Plumber', phone: '6095551234',
+    normalized_phone: '6095551234',
+    website_url: '', // no site
+    category: 'Plumbing', county: 'Camden', state: 'NJ',
+    rating: 4.6, review_count: 35,
+  };
+  const s = scoreLead(lead);
+  assert.ok(
+    s.breakdown.buyingIntent.reasons.some((r) => /ideal Foundation lead/i.test(r)),
+    'should call out the no-website + reviews combo as an ideal Foundation lead',
+  );
+  assert.equal(s.recommendedOffer, 'Website Foundation');
+});
+
+test('Polished site + 150+ reviews triggers agency-displacement penalty (no ad_signal needed)', () => {
+  const lead = {
+    business_name: 'Big Roofing', phone: '6095551234',
+    normalized_phone: '6095551234',
+    website_url: 'https://bigroofing.com', category: 'Roofing',
+    county: 'Camden', state: 'NJ', rating: 4.6, review_count: 220,
+    website_audit: {
+      has_click_to_call: true, has_quote_cta: true,
+      has_localbusiness_schema: true, has_gallery: true,
+      loads_successfully: true,
+    },
+    // NOTE: no ad_signal at all — pre-fix this penalty required active ads
+  };
+  const s = scoreLead(lead);
+  assert.ok(
+    s.penalties.some((p) => /agency/i.test(p)),
+    `expected agency penalty, got: ${s.penalties.join(', ')}`,
+  );
+});
+
+test('Low rating with real review count disqualifies the lead', () => {
+  const lead = {
+    business_name: 'Bleeding Customers', phone: '6095551234',
+    normalized_phone: '6095551234',
+    category: 'Roofing', county: 'Camden', state: 'NJ',
+    rating: 2.9, review_count: 40,
+  };
+  const s = scoreLead(lead);
+  assert.ok(
+    s.disqualifiers.some((d) => /Low rating/i.test(d)),
+    'should disqualify low-rated businesses with real review count',
+  );
+});
+
+test('Suspiciously perfect (4.9+ × 100+ reviews) gets agency-curation penalty', () => {
+  const lead = {
+    business_name: 'Perfect Co', phone: '6095551234',
+    normalized_phone: '6095551234',
+    category: 'Roofing', county: 'Camden', state: 'NJ',
+    rating: 4.95, review_count: 180,
+  };
+  const s = scoreLead(lead);
+  assert.ok(
+    s.penalties.some((p) => /curated|agency/i.test(p)),
+    `expected curated-reviews penalty, got: ${s.penalties.join(', ')}`,
+  );
+});
+
+test('Temporarily closed gets soft penalty but not exclusion', () => {
+  const lead = {
+    business_name: 'On Break LLC', phone: '6095551234',
+    normalized_phone: '6095551234',
+    category: 'Roofing', county: 'Camden', state: 'NJ',
+    rating: 4.5, review_count: 50,
+    business_status: 'CLOSED_TEMPORARILY',
+  };
+  const s = scoreLead(lead);
+  assert.equal(s.disqualifiers.length, 0, 'should not disqualify');
+  assert.ok(
+    s.penalties.some((p) => /Temporarily closed/i.test(p)),
+    'should apply temporary-closed penalty',
+  );
+});
+
 test('Score breakdown exposes per-bucket reasons for UI display', () => {
   const lead = {
     business_name: 'Acme Tree Service',

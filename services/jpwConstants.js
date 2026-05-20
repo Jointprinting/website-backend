@@ -61,51 +61,64 @@ const SOUTH_JERSEY_COUNTY_COORDS = {
   'Cape May':   { lat: 39.080, lng: -74.830 },
 };
 
-const PLACES_TOWN_RADIUS_M   = 25_000; // 25 km — tight enough to exclude north/central NJ
-const PLACES_COUNTY_RADIUS_M = 35_000; // 35 km — wider for county-only searches
+// Radius tuned tighter than the original 25 km. Google ranks businesses by
+// proximity *within* the restriction circle, and a wide radius lets popular
+// Cherry Hill / Camden businesses dominate the results when we're searching
+// Voorhees. 15 km gets us the genuinely-local results; the next town's sweep
+// covers anything we miss in the gap.
+const PLACES_TOWN_RADIUS_M   = 15_000;
+const PLACES_COUNTY_RADIUS_M = 35_000;
+
+// `searchPhrases` per category — multiple phrasings of the same intent.
+// Google ranks `searchText` differently for each phrase, so running all 2-3
+// per category surfaces businesses Google buries in the default ranking.
+// Those buried businesses tend to be Nate's ideal customers (weak SEO =
+// great prospect).
+//
+// Defaults to [category.name.toLowerCase()] if not specified.
 
 // Category tiers drive Ability-to-Pay and Fit scores.
 // 'disqualify' categories are excluded outright unless manually overridden.
 const CATEGORIES = [
   // High-ticket, phone-driven, lead-hungry — ideal JPW customers
-  { name: 'Tree Service',           tier: 'high', emergency: false },
-  { name: 'Stump Grinding',         tier: 'high', emergency: false },
-  { name: 'Roofing',                tier: 'high', emergency: false },
-  { name: 'Septic Service',         tier: 'high', emergency: true  },
-  { name: 'Well Drilling',          tier: 'high', emergency: false },
-  { name: 'Well Pump Repair',       tier: 'high', emergency: true  },
-  { name: 'Excavation',             tier: 'high', emergency: false },
-  { name: 'Drainage',               tier: 'high', emergency: false },
-  { name: 'Grading',                tier: 'high', emergency: false },
-  { name: 'Land Clearing',          tier: 'high', emergency: false },
-  { name: 'Basement Waterproofing', tier: 'high', emergency: false },
-  { name: 'Foundation Repair',      tier: 'high', emergency: false },
-  { name: 'Pest Control',           tier: 'high', emergency: false },
-  { name: 'Chimney',                tier: 'high', emergency: false },
-  { name: 'Restoration',            tier: 'high', emergency: true  },
-  { name: 'Water Damage Restoration', tier: 'high', emergency: true },
-  { name: 'Mold Remediation',       tier: 'high', emergency: true  },
-  { name: 'Demolition',             tier: 'high', emergency: false },
-  { name: 'Environmental Remediation', tier: 'high', emergency: false },
-  { name: 'Hardscaping',            tier: 'high', emergency: false },
-  { name: 'Concrete',               tier: 'high', emergency: false },
-  { name: 'Asphalt Paving',         tier: 'high', emergency: false },
-  { name: 'Fence Companies',        tier: 'high', emergency: false },
-  { name: 'Siding',                 tier: 'high', emergency: false },
-  { name: 'Gutter Installation',    tier: 'high', emergency: false },
-  { name: 'HVAC',                   tier: 'high', emergency: true  },
-  { name: 'Plumbing',               tier: 'high', emergency: true  },
-  { name: 'Electrical',             tier: 'high', emergency: true  },
-  { name: 'Garage Doors',           tier: 'high', emergency: false },
-  { name: 'Insulation',             tier: 'high', emergency: false },
-  { name: 'Crawlspace Repair',      tier: 'high', emergency: false },
+  { name: 'Tree Service',           tier: 'high', emergency: false, searchPhrases: ['tree service', 'tree removal', 'arborist'] },
+  { name: 'Stump Grinding',         tier: 'high', emergency: false, searchPhrases: ['stump grinding', 'stump removal'] },
+  { name: 'Roofing',                tier: 'high', emergency: false, searchPhrases: ['roofing contractor', 'roof repair', 'roofers'] },
+  { name: 'Septic Service',         tier: 'high', emergency: true,  searchPhrases: ['septic service', 'septic pumping', 'septic tank repair'] },
+  { name: 'Well Drilling',          tier: 'high', emergency: false, searchPhrases: ['well drilling', 'water well contractor'] },
+  { name: 'Well Pump Repair',       tier: 'high', emergency: true,  searchPhrases: ['well pump repair', 'water pump service'] },
+  { name: 'Excavation',             tier: 'high', emergency: false, searchPhrases: ['excavation contractor', 'excavating', 'site work contractor'] },
+  { name: 'Drainage',               tier: 'high', emergency: false, searchPhrases: ['drainage contractor', 'french drain installation'] },
+  { name: 'Grading',                tier: 'high', emergency: false, searchPhrases: ['land grading', 'lot grading'] },
+  { name: 'Land Clearing',          tier: 'high', emergency: false, searchPhrases: ['land clearing', 'brush clearing'] },
+  { name: 'Basement Waterproofing', tier: 'high', emergency: false, searchPhrases: ['basement waterproofing', 'wet basement repair'] },
+  { name: 'Foundation Repair',      tier: 'high', emergency: false, searchPhrases: ['foundation repair', 'foundation contractor'] },
+  { name: 'Pest Control',           tier: 'high', emergency: false, searchPhrases: ['pest control', 'exterminator', 'termite control'] },
+  { name: 'Chimney',                tier: 'high', emergency: false, searchPhrases: ['chimney sweep', 'chimney repair', 'fireplace contractor'] },
+  { name: 'Restoration',            tier: 'high', emergency: true,  searchPhrases: ['restoration company', 'disaster restoration', 'damage restoration'] },
+  { name: 'Water Damage Restoration', tier: 'high', emergency: true, searchPhrases: ['water damage restoration', 'flood damage restoration', 'water cleanup'] },
+  { name: 'Mold Remediation',       tier: 'high', emergency: true,  searchPhrases: ['mold remediation', 'mold removal'] },
+  { name: 'Demolition',             tier: 'high', emergency: false, searchPhrases: ['demolition contractor', 'demolition services'] },
+  { name: 'Environmental Remediation', tier: 'high', emergency: false, searchPhrases: ['environmental remediation', 'asbestos removal'] },
+  { name: 'Hardscaping',            tier: 'high', emergency: false, searchPhrases: ['hardscaping', 'paver patio installation', 'masonry contractor'] },
+  { name: 'Concrete',               tier: 'high', emergency: false, searchPhrases: ['concrete contractor', 'cement contractor', 'concrete driveway'] },
+  { name: 'Asphalt Paving',         tier: 'high', emergency: false, searchPhrases: ['asphalt paving', 'driveway paving', 'paving contractor'] },
+  { name: 'Fence Companies',        tier: 'high', emergency: false, searchPhrases: ['fence contractor', 'fence installation', 'fence company'] },
+  { name: 'Siding',                 tier: 'high', emergency: false, searchPhrases: ['siding contractor', 'siding installation', 'vinyl siding'] },
+  { name: 'Gutter Installation',    tier: 'high', emergency: false, searchPhrases: ['gutter installation', 'seamless gutters', 'gutter contractor'] },
+  { name: 'HVAC',                   tier: 'high', emergency: true,  searchPhrases: ['hvac contractor', 'heating and cooling', 'air conditioning repair'] },
+  { name: 'Plumbing',               tier: 'high', emergency: true,  searchPhrases: ['plumber', 'plumbing contractor', 'emergency plumber'] },
+  { name: 'Electrical',             tier: 'high', emergency: true,  searchPhrases: ['electrician', 'electrical contractor', 'residential electrician'] },
+  { name: 'Garage Doors',           tier: 'high', emergency: false, searchPhrases: ['garage door installation', 'garage door repair'] },
+  { name: 'Insulation',             tier: 'high', emergency: false, searchPhrases: ['insulation contractor', 'spray foam insulation', 'attic insulation'] },
+  { name: 'Crawlspace Repair',      tier: 'high', emergency: false, searchPhrases: ['crawl space repair', 'crawl space encapsulation'] },
 
   // Mid-ticket — still workable but not ideal
-  { name: 'Landscaping',            tier: 'mid',  emergency: false },
-  { name: 'Painting',               tier: 'mid',  emergency: false },
-  { name: 'Junk Removal',           tier: 'mid',  emergency: false },
-  { name: 'Cleaning Services',      tier: 'mid',  emergency: false },
-  { name: 'Auto Repair',            tier: 'mid',  emergency: false },
+  { name: 'Landscaping',            tier: 'mid',  emergency: false, searchPhrases: ['landscaping', 'landscape contractor'] },
+  { name: 'Painting',               tier: 'mid',  emergency: false, searchPhrases: ['painting contractor', 'house painter'] },
+  { name: 'Junk Removal',           tier: 'mid',  emergency: false, searchPhrases: ['junk removal', 'hauling service'] },
+  { name: 'Cleaning Services',      tier: 'mid',  emergency: false, searchPhrases: ['cleaning service', 'commercial cleaning'] },
+  { name: 'Auto Repair',            tier: 'mid',  emergency: false, searchPhrases: ['auto repair', 'mechanic'] },
 
   // Disqualified — penalty in scoring, hidden by default in UI
   { name: 'Restaurant',             tier: 'disqualify' },
