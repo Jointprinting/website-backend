@@ -593,7 +593,6 @@ const SS_POPULAR_BRANDS = [
 ];
 
 // Smaller curated set used for the no-brand "browse all" view.
-// Covers the full garment spectrum while keeping the first-load fast.
 const SS_FEATURED_BRANDS = [
   'Bella + Canvas',
   'Gildan',
@@ -615,8 +614,14 @@ async function fetchAndGroupSSBrand(brand) {
 
   if (!Array.isArray(data)) {
     const detail = data?.Message || data?.message || JSON.stringify(data).slice(0, 200);
-    console.error(`[browseSS] S&S returned non-array for brand "${brand}":`, detail);
-    throw new Error(`S&S catalog unavailable for this brand. (${detail})`);
+    console.error(`[fetchAndGroupSSBrand] S&S returned non-array for brand "${brand}":`, detail);
+    throw new Error(`S&S catalog unavailable for brand "${brand}". (${detail})`);
+  }
+
+  // Empty array likely means bad credentials or rate-limit — don't cache, force retry
+  if (data.length === 0) {
+    console.warn(`[fetchAndGroupSSBrand] S&S returned 0 SKUs for brand "${brand}" — not caching`);
+    throw new Error(`S&S returned no products for brand "${brand}". Check SS_ACCOUNT / SS_API_KEY env vars.`);
   }
 
   const byStyle = new Map();
@@ -648,9 +653,6 @@ async function fetchAndGroupSSBrand(brand) {
   return result;
 }
 
-// Fetches the curated featured brands in parallel and merges into one catalog.
-// Uses only SS_FEATURED_BRANDS (6 brands) instead of all 15 so the first
-// uncached request completes in a reasonable time.
 async function fetchAllSSBrands() {
   const cacheKey = 'all-brands';
   const cached   = _ssCache.get(cacheKey);
@@ -662,14 +664,23 @@ async function fetchAllSSBrands() {
 
   const seenStyles = new Set();
   const allStyles  = [];
+  const errors     = [];
   for (const r of results) {
     if (r.status === 'fulfilled') {
       for (const s of r.value.styles) {
         if (!seenStyles.has(s.style)) { seenStyles.add(s.style); allStyles.push(s); }
       }
     } else {
+      errors.push(r.reason?.message || 'Unknown error');
       console.error('[fetchAllSSBrands] brand failed:', r.reason?.message);
     }
+  }
+
+  // Don't cache empty results — throw so browseSS returns a real error message
+  // and the frontend shows a retry button rather than a misleading "No styles found"
+  if (allStyles.length === 0) {
+    const detail = errors.length ? errors[0] : 'All brand requests failed.';
+    throw new Error(`Could not load the product catalog. ${detail}`);
   }
 
   allStyles.sort((a, b) => a.name.localeCompare(b.name));
@@ -711,6 +722,31 @@ exports.browseSS = async (req, res) => {
 
 exports.getSSBrands = (_req, res) => {
   res.json({ brands: SS_POPULAR_BRANDS });
+};
+
+/**
+ * GET /api/products/ss/test
+ * Quick connectivity check — returns credential status and a sample API call result.
+ * Useful for diagnosing "No styles found" issues without reading server logs.
+ */
+exports.testSSConnection = async (req, res) => {
+  const account = SS_ACCOUNT ? `${SS_ACCOUNT.slice(0, 3)}***` : '(not set)';
+  const keySet  = !!SS_API_KEY;
+  if (!SS_ACCOUNT || !SS_API_KEY) {
+    return res.status(200).json({ ok: false, account, keySet, error: 'Credentials missing' });
+  }
+  try {
+    const { data } = await ssClient.get(
+      `/Products.aspx?brand=${encodeURIComponent('Gildan')}&mediatype=json`,
+      { timeout: 15_000 }
+    );
+    if (!Array.isArray(data)) {
+      return res.status(200).json({ ok: false, account, keySet, error: 'S&S returned non-array', sample: JSON.stringify(data).slice(0, 300) });
+    }
+    return res.status(200).json({ ok: true, account, keySet, skuCount: data.length, sampleStyle: data[0]?.styleName || null });
+  } catch (err) {
+    return res.status(200).json({ ok: false, account, keySet, error: err.message });
+  }
 };
 
 /**
