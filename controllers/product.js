@@ -184,10 +184,14 @@ exports.getProducts = async (req, res) => {
     const limit = parseInt(req.query.limit) || 12;
     const skip = (page - 1) * limit;
 
-    const { category, type, search } = req.query;
+    const { category, type, search, vendor } = req.query;
     const query = {};
     if (category) query.category = category;
     if (type)     query.type = type;
+    if (vendor) {
+      // Escape special regex chars so "Bella + Canvas" matches literally (case-insensitive)
+      query.vendor = { $regex: vendor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+    }
     if (search) {
       const re = { $regex: `\\b${search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, $options: 'i' };
       query.$or = [{ name: re }, { vendor: re }];
