@@ -530,18 +530,20 @@ async function startSweepInBackground({ maxSearches = null, pairs = null, pagesP
   }
 
   // If `maxSearches` isn't specified, max out whatever Places API budget is
-  // left for today. Each pair uses ~6 API calls (3 phrasings × 2 pages), so
-  // remaining_budget / 6 ≈ pairs we can fit. Hard cap at 100 for safety.
-  // This way Nate doesn't have to think about "how many" — sweep just uses
-  // whatever's left.
+  // left for today. Actual usage in production: ~2.5–3 API calls per pair
+  // (most search phrases return < 20 results so pagination doesn't trigger).
+  // We use 3 as the conservative estimate and let the sweep loop halt
+  // cleanly if budget runs out mid-run.
   let cap;
   if (maxSearches === null || maxSearches === undefined) {
     const usage = await getTodayUsage();
     const remainingCalls = Math.max(0, PLACES_DAILY_CAP - usage.places_calls);
-    const callsPerPair = (pagesPerPhrase * 3); // ~3 phrases × pagesPerPhrase pages
-    cap = Math.min(Math.max(Math.floor(remainingCalls / callsPerPair), 1), 100);
+    const callsPerPair = 3;
+    // Hard cap of 200 just means "no artificial cap" — daily budget
+    // dictates the real ceiling.
+    cap = Math.min(Math.max(Math.floor(remainingCalls / callsPerPair), 1), 200);
   } else {
-    cap = Math.min(Math.max(parseInt(maxSearches, 10) || 30, 1), 100);
+    cap = Math.min(Math.max(parseInt(maxSearches, 10) || 30, 1), 200);
   }
   const queue = (Array.isArray(pairs) && pairs.length) ? pairs.slice(0, cap) : await getNextSweepPairs(cap);
 
