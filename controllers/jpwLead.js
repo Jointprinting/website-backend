@@ -18,6 +18,7 @@ const {
 } = require('../services/jpwConstants');
 const { runSearch, getTodayUsage, PLACES_DAILY_CAP } = require('../services/jpwPlacesIngest');
 const { auditLead, auditLeadsConcurrent } = require('../services/jpwAuditor');
+const { pushLead, pushLeadsBatch, dedupeKeyFor, isConfigured: isSpiderConfigured } = require('../services/jpwSpiderPush');
 
 // ── Field whitelist ───────────────────────────────────────────────────────
 // Only these fields can be set from the request body. Everything else (dedupe
@@ -602,10 +603,132 @@ async function getUsage(_req, res) {
       audits_run_today:   today.audits_run,
       daily_cap:          PLACES_DAILY_CAP,
       places_key_configured: !!process.env.GOOGLE_PLACES_KEY,
+      spider_configured:     isSpiderConfigured(),
     });
   } catch (err) {
     console.error('[jpwLead] getUsage error:', err);
     res.status(500).json({ message: 'Failed to fetch usage.' });
+  }
+}
+
+// ── Push to Spider (one) ──────────────────────────────────────────────────
+//
+// POST /api/jpw/leads/:id/push-to-spider
+// Stamps pushed_to_spider_at on success so the UI can show "Pushed at X"
+// and so we never spam-append the same lead twice.
+async function pushOneToSpider(req, res) {
+  try {
+    const lead = await JpwLead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ message: 'Lead not found.' });
+    const result = await pushLead(lead.toObject());
+    lead.pushed_to_spider_at  = new Date();
+    lead.pushed_to_spider_key = result.dedupe_key || dedupeKeyFor(lead.toObject());
+    await lead.save();
+    res.json({ ok: true, lead, status: result.status, row: result.row });
+  } catch (err) {
+    console.error('[jpwLead] pushOneToSpider error:', err.message);
+    res.status(500).json({ message: err.message || 'Push to Spider failed.' });
+  }
+}
+
+// ── Push to Spider (batch) ────────────────────────────────────────────────
+//
+// POST /api/jpw/push-to-spider-batch
+//   body: { ids?: string[], grade?: 'A+'|'A'|..., only_unpushed?: boolean,
+//           limit?: number }
+//
+// Without `ids`, defaults to "A+/A leads that haven't been pushed yet" so
+// you can hit one button to fan out the call queue.
+async function pushBatchToSpider(req, res) {
+  try {
+    const { ids, grade, only_unpushed = true, limit = 100 } = req.body || {};
+    const filter = {};
+    if (Array.isArray(ids) && ids.length) {
+      filter._id = { $in: ids };
+    } else {
+      filter['lead_score.grade'] = grade
+        ? grade
+        : { $in: ['A+', 'A'] };
+      if (only_unpushed) {
+        filter.$or = [
+          { pushed_to_spider_at: { $exists: false } },
+          { pushed_to_spider_at: null },
+        ];
+      }
+    }
+    const leads = await JpwLead.find(filter).limit(Math.min(parseInt(limit, 10) || 100, 500));
+    if (!leads.length) return res.json({ ok: true, requested: 0, pushed: 0, skipped: 0, results: [] });
+
+    const result = await pushLeadsBatch(leads.map((l) => l.toObject()));
+    const byKey = {};
+    for (const r of result.results) byKey[r.dedupe_key] = r;
+
+    let pushed = 0, skipped = 0;
+    for (const lead of leads) {
+      const key = dedupeKeyFor(lead.toObject());
+      const r = byKey[key] || {};
+      if (r.status === 'appended') {
+        lead.pushed_to_spider_at  = new Date();
+        lead.pushed_to_spider_key = key;
+        await lead.save();
+        pushed += 1;
+      } else if (r.status === 'already_present') {
+        // Sheet already had it — stamp so the UI hides the button next time
+        if (!lead.pushed_to_spider_at) {
+          lead.pushed_to_spider_at  = new Date();
+          lead.pushed_to_spider_key = key;
+          await lead.save();
+        }
+        skipped += 1;
+      }
+    }
+    res.json({ ok: true, requested: leads.length, pushed, skipped, results: result.results });
+  } catch (err) {
+    console.error('[jpwLead] pushBatchToSpider error:', err.message);
+    res.status(500).json({ message: err.message || 'Batch push to Spider failed.' });
+  }
+}
+
+// ── Manual ad-signal entry (Meta Ad Library notes) ───────────────────────
+//
+// POST /api/jpw/leads/:id/ad-signal
+//   body: { active_ads_found, active_ad_count, confidence, page_url, page_id,
+//           page_name, ad_text_samples, landing_page_urls, ad_angle_summary,
+//           first_seen_date, latest_seen_date, manual_notes, matched_keywords }
+//
+// Stored into lead.ad_signal, then re-scored so buying-intent points kick in.
+async function updateAdSignal(req, res) {
+  try {
+    const lead = await JpwLead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ message: 'Lead not found.' });
+
+    const body = req.body || {};
+    const cleanArray = (v) => Array.isArray(v) ? v : (v ? [v] : []);
+    const next = {
+      ...lead.ad_signal?.toObject?.() || {},
+      source: body.source || 'manual',
+    };
+    const keys = [
+      'active_ads_found', 'active_ad_count', 'confidence',
+      'page_url', 'page_id', 'page_name',
+      'ad_angle_summary', 'manual_notes',
+      'first_seen_date', 'latest_seen_date',
+    ];
+    for (const k of keys) {
+      if (body[k] !== undefined) next[k] = body[k];
+    }
+    if (body.ad_text_samples !== undefined)   next.ad_text_samples   = cleanArray(body.ad_text_samples);
+    if (body.landing_page_urls !== undefined) next.landing_page_urls = cleanArray(body.landing_page_urls);
+    if (body.ad_snapshot_urls !== undefined)  next.ad_snapshot_urls  = cleanArray(body.ad_snapshot_urls);
+    if (body.matched_keywords !== undefined)  next.matched_keywords  = cleanArray(body.matched_keywords);
+
+    lead.ad_signal = next;
+    lead.lead_score = scoreLead(lead.toObject());
+    const saved = await lead.save();
+    res.json(saved);
+  } catch (err) {
+    console.error('[jpwLead] updateAdSignal error:', err);
+    res.status(500).json({ message: 'Failed to update ad signal.' });
   }
 }
 
@@ -614,4 +737,5 @@ module.exports = {
   rescoreLeads, importCsv, getDashboardStats, getReferenceData,
   exportCsv, bulkStatus,
   searchPlaces, auditOneLead, auditBatch, getUsage,
+  pushOneToSpider, pushBatchToSpider, updateAdSignal,
 };
