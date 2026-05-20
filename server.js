@@ -109,6 +109,7 @@ const siteSettingRoutes    = require('./routes/siteSettingRoutes');
 const roadTripRoutes       = require('./routes/roadTripRoutes');
 const studioRoutes         = require('./routes/studioRoutes');
 const quoterRoutes         = require('./routes/quoterRoutes');
+const orderRoutes          = require('./routes/orderRoutes');
 const jpwRoutes            = require('./routes/jpwRoutes');
 
 app.use('/api/products', productRoutes);
@@ -120,6 +121,7 @@ app.use('/api/site-settings', siteSettingRoutes);
 app.use('/api/roadtrip', roadTripRoutes);
 app.use('/api/studio', studioRoutes);
 app.use('/api/quoter', quoterRoutes);
+app.use('/api/orders', orderRoutes);
 // JPW lead recon endpoint accepts CSV imports of up to 5k rows; bump the JSON
 // body limit so Apify/OutScraper exports don't get rejected at the parser.
 app.use('/api/jpw', express.json({ limit: '20mb' }), jpwRoutes);
