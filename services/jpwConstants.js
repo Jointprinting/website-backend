@@ -21,6 +21,49 @@ const SOUTH_JERSEY_COUNTIES = [
   'Cumberland', 'Salem', 'Cape May',
 ];
 
+// Geographic anchors used to restrict Google Places Text Search to the area
+// we actually sell into. Without this, a query like "tree service near
+// Voorhees NJ" can leak results from Worcestershire UK or Philadelphia
+// because Google falls back to name matching when the location modifier is
+// soft. We pass these as `locationRestriction` (hard exclusion of anything
+// outside the circle) instead of `locationBias` (just a soft preference).
+//
+// Coordinates are approximate town centers. Radius is 25 km for towns — wide
+// enough to catch nearby businesses that might serve the town, tight enough
+// to exclude North/Central NJ and out-of-state. Counties get a 35 km radius
+// around their county-seat-ish centroid.
+const SOUTH_JERSEY_TOWN_COORDS = {
+  'Voorhees':            { lat: 39.852, lng: -74.954 },
+  'Marlton':             { lat: 39.891, lng: -74.921 },
+  'Cherry Hill':         { lat: 39.934, lng: -75.030 },
+  'Mount Laurel':        { lat: 39.937, lng: -74.890 },
+  'Medford':             { lat: 39.901, lng: -74.823 },
+  'Berlin':              { lat: 39.791, lng: -74.929 },
+  'Hammonton':           { lat: 39.636, lng: -74.802 },
+  'Williamstown':        { lat: 39.692, lng: -74.992 },
+  'Glassboro':           { lat: 39.703, lng: -75.112 },
+  'Deptford':            { lat: 39.834, lng: -75.106 },
+  'Sewell':              { lat: 39.756, lng: -75.130 },
+  'Washington Township': { lat: 39.751, lng: -75.045 },
+  'Gloucester Township': { lat: 39.793, lng: -75.018 },
+  'Haddonfield':         { lat: 39.891, lng: -75.038 },
+  'Moorestown':          { lat: 39.969, lng: -74.948 },
+  'Evesham':             { lat: 39.875, lng: -74.890 },
+};
+
+const SOUTH_JERSEY_COUNTY_COORDS = {
+  'Burlington': { lat: 39.876, lng: -74.667 },
+  'Camden':     { lat: 39.800, lng: -75.020 },
+  'Gloucester': { lat: 39.717, lng: -75.135 },
+  'Atlantic':   { lat: 39.470, lng: -74.640 },
+  'Cumberland': { lat: 39.330, lng: -75.120 },
+  'Salem':      { lat: 39.572, lng: -75.350 },
+  'Cape May':   { lat: 39.080, lng: -74.830 },
+};
+
+const PLACES_TOWN_RADIUS_M   = 25_000; // 25 km — tight enough to exclude north/central NJ
+const PLACES_COUNTY_RADIUS_M = 35_000; // 35 km — wider for county-only searches
+
 // Category tiers drive Ability-to-Pay and Fit scores.
 // 'disqualify' categories are excluded outright unless manually overridden.
 const CATEGORIES = [
@@ -173,6 +216,10 @@ const CALL_STATUSES = [
 module.exports = {
   SOUTH_JERSEY_TOWNS,
   SOUTH_JERSEY_COUNTIES,
+  SOUTH_JERSEY_TOWN_COORDS,
+  SOUTH_JERSEY_COUNTY_COORDS,
+  PLACES_TOWN_RADIUS_M,
+  PLACES_COUNTY_RADIUS_M,
   CATEGORIES,
   CATEGORY_BY_NAME,
   guessCategory,

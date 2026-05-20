@@ -22,7 +22,8 @@ const JpwLead = require('../models/JpwLead');
 const JpwSchedulerState = require('../models/JpwSchedulerState');
 const { scoreLead } = require('./jpwScoring');
 const { auditLeadsConcurrent } = require('./jpwAuditor');
-const { SOUTH_JERSEY_TOWNS } = require('./jpwConstants');
+const { runSweep } = require('./jpwPlacesIngest');
+const { SOUTH_JERSEY_TOWNS, CATEGORIES } = require('./jpwConstants');
 
 const STALE_AUDIT_DAYS = parseInt(process.env.JPW_STALE_AUDIT_DAYS || '30', 10);
 const BATCH_AUDIT_CAP  = parseInt(process.env.JPW_NIGHTLY_AUDIT_CAP || '100', 10);
@@ -99,17 +100,55 @@ async function runStaleAudit() {
   }
 }
 
+// ── Job 3: weekly sweep (opt-in) ─────────────────────────────────────────
+//
+// Runs a 30-search-cap sweep across (all high-ticket categories × all SJ
+// towns). Off by default because it consumes API quota; enable with
+// JPW_WEEKLY_SWEEP_ENABLED=true. The runSweep helper enforces the daily
+// cap regardless, so even with a high JPW_WEEKLY_SWEEP_MAX we won't blow
+// the budget.
+async function runWeeklySweep() {
+  const start = Date.now();
+  const max = parseInt(process.env.JPW_WEEKLY_SWEEP_MAX || '30', 10);
+  try {
+    const cats = CATEGORIES.filter((c) => c.tier === 'high').map((c) => c.name);
+    const pairs = [];
+    for (const cat of cats) {
+      for (const town of SOUTH_JERSEY_TOWNS) pairs.push({ category: cat, town });
+    }
+    const result = await runSweep({ pairs, maxSearches: max });
+    const duration_ms = Date.now() - start;
+    await recordRun('weekly_sweep', {
+      attempted: result.searches_run,
+      audited: result.total_created,
+      duration_ms,
+      error: result.halted_reason || '',
+    });
+    console.log(`[jpw-scheduler] weekly_sweep: ${result.searches_run} searches, ${result.total_created} new leads in ${duration_ms}ms`);
+  } catch (err) {
+    await recordRun('weekly_sweep', { error: err.message });
+    console.error('[jpw-scheduler] weekly_sweep error:', err.message);
+  }
+}
+
 // ── Bootstrap ────────────────────────────────────────────────────────────
 function startJpwScheduler() {
   // 03:00 every day
   cron.schedule('0 3 * * *', () => { runRescoreAll(); });
   // 03:30 on Sundays
   cron.schedule('30 3 * * 0', () => { runStaleAudit(); });
-  console.log('[jpw-scheduler] started — rescore 03:00 daily, stale-audit 03:30 Sundays');
+  // Mon 04:00 — opt-in weekly sweep, off unless env flag set
+  if (process.env.JPW_WEEKLY_SWEEP_ENABLED === 'true') {
+    cron.schedule('0 4 * * 1', () => { runWeeklySweep(); });
+    console.log('[jpw-scheduler] started — rescore 03:00 daily, stale-audit 03:30 Sun, weekly-sweep 04:00 Mon');
+  } else {
+    console.log('[jpw-scheduler] started — rescore 03:00 daily, stale-audit 03:30 Sun (weekly-sweep off; set JPW_WEEKLY_SWEEP_ENABLED=true to enable)');
+  }
 }
 
 module.exports = {
   startJpwScheduler,
   runRescoreAll,
   runStaleAudit,
+  runWeeklySweep,
 };

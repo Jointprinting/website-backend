@@ -18,8 +18,13 @@ const JpwLead = require('../models/JpwLead');
 const JpwApiUsage = require('../models/JpwApiUsage');
 const { scoreLead } = require('./jpwScoring');
 const { buildDedupeKeys, buildDedupeFilter, normalizePhone } = require('./jpwDedupe');
-const { guessCategory } = require('./jpwConstants');
+const {
+  guessCategory,
+  SOUTH_JERSEY_TOWN_COORDS, SOUTH_JERSEY_COUNTY_COORDS,
+  PLACES_TOWN_RADIUS_M, PLACES_COUNTY_RADIUS_M,
+} = require('./jpwConstants');
 const { fetchSpiderPhones } = require('./jpwSpiderPush');
+const { auditLeadsConcurrent } = require('./jpwAuditor');
 
 const PLACES_DAILY_CAP = parseInt(process.env.JPW_PLACES_DAILY_CAP || '200', 10);
 
@@ -78,7 +83,19 @@ function pickAddressComponents(components = []) {
 }
 
 // ── Search Google Places by text query ───────────────────────────────────
-async function googlePlacesTextSearch(textQuery, { lat, lng, radius = 25000, maxResults = 20 } = {}) {
+//
+// `locationRestriction` (hard) is preferred over `locationBias` (soft) when
+// town/county coords are known — without it, Google can return businesses
+// matched by name from anywhere in the world (we saw Worcestershire UK and
+// Philadelphia results polluting "roofing in Voorhees" searches). Pass
+// `useRestriction: false` to fall back to soft bias if coords are unknown
+// or the search is intentionally global.
+async function googlePlacesTextSearch(textQuery, {
+  lat, lng,
+  radius = 25000,
+  maxResults = 20,
+  useRestriction = true,
+} = {}) {
   const key = process.env.GOOGLE_PLACES_KEY;
   if (!key) throw new Error('GOOGLE_PLACES_KEY env var not set on the backend.');
 
@@ -87,7 +104,9 @@ async function googlePlacesTextSearch(textQuery, { lat, lng, radius = 25000, max
     maxResultCount: Math.min(maxResults, 20),
   };
   if (isFinite(lat) && isFinite(lng)) {
-    body.locationBias = { circle: { center: { latitude: lat, longitude: lng }, radius } };
+    const circle = { center: { latitude: lat, longitude: lng }, radius };
+    if (useRestriction) body.locationRestriction = { circle };
+    else                body.locationBias        = { circle };
   }
 
   const { data } = await axios.post(
@@ -187,13 +206,27 @@ async function upsertPlace(data) {
 async function runSearch({ category, town = '', county = '', extraQuery = '', maxResults = 20 }) {
   if (!category) throw new Error('category is required.');
 
-  // Build the query string. Format examples:
-  //   "tree service near Marlton NJ"
-  //   "septic service Burlington County NJ"
-  let textQuery;
-  if (town) textQuery = `${category} near ${town} NJ`;
-  else if (county) textQuery = `${category} ${county} County NJ`;
-  else textQuery = `${category} South Jersey NJ`;
+  // Build the query string + geographic anchor. Geographic restriction
+  // is what keeps results inside South Jersey — without it Google can
+  // (and did) return matches from Worcestershire UK or Philadelphia PA
+  // because the text search falls back to name matching.
+  let textQuery, anchor;
+  if (town) {
+    textQuery = `${category} near ${town} NJ`;
+    anchor = SOUTH_JERSEY_TOWN_COORDS[town] && {
+      ...SOUTH_JERSEY_TOWN_COORDS[town], radius: PLACES_TOWN_RADIUS_M,
+    };
+  } else if (county) {
+    textQuery = `${category} ${county} County NJ`;
+    anchor = SOUTH_JERSEY_COUNTY_COORDS[county] && {
+      ...SOUTH_JERSEY_COUNTY_COORDS[county], radius: PLACES_COUNTY_RADIUS_M,
+    };
+  } else {
+    textQuery = `${category} South Jersey NJ`;
+    // No specific anchor — use Camden county center as a fallback so we
+    // still bias toward South Jersey rather than wherever Google decides.
+    anchor = { ...SOUTH_JERSEY_COUNTY_COORDS['Camden'], radius: 60_000 };
+  }
   if (extraQuery) textQuery += ` ${extraQuery}`;
 
   const usage = await getTodayUsage();
@@ -207,11 +240,16 @@ async function runSearch({ category, town = '', county = '', extraQuery = '', ma
   // in Mongo. Empty set if Spider isn't configured or the GET fails.
   const spiderPhones = await fetchSpiderPhones();
 
-  const places = await googlePlacesTextSearch(textQuery, { maxResults });
+  const places = await googlePlacesTextSearch(textQuery, {
+    maxResults,
+    lat: anchor?.lat, lng: anchor?.lng, radius: anchor?.radius,
+    useRestriction: !!anchor,
+  });
   await incPlacesUsage(1);
 
   let created = 0, merged = 0, skipped = 0, skipped_in_spider = 0;
   const upserted = [];
+  const newLeadIds = []; // leads to send through the background auditor
   for (const p of places) {
     if (!p.id || !p.displayName?.text) { skipped += 1; continue; }
     const data = placeToLeadData(p, {
@@ -230,7 +268,7 @@ async function runSearch({ category, town = '', county = '', extraQuery = '', ma
     }
     try {
       const r = await upsertPlace(data);
-      if (r.created) created += 1;
+      if (r.created) { created += 1; newLeadIds.push(r.lead._id); }
       else if (r.merged) merged += 1;
       upserted.push(r.lead._id);
     } catch (err) {
@@ -239,20 +277,108 @@ async function runSearch({ category, town = '', county = '', extraQuery = '', ma
     }
   }
 
+  // Fire-and-forget auto-audit so freshly ingested leads have a populated
+  // Pain score by the time the user clicks into them. Skipped if a lead
+  // was already audited within 14 days (handled in auditLeadsConcurrent).
+  if (newLeadIds.length) {
+    setImmediate(() => triggerBackgroundAudit(newLeadIds).catch((e) =>
+      console.warn('[jpwPlaces] background audit error:', e.message)));
+  }
+
   return {
     query: textQuery,
     received: places.length,
     created, merged, skipped, skipped_in_spider,
     upserted_ids: upserted,
+    auto_audit_queued: newLeadIds.length,
     usage_today: usage.places_calls + 1,
     daily_cap: PLACES_DAILY_CAP,
     spider_phones_checked: spiderPhones.size,
   };
 }
 
+// ── Background auto-audit ─────────────────────────────────────────────────
+//
+// Pulls the just-created leads back out of Mongo (we only kept ids) and
+// runs them through the auditor with concurrency 4. The auditor itself
+// skips leads audited within 14 days. PSI is left off here because it
+// adds 20s+ per lead — too slow for a "freshly searched" UX.
+async function triggerBackgroundAudit(leadIds) {
+  if (!leadIds || !leadIds.length) return;
+  const leads = await JpwLead.find({ _id: { $in: leadIds }, website_url: { $ne: '' } });
+  if (!leads.length) return;
+  const results = await auditLeadsConcurrent(leads, {
+    concurrency: 4,
+    usePageSpeed: false,
+    skipIfAuditedWithinDays: 14,
+  });
+  // Save each audited lead — auditLeadsConcurrent mutates `audit` only, the
+  // controller is normally responsible for saving. Since we're the
+  // controller here, do it inline.
+  for (const { lead, audit, error } of results) {
+    if (error || !audit) continue;
+    lead.website_audit = audit;
+    lead.lead_score = scoreLead(lead.toObject());
+    try { await lead.save(); }
+    catch (e) { console.warn('[jpwPlaces] bg-audit save failed:', e.message); }
+  }
+}
+
+// ── Bulk sweep ────────────────────────────────────────────────────────────
+//
+// Runs runSearch() across a list of {category, town} or {category, county}
+// pairs sequentially. Halts early when the daily cap is hit. Each call has
+// a small inter-search delay so we don't hammer Places back-to-back. The
+// background auditor kicks off for each search just like a one-off search,
+// so the entire sweep populates audit data without separate orchestration.
+async function runSweep({ pairs = [], maxSearches = 30, delayMs = 600 } = {}) {
+  const cap = Math.min(parseInt(maxSearches, 10) || 30, 100);
+  let searches_run = 0;
+  let total_created = 0;
+  let total_merged = 0;
+  let total_skipped = 0;
+  let total_skipped_in_spider = 0;
+  let halted_reason = '';
+
+  for (const pair of pairs) {
+    if (searches_run >= cap) {
+      halted_reason = `Hit per-sweep cap (${cap}).`;
+      break;
+    }
+    try {
+      const result = await runSearch({
+        category: pair.category,
+        town: pair.town || '',
+        county: pair.county || '',
+      });
+      searches_run += 1;
+      total_created  += result.created;
+      total_merged   += result.merged;
+      total_skipped  += result.skipped;
+      total_skipped_in_spider += result.skipped_in_spider;
+    } catch (err) {
+      if (err.statusCode === 429) {
+        halted_reason = err.message || 'Daily Places cap reached.';
+        break;
+      }
+      console.warn('[jpwPlaces] sweep search failed:', err.message);
+    }
+    if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+  }
+
+  return {
+    searches_run,
+    pairs_total: pairs.length,
+    total_created, total_merged, total_skipped, total_skipped_in_spider,
+    halted_reason,
+  };
+}
+
 module.exports = {
   runSearch,
+  runSweep,
   upsertPlace,
   getTodayUsage,
+  triggerBackgroundAudit,
   PLACES_DAILY_CAP,
 };

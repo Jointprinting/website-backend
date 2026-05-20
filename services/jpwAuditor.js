@@ -372,8 +372,13 @@ async function auditLead(lead, options = {}) {
 // turn a batch of 50 into a 15-minute job. Single-lead audits run PSI by
 // default; bulk runs only do HTML.
 async function auditLeadsConcurrent(leads, {
-  concurrency = 4, cityHints = [], usePageSpeed = false, onProgress,
+  concurrency = 4, cityHints = [], usePageSpeed = false,
+  skipIfAuditedWithinDays = 0,
+  onProgress,
 } = {}) {
+  const skipCutoff = skipIfAuditedWithinDays > 0
+    ? new Date(Date.now() - skipIfAuditedWithinDays * 86400000)
+    : null;
   const results = [];
   let cursor = 0;
   let done = 0;
@@ -381,6 +386,16 @@ async function auditLeadsConcurrent(leads, {
     while (cursor < leads.length) {
       const i = cursor++;
       const lead = leads[i];
+      // Skip recently-audited leads when caller asks. We still emit a result
+      // so progress counts line up; the result's `audit` is the prior one
+      // so the caller has something to save back if it merges blindly.
+      if (skipCutoff && lead.website_audit?.audited_at
+          && new Date(lead.website_audit.audited_at) > skipCutoff) {
+        results.push({ lead, audit: null, error: null, skipped: true });
+        done += 1;
+        if (onProgress) onProgress(done, leads.length);
+        continue;
+      }
       try {
         const audit = await auditLead(lead, { cityHints, usePageSpeed });
         results.push({ lead, audit, error: null });

@@ -11,7 +11,7 @@ const {
   listLeads, getLead, createLead, updateLead, deleteLead,
   rescoreLeads, importCsv, getDashboardStats, getReferenceData,
   exportCsv, bulkStatus, bulkDelete,
-  searchPlaces, auditOneLead, auditBatch, getUsage,
+  searchPlaces, sweepPlaces, auditOneLead, auditBatch, getUsage,
   pushOneToSpider, pushBatchToSpider, updateAdSignal,
   runScheduledJob,
 } = require('../controllers/jpwLead');
@@ -34,6 +34,7 @@ router.post('/rescore',      rescoreLeads);
 router.post('/bulk-status',  bulkStatus);
 router.post('/audit-batch',           auditBatch);
 router.post('/search/places',         searchPlaces);
+router.post('/search/sweep',          sweepPlaces);
 router.post('/push-to-spider-batch',  pushBatchToSpider);
 router.post('/bulk-delete',           bulkDelete);
 router.post('/scheduler/:job/run',    runScheduledJob);
