@@ -28,6 +28,11 @@ const { auditLeadsConcurrent } = require('./jpwAuditor');
 
 const PLACES_DAILY_CAP = parseInt(process.env.JPW_PLACES_DAILY_CAP || '200', 10);
 
+// Google Places (New) FieldMask. ONLY `places.*` field paths are valid here
+// — top-level response keys like `nextPageToken` must NOT be listed or Google
+// rejects the whole request with 400 ("Field 'nextPageToken' is not valid").
+// The pagination token comes back at the top level by default regardless of
+// what's in the mask.
 const GOOGLE_FIELDS = [
   'places.id',
   'places.displayName',
@@ -43,10 +48,6 @@ const GOOGLE_FIELDS = [
   'places.nationalPhoneNumber',
   'places.websiteUri',
   'places.googleMapsUri',
-  // `nextPageToken` is at the top of the response, not under `places`, so
-  // it's enabled by an empty field selector. The current mask returns it
-  // automatically when more results exist.
-  'nextPageToken',
 ].join(',');
 
 // ── Usage tracking ───────────────────────────────────────────────────────
@@ -542,11 +543,11 @@ async function _runSweepLoop(queue, pagesPerPhrase) {
   let total_merged = 0;
   let total_skipped = 0;
   let total_skipped_in_spider = 0;
+  let pair_failures = 0;
+  let last_error_message = '';
   let halted_reason = '';
 
   for (const pair of queue) {
-    // Check the stop flag between pairs. Reload the state doc so the flag
-    // set by another request is visible.
     const cur = await _getSweepState();
     if (cur?.stop_requested) {
       halted_reason = 'Stopped by user.';
@@ -575,8 +576,16 @@ async function _runSweepLoop(queue, pagesPerPhrase) {
         halted_reason = err.message || 'Daily Places cap reached.';
         break;
       }
-      console.warn('[jpwPlaces] sweep search failed:', err.message);
-      // Don't break the loop on a single failure — log and move on.
+      pair_failures += 1;
+      // Capture more than `err.message` — Places API errors typically wrap a
+      // useful detail object in axios's `response.data` that explains exactly
+      // why the request was rejected (e.g. "Invalid FieldMask"). Without this
+      // we'd see "Request failed with status code 400" and nothing else.
+      last_error_message = err.response?.data?.error?.message
+                        || JSON.stringify(err.response?.data || {}).slice(0, 200)
+                        || err.message
+                        || 'unknown';
+      console.warn(`[jpwPlaces] sweep search failed (${label}): ${last_error_message}`);
     }
 
     await _setSweepState({
@@ -585,13 +594,25 @@ async function _runSweepLoop(queue, pagesPerPhrase) {
       ran_at: new Date(),
     });
 
-    // Small breath between pairs so we don't burst Google's QPS limit.
     await new Promise((r) => setTimeout(r, 400));
   }
 
+  // If every pair in the queue failed (and the queue wasn't empty), this is
+  // a real problem worth surfacing — not a "completed" run. Common cause: a
+  // mis-formed request to Google (e.g. an invalid FieldMask) that kills
+  // every single search. Set status to 'failed' so the dialog shows red.
+  const allFailed = queue.length > 0 && pairs_done === 0 && !halted_reason && pair_failures > 0;
+  const finalStatus = halted_reason
+    ? 'stopped'
+    : allFailed ? 'failed' : 'completed';
+  const finalError = allFailed
+    ? `All ${pair_failures} searches failed. Last error: ${last_error_message}`
+    : '';
+
   await _setSweepState({
-    status: halted_reason ? 'stopped' : 'completed',
-    halted_reason,
+    status: finalStatus,
+    halted_reason: halted_reason || (allFailed ? 'Every search returned an error — see error field.' : ''),
+    error: finalError,
     finished_at: new Date(),
     current_pair: '',
     pairs_done, api_calls_used,
