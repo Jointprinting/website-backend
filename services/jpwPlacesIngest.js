@@ -17,8 +17,9 @@ const axios = require('axios');
 const JpwLead = require('../models/JpwLead');
 const JpwApiUsage = require('../models/JpwApiUsage');
 const { scoreLead } = require('./jpwScoring');
-const { buildDedupeKeys, buildDedupeFilter } = require('./jpwDedupe');
+const { buildDedupeKeys, buildDedupeFilter, normalizePhone } = require('./jpwDedupe');
 const { guessCategory } = require('./jpwConstants');
+const { fetchSpiderPhones } = require('./jpwSpiderPush');
 
 const PLACES_DAILY_CAP = parseInt(process.env.JPW_PLACES_DAILY_CAP || '200', 10);
 
@@ -200,10 +201,16 @@ async function runSearch({ category, town = '', county = '', extraQuery = '', ma
     throw Object.assign(new Error(`Daily Places API cap reached (${PLACES_DAILY_CAP}). Try again tomorrow or raise JPW_PLACES_DAILY_CAP.`), { statusCode: 429 });
   }
 
+  // Cross-tab Spider dedupe — pull every phone currently in the user's
+  // Spider workbook (any tab) before ingesting. If a Places result's phone
+  // matches one in Spider, we skip it entirely — never even create the lead
+  // in Mongo. Empty set if Spider isn't configured or the GET fails.
+  const spiderPhones = await fetchSpiderPhones();
+
   const places = await googlePlacesTextSearch(textQuery, { maxResults });
   await incPlacesUsage(1);
 
-  let created = 0, merged = 0, skipped = 0;
+  let created = 0, merged = 0, skipped = 0, skipped_in_spider = 0;
   const upserted = [];
   for (const p of places) {
     if (!p.id || !p.displayName?.text) { skipped += 1; continue; }
@@ -212,6 +219,15 @@ async function runSearch({ category, town = '', county = '', extraQuery = '', ma
       sourceCity: town,
       sourceCounty: county,
     });
+    // Spider dedupe — phone-based. We only know about phones, not place_ids,
+    // because Spider rows were entered by hand. Catches the 99% case the
+    // user described: businesses already in his Prospect Tracking / cold-
+    // call tabs that get re-surfaced by every Places search.
+    const normPhone = normalizePhone(data.phone);
+    if (normPhone && spiderPhones.has(normPhone)) {
+      skipped_in_spider += 1;
+      continue;
+    }
     try {
       const r = await upsertPlace(data);
       if (r.created) created += 1;
@@ -226,10 +242,11 @@ async function runSearch({ category, town = '', county = '', extraQuery = '', ma
   return {
     query: textQuery,
     received: places.length,
-    created, merged, skipped,
+    created, merged, skipped, skipped_in_spider,
     upserted_ids: upserted,
     usage_today: usage.places_calls + 1,
     daily_cap: PLACES_DAILY_CAP,
+    spider_phones_checked: spiderPhones.size,
   };
 }
 

@@ -112,11 +112,53 @@ async function pushLeadsBatch(leads) {
   return { ok: true, results: data.results || [] };
 }
 
+// ── Fetch existing phones from Spider for cross-sheet dedupe ─────────────
+//
+// Places searches return a lot of businesses Nate already has in his Spider
+// workbook (in other tabs — Subscriptions, Prospect Tracking, his cold-call
+// list). We dedupe against those by pulling every 10-digit phone from every
+// tab of the sheet once and caching for 5 minutes.
+//
+// The Apps Script doGet(action=phones) handler does the cell-by-cell regex
+// scan; this side just fetches + caches. Cache key is the webhook URL so
+// changing it (e.g. rotating deployments) invalidates the old cache.
+//
+// Degrades gracefully: if the GET fails for any reason — network down, bad
+// secret, Apps Script returning the wrong shape — we return an empty set so
+// Places ingestion still runs, just without Spider dedupe for that call.
+
+const PHONE_CACHE_TTL_MS = 5 * 60 * 1000;
+const phoneCache = new Map(); // url -> { phones: Set<string>, fetchedAt: number }
+
+async function fetchSpiderPhones({ force = false } = {}) {
+  if (!isConfigured()) return new Set();
+  const cached = phoneCache.get(WEBHOOK_URL);
+  if (!force && cached && Date.now() - cached.fetchedAt < PHONE_CACHE_TTL_MS) {
+    return cached.phones;
+  }
+  try {
+    const { data } = await axios.get(WEBHOOK_URL, {
+      params: { action: 'phones', secret: SHARED_SECRET },
+      timeout: 20000,
+    });
+    if (!data || data.ok !== true || !Array.isArray(data.phones)) {
+      throw new Error(data?.message || 'Unexpected response from Spider phones endpoint.');
+    }
+    const phones = new Set(data.phones);
+    phoneCache.set(WEBHOOK_URL, { phones, fetchedAt: Date.now() });
+    return phones;
+  } catch (err) {
+    console.warn('[jpwSpiderPush] fetchSpiderPhones failed:', err.message);
+    return new Set();
+  }
+}
+
 module.exports = {
   isConfigured,
   pushLead,
   pushLeadsBatch,
   dedupeKeyFor,
   leadToRow,
+  fetchSpiderPhones,
   TARGET_TAB,
 };

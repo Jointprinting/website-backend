@@ -93,9 +93,55 @@ function doPost(e) {
   }
 }
 
-// GET — health check for manual debugging.
-function doGet() {
+// GET — two modes:
+//
+//   ?action=phones&secret=...
+//     Returns every 10-digit US phone number found anywhere in the workbook,
+//     across every tab. The backend caches this and uses it to dedupe Google
+//     Places search results against leads Nate already has in Spider — so a
+//     "tree service Voorhees" search doesn't return 16 businesses he already
+//     called.
+//
+//   (anything else)
+//     Health check.
+function doGet(e) {
+  const params = (e && e.parameter) || {};
+  if (params.action === 'phones') {
+    if (params.secret !== SHARED_SECRET) {
+      return json({ ok: false, message: 'Invalid secret.' });
+    }
+    return json({ ok: true, phones: collectAllPhones() });
+  }
   return json({ ok: true, message: 'JPW Spider endpoint up. POST JSON to push leads.' });
+}
+
+// Walk every sheet, normalize anything that looks like a US phone number,
+// dedupe, and return a flat array of 10-digit strings. Robust to free-text
+// cells like "call (609) 555-1234 anytime" — we run a regex on every cell.
+function collectAllPhones() {
+  const PHONE_RX = /(?:\+?1[-.\s]?)?\(?(\d{3})\)?[-.\s]?(\d{3})[-.\s]?(\d{4})/g;
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheets = ss.getSheets();
+  const out = new Set();
+  for (let s = 0; s < sheets.length; s++) {
+    const sheet = sheets[s];
+    if (sheet.getLastRow() === 0) continue;
+    const values = sheet.getDataRange().getValues();
+    for (let r = 0; r < values.length; r++) {
+      const row = values[r];
+      for (let c = 0; c < row.length; c++) {
+        const cell = row[c];
+        if (cell === '' || cell === null || cell === undefined) continue;
+        const text = String(cell);
+        let m;
+        PHONE_RX.lastIndex = 0;
+        while ((m = PHONE_RX.exec(text)) !== null) {
+          out.add(m[1] + m[2] + m[3]);
+        }
+      }
+    }
+  }
+  return Array.from(out);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
