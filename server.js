@@ -95,7 +95,6 @@ const catalogRoutes        = require('./routes/catalogRoutes');
 const siteSettingRoutes    = require('./routes/siteSettingRoutes');
 const roadTripRoutes       = require('./routes/roadTripRoutes');
 const studioRoutes         = require('./routes/studioRoutes');
-const quoterRoutes         = require('./routes/quoterRoutes');
 const orderRoutes          = require('./routes/orderRoutes');
 const jpwRoutes            = require('./routes/jpwRoutes');
 
@@ -107,7 +106,6 @@ app.use('/api/catalogs', catalogRoutes);
 app.use('/api/site-settings', siteSettingRoutes);
 app.use('/api/roadtrip', roadTripRoutes);
 app.use('/api/studio', studioRoutes);
-app.use('/api/quoter', quoterRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/jpw', express.json({ limit: '20mb' }), jpwRoutes);
 app.use('/api/email', contactLimiter, upload.array('files', 10), emailRoutes);
