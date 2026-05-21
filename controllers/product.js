@@ -10,8 +10,12 @@ const { getGfs } = require('../gridfs');
 // ─────────────────────────────────────────────────────────────────────────────
 //  Pricing config
 // ─────────────────────────────────────────────────────────────────────────────
-const PRICE_MARKUP = 2.5;
-const PRICE_SPREAD = 1.4;
+//  Markup is the cost multiplier (final blank ≈ cost × markup). Spread is the
+//  width of the visible price range — final card shows [markup, markup × spread].
+//  Tuned to "slightly above garment cost, ~2×" with a tight window so cards
+//  don't feel padded.
+const PRICE_MARKUP = 2.0;
+const PRICE_SPREAD = 1.2;
 const round50c = (n) => Math.max(5, Math.round(n * 2) / 2);
 
 function deriveRating(styleName = '') {
@@ -30,9 +34,15 @@ function deriveTag(brand = '', styleName = '') {
   return 'New Arrival';
 }
 
+// Returns a real [low, high] markup range when basePrice is known. Returns
+// nulls when it isn't — calling code must decide whether to show "get a quote"
+// or hide pricing entirely. The old behaviour of fabricating $20–$28 from an
+// $8 default made every imageless style look identically priced.
 function deriveRange(basePrice) {
-  const safeBase = (typeof basePrice === 'number' && basePrice > 0) ? basePrice : 8;
-  const lo = safeBase * PRICE_MARKUP;
+  if (typeof basePrice !== 'number' || !(basePrice > 0)) {
+    return { priceRangeBottom: null, priceRangeTop: null };
+  }
+  const lo = basePrice * PRICE_MARKUP;
   const hi = lo * PRICE_SPREAD;
   return { priceRangeBottom: round50c(lo), priceRangeTop: round50c(hi) };
 }
@@ -349,11 +359,17 @@ async function parseAlphaBroderXML(xmlString, req) {
 // ─────────────────────────────────────────────────────────────────────────────
 //  S&S Activewear sync
 // ─────────────────────────────────────────────────────────────────────────────
+// Some S&S deployments accept ?style=, others want ?styleName=. Try both so a
+// param-name mismatch doesn't silently mean "no SKUs, no colors, no prices".
 async function fetchSSProducts(styleName) {
   ensureSsCredentials();
-  const { data } = await ssClient.get('/products/', {
-    params: { style: styleName },
-  });
+  let { data } = await ssClient.get('/products/', { params: { style: styleName } });
+  if (!Array.isArray(data) || data.length === 0) {
+    try {
+      const retry = await ssClient.get('/products/', { params: { styleName } });
+      if (Array.isArray(retry.data) && retry.data.length > 0) data = retry.data;
+    } catch (_) { /* fall through */ }
+  }
   if (!Array.isArray(data) || data.length === 0) {
     throw new Error(`No SKUs found for style "${styleName}".`);
   }
@@ -704,7 +720,9 @@ async function fetchAndGroupSSBrand(brand) {
   for (const style of data) {
     const title = style.title || style.styleTitle || style.styleDescription
       || `${style.brandName || brand} ${style.styleName}`;
-    // piecePrice may not exist at style level — deriveRange handles null with an $8 default
+    // piecePrice rarely exists at style level. When it doesn't, deriveRange
+    // returns nulls and the frontend hides the price row entirely (better
+    // than showing fake $20–$28 on every card).
     const minPrice = typeof style.piecePrice === 'number' && style.piecePrice > 0
       ? style.piecePrice : null;
     const { priceRangeBottom, priceRangeTop } = deriveRange(minPrice);
@@ -849,12 +867,12 @@ exports.testSSConnection = async (req, res) => {
 // Resilient style-detail endpoint used by the product page when the style
 // isn't already in MongoDB. Two-stage fetch:
 //   1. /styles/?style=X — fast, guaranteed source of title, brand, image,
-//      basic size range. One row per matching style.
+//      description, basic size range. One row per matching style.
 //   2. /products/?style=X — slow but provides SKU-level detail (per-color
 //      images, hex codes, real piece price, exact size range).
 // Either stage succeeding is enough to render a usable detail page; we only
-// 404 if both fail. This stops the page from rendering blank when /products/
-// times out (which was happening for large styles).
+// 404 if both fail. Prices and colors are only emitted if /products/ gave
+// them; we never fabricate a price range just because piecePrice was missing.
 exports.getSSStyleDetail = async (req, res) => {
   try {
     ensureSsCredentials();
@@ -915,7 +933,6 @@ exports.getSSStyleDetail = async (req, res) => {
 
     const title = detail?.title || basicInfo?.title || styleName;
     const brand = detail?.brand || basicInfo?.brand || 'S&S Activewear';
-    const fallbackPrice = deriveRange(null);
 
     return res.json({
       style: styleName,
@@ -923,8 +940,9 @@ exports.getSSStyleDetail = async (req, res) => {
       vendor: brand,
       category: detectCategory(title),
       type: detectType(title),
-      priceRangeBottom: detail?.priceRangeBottom ?? fallbackPrice.priceRangeBottom,
-      priceRangeTop: detail?.priceRangeTop ?? fallbackPrice.priceRangeTop,
+      // Only return prices when we actually computed them from real SKU data.
+      priceRangeBottom: detail?.priceRangeBottom ?? null,
+      priceRangeTop: detail?.priceRangeTop ?? null,
       sizeRangeBottom: detail?.sizeRangeBottom || basicInfo?.sizeRangeBottom || 'S',
       sizeRangeTop: detail?.sizeRangeTop || basicInfo?.sizeRangeTop || 'XL',
       colors: detail?.colors || [],
