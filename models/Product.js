@@ -9,8 +9,10 @@ const ProductSchema = new mongoose.Schema({
 
   sizeRangeBottom: { type: String, default: 'S' },
   sizeRangeTop:    { type: String, default: 'XL' },
-  priceRangeBottom:{ type: Number, default: 20 },
-  priceRangeTop:   { type: Number, default: 28 },
+  // Defaults bumped to match the new T-Shirt floor (which factors in printing
+  // markup). Real per-style values overwrite on sync.
+  priceRangeBottom:{ type: Number, default: 13 },
+  priceRangeTop:   { type: Number, default: 18 },
 
   colors:     [{ type: String }],
   colorCodes: [{ type: String }],
