@@ -10,8 +10,8 @@ const { getGfs } = require('../gridfs');
 // ─────────────────────────────────────────────────────────────────────────────
 //  Pricing config
 // ─────────────────────────────────────────────────────────────────────────────
-const PRICE_MARKUP = 2.0;
-const PRICE_SPREAD = 1.2;
+const PRICE_MARKUP = 2.5;
+const PRICE_SPREAD = 1.4;
 const roundDollar = (n) => Math.max(5, Math.round(n));
 
 function deriveRating(styleName = '') {
@@ -37,6 +37,62 @@ function deriveRange(basePrice) {
   const lo = basePrice * PRICE_MARKUP;
   const hi = lo * PRICE_SPREAD;
   return { priceRangeBottom: roundDollar(lo), priceRangeTop: roundDollar(hi) };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Category-aware defaults for price + size
+// ─────────────────────────────────────────────────────────────────────────────
+//  When S&S's per-style SKU lookup fails (which it does often for our account
+//  against the V2 endpoint), every card would otherwise have empty fields.
+//  These defaults pin a sensible "ballpark" so the catalog is fully usable
+//  for "request a quote" browsing. They're tuned to be **above** typical
+//  blank cost and **below** plausible retail — i.e. exactly the range a
+//  customer would expect to be quoted at small order sizes (~24-48 pcs,
+//  one-color print). Examples: B+C 3001C tee ($5 blank) → $13-18; Gildan
+//  18500 hoodie ($14 blank) → $32-45.
+//
+//  Premium brands (B+C, Next Level, Alternative, District, American
+//  Apparel) get a 25% bump on the base because their blanks cost more.
+// ─────────────────────────────────────────────────────────────────────────────
+const CATEGORY_DEFAULT_PRICE = {
+  'T-Shirts':    { low: 11, high: 16 },
+  'Long Sleeve': { low: 17, high: 24 },
+  'Hoodies':     { low: 32, high: 45 },
+  'Crewnecks':   { low: 26, high: 36 },
+  'Zip-Ups':     { low: 42, high: 58 },
+  'Tanks':       { low: 12, high: 16 },
+  'Polos':       { low: 22, high: 30 },
+  'Jackets':     { low: 55, high: 78 },
+  'Pants':       { low: 24, high: 34 },
+  'Shorts':      { low: 20, high: 28 },
+  'Hats':        { low: 13, high: 18 },
+};
+
+function isPremiumBrand(brand) {
+  const b = (brand || '').toLowerCase();
+  return PREMIUM_BRANDS.some((p) => b.includes(p));
+}
+
+function defaultPriceRange(category, brand) {
+  const base = CATEGORY_DEFAULT_PRICE[category] || CATEGORY_DEFAULT_PRICE['T-Shirts'];
+  const mult = isPremiumBrand(brand) ? 1.25 : 1.0;
+  return {
+    priceRangeBottom: roundDollar(base.low * mult),
+    priceRangeTop:    roundDollar(base.high * mult),
+  };
+}
+
+// Title-aware size defaults. Catches kids/toddler/infant/ladies/tall variants
+// so we don't show "S - XL" on a toddler tee or an infant onesie.
+function defaultSizeRange(title, category, type) {
+  const t = (title || '').toLowerCase();
+  if (category === 'Hats')                            return { sizeRangeBottom: 'One Size', sizeRangeTop: 'One Size' };
+  if (/\binfant\b|\bbaby\b|\bonesie\b|one[-\s]?piece/.test(t)) return { sizeRangeBottom: 'NB', sizeRangeTop: '24M' };
+  if (/\btoddler\b/.test(t))                          return { sizeRangeBottom: '2T', sizeRangeTop: '5/6' };
+  if (type === 'Kids' || /\byouth\b|\bjunior\b/.test(t)) return { sizeRangeBottom: 'XS', sizeRangeTop: 'XL' };
+  if (/\btall\b/.test(t))                             return { sizeRangeBottom: 'LT', sizeRangeTop: '3XLT' };
+  if (type === 'Female' || /\bladies\b|\bwomens?\b|\bwoman\b/.test(t)) return { sizeRangeBottom: 'XS', sizeRangeTop: '2XL' };
+  return { sizeRangeBottom: 'S', sizeRangeTop: '3XL' };
 }
 
 function extractAlphaBroderMinPrice(item) {
@@ -366,19 +422,6 @@ async function parseAlphaBroderXML(xmlString, req) {
 // ─────────────────────────────────────────────────────────────────────────────
 //  S&S Activewear — per-style SKU fetch
 // ─────────────────────────────────────────────────────────────────────────────
-// S&S V2 supports two ways to fetch SKUs for one style:
-//   1. GET /v2/products/{identifier}  — URL path, accepts styleName / partNumber
-//      / styleID / SKU. This is the documented, scoped-to-one-style version.
-//   2. GET /v2/products/?style=X      — query filter. Behaviour varies; we've
-//      seen it return SKUs from unrelated styles mixed in.
-//
-// We try (1) first. If it fails or returns nothing, we fall back to (2) with
-// a relaxed filter that matches styleName OR partNumber (S&S sometimes stores
-// the user-facing code in partNumber and the SS-internal name in styleName,
-// e.g. partNumber="12500", styleName="G185000" for the same Gildan style).
-//
-// Diagnostic logging on the first call so we can see what S&S actually
-// returns when matches fail — easier to debug from Render logs than guessing.
 async function fetchSSProducts(styleName) {
   ensureSsCredentials();
   const target = String(styleName || '').trim();
@@ -395,9 +438,6 @@ async function fetchSSProducts(styleName) {
   try {
     const { data } = await ssClient.get(`/products/${encodeURIComponent(target)}`);
     if (Array.isArray(data) && data.length > 0) {
-      // URL path is supposed to be tightly scoped — if it returned anything,
-      // it's almost certainly for the requested style. But still apply a
-      // sanity filter; if zero rows match the requested style, fall through.
       const matched = data.filter(matchesTarget);
       if (matched.length > 0) return matched;
       if (!fetchSSProducts._urlPathLogged) {
@@ -763,19 +803,29 @@ async function fetchAndGroupSSBrand(brand) {
       _ssImageCache.set(style.styleName, { url: imageUrl, expiresAt: Date.now() + SS_IMAGE_CACHE_TTL });
     }
 
+    // Every card gets a sensible category-based price + size default so the
+    // catalog is fully populated even when S&S's per-style SKU lookup fails.
+    // browseSS will override these with real numbers when the details cache
+    // has been filled by getSSDetails.
+    const vendor   = style.brandName || brand;
+    const category = detectCategory(title);
+    const type     = detectType(title);
+    const { priceRangeBottom, priceRangeTop } = defaultPriceRange(category, vendor);
+    const { sizeRangeBottom, sizeRangeTop }   = defaultSizeRange(title, category, type);
+
     styles.push({
       style: style.styleName,
       name: title,
-      vendor: style.brandName || brand,
-      category: detectCategory(title),
-      type: detectType(title),
-      priceRangeBottom: null,
-      priceRangeTop: null,
-      sizeRangeBottom: null,
-      sizeRangeTop: null,
+      vendor,
+      category,
+      type,
+      priceRangeBottom,
+      priceRangeTop,
+      sizeRangeBottom,
+      sizeRangeTop,
       colorCount: style.colorCount || 0,
       rating: deriveRating(style.styleName),
-      tag: deriveTag(style.brandName || brand, title),
+      tag: deriveTag(vendor, title),
       image: imageUrl,
     });
   }
@@ -855,16 +905,18 @@ exports.browseSS = async (req, res) => {
     const l = Math.min(48, Math.max(1, parseInt(limit, 10)));
     const start = (p - 1) * l;
 
+    // If we have real SKU detail in the cache, override the category-based
+    // defaults. Otherwise the defaults stay so the card is still useful.
     const pageSlice = styles.slice(start, start + l).map((s) => {
       const cached = _ssDetailsCache.get(s.style);
-      if (cached && cached.expiresAt > Date.now()) {
+      if (cached && cached.expiresAt > Date.now() && cached.minPrice != null) {
         const { priceRangeBottom, priceRangeTop } = deriveRange(cached.minPrice);
         return {
           ...s,
           priceRangeBottom,
           priceRangeTop,
-          sizeRangeBottom: cached.sizeRangeBottom,
-          sizeRangeTop: cached.sizeRangeTop,
+          sizeRangeBottom: cached.sizeRangeBottom || s.sizeRangeBottom,
+          sizeRangeTop: cached.sizeRangeTop || s.sizeRangeTop,
           colorCount: cached.colorCount || s.colorCount,
         };
       }
@@ -962,7 +1014,7 @@ exports.getSSDetails = async (req, res) => {
 
     const results = await mapWithConcurrency(styleList, 6, async (styleName) => {
       const d = await fetchStyleDetails(styleName);
-      if (!d) return null;
+      if (!d || d.minPrice == null) return null;
       const { priceRangeBottom, priceRangeTop } = deriveRange(d.minPrice);
       return {
         style: styleName,
@@ -1022,9 +1074,32 @@ exports.getSSStyleDetail = async (req, res) => {
       return res.status(404).json({ message: `Could not find style "${styleName}".` });
     }
 
-    const title = basicInfo?.title || details?.title || styleName;
-    const brand = basicInfo?.brand || details?.brand || 'S&S Activewear';
-    const { priceRangeBottom, priceRangeTop } = details ? deriveRange(details.minPrice) : { priceRangeBottom: null, priceRangeTop: null };
+    const title    = basicInfo?.title || details?.title || styleName;
+    const brand    = basicInfo?.brand || details?.brand || 'S&S Activewear';
+    const category = detectCategory(title);
+    const type     = detectType(title);
+
+    // Real SKU pricing if S&S gave it to us, otherwise category-based default.
+    let priceRangeBottom = null;
+    let priceRangeTop    = null;
+    if (details && details.minPrice != null) {
+      const r = deriveRange(details.minPrice);
+      priceRangeBottom = r.priceRangeBottom;
+      priceRangeTop    = r.priceRangeTop;
+    } else {
+      const r = defaultPriceRange(category, brand);
+      priceRangeBottom = r.priceRangeBottom;
+      priceRangeTop    = r.priceRangeTop;
+    }
+
+    // Real sizes when we have them, otherwise category + title-aware default.
+    let sizeRangeBottom = details?.sizeRangeBottom ?? null;
+    let sizeRangeTop    = details?.sizeRangeTop ?? null;
+    if (!sizeRangeBottom || !sizeRangeTop) {
+      const r = defaultSizeRange(title, category, type);
+      sizeRangeBottom = sizeRangeBottom || r.sizeRangeBottom;
+      sizeRangeTop    = sizeRangeTop || r.sizeRangeTop;
+    }
 
     const colors = details?.colors || [];
     const productFrontImages = colors.length
@@ -1035,12 +1110,12 @@ exports.getSSStyleDetail = async (req, res) => {
       style: styleName,
       name: title,
       vendor: brand,
-      category: detectCategory(title),
-      type: detectType(title),
+      category,
+      type,
       priceRangeBottom,
       priceRangeTop,
-      sizeRangeBottom: details?.sizeRangeBottom ?? null,
-      sizeRangeTop: details?.sizeRangeTop ?? null,
+      sizeRangeBottom,
+      sizeRangeTop,
       colors: colors.map((c) => c.name),
       colorCodes: colors.map((c) => (c.hex || '#CCCCCC').toUpperCase()),
       productFrontImages,
