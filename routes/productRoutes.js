@@ -16,6 +16,7 @@ const {
   getSSBrands,
   getSSStyleDetail,
   getSSImages,
+  getSSDetails,
   testSSConnection,
 } = require('../controllers/product');
 
@@ -28,6 +29,7 @@ router.get('/types', getTypes);
 router.get('/ss/brands', getSSBrands);
 router.get('/ss/browse', browseSS);
 router.get('/ss/images', getSSImages);              // batch per-style image URL lookup
+router.get('/ss/details', getSSDetails);            // batch per-style price/size/colorCount lookup
 router.get('/ss/test', testSSConnection);           // credential + connectivity check
 router.get('/ss/style/:style', getSSStyleDetail);   // live S&S detail for Product page
 router.get('/style/:style', getProductByStyleCode);
