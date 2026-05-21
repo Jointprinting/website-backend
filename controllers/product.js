@@ -846,26 +846,132 @@ exports.getSSDetails = async (req, res) => {
   }
 };
 
-// Debug endpoint kept (read-only) so future S&S tweaks can be verified.
+// Comprehensive S&S diagnostic — tries every plausible /products/ and
+// /styles/ shape for one style, plus a brand-filtered sample so we can
+// see what fields S&S actually populates. Visit
+//   /api/products/ss/debug?style=G500&brand=Gildan&styleid=9182
+// in a browser and paste the JSON. The first attempt that returns
+// rowCount > 0 and a styleName matching the query is the one we should
+// wire into fetchSSProducts.
 exports.debugSSStyle = async (req, res) => {
   try {
     ensureSsCredentials();
-    const style = String(req.query.style || '').trim();
-    if (!style) return res.status(400).json({ message: 'Provide ?style=X' });
-    const cacheHit = await findStyleByName(style);
+    const style   = String(req.query.style   || '').trim();
+    const brand   = String(req.query.brand   || '').trim();
+    const styleid = String(req.query.styleid || '').trim();
+    if (!style && !styleid) {
+      return res.status(400).json({
+        message: 'Provide ?style=X (and optionally &brand=Y&styleid=N).',
+      });
+    }
+
+    // List of paths to try. Each entry is [label, axios call factory].
+    const attempts = [];
+    const push = (label, fn) => attempts.push({ label, fn });
+
+    // ── /v2/products/ variants ──────────────────────────────────────────────
+    if (style) {
+      push(`GET /products?style=${style}`,
+        () => ssClient.get('/products', { params: { style } }));
+      push(`GET /products?styleName=${style}`,
+        () => ssClient.get('/products', { params: { styleName: style } }));
+      push(`GET /products/?style=${style}`,
+        () => ssClient.get('/products/', { params: { style } }));
+      push(`GET /products/${style}`,
+        () => ssClient.get(`/products/${encodeURIComponent(style)}`));
+      if (brand) {
+        push(`GET /products?brand=${brand}&style=${style}`,
+          () => ssClient.get('/products', { params: { brand, style } }));
+        push(`GET /products/?brand=${brand}&style=${style}`,
+          () => ssClient.get('/products/', { params: { brand, style } }));
+      }
+    }
+    if (styleid) {
+      push(`GET /products?styleid=${styleid}`,
+        () => ssClient.get('/products', { params: { styleid } }));
+      push(`GET /products?styleID=${styleid}`,
+        () => ssClient.get('/products', { params: { styleID: styleid } }));
+      push(`GET /products/${styleid}`,
+        () => ssClient.get(`/products/${styleid}`));
+    }
+
+    // ── /v2/inventory/ (sometimes mirrors products) ─────────────────────────
+    if (style) {
+      push(`GET /inventory?style=${style}`,
+        () => ssClient.get('/inventory', { params: { style } }));
+    }
+    if (styleid) {
+      push(`GET /inventory/${styleid}`,
+        () => ssClient.get(`/inventory/${styleid}`));
+    }
+
+    // ── /v2/styles/ detail variants ─────────────────────────────────────────
+    if (styleid) {
+      push(`GET /styles/${styleid}`,
+        () => ssClient.get(`/styles/${styleid}`));
+    }
+    if (style) {
+      push(`GET /styles/${style}`,
+        () => ssClient.get(`/styles/${encodeURIComponent(style)}`));
+    }
+    if (brand) {
+      push(`GET /styles?brand=${brand} (one row sample)`,
+        () => ssClient.get('/styles', { params: { brand } }));
+    }
+
+    // Run them sequentially so the JSON output is ordered + readable.
+    const results = [];
+    for (const a of attempts) {
+      const t0 = Date.now();
+      try {
+        const resp = await a.fn();
+        const data = resp.data;
+        const ms = Date.now() - t0;
+        const isArr = Array.isArray(data);
+        const first = isArr ? data[0] : data;
+        const matchesQueriedStyle = isArr && style
+          ? data.some((row) => (row?.styleName || '').toLowerCase() === style.toLowerCase())
+          : null;
+        results.push({
+          attempt: a.label,
+          ms,
+          status: resp.status,
+          rowCount: isArr ? data.length : 'non-array',
+          matchesQueriedStyle,
+          firstRowKeys: first && typeof first === 'object' ? Object.keys(first).slice(0, 30) : null,
+          firstRow: first && typeof first === 'object' ? {
+            styleID:        first.styleID,
+            styleName:      first.styleName,
+            partNumber:     first.partNumber,
+            brandName:      first.brandName,
+            title:          first.title,
+            sku:            first.sku,
+            colorName:      first.colorName,
+            sizeName:       first.sizeName,
+            piecePrice:     first.piecePrice,
+            colorFrontImage: first.colorFrontImage,
+            colorCount:     first.colorCount,
+            sizeRangeBottom: first.sizeRangeBottom,
+            sizeRangeTop:    first.sizeRangeTop,
+          } : null,
+        });
+      } catch (e) {
+        results.push({
+          attempt: a.label,
+          ms: Date.now() - t0,
+          status: e?.response?.status || null,
+          error: e.message,
+          body: e?.response?.data ? JSON.stringify(e.response.data).slice(0, 200) : null,
+        });
+      }
+    }
+
     return res.json({
-      style,
-      cacheHit: cacheHit ? {
-        styleID:    cacheHit.styleID,
-        styleName:  cacheHit.style,
-        partNumber: cacheHit.partNumber,
-        vendor:     cacheHit.vendor,
-        name:       cacheHit.name,
-        category:   cacheHit.category,
-        colorCount: cacheHit.colorCount,
-        image:      cacheHit.image,
-      } : null,
-      note: 'S&S /products/ returns 404 for our account, so per-color SKU data is not available. Catalog uses /styles/ data only.',
+      query: { style, brand, styleid },
+      summary: results
+        .filter((r) => r.rowCount > 0 && r.matchesQueriedStyle === true)
+        .map((r) => r.attempt),
+      attempts: results,
     });
   } catch (err) {
     return res.status(500).json({ message: err.message });
