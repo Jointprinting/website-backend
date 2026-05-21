@@ -598,9 +598,13 @@ async function fetchStyleImage(styleName) {
       params: { style: styleName },
       timeout: 10_000,
     });
-    // Validate the returned SKU actually belongs to the requested style
-    const matching = Array.isArray(data) ? data.find((s) => s.styleName === styleName) : null;
-    const url = matching?.colorFrontImage ? ssImageUrl(matching.colorFrontImage) : null;
+    const normalizedTarget = styleName.trim().toLowerCase();
+    const matching = Array.isArray(data)
+      ? data.find((s) => (s.styleName || '').trim().toLowerCase() === normalizedTarget)
+      : null;
+    const imgPath = matching?.colorFrontImage || matching?.styleImage
+      || matching?.styleImageFront || matching?.frontImage;
+    const url = imgPath ? ssImageUrl(imgPath) : null;
     _ssImageCache.set(styleName, { url, expiresAt: Date.now() + SS_IMAGE_CACHE_TTL });
     return url;
   } catch (_) {
@@ -675,6 +679,13 @@ async function fetchAndGroupSSBrand(brand) {
     throw new Error(`S&S returned no styles for brand "${brand}". Check SS_ACCOUNT / SS_API_KEY env vars.`);
   }
 
+  // One-time diagnostic: log all field names from the styles endpoint response
+  if (!fetchAndGroupSSBrand._fieldsLogged) {
+    fetchAndGroupSSBrand._fieldsLogged = true;
+    console.log('[S&S /styles/ available fields]:', Object.keys(data[0]).join(', '));
+    console.log('[S&S /styles/ sample row]:', JSON.stringify(data[0]).slice(0, 500));
+  }
+
   const styles = [];
   for (const style of data) {
     const title = style.title || style.styleTitle || style.styleDescription
@@ -697,7 +708,7 @@ async function fetchAndGroupSSBrand(brand) {
       colorCount: style.colorCount || 0,
       rating: deriveRating(style.styleName),
       tag: deriveTag(style.brandName || brand, title),
-      image: style.colorFrontImage ? ssImageUrl(style.colorFrontImage) : null,
+      image: ssImageUrl(style.colorFrontImage || style.styleImage || style.styleImageFront || style.frontImage || null),
     });
   }
 
