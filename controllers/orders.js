@@ -230,6 +230,41 @@ const listByCompany = async (req, res) => {
   }
 };
 
+// POST /api/orders/import-quotes — bulk import from Google Drive Apps Script export
+const importQuotes = async (req, res) => {
+  try {
+    const quotes = req.body;
+    if (!Array.isArray(quotes)) return res.status(400).json({ message: 'Expected a JSON array' });
+
+    let created = 0, skipped = 0;
+    for (const q of quotes) {
+      if (!q.companyName) { skipped++; continue; }
+      // Deduplicate by companyName + notes (which encodes the source file + sheet)
+      const exists = await Order.findOne({
+        companyName: q.companyName,
+        notes: q.notes,
+        importedFrom: 'gdrive_quoter',
+      }).lean();
+      if (exists) { skipped++; continue; }
+      await Order.create({
+        companyName:   q.companyName || '',
+        clientName:    q.clientName  || '',
+        status:        'quoted',
+        totalValue:    Number(q.totalValue) || 0,
+        cogs:          Number(q.cogs)       || 0,
+        notes:         q.notes       || '',
+        items:         Array.isArray(q.items) ? q.items : [],
+        importedFrom:  'gdrive_quoter',
+        orderDate:     q.orderDate ? new Date(q.orderDate) : null,
+      });
+      created++;
+    }
+    res.json({ created, skipped });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 // POST /api/orders/:id/files — upload a design file (multer applied in route)
 const uploadFile = async (req, res) => {
   try {
@@ -283,4 +318,5 @@ const serveFile = async (req, res) => {
 module.exports = {
   listOrders, listClients, getOrder, createOrder, updateOrder, deleteOrder,
   listByCompany, seedHistorical, nextOrderNumber, uploadFile, deleteFile, serveFile,
+  importQuotes,
 };
