@@ -538,12 +538,20 @@ async function startSweepInBackground({ maxSearches = null, pairs = null, pagesP
   if (maxSearches === null || maxSearches === undefined) {
     const usage = await getTodayUsage();
     const remainingCalls = Math.max(0, PLACES_DAILY_CAP - usage.places_calls);
-    // Estimate aggressively (2 calls/pair). Actual averages ~2.5, so the
-    // sweep loop will halt naturally a bit before the cap when budget is
-    // truly exhausted. Goal: a single daily click fully consumes the API
-    // budget instead of leaving 30-40% on the table.
     const callsPerPair = 2;
-    cap = Math.min(Math.max(Math.floor(remainingCalls / callsPerPair), 1), 200);
+    // If there's not enough budget for at least 3 pairs (~6 calls), don't
+    // start a sweep at all. Spinning up a 1-pair "queue" just to immediately
+    // halt with "daily cap reached" wastes UI feedback and confuses the user.
+    // The frontend's budget-exhausted block should catch this case too, but
+    // this is a hard backstop.
+    if (remainingCalls < callsPerPair * 3) {
+      return {
+        ok: false,
+        message: `Daily Google Places budget is used up (${usage.places_calls}/${PLACES_DAILY_CAP}). Resets at midnight.`,
+        budget_exhausted: true,
+      };
+    }
+    cap = Math.min(Math.floor(remainingCalls / callsPerPair), 200);
   } else {
     cap = Math.min(Math.max(parseInt(maxSearches, 10) || 30, 1), 200);
   }
