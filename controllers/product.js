@@ -12,8 +12,6 @@ const { getGfs } = require('../gridfs');
 // ─────────────────────────────────────────────────────────────────────────────
 //  Markup is the cost multiplier (final blank ≈ cost × markup). Spread is the
 //  width of the visible price range — final card shows [markup, markup × spread].
-//  Tuned to "slightly above garment cost, ~2×" with a tight window so cards
-//  don't feel padded.
 const PRICE_MARKUP = 2.0;
 const PRICE_SPREAD = 1.2;
 const round50c = (n) => Math.max(5, Math.round(n * 2) / 2);
@@ -34,9 +32,6 @@ function deriveTag(brand = '', styleName = '') {
   return 'New Arrival';
 }
 
-// Returns a real [low, high] markup range when basePrice is known. Returns
-// nulls when it isn't — calling code must decide whether to show "get a quote"
-// or hide pricing entirely.
 function deriveRange(basePrice) {
   if (typeof basePrice !== 'number' || !(basePrice > 0)) {
     return { priceRangeBottom: null, priceRangeTop: null };
@@ -107,8 +102,6 @@ function ssImageUrl(relPath) {
   return SS_CDN_BASE + relPath.replace(/^\/+/, '');
 }
 
-// Pick whichever image-path field S&S happens to populate for this row.
-// /styles/ uses "image"; /products/ uses "colorFrontImage".
 function pickSSImagePath(row) {
   if (!row) return null;
   return row.image
@@ -119,9 +112,6 @@ function pickSSImagePath(row) {
     || null;
 }
 
-// Comprehensive size order covering infant, toddler, youth, and adult sizes.
-// Lets us sort mixed apparel ranges correctly so a toddler item ends up
-// with bottom='2T' top='5/6' instead of "S - XL" garbage.
 const SS_SIZE_ORDER = [
   'NB', '0-3M', '3-6M', '6-12M', '6M', '12M', '12-18M', '18M', '18-24M', '24M',
   '2T', '3T', '4T', '5T', '5/6', '6T', '6/7', '7', '8', '10', '12', '14', '16', '18',
@@ -141,7 +131,7 @@ function sortSizes(sizes) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Granular category/type detection. Order matters.
+//  Granular category/type detection.
 // ─────────────────────────────────────────────────────────────────────────────
 function detectCategory(name = '') {
   const n = name.toLowerCase();
@@ -376,10 +366,8 @@ async function parseAlphaBroderXML(xmlString, req) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  S&S Activewear sync
+//  S&S Activewear — per-style SKU fetch (bounded memory, cached aggressively)
 // ─────────────────────────────────────────────────────────────────────────────
-// Some S&S deployments accept ?style=, others want ?styleName=. Try both so a
-// param-name mismatch doesn't silently mean "no SKUs, no colors, no prices".
 async function fetchSSProducts(styleName) {
   ensureSsCredentials();
   let { data } = await ssClient.get('/products/', { params: { style: styleName } });
@@ -479,7 +467,7 @@ exports.syncFromSS = async (req, res) => {
     if (!Array.isArray(styles) || styles.length === 0) return res.status(400).json({ message: 'Provide a non-empty `styles` array.' });
     if (styles.length > 50) return res.status(400).json({ message: 'Sync at most 50 styles per request.' });
 
-    const markupNum = Number.isFinite(Number(markup)) && Number(markum) > 0 ? Number(markup) : PRICE_MARKUP;
+    const markupNum = Number.isFinite(Number(markup)) && Number(markup) > 0 ? Number(markup) : PRICE_MARKUP;
     const tagToUse  = typeof tag === 'string' && tag ? tag : 'New Arrival';
     let created = 0, updated = 0;
     const products = [], failed = [];
@@ -623,11 +611,11 @@ exports.importFromJson = async (req, res) => {
 
 // ─── S&S Live Browse ──────────────────────────────────────────────────────────
 const _ssCache         = new Map();
-const _ssPricingCache  = new Map();  // brand → Map<styleName, { minPrice, sizeRangeBottom, sizeRangeTop, colors, colorCount }>
+const _ssDetailsCache  = new Map();  // styleName → { minPrice, sizeRangeBottom, sizeRangeTop, colors[], colorCount, expiresAt }
 const _ssImageCache    = new Map();
-const SS_CACHE_TTL         = 4 * 60 * 60 * 1000;  // 4 hours — style metadata
-const SS_PRICING_CACHE_TTL = 4 * 60 * 60 * 1000;  // 4 hours — SKU detail (price/size/color)
-const SS_IMAGE_CACHE_TTL   = 12 * 60 * 60 * 1000; // 12 hours — image URL only
+const SS_CACHE_TTL          = 4 * 60 * 60 * 1000;
+const SS_DETAILS_CACHE_TTL  = 12 * 60 * 60 * 1000;
+const SS_IMAGE_CACHE_TTL    = 12 * 60 * 60 * 1000;
 
 async function fetchStyleImage(styleName) {
   const cached = _ssImageCache.get(styleName);
@@ -685,7 +673,6 @@ const SS_POPULAR_BRANDS = [
   'Independent Trading Co.', 'Comfort Colors', 'LAT Apparel',
 ];
 
-// Brands pre-fetched on startup and for the default "all" view.
 const SS_FEATURED_BRANDS = [
   'Gildan',
   'Bella + Canvas',
@@ -693,101 +680,19 @@ const SS_FEATURED_BRANDS = [
   'Hanes',
 ];
 
-// Bulk-fetch every SKU for one brand and reduce to a per-style map of
-// real pricing, size range, and color list. This is the single fetch that
-// turns the catalog from "S–XL placeholder + no price" into real data, since
-// /styles/ doesn't carry piecePrice / sizeName / colorName. The result Map
-// is tiny (one entry per style) so it caches happily in memory.
-async function fetchSSBrandPricing(brand) {
-  const cacheKey = brand;
-  const cached = _ssPricingCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) return cached.data;
-
-  let data;
-  try {
-    const resp = await ssClient.get('/products/', {
-      params: { brand },
-      timeout: 90_000, // bulk SKU list can be large for big brands like Gildan
-    });
-    data = resp.data;
-  } catch (e) {
-    console.warn(`[fetchSSBrandPricing] "${brand}" failed:`, e.message);
-    return new Map();
-  }
-
-  if (!Array.isArray(data) || data.length === 0) {
-    console.warn(`[fetchSSBrandPricing] "${brand}" returned ${Array.isArray(data) ? '0 rows' : 'non-array'}`);
-    return new Map();
-  }
-
-  // Reduce SKUs → per-style summary. Keep the raw map small.
-  const byStyle = new Map();
-  for (const sku of data) {
-    const sn = sku.styleName;
-    if (!sn) continue;
-    let entry = byStyle.get(sn);
-    if (!entry) {
-      entry = { minPrice: null, sizes: new Set(), colorMap: new Map() };
-      byStyle.set(sn, entry);
-    }
-    if (typeof sku.piecePrice === 'number' && sku.piecePrice > 0) {
-      entry.minPrice = entry.minPrice == null ? sku.piecePrice : Math.min(entry.minPrice, sku.piecePrice);
-    }
-    if (sku.sizeName) entry.sizes.add(sku.sizeName);
-    if (sku.colorName && !entry.colorMap.has(sku.colorName)) {
-      entry.colorMap.set(sku.colorName, {
-        name: sku.colorName,
-        hex: sku.color1 || '#CCCCCC',
-        front: ssImageUrl(sku.colorFrontImage),
-        back: ssImageUrl(sku.colorBackImage),
-      });
-    }
-  }
-
-  // Finalize into plain data and drop the raw SKU buffer for GC.
-  const result = new Map();
-  for (const [styleName, entry] of byStyle) {
-    const sizes = sortSizes(entry.sizes);
-    const colors = [...entry.colorMap.values()];
-    result.set(styleName, {
-      minPrice: entry.minPrice,
-      sizeRangeBottom: sizes[0] || null,
-      sizeRangeTop: sizes[sizes.length - 1] || null,
-      colors,
-      colorCount: colors.length,
-    });
-  }
-  data = null; // help GC
-
-  _ssPricingCache.set(cacheKey, { data: result, expiresAt: Date.now() + SS_PRICING_CACHE_TTL });
-  console.log(`[fetchSSBrandPricing] "${brand}" indexed ${result.size} styles`);
-  return result;
-}
-
-// Public-facing pricing lookup. Used by getSSStyleDetail to skip a slow
-// per-style /products/ call when the brand pricing map already has the answer.
-function getPricingFromCache(brand, styleName) {
-  if (!brand || !styleName) return null;
-  const bucket = _ssPricingCache.get(brand);
-  if (!bucket || bucket.expiresAt <= Date.now()) return null;
-  return bucket.data.get(styleName) || null;
-}
-
-// Fetch style-level data using /styles/, then enrich with per-style pricing
-// from the bulk /products/?brand= cache. Falls back gracefully when pricing
-// hasn't loaded yet — the catalog still renders, just without prices.
+// Fetch style metadata via /styles/?brand=. This call is small (~200 styles
+// per brand, one row each) so memory is fine. Per-style pricing/sizes/colors
+// are filled in lazily via getSSDetails as the user looks at them — this
+// keeps the page-load fast and the memory footprint bounded.
 async function fetchAndGroupSSBrand(brand) {
   const cacheKey = `brand:${brand}`;
   const cached   = _ssCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.data;
 
-  // Kick off pricing fetch in parallel with the styles fetch — they're
-  // independent requests and we want both done as fast as possible.
-  const [stylesResp, pricingMap] = await Promise.all([
-    ssClient.get('/styles/', { params: { brand }, timeout: 30_000 }),
-    fetchSSBrandPricing(brand),
-  ]);
-  const data = stylesResp.data;
+  const { data } = await ssClient.get('/styles/', {
+    params: { brand },
+    timeout: 30_000,
+  });
 
   if (!Array.isArray(data)) {
     const detail = data?.Message || data?.message || JSON.stringify(data).slice(0, 200);
@@ -803,36 +708,33 @@ async function fetchAndGroupSSBrand(brand) {
   if (!fetchAndGroupSSBrand._fieldsLogged) {
     fetchAndGroupSSBrand._fieldsLogged = true;
     console.log('[S&S /styles/ available fields]:', Object.keys(data[0]).join(', '));
-    console.log('[S&S /styles/ sample row]:', JSON.stringify(data[0]).slice(0, 500));
   }
 
   const styles = [];
   for (const style of data) {
     const title = style.title || style.styleTitle || style.styleDescription
       || `${style.brandName || brand} ${style.styleName}`;
-    const pricing = pricingMap.get(style.styleName);
-    const minPrice = pricing?.minPrice ?? null;
-    const { priceRangeBottom, priceRangeTop } = deriveRange(minPrice);
     const imageUrl = ssImageUrl(pickSSImagePath(style));
 
     if (imageUrl) {
       _ssImageCache.set(style.styleName, { url: imageUrl, expiresAt: Date.now() + SS_IMAGE_CACHE_TTL });
     }
 
+    // Pricing and sizes are intentionally null here — they're filled lazily
+    // by the /ss/details endpoint after the catalog renders, so we don't have
+    // to bulk-fetch tens of thousands of SKUs per brand on every cold start
+    // (that crashed the 512 MB Render dyno).
     styles.push({
       style: style.styleName,
       name: title,
       vendor: style.brandName || brand,
       category: detectCategory(title),
       type: detectType(title),
-      priceRangeBottom,
-      priceRangeTop,
-      // Real ranges from SKU data, or null when pricing didn't load yet.
-      // Frontend hides the size row entirely in the null case (instead of
-      // showing a hardcoded "S - XL" that would be wrong for kids/infant items).
-      sizeRangeBottom: pricing?.sizeRangeBottom ?? null,
-      sizeRangeTop: pricing?.sizeRangeTop ?? null,
-      colorCount: pricing?.colorCount || style.colorCount || 0,
+      priceRangeBottom: null,
+      priceRangeTop: null,
+      sizeRangeBottom: null,
+      sizeRangeTop: null,
+      colorCount: style.colorCount || 0,
       rating: deriveRating(style.styleName),
       tag: deriveTag(style.brandName || brand, title),
       image: imageUrl,
@@ -914,7 +816,26 @@ exports.browseSS = async (req, res) => {
     const l = Math.min(48, Math.max(1, parseInt(limit, 10)));
     const start = (p - 1) * l;
 
-    return res.json({ products: styles.slice(start, start + l), total, page: p, totalPages: Math.ceil(total / l) });
+    // Decorate the page slice with cached per-style details when available.
+    // Cards that don't have a cached entry yet just show no price/size and
+    // the frontend will hit /ss/details to fill them in.
+    const pageSlice = styles.slice(start, start + l).map((s) => {
+      const cached = _ssDetailsCache.get(s.style);
+      if (cached && cached.expiresAt > Date.now()) {
+        const { priceRangeBottom, priceRangeTop } = deriveRange(cached.minPrice);
+        return {
+          ...s,
+          priceRangeBottom,
+          priceRangeTop,
+          sizeRangeBottom: cached.sizeRangeBottom,
+          sizeRangeTop: cached.sizeRangeTop,
+          colorCount: cached.colorCount || s.colorCount,
+        };
+      }
+      return s;
+    });
+
+    return res.json({ products: pageSlice, total, page: p, totalPages: Math.ceil(total / l) });
   } catch (err) {
     console.error('browseSS error:', err.message);
     return res.status(500).json({ message: err.message || 'Browse failed.' });
@@ -950,13 +871,94 @@ exports.testSSConnection = async (req, res) => {
   }
 };
 
-// Resilient style-detail endpoint used by the product page when the style
-// isn't already in MongoDB. Three-stage lookup:
-//   1. /styles/?style=X — fast, guaranteed source of title/brand/image/description.
-//   2. Bulk pricing cache (filled by fetchSSBrandPricing) — if we have it
-//      for this brand already, we get pricing/sizes/colors with zero extra calls.
-//   3. /products/?style=X — slow last-resort SKU fetch when bulk pricing
-//      doesn't cover this style.
+// Fetch SKU-level detail for one style. Cached for 12h so repeat lookups are
+// instant. Resilient: any failure returns null so the catalog still renders.
+async function fetchStyleDetails(styleName) {
+  const cached = _ssDetailsCache.get(styleName);
+  if (cached && cached.expiresAt > Date.now()) return cached;
+
+  try {
+    const skus = await fetchSSProducts(styleName);
+    const summary = summarizeSsStyle(skus);
+    const entry = {
+      minPrice: summary.minPrice,
+      sizeRangeBottom: summary.sizeRangeBottom,
+      sizeRangeTop: summary.sizeRangeTop,
+      colors: summary.colors,
+      colorCount: summary.colors.length,
+      title: summary.title,
+      brand: summary.brand,
+      expiresAt: Date.now() + SS_DETAILS_CACHE_TTL,
+    };
+    _ssDetailsCache.set(styleName, entry);
+    return entry;
+  } catch (e) {
+    console.warn(`[fetchStyleDetails] "${styleName}" failed:`, e.message);
+    return null;
+  }
+}
+
+// Bounded-concurrency helper: process `items` through `worker` no more than
+// `concurrency` at a time. Keeps memory + outbound socket use predictable.
+async function mapWithConcurrency(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  async function next() {
+    while (true) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      try { results[i] = await worker(items[i], i); }
+      catch (e) { results[i] = { _error: e?.message || 'error' }; }
+    }
+  }
+  const lanes = Array(Math.min(concurrency, items.length)).fill(0).map(next);
+  await Promise.all(lanes);
+  return results;
+}
+
+// Batch endpoint the catalog hits after first paint. Frontend sends the
+// styles currently on screen; backend returns per-style price + size
+// + color count for whichever ones it could fetch. Cold cache: ~10-15s for
+// 24 styles at concurrency 6. Warm cache: instant.
+exports.getSSDetails = async (req, res) => {
+  try {
+    ensureSsCredentials();
+    const { styles } = req.query;
+    if (!styles) return res.json({ details: {} });
+
+    const styleList = String(styles)
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 50);
+
+    const results = await mapWithConcurrency(styleList, 6, async (styleName) => {
+      const d = await fetchStyleDetails(styleName);
+      if (!d) return null;
+      const { priceRangeBottom, priceRangeTop } = deriveRange(d.minPrice);
+      return {
+        style: styleName,
+        priceRangeBottom,
+        priceRangeTop,
+        sizeRangeBottom: d.sizeRangeBottom,
+        sizeRangeTop: d.sizeRangeTop,
+        colorCount: d.colorCount,
+      };
+    });
+
+    const details = {};
+    for (const r of results) {
+      if (r && r.style) details[r.style] = r;
+    }
+    return res.json({ details });
+  } catch (err) {
+    console.error('getSSDetails error:', err.message);
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+// Detail page endpoint. Uses the cached per-style summary when available,
+// otherwise hits S&S directly.
 exports.getSSStyleDetail = async (req, res) => {
   try {
     ensureSsCredentials();
@@ -988,52 +990,20 @@ exports.getSSStyleDetail = async (req, res) => {
       console.warn(`[getSSStyleDetail] /styles/ lookup failed for "${styleName}":`, e.message);
     }
 
-    let detail = null;
-    // Cheap path: if the brand's bulk pricing is already cached, reuse it.
-    const cachedPricing = basicInfo ? getPricingFromCache(basicInfo.brand, basicInfo.styleName) : null;
-    if (cachedPricing) {
-      const { priceRangeBottom, priceRangeTop } = deriveRange(cachedPricing.minPrice);
-      detail = {
-        title: basicInfo.title,
-        brand: basicInfo.brand,
-        priceRangeBottom,
-        priceRangeTop,
-        sizeRangeBottom: cachedPricing.sizeRangeBottom,
-        sizeRangeTop: cachedPricing.sizeRangeTop,
-        colors: cachedPricing.colors.map((c) => c.name),
-        colorCodes: cachedPricing.colors.map((c) => (c.hex || '#CCCCCC').toUpperCase()),
-        productFrontImages: cachedPricing.colors.map((c) => c.front || null),
-        productBackImages: cachedPricing.colors.map((c) => c.back || null),
-      };
-    } else {
-      // Fall back to a single-style SKU fetch.
-      try {
-        const skus = await fetchSSProducts(styleName);
-        const summary = summarizeSsStyle(skus);
-        const { priceRangeBottom, priceRangeTop } = deriveRange(summary.minPrice);
-        detail = {
-          title: summary.title,
-          brand: summary.brand,
-          priceRangeBottom,
-          priceRangeTop,
-          sizeRangeBottom: summary.sizeRangeBottom,
-          sizeRangeTop: summary.sizeRangeTop,
-          colors: summary.colors.map((c) => c.name),
-          colorCodes: summary.colors.map((c) => (c.hex || '#CCCCCC').toUpperCase()),
-          productFrontImages: summary.colors.map((c) => c.front || null),
-          productBackImages: summary.colors.map((c) => c.back || null),
-        };
-      } catch (e) {
-        console.warn(`[getSSStyleDetail] /products/ lookup failed for "${styleName}":`, e.message);
-      }
-    }
+    const details = await fetchStyleDetails(styleName);
 
-    if (!basicInfo && !detail) {
+    if (!basicInfo && !details) {
       return res.status(404).json({ message: `Could not find style "${styleName}".` });
     }
 
-    const title = detail?.title || basicInfo?.title || styleName;
-    const brand = detail?.brand || basicInfo?.brand || 'S&S Activewear';
+    const title = details?.title || basicInfo?.title || styleName;
+    const brand = details?.brand || basicInfo?.brand || 'S&S Activewear';
+    const { priceRangeBottom, priceRangeTop } = details ? deriveRange(details.minPrice) : { priceRangeBottom: null, priceRangeTop: null };
+
+    const colors = details?.colors || [];
+    const productFrontImages = colors.length
+      ? colors.map((c) => c.front || null)
+      : (basicInfo?.image ? [basicInfo.image] : []);
 
     return res.json({
       style: styleName,
@@ -1041,17 +1011,14 @@ exports.getSSStyleDetail = async (req, res) => {
       vendor: brand,
       category: detectCategory(title),
       type: detectType(title),
-      priceRangeBottom: detail?.priceRangeBottom ?? null,
-      priceRangeTop: detail?.priceRangeTop ?? null,
-      // Real sizes when we have them, null otherwise (frontend hides the row).
-      sizeRangeBottom: detail?.sizeRangeBottom ?? null,
-      sizeRangeTop: detail?.sizeRangeTop ?? null,
-      colors: detail?.colors || [],
-      colorCodes: detail?.colorCodes || [],
-      productFrontImages: (detail?.productFrontImages && detail.productFrontImages.some(Boolean))
-        ? detail.productFrontImages
-        : (basicInfo?.image ? [basicInfo.image] : []),
-      productBackImages: detail?.productBackImages || [],
+      priceRangeBottom,
+      priceRangeTop,
+      sizeRangeBottom: details?.sizeRangeBottom ?? null,
+      sizeRangeTop: details?.sizeRangeTop ?? null,
+      colors: colors.map((c) => c.name),
+      colorCodes: colors.map((c) => (c.hex || '#CCCCCC').toUpperCase()),
+      productFrontImages,
+      productBackImages: colors.map((c) => c.back || null),
       rating: deriveRating(styleName),
       tag: deriveTag(brand, title),
       description: basicInfo?.description || `${brand} ${styleName} — ${title}`,
