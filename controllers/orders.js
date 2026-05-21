@@ -145,7 +145,7 @@ const listClients = async (req, res) => {
         clientName:     { $first: '$clientName' },
         orderCount:     { $sum: { $cond: [{ $ne: ['$status', 'cancelled'] }, 1, 0] } },
         allOrderCount:  { $sum: 1 },
-        totalRevenue:   { $sum: { $cond: [{ $ne: ['$status', 'cancelled'] }, '$totalValue', 0] } },
+        totalRevenue:   { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, '$totalValue', 0] } },
         lastOrderDate:  { $max: '$orderDate' },
         lastActivity:   { $max: '$createdAt' },
         statuses:       { $addToSet: '$status' },
