@@ -19,6 +19,8 @@ const {
   getSSDetails,
   testSSConnection,
   warmAllStylesHandler,
+  debugSSStyle,
+  dropGridfsAndStaleSync,
 } = require('../controllers/product');
 
 const { requireAdmin } = require('../middleware/auth');
@@ -29,18 +31,20 @@ router.get('/categories', getCategories);
 router.get('/types', getTypes);
 router.get('/ss/brands', getSSBrands);
 router.get('/ss/browse', browseSS);
-router.get('/ss/images', getSSImages);              // batch per-style image URL lookup
-router.get('/ss/details', getSSDetails);            // batch per-style price/size/colorCount lookup
-router.get('/ss/test', testSSConnection);           // credential + connectivity check
-router.get('/ss/style/:style', getSSStyleDetail);   // live S&S detail (fallback when sync fails)
-router.get('/style/:style', getProductByStyleCode); // Mongo → on-demand sync → live fallback
+router.get('/ss/images', getSSImages);                  // legacy fallback
+router.get('/ss/details', getSSDetails);                // Mongo-backed batch enrichment
+router.get('/ss/test', testSSConnection);
+router.get('/ss/debug', debugSSStyle);                  // ?style=X — see raw S&S responses
+router.get('/ss/style/:style', getSSStyleDetail);       // honest live fallback
+router.get('/style/:style', getProductByStyleCode);     // Mongo -> sync -> fallback
 router.get('/:id', getProductById);
 
 // Admin writes — require studio token
-router.post('/add', requireAdmin, createProduct);                          // Alpha Broder fallback
-router.post('/ss/sync', requireAdmin, syncFromSS);                         // S&S Activewear smart sync (batch)
-router.post('/ss/refresh-all', requireAdmin, refreshAllSSProductsHandler); // Nightly price+size refresh
-router.post('/ss/warm-all', requireAdmin, warmAllStylesHandler);           // Kick off full per-style catalog warm
-router.post('/import-json', requireAdmin, importFromJson);                 // PDF/ChatGPT JSON bulk import
+router.post('/add', requireAdmin, createProduct);
+router.post('/ss/sync', requireAdmin, syncFromSS);
+router.post('/ss/refresh-all', requireAdmin, refreshAllSSProductsHandler);
+router.post('/ss/warm-all', requireAdmin, warmAllStylesHandler);
+router.post('/ss/drop-gridfs', requireAdmin, dropGridfsAndStaleSync); // one-time cleanup
+router.post('/import-json', requireAdmin, importFromJson);
 
 module.exports = router;
