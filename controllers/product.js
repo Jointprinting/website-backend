@@ -36,8 +36,7 @@ function deriveTag(brand = '', styleName = '') {
 
 // Returns a real [low, high] markup range when basePrice is known. Returns
 // nulls when it isn't — calling code must decide whether to show "get a quote"
-// or hide pricing entirely. The old behaviour of fabricating $20–$28 from an
-// $8 default made every imageless style look identically priced.
+// or hide pricing entirely.
 function deriveRange(basePrice) {
   if (typeof basePrice !== 'number' || !(basePrice > 0)) {
     return { priceRangeBottom: null, priceRangeTop: null };
@@ -109,8 +108,7 @@ function ssImageUrl(relPath) {
 }
 
 // Pick whichever image-path field S&S happens to populate for this row.
-// /styles/ uses "image"; /products/ uses "colorFrontImage". Older brands
-// have surfaced styleImage / styleImageFront / frontImage too.
+// /styles/ uses "image"; /products/ uses "colorFrontImage".
 function pickSSImagePath(row) {
   if (!row) return null;
   return row.image
@@ -119,6 +117,27 @@ function pickSSImagePath(row) {
     || row.styleImageFront
     || row.frontImage
     || null;
+}
+
+// Comprehensive size order covering infant, toddler, youth, and adult sizes.
+// Lets us sort mixed apparel ranges correctly so a toddler item ends up
+// with bottom='2T' top='5/6' instead of "S - XL" garbage.
+const SS_SIZE_ORDER = [
+  'NB', '0-3M', '3-6M', '6-12M', '6M', '12M', '12-18M', '18M', '18-24M', '24M',
+  '2T', '3T', '4T', '5T', '5/6', '6T', '6/7', '7', '8', '10', '12', '14', '16', '18',
+  'XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', '2XL', '3XL', '4XL', '5XL', '6XL', '7XL', '8XL',
+  'OS', 'OSFA', 'OSFM', 'One Size',
+];
+
+function sortSizes(sizes) {
+  return [...sizes].sort((a, b) => {
+    const ai = SS_SIZE_ORDER.indexOf(a);
+    const bi = SS_SIZE_ORDER.indexOf(b);
+    if (ai === -1 && bi === -1) return a.localeCompare(b);
+    if (ai === -1) return 1;
+    if (bi === -1) return -1;
+    return ai - bi;
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -401,22 +420,14 @@ function summarizeSsStyle(skus) {
     }
   }
 
-  const sizeOrder = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '2XL', '3XL', '4XL', '5XL', '6XL'];
-  const orderedSizes = [...sizeSet].sort((a, b) => {
-    const ai = sizeOrder.indexOf(a.toUpperCase());
-    const bi = sizeOrder.indexOf(b.toUpperCase());
-    if (ai === -1 && bi === -1) return a.localeCompare(b);
-    if (ai === -1) return 1;
-    if (bi === -1) return -1;
-    return ai - bi;
-  });
+  const orderedSizes = sortSizes(sizeSet);
 
   return {
     styleName, brand,
     title: titleCandidate,
     minPrice: minPrice === Infinity ? null : minPrice,
-    sizeRangeBottom: orderedSizes[0] || 'S',
-    sizeRangeTop:    orderedSizes[orderedSizes.length - 1] || 'XL',
+    sizeRangeBottom: orderedSizes[0] || null,
+    sizeRangeTop:    orderedSizes[orderedSizes.length - 1] || null,
     colors: [...colorMap.values()],
     ssStyleID: first.styleID,
   };
@@ -436,7 +447,7 @@ async function refreshAllSSProducts() {
       await Product.updateOne(
         { style: p.style },
         { $set: { basePrice: summary.minPrice, priceRangeBottom, priceRangeTop,
-            sizeRangeBottom: summary.sizeRangeBottom, sizeRangeTop: summary.sizeRangeTop,
+            sizeRangeBottom: summary.sizeRangeBottom || 'S', sizeRangeTop: summary.sizeRangeTop || 'XL',
             rating: deriveRating(p.style), updatedAt: new Date() } }
       );
       updated++;
@@ -468,7 +479,7 @@ exports.syncFromSS = async (req, res) => {
     if (!Array.isArray(styles) || styles.length === 0) return res.status(400).json({ message: 'Provide a non-empty `styles` array.' });
     if (styles.length > 50) return res.status(400).json({ message: 'Sync at most 50 styles per request.' });
 
-    const markupNum = Number.isFinite(Number(markup)) && Number(markup) > 0 ? Number(markup) : PRICE_MARKUP;
+    const markupNum = Number.isFinite(Number(markup)) && Number(markum) > 0 ? Number(markup) : PRICE_MARKUP;
     const tagToUse  = typeof tag === 'string' && tag ? tag : 'New Arrival';
     let created = 0, updated = 0;
     const products = [], failed = [];
@@ -497,7 +508,8 @@ exports.syncFromSS = async (req, res) => {
           brandName: summary.brand, style: summary.styleName, ssStyleID: summary.ssStyleID,
           source: 'ssactivewear', basePrice: summary.minPrice,
           description: `${summary.brand} ${summary.styleName} — ${summary.title}`,
-          sizeRangeBottom: summary.sizeRangeBottom, sizeRangeTop: summary.sizeRangeTop,
+          sizeRangeBottom: summary.sizeRangeBottom || 'S',
+          sizeRangeTop:    summary.sizeRangeTop || 'XL',
           colors, colorCodes, productFrontImages, productBackImages,
           rating: deriveRating(summary.styleName), tag: tagToUse,
           category, type, priceRangeBottom, priceRangeTop,
@@ -610,21 +622,17 @@ exports.importFromJson = async (req, res) => {
 };
 
 // ─── S&S Live Browse ──────────────────────────────────────────────────────────
-const _ssCache   = new Map();
-const SS_CACHE_TTL = 4 * 60 * 60 * 1000; // 4 hours
-
-// Per-style image cache — populated lazily by the /ss/images endpoint.
-// TTL is longer than browse cache since images rarely change.
-const _ssImageCache = new Map();
-const SS_IMAGE_CACHE_TTL = 12 * 60 * 60 * 1000; // 12 hours
+const _ssCache         = new Map();
+const _ssPricingCache  = new Map();  // brand → Map<styleName, { minPrice, sizeRangeBottom, sizeRangeTop, colors, colorCount }>
+const _ssImageCache    = new Map();
+const SS_CACHE_TTL         = 4 * 60 * 60 * 1000;  // 4 hours — style metadata
+const SS_PRICING_CACHE_TTL = 4 * 60 * 60 * 1000;  // 4 hours — SKU detail (price/size/color)
+const SS_IMAGE_CACHE_TTL   = 12 * 60 * 60 * 1000; // 12 hours — image URL only
 
 async function fetchStyleImage(styleName) {
   const cached = _ssImageCache.get(styleName);
   if (cached && cached.expiresAt > Date.now()) return cached.url;
 
-  // /styles/?style=X returns one row per style (the canonical image field is
-  // literally named "image"). Using /products/ here was pulling thousands of
-  // SKU rows just to find the same image — slow and frequently timed out.
   try {
     const { data } = await ssClient.get('/styles/', {
       params: { style: styleName },
@@ -685,18 +693,101 @@ const SS_FEATURED_BRANDS = [
   'Hanes',
 ];
 
-// Fetch style-level data using /styles/ — returns one row per style (~100-500)
-// instead of /products/ which returns one row per SKU (10,000+ for large brands).
-// This is the critical fix that prevents the browse endpoint from timing out.
+// Bulk-fetch every SKU for one brand and reduce to a per-style map of
+// real pricing, size range, and color list. This is the single fetch that
+// turns the catalog from "S–XL placeholder + no price" into real data, since
+// /styles/ doesn't carry piecePrice / sizeName / colorName. The result Map
+// is tiny (one entry per style) so it caches happily in memory.
+async function fetchSSBrandPricing(brand) {
+  const cacheKey = brand;
+  const cached = _ssPricingCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.data;
+
+  let data;
+  try {
+    const resp = await ssClient.get('/products/', {
+      params: { brand },
+      timeout: 90_000, // bulk SKU list can be large for big brands like Gildan
+    });
+    data = resp.data;
+  } catch (e) {
+    console.warn(`[fetchSSBrandPricing] "${brand}" failed:`, e.message);
+    return new Map();
+  }
+
+  if (!Array.isArray(data) || data.length === 0) {
+    console.warn(`[fetchSSBrandPricing] "${brand}" returned ${Array.isArray(data) ? '0 rows' : 'non-array'}`);
+    return new Map();
+  }
+
+  // Reduce SKUs → per-style summary. Keep the raw map small.
+  const byStyle = new Map();
+  for (const sku of data) {
+    const sn = sku.styleName;
+    if (!sn) continue;
+    let entry = byStyle.get(sn);
+    if (!entry) {
+      entry = { minPrice: null, sizes: new Set(), colorMap: new Map() };
+      byStyle.set(sn, entry);
+    }
+    if (typeof sku.piecePrice === 'number' && sku.piecePrice > 0) {
+      entry.minPrice = entry.minPrice == null ? sku.piecePrice : Math.min(entry.minPrice, sku.piecePrice);
+    }
+    if (sku.sizeName) entry.sizes.add(sku.sizeName);
+    if (sku.colorName && !entry.colorMap.has(sku.colorName)) {
+      entry.colorMap.set(sku.colorName, {
+        name: sku.colorName,
+        hex: sku.color1 || '#CCCCCC',
+        front: ssImageUrl(sku.colorFrontImage),
+        back: ssImageUrl(sku.colorBackImage),
+      });
+    }
+  }
+
+  // Finalize into plain data and drop the raw SKU buffer for GC.
+  const result = new Map();
+  for (const [styleName, entry] of byStyle) {
+    const sizes = sortSizes(entry.sizes);
+    const colors = [...entry.colorMap.values()];
+    result.set(styleName, {
+      minPrice: entry.minPrice,
+      sizeRangeBottom: sizes[0] || null,
+      sizeRangeTop: sizes[sizes.length - 1] || null,
+      colors,
+      colorCount: colors.length,
+    });
+  }
+  data = null; // help GC
+
+  _ssPricingCache.set(cacheKey, { data: result, expiresAt: Date.now() + SS_PRICING_CACHE_TTL });
+  console.log(`[fetchSSBrandPricing] "${brand}" indexed ${result.size} styles`);
+  return result;
+}
+
+// Public-facing pricing lookup. Used by getSSStyleDetail to skip a slow
+// per-style /products/ call when the brand pricing map already has the answer.
+function getPricingFromCache(brand, styleName) {
+  if (!brand || !styleName) return null;
+  const bucket = _ssPricingCache.get(brand);
+  if (!bucket || bucket.expiresAt <= Date.now()) return null;
+  return bucket.data.get(styleName) || null;
+}
+
+// Fetch style-level data using /styles/, then enrich with per-style pricing
+// from the bulk /products/?brand= cache. Falls back gracefully when pricing
+// hasn't loaded yet — the catalog still renders, just without prices.
 async function fetchAndGroupSSBrand(brand) {
   const cacheKey = `brand:${brand}`;
   const cached   = _ssCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.data;
 
-  const { data } = await ssClient.get('/styles/', {
-    params: { brand },
-    timeout: 30_000,
-  });
+  // Kick off pricing fetch in parallel with the styles fetch — they're
+  // independent requests and we want both done as fast as possible.
+  const [stylesResp, pricingMap] = await Promise.all([
+    ssClient.get('/styles/', { params: { brand }, timeout: 30_000 }),
+    fetchSSBrandPricing(brand),
+  ]);
+  const data = stylesResp.data;
 
   if (!Array.isArray(data)) {
     const detail = data?.Message || data?.message || JSON.stringify(data).slice(0, 200);
@@ -709,7 +800,6 @@ async function fetchAndGroupSSBrand(brand) {
     throw new Error(`S&S returned no styles for brand "${brand}". Check SS_ACCOUNT / SS_API_KEY env vars.`);
   }
 
-  // One-time diagnostic: log all field names from the styles endpoint response
   if (!fetchAndGroupSSBrand._fieldsLogged) {
     fetchAndGroupSSBrand._fieldsLogged = true;
     console.log('[S&S /styles/ available fields]:', Object.keys(data[0]).join(', '));
@@ -720,16 +810,11 @@ async function fetchAndGroupSSBrand(brand) {
   for (const style of data) {
     const title = style.title || style.styleTitle || style.styleDescription
       || `${style.brandName || brand} ${style.styleName}`;
-    // piecePrice rarely exists at style level. When it doesn't, deriveRange
-    // returns nulls and the frontend hides the price row entirely (better
-    // than showing fake $20–$28 on every card).
-    const minPrice = typeof style.piecePrice === 'number' && style.piecePrice > 0
-      ? style.piecePrice : null;
+    const pricing = pricingMap.get(style.styleName);
+    const minPrice = pricing?.minPrice ?? null;
     const { priceRangeBottom, priceRangeTop } = deriveRange(minPrice);
     const imageUrl = ssImageUrl(pickSSImagePath(style));
 
-    // Warm the per-style cache while we're here so /ss/images doesn't have
-    // to re-fetch what we already have.
     if (imageUrl) {
       _ssImageCache.set(style.styleName, { url: imageUrl, expiresAt: Date.now() + SS_IMAGE_CACHE_TTL });
     }
@@ -742,9 +827,12 @@ async function fetchAndGroupSSBrand(brand) {
       type: detectType(title),
       priceRangeBottom,
       priceRangeTop,
-      sizeRangeBottom: style.sizeRangeBottom || 'S',
-      sizeRangeTop: style.sizeRangeTop || 'XL',
-      colorCount: style.colorCount || 0,
+      // Real ranges from SKU data, or null when pricing didn't load yet.
+      // Frontend hides the size row entirely in the null case (instead of
+      // showing a hardcoded "S - XL" that would be wrong for kids/infant items).
+      sizeRangeBottom: pricing?.sizeRangeBottom ?? null,
+      sizeRangeTop: pricing?.sizeRangeTop ?? null,
+      colorCount: pricing?.colorCount || style.colorCount || 0,
       rating: deriveRating(style.styleName),
       tag: deriveTag(style.brandName || brand, title),
       image: imageUrl,
@@ -785,7 +873,6 @@ async function fetchAllSSBrands() {
     throw new Error(`Could not load the product catalog. ${detail}`);
   }
 
-  // Sort: featured brands first (in priority order), then alphabetical by name
   allStyles.sort((a, b) => {
     const aPri = SS_FEATURED_BRANDS.findIndex((bp) => (a.vendor || '').toLowerCase().includes(bp.toLowerCase()));
     const bPri = SS_FEATURED_BRANDS.findIndex((bp) => (b.vendor || '').toLowerCase().includes(bp.toLowerCase()));
@@ -838,7 +925,6 @@ exports.getSSBrands = (_req, res) => {
   res.json({ brands: SS_POPULAR_BRANDS });
 };
 
-// Credential + connectivity check using the fast /styles/ endpoint
 exports.testSSConnection = async (req, res) => {
   const account = SS_ACCOUNT ? `${SS_ACCOUNT.slice(0, 3)}***` : '(not set)';
   const keySet  = !!SS_API_KEY;
@@ -865,14 +951,12 @@ exports.testSSConnection = async (req, res) => {
 };
 
 // Resilient style-detail endpoint used by the product page when the style
-// isn't already in MongoDB. Two-stage fetch:
-//   1. /styles/?style=X — fast, guaranteed source of title, brand, image,
-//      description, basic size range. One row per matching style.
-//   2. /products/?style=X — slow but provides SKU-level detail (per-color
-//      images, hex codes, real piece price, exact size range).
-// Either stage succeeding is enough to render a usable detail page; we only
-// 404 if both fail. Prices and colors are only emitted if /products/ gave
-// them; we never fabricate a price range just because piecePrice was missing.
+// isn't already in MongoDB. Three-stage lookup:
+//   1. /styles/?style=X — fast, guaranteed source of title/brand/image/description.
+//   2. Bulk pricing cache (filled by fetchSSBrandPricing) — if we have it
+//      for this brand already, we get pricing/sizes/colors with zero extra calls.
+//   3. /products/?style=X — slow last-resort SKU fetch when bulk pricing
+//      doesn't cover this style.
 exports.getSSStyleDetail = async (req, res) => {
   try {
     ensureSsCredentials();
@@ -898,8 +982,6 @@ exports.getSSStyleDetail = async (req, res) => {
           title,
           description: match.description || `${brand} ${match.styleName || styleName}`,
           image: ssImageUrl(pickSSImagePath(match)),
-          sizeRangeBottom: match.sizeRangeBottom || 'S',
-          sizeRangeTop: match.sizeRangeTop || 'XL',
         };
       }
     } catch (e) {
@@ -907,24 +989,43 @@ exports.getSSStyleDetail = async (req, res) => {
     }
 
     let detail = null;
-    try {
-      const skus = await fetchSSProducts(styleName);
-      const summary = summarizeSsStyle(skus);
-      const { priceRangeBottom, priceRangeTop } = deriveRange(summary.minPrice);
+    // Cheap path: if the brand's bulk pricing is already cached, reuse it.
+    const cachedPricing = basicInfo ? getPricingFromCache(basicInfo.brand, basicInfo.styleName) : null;
+    if (cachedPricing) {
+      const { priceRangeBottom, priceRangeTop } = deriveRange(cachedPricing.minPrice);
       detail = {
-        title: summary.title,
-        brand: summary.brand,
+        title: basicInfo.title,
+        brand: basicInfo.brand,
         priceRangeBottom,
         priceRangeTop,
-        sizeRangeBottom: summary.sizeRangeBottom,
-        sizeRangeTop: summary.sizeRangeTop,
-        colors: summary.colors.map((c) => c.name),
-        colorCodes: summary.colors.map((c) => (c.hex || '#CCCCCC').toUpperCase()),
-        productFrontImages: summary.colors.map((c) => c.front || null),
-        productBackImages: summary.colors.map((c) => c.back || null),
+        sizeRangeBottom: cachedPricing.sizeRangeBottom,
+        sizeRangeTop: cachedPricing.sizeRangeTop,
+        colors: cachedPricing.colors.map((c) => c.name),
+        colorCodes: cachedPricing.colors.map((c) => (c.hex || '#CCCCCC').toUpperCase()),
+        productFrontImages: cachedPricing.colors.map((c) => c.front || null),
+        productBackImages: cachedPricing.colors.map((c) => c.back || null),
       };
-    } catch (e) {
-      console.warn(`[getSSStyleDetail] /products/ lookup failed for "${styleName}":`, e.message);
+    } else {
+      // Fall back to a single-style SKU fetch.
+      try {
+        const skus = await fetchSSProducts(styleName);
+        const summary = summarizeSsStyle(skus);
+        const { priceRangeBottom, priceRangeTop } = deriveRange(summary.minPrice);
+        detail = {
+          title: summary.title,
+          brand: summary.brand,
+          priceRangeBottom,
+          priceRangeTop,
+          sizeRangeBottom: summary.sizeRangeBottom,
+          sizeRangeTop: summary.sizeRangeTop,
+          colors: summary.colors.map((c) => c.name),
+          colorCodes: summary.colors.map((c) => (c.hex || '#CCCCCC').toUpperCase()),
+          productFrontImages: summary.colors.map((c) => c.front || null),
+          productBackImages: summary.colors.map((c) => c.back || null),
+        };
+      } catch (e) {
+        console.warn(`[getSSStyleDetail] /products/ lookup failed for "${styleName}":`, e.message);
+      }
     }
 
     if (!basicInfo && !detail) {
@@ -940,11 +1041,11 @@ exports.getSSStyleDetail = async (req, res) => {
       vendor: brand,
       category: detectCategory(title),
       type: detectType(title),
-      // Only return prices when we actually computed them from real SKU data.
       priceRangeBottom: detail?.priceRangeBottom ?? null,
       priceRangeTop: detail?.priceRangeTop ?? null,
-      sizeRangeBottom: detail?.sizeRangeBottom || basicInfo?.sizeRangeBottom || 'S',
-      sizeRangeTop: detail?.sizeRangeTop || basicInfo?.sizeRangeTop || 'XL',
+      // Real sizes when we have them, null otherwise (frontend hides the row).
+      sizeRangeBottom: detail?.sizeRangeBottom ?? null,
+      sizeRangeTop: detail?.sizeRangeTop ?? null,
       colors: detail?.colors || [],
       colorCodes: detail?.colorCodes || [],
       productFrontImages: (detail?.productFrontImages && detail.productFrontImages.some(Boolean))
