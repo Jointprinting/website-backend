@@ -734,7 +734,15 @@ async function fetchAllSSBrands() {
     throw new Error(`Could not load the product catalog. ${detail}`);
   }
 
-  allStyles.sort((a, b) => a.name.localeCompare(b.name));
+  // Sort: featured brands first (in priority order), then alphabetical by name
+  allStyles.sort((a, b) => {
+    const aPri = SS_FEATURED_BRANDS.findIndex((bp) => (a.vendor || '').toLowerCase().includes(bp.toLowerCase()));
+    const bPri = SS_FEATURED_BRANDS.findIndex((bp) => (b.vendor || '').toLowerCase().includes(bp.toLowerCase()));
+    const ai = aPri === -1 ? SS_FEATURED_BRANDS.length : aPri;
+    const bi = bPri === -1 ? SS_FEATURED_BRANDS.length : bPri;
+    if (ai !== bi) return ai - bi;
+    return a.name.localeCompare(b.name);
+  });
   const data = { styles: allStyles, total: allStyles.length };
   _ssCache.set(cacheKey, { data, expiresAt: Date.now() + SS_CACHE_TTL });
   return data;
