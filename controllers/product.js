@@ -40,32 +40,26 @@ function deriveRange(basePrice) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Category-aware defaults for price + size
+//  Category-aware defaults for price + size (FreshPrints-style ballpark)
 // ─────────────────────────────────────────────────────────────────────────────
-//  When S&S's per-style SKU lookup fails (which it does often for our account
-//  against the V2 endpoint), every card would otherwise have empty fields.
-//  These defaults pin a sensible "ballpark" so the catalog is fully usable
-//  for "request a quote" browsing. They're tuned to be **above** typical
-//  blank cost and **below** plausible retail — i.e. exactly the range a
-//  customer would expect to be quoted at small order sizes (~24-48 pcs,
-//  one-color print). Examples: B+C 3001C tee ($5 blank) → $13-18; Gildan
-//  18500 hoodie ($14 blank) → $32-45.
-//
-//  Premium brands (B+C, Next Level, Alternative, District, American
-//  Apparel) get a 25% bump on the base because their blanks cost more.
+//  When S&S's per-style SKU lookup fails, every card uses these defaults so
+//  the catalog is fully usable. Real SKU pricing from /ss/details overrides
+//  them whenever it's available. Tuned to small-order pricing (~24-48 pcs,
+//  one-color print): tees $11-16, hoodies $22-28, polos $18-25, etc.
+//  Premium brands (B+C, Next Level, etc.) get a 15% bump on the base.
 // ─────────────────────────────────────────────────────────────────────────────
 const CATEGORY_DEFAULT_PRICE = {
   'T-Shirts':    { low: 11, high: 16 },
-  'Long Sleeve': { low: 17, high: 24 },
-  'Hoodies':     { low: 32, high: 45 },
-  'Crewnecks':   { low: 26, high: 36 },
-  'Zip-Ups':     { low: 42, high: 58 },
-  'Tanks':       { low: 12, high: 16 },
-  'Polos':       { low: 22, high: 30 },
-  'Jackets':     { low: 55, high: 78 },
-  'Pants':       { low: 24, high: 34 },
-  'Shorts':      { low: 20, high: 28 },
-  'Hats':        { low: 13, high: 18 },
+  'Long Sleeve': { low: 15, high: 22 },
+  'Hoodies':     { low: 22, high: 28 },
+  'Crewnecks':   { low: 20, high: 26 },
+  'Zip-Ups':     { low: 28, high: 38 },
+  'Tanks':       { low: 11, high: 15 },
+  'Polos':       { low: 18, high: 25 },
+  'Jackets':     { low: 40, high: 58 },
+  'Pants':       { low: 20, high: 28 },
+  'Shorts':      { low: 16, high: 22 },
+  'Hats':        { low: 12, high: 17 },
 };
 
 function isPremiumBrand(brand) {
@@ -75,7 +69,7 @@ function isPremiumBrand(brand) {
 
 function defaultPriceRange(category, brand) {
   const base = CATEGORY_DEFAULT_PRICE[category] || CATEGORY_DEFAULT_PRICE['T-Shirts'];
-  const mult = isPremiumBrand(brand) ? 1.25 : 1.0;
+  const mult = isPremiumBrand(brand) ? 1.15 : 1.0;
   return {
     priceRangeBottom: roundDollar(base.low * mult),
     priceRangeTop:    roundDollar(base.high * mult),
@@ -803,10 +797,6 @@ async function fetchAndGroupSSBrand(brand) {
       _ssImageCache.set(style.styleName, { url: imageUrl, expiresAt: Date.now() + SS_IMAGE_CACHE_TTL });
     }
 
-    // Every card gets a sensible category-based price + size default so the
-    // catalog is fully populated even when S&S's per-style SKU lookup fails.
-    // browseSS will override these with real numbers when the details cache
-    // has been filled by getSSDetails.
     const vendor   = style.brandName || brand;
     const category = detectCategory(title);
     const type     = detectType(title);
@@ -905,8 +895,6 @@ exports.browseSS = async (req, res) => {
     const l = Math.min(48, Math.max(1, parseInt(limit, 10)));
     const start = (p - 1) * l;
 
-    // If we have real SKU detail in the cache, override the category-based
-    // defaults. Otherwise the defaults stay so the card is still useful.
     const pageSlice = styles.slice(start, start + l).map((s) => {
       const cached = _ssDetailsCache.get(s.style);
       if (cached && cached.expiresAt > Date.now() && cached.minPrice != null) {
@@ -1079,7 +1067,6 @@ exports.getSSStyleDetail = async (req, res) => {
     const category = detectCategory(title);
     const type     = detectType(title);
 
-    // Real SKU pricing if S&S gave it to us, otherwise category-based default.
     let priceRangeBottom = null;
     let priceRangeTop    = null;
     if (details && details.minPrice != null) {
@@ -1092,7 +1079,6 @@ exports.getSSStyleDetail = async (req, res) => {
       priceRangeTop    = r.priceRangeTop;
     }
 
-    // Real sizes when we have them, otherwise category + title-aware default.
     let sizeRangeBottom = details?.sizeRangeBottom ?? null;
     let sizeRangeTop    = details?.sizeRangeTop ?? null;
     if (!sizeRangeBottom || !sizeRangeTop) {
