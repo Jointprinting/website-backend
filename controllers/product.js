@@ -98,6 +98,19 @@ function ssImageUrl(relPath) {
   return SS_CDN_BASE + relPath.replace(/^\/+/, '');
 }
 
+// Pick whichever image-path field S&S happens to populate for this row.
+// /styles/ uses "image"; /products/ uses "colorFrontImage". Older brands
+// have surfaced styleImage / styleImageFront / frontImage too.
+function pickSSImagePath(row) {
+  if (!row) return null;
+  return row.image
+    || row.colorFrontImage
+    || row.styleImage
+    || row.styleImageFront
+    || row.frontImage
+    || null;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Granular category/type detection. Order matters.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -593,18 +606,19 @@ async function fetchStyleImage(styleName) {
   const cached = _ssImageCache.get(styleName);
   if (cached && cached.expiresAt > Date.now()) return cached.url;
 
+  // /styles/?style=X returns one row per style (the canonical image field is
+  // literally named "image"). Using /products/ here was pulling thousands of
+  // SKU rows just to find the same image — slow and frequently timed out.
   try {
-    const { data } = await ssClient.get('/products/', {
+    const { data } = await ssClient.get('/styles/', {
       params: { style: styleName },
       timeout: 10_000,
     });
     const normalizedTarget = styleName.trim().toLowerCase();
     const matching = Array.isArray(data)
-      ? data.find((s) => (s.styleName || '').trim().toLowerCase() === normalizedTarget)
+      ? (data.find((s) => (s.styleName || '').trim().toLowerCase() === normalizedTarget) || data[0])
       : null;
-    const imgPath = matching?.colorFrontImage || matching?.styleImage
-      || matching?.styleImageFront || matching?.frontImage;
-    const url = imgPath ? ssImageUrl(imgPath) : null;
+    const url = ssImageUrl(pickSSImagePath(matching));
     _ssImageCache.set(styleName, { url, expiresAt: Date.now() + SS_IMAGE_CACHE_TTL });
     return url;
   } catch (_) {
@@ -694,6 +708,13 @@ async function fetchAndGroupSSBrand(brand) {
     const minPrice = typeof style.piecePrice === 'number' && style.piecePrice > 0
       ? style.piecePrice : null;
     const { priceRangeBottom, priceRangeTop } = deriveRange(minPrice);
+    const imageUrl = ssImageUrl(pickSSImagePath(style));
+
+    // Warm the per-style cache while we're here so /ss/images doesn't have
+    // to re-fetch what we already have.
+    if (imageUrl) {
+      _ssImageCache.set(style.styleName, { url: imageUrl, expiresAt: Date.now() + SS_IMAGE_CACHE_TTL });
+    }
 
     styles.push({
       style: style.styleName,
@@ -708,7 +729,7 @@ async function fetchAndGroupSSBrand(brand) {
       colorCount: style.colorCount || 0,
       rating: deriveRating(style.styleName),
       tag: deriveTag(style.brandName || brand, title),
-      image: ssImageUrl(style.colorFrontImage || style.styleImage || style.styleImageFront || style.frontImage || null),
+      image: imageUrl,
     });
   }
 
@@ -825,24 +846,96 @@ exports.testSSConnection = async (req, res) => {
   }
 };
 
+// Resilient style-detail endpoint used by the product page when the style
+// isn't already in MongoDB. Two-stage fetch:
+//   1. /styles/?style=X — fast, guaranteed source of title, brand, image,
+//      basic size range. One row per matching style.
+//   2. /products/?style=X — slow but provides SKU-level detail (per-color
+//      images, hex codes, real piece price, exact size range).
+// Either stage succeeding is enough to render a usable detail page; we only
+// 404 if both fail. This stops the page from rendering blank when /products/
+// times out (which was happening for large styles).
 exports.getSSStyleDetail = async (req, res) => {
   try {
     ensureSsCredentials();
-    const skus    = await fetchSSProducts(req.params.style);
-    const summary = summarizeSsStyle(skus);
-    const { priceRangeBottom, priceRangeTop } = deriveRange(summary.minPrice);
+    const styleName = req.params.style;
+
+    let basicInfo = null;
+    try {
+      const { data: stylesData } = await ssClient.get('/styles/', {
+        params: { style: styleName },
+        timeout: 10_000,
+      });
+      const match = Array.isArray(stylesData)
+        ? (stylesData.find((s) => (s.styleName || '').trim().toLowerCase() === styleName.trim().toLowerCase())
+            || stylesData[0])
+        : null;
+      if (match) {
+        const title = match.title || match.styleTitle || match.styleDescription
+          || `${match.brandName || ''} ${match.styleName || styleName}`.trim();
+        const brand = match.brandName || 'S&S Activewear';
+        basicInfo = {
+          styleName: match.styleName || styleName,
+          brand,
+          title,
+          description: match.description || `${brand} ${match.styleName || styleName}`,
+          image: ssImageUrl(pickSSImagePath(match)),
+          sizeRangeBottom: match.sizeRangeBottom || 'S',
+          sizeRangeTop: match.sizeRangeTop || 'XL',
+        };
+      }
+    } catch (e) {
+      console.warn(`[getSSStyleDetail] /styles/ lookup failed for "${styleName}":`, e.message);
+    }
+
+    let detail = null;
+    try {
+      const skus = await fetchSSProducts(styleName);
+      const summary = summarizeSsStyle(skus);
+      const { priceRangeBottom, priceRangeTop } = deriveRange(summary.minPrice);
+      detail = {
+        title: summary.title,
+        brand: summary.brand,
+        priceRangeBottom,
+        priceRangeTop,
+        sizeRangeBottom: summary.sizeRangeBottom,
+        sizeRangeTop: summary.sizeRangeTop,
+        colors: summary.colors.map((c) => c.name),
+        colorCodes: summary.colors.map((c) => (c.hex || '#CCCCCC').toUpperCase()),
+        productFrontImages: summary.colors.map((c) => c.front || null),
+        productBackImages: summary.colors.map((c) => c.back || null),
+      };
+    } catch (e) {
+      console.warn(`[getSSStyleDetail] /products/ lookup failed for "${styleName}":`, e.message);
+    }
+
+    if (!basicInfo && !detail) {
+      return res.status(404).json({ message: `Could not find style "${styleName}".` });
+    }
+
+    const title = detail?.title || basicInfo?.title || styleName;
+    const brand = detail?.brand || basicInfo?.brand || 'S&S Activewear';
+    const fallbackPrice = deriveRange(null);
+
     return res.json({
-      style: summary.styleName, name: summary.title, vendor: summary.brand,
-      category: detectCategory(summary.title), type: detectType(summary.title),
-      priceRangeBottom, priceRangeTop,
-      sizeRangeBottom: summary.sizeRangeBottom, sizeRangeTop: summary.sizeRangeTop,
-      colors:            summary.colors.map((c) => c.name),
-      colorCodes:        summary.colors.map((c) => (c.hex || '#CCCCCC').toUpperCase()),
-      productFrontImages: summary.colors.map((c) => c.front || null),
-      productBackImages:  summary.colors.map((c) => c.back  || null),
-      rating: deriveRating(summary.styleName),
-      tag:    deriveTag(summary.brand, summary.title),
-      description: `${summary.brand} ${summary.styleName} — ${summary.title}`,
+      style: styleName,
+      name: title,
+      vendor: brand,
+      category: detectCategory(title),
+      type: detectType(title),
+      priceRangeBottom: detail?.priceRangeBottom ?? fallbackPrice.priceRangeBottom,
+      priceRangeTop: detail?.priceRangeTop ?? fallbackPrice.priceRangeTop,
+      sizeRangeBottom: detail?.sizeRangeBottom || basicInfo?.sizeRangeBottom || 'S',
+      sizeRangeTop: detail?.sizeRangeTop || basicInfo?.sizeRangeTop || 'XL',
+      colors: detail?.colors || [],
+      colorCodes: detail?.colorCodes || [],
+      productFrontImages: (detail?.productFrontImages && detail.productFrontImages.some(Boolean))
+        ? detail.productFrontImages
+        : (basicInfo?.image ? [basicInfo.image] : []),
+      productBackImages: detail?.productBackImages || [],
+      rating: deriveRating(styleName),
+      tag: deriveTag(brand, title),
+      description: basicInfo?.description || `${brand} ${styleName} — ${title}`,
     });
   } catch (err) {
     console.error('getSSStyleDetail error:', err.message);
