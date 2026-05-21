@@ -598,8 +598,9 @@ async function fetchStyleImage(styleName) {
       params: { style: styleName },
       timeout: 10_000,
     });
-    const first = Array.isArray(data) && data.length > 0 ? data[0] : null;
-    const url = first?.colorFrontImage ? ssImageUrl(first.colorFrontImage) : null;
+    // Validate the returned SKU actually belongs to the requested style
+    const matching = Array.isArray(data) ? data.find((s) => s.styleName === styleName) : null;
+    const url = matching?.colorFrontImage ? ssImageUrl(matching.colorFrontImage) : null;
     _ssImageCache.set(styleName, { url, expiresAt: Date.now() + SS_IMAGE_CACHE_TTL });
     return url;
   } catch (_) {
