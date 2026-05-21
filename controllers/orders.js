@@ -82,16 +82,37 @@ const HISTORICAL_ORDERS = [
   { invoiceNum: 'LG-2026-1', clientName: 'Dredo', items: '25 Paragon 500 polos (Screen Printing, Turquoise), 25 Bella Canvas 3001 tees (Screen Printing, Clay), 25 SS3000 crewnecks (Screen Printing)', mockup: '', dateOfSale: '5/20/2026', cogs: 0, invoiced: 1651.19, paid: 'Unpaid', printer: '' },
 ];
 
-// POST /api/orders/seed-historical — idempotent, skips existing orderNumbers
+// POST /api/orders/seed-historical
+//   - creates orders that don't exist yet
+//   - backfills empty mockupNumbers / printerName on orders that do exist
+//     (so users who seeded before mockup parsing existed pick up the data)
 const seedHistorical = async (req, res) => {
   try {
-    let created = 0, skipped = 0;
+    let created = 0, skipped = 0, backfilled = 0;
     for (const raw of HISTORICAL_ORDERS) {
-      const exists = await Order.findOne({ orderNumber: raw.invoiceNum });
-      if (exists) { skipped++; continue; }
       const companyName = CLIENT_COMPANIES[raw.clientName] ?? '';
-      const status = _statusFromPaid(raw.paid, raw.invoiceNum);
       const mockupNumbers = _parseMockupNumbers(raw.mockup);
+      const existing = await Order.findOne({ orderNumber: raw.invoiceNum });
+
+      if (existing) {
+        const patch = {};
+        if ((!existing.mockupNumbers || existing.mockupNumbers.length === 0)
+            && mockupNumbers.length > 0) {
+          patch.mockupNumbers = mockupNumbers;
+        }
+        if (!existing.printerName && raw.printer) {
+          patch.printerName = raw.printer;
+        }
+        if (Object.keys(patch).length > 0) {
+          await Order.updateOne({ _id: existing._id }, { $set: patch });
+          backfilled++;
+        } else {
+          skipped++;
+        }
+        continue;
+      }
+
+      const status = _statusFromPaid(raw.paid, raw.invoiceNum);
       await Order.create({
         orderNumber:  raw.invoiceNum,
         clientName:   raw.clientName,
@@ -107,7 +128,7 @@ const seedHistorical = async (req, res) => {
       });
       created++;
     }
-    res.json({ created, skipped, total: HISTORICAL_ORDERS.length });
+    res.json({ created, backfilled, skipped, total: HISTORICAL_ORDERS.length });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
