@@ -55,15 +55,19 @@ db.on('error', console.error.bind(console, 'MongoDB connection error:'));
 db.once('open', () => {
   console.log('Connected to MongoDB');
 
-  // Nightly S&S price refresh
+  // One-time-per-boot cleanup: drop the legacy GridFS images bucket and any
+  // S&S products with ObjectId-based image arrays from the abandoned sync.
+  // Idempotent — running again is a no-op once everything is clean.
+  setTimeout(() => {
+    require('./controllers/product').runOneTimeCleanup()
+      .catch((e) => console.warn('[cleanup] failure:', e.message));
+  }, 2_000);
+
+  // Nightly S&S price refresh (cron) + initial /styles/ cache warm so the
+  // first visitor doesn't wait on the catalog endpoint.
   if (process.env.SS_ACCOUNT && process.env.SS_API_KEY) {
     require('./services/ssAutoSync').startSSAutoSync();
-    // Pre-warm the S&S /styles/ cache so the first visitor doesn't wait
     setTimeout(() => require('./controllers/product').warmSSCache(), 5_000);
-    // Then 30 s later kick off the full per-style warm — populates Mongo
-    // with real colors/sizes/prices/images for every popular-brand style.
-    // Runs serial in the background; safe on a 512 MB dyno.
-    setTimeout(() => require('./services/ssWarmAll').warmAllStyles(), 30_000);
   }
 
   require('./services/jpwScheduler').startJpwScheduler();
