@@ -14,7 +14,8 @@ const { getGfs } = require('../gridfs');
 //  width of the visible price range — final card shows [markup, markup × spread].
 const PRICE_MARKUP = 2.0;
 const PRICE_SPREAD = 1.2;
-const round50c = (n) => Math.max(5, Math.round(n * 2) / 2);
+// Whole-dollar rounding, $5 floor. Avoids price tags like "$13.5 – $16.5".
+const roundDollar = (n) => Math.max(5, Math.round(n));
 
 function deriveRating(styleName = '') {
   let h = 0;
@@ -38,7 +39,7 @@ function deriveRange(basePrice) {
   }
   const lo = basePrice * PRICE_MARKUP;
   const hi = lo * PRICE_SPREAD;
-  return { priceRangeBottom: round50c(lo), priceRangeTop: round50c(hi) };
+  return { priceRangeBottom: roundDollar(lo), priceRangeTop: roundDollar(hi) };
 }
 
 function extractAlphaBroderMinPrice(item) {
@@ -368,19 +369,33 @@ async function parseAlphaBroderXML(xmlString, req) {
 // ─────────────────────────────────────────────────────────────────────────────
 //  S&S Activewear — per-style SKU fetch (bounded memory, cached aggressively)
 // ─────────────────────────────────────────────────────────────────────────────
+// S&S's /products/?style= filter is loose: it can return SKUs from related or
+// unrelated styles mixed in. If we trust the raw response, summarizeSsStyle's
+// `first = skus[0]` picks the wrong style as the "representative", which then
+// poisons the cache (we saw a Kati cap's pricing+title+images stamped onto a
+// Gildan sweatshirt). Filter strictly on styleName so cross-contamination is
+// impossible.
 async function fetchSSProducts(styleName) {
   ensureSsCredentials();
-  let { data } = await ssClient.get('/products/', { params: { style: styleName } });
-  if (!Array.isArray(data) || data.length === 0) {
+  const target = String(styleName || '').trim().toLowerCase();
+  const strictFilter = (arr) => Array.isArray(arr)
+    ? arr.filter((s) => (s.styleName || '').trim().toLowerCase() === target)
+    : [];
+
+  let raw = (await ssClient.get('/products/', { params: { style: styleName } })).data;
+  let matched = strictFilter(raw);
+
+  if (matched.length === 0) {
     try {
       const retry = await ssClient.get('/products/', { params: { styleName } });
-      if (Array.isArray(retry.data) && retry.data.length > 0) data = retry.data;
+      matched = strictFilter(retry.data);
     } catch (_) { /* fall through */ }
   }
-  if (!Array.isArray(data) || data.length === 0) {
+
+  if (matched.length === 0) {
     throw new Error(`No SKUs found for style "${styleName}".`);
   }
-  return data;
+  return matched;
 }
 
 function summarizeSsStyle(skus) {
@@ -480,8 +495,8 @@ exports.syncFromSS = async (req, res) => {
         const type     = overrideType     || detectType(summary.title);
         const baseLo = (summary.minPrice || 8) * markupNum;
         const baseHi = baseLo * PRICE_SPREAD;
-        const priceRangeBottom = round50c(baseLo);
-        const priceRangeTop    = round50c(baseHi);
+        const priceRangeBottom = roundDollar(baseLo);
+        const priceRangeTop    = roundDollar(baseHi);
 
         const productFrontImages = [], productBackImages = [], colors = [], colorCodes = [];
         for (const c of summary.colors) {
@@ -611,7 +626,7 @@ exports.importFromJson = async (req, res) => {
 
 // ─── S&S Live Browse ──────────────────────────────────────────────────────────
 const _ssCache         = new Map();
-const _ssDetailsCache  = new Map();  // styleName → { minPrice, sizeRangeBottom, sizeRangeTop, colors[], colorCount, expiresAt }
+const _ssDetailsCache  = new Map();
 const _ssImageCache    = new Map();
 const SS_CACHE_TTL          = 4 * 60 * 60 * 1000;
 const SS_DETAILS_CACHE_TTL  = 12 * 60 * 60 * 1000;
@@ -680,10 +695,6 @@ const SS_FEATURED_BRANDS = [
   'Hanes',
 ];
 
-// Fetch style metadata via /styles/?brand=. This call is small (~200 styles
-// per brand, one row each) so memory is fine. Per-style pricing/sizes/colors
-// are filled in lazily via getSSDetails as the user looks at them — this
-// keeps the page-load fast and the memory footprint bounded.
 async function fetchAndGroupSSBrand(brand) {
   const cacheKey = `brand:${brand}`;
   const cached   = _ssCache.get(cacheKey);
@@ -720,10 +731,6 @@ async function fetchAndGroupSSBrand(brand) {
       _ssImageCache.set(style.styleName, { url: imageUrl, expiresAt: Date.now() + SS_IMAGE_CACHE_TTL });
     }
 
-    // Pricing and sizes are intentionally null here — they're filled lazily
-    // by the /ss/details endpoint after the catalog renders, so we don't have
-    // to bulk-fetch tens of thousands of SKUs per brand on every cold start
-    // (that crashed the 512 MB Render dyno).
     styles.push({
       style: style.styleName,
       name: title,
@@ -816,9 +823,6 @@ exports.browseSS = async (req, res) => {
     const l = Math.min(48, Math.max(1, parseInt(limit, 10)));
     const start = (p - 1) * l;
 
-    // Decorate the page slice with cached per-style details when available.
-    // Cards that don't have a cached entry yet just show no price/size and
-    // the frontend will hit /ss/details to fill them in.
     const pageSlice = styles.slice(start, start + l).map((s) => {
       const cached = _ssDetailsCache.get(s.style);
       if (cached && cached.expiresAt > Date.now()) {
@@ -871,8 +875,6 @@ exports.testSSConnection = async (req, res) => {
   }
 };
 
-// Fetch SKU-level detail for one style. Cached for 12h so repeat lookups are
-// instant. Resilient: any failure returns null so the catalog still renders.
 async function fetchStyleDetails(styleName) {
   const cached = _ssDetailsCache.get(styleName);
   if (cached && cached.expiresAt > Date.now()) return cached;
@@ -898,8 +900,6 @@ async function fetchStyleDetails(styleName) {
   }
 }
 
-// Bounded-concurrency helper: process `items` through `worker` no more than
-// `concurrency` at a time. Keeps memory + outbound socket use predictable.
 async function mapWithConcurrency(items, concurrency, worker) {
   const results = new Array(items.length);
   let cursor = 0;
@@ -916,10 +916,6 @@ async function mapWithConcurrency(items, concurrency, worker) {
   return results;
 }
 
-// Batch endpoint the catalog hits after first paint. Frontend sends the
-// styles currently on screen; backend returns per-style price + size
-// + color count for whichever ones it could fetch. Cold cache: ~10-15s for
-// 24 styles at concurrency 6. Warm cache: instant.
 exports.getSSDetails = async (req, res) => {
   try {
     ensureSsCredentials();
@@ -957,13 +953,15 @@ exports.getSSDetails = async (req, res) => {
   }
 };
 
-// Detail page endpoint. Uses the cached per-style summary when available,
-// otherwise hits S&S directly.
 exports.getSSStyleDetail = async (req, res) => {
   try {
     ensureSsCredentials();
     const styleName = req.params.style;
 
+    // basicInfo comes from /styles/?style=X which is the authoritative source
+    // for the requested style's title, brand, and description. Use that as
+    // the primary source so wrong cached SKU data can never overwrite the
+    // identity of the page.
     let basicInfo = null;
     try {
       const { data: stylesData } = await ssClient.get('/styles/', {
@@ -996,8 +994,10 @@ exports.getSSStyleDetail = async (req, res) => {
       return res.status(404).json({ message: `Could not find style "${styleName}".` });
     }
 
-    const title = details?.title || basicInfo?.title || styleName;
-    const brand = details?.brand || basicInfo?.brand || 'S&S Activewear';
+    // Prefer basicInfo for identity fields (title/brand) — these come from a
+    // style-keyed lookup. Fall back to details only if /styles/ failed.
+    const title = basicInfo?.title || details?.title || styleName;
+    const brand = basicInfo?.brand || details?.brand || 'S&S Activewear';
     const { priceRangeBottom, priceRangeTop } = details ? deriveRange(details.minPrice) : { priceRangeBottom: null, priceRangeTop: null };
 
     const colors = details?.colors || [];
