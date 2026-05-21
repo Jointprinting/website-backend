@@ -584,6 +584,57 @@ exports.importFromJson = async (req, res) => {
 const _ssCache   = new Map();
 const SS_CACHE_TTL = 4 * 60 * 60 * 1000; // 4 hours
 
+// Per-style image cache — populated lazily by the /ss/images endpoint.
+// TTL is longer than browse cache since images rarely change.
+const _ssImageCache = new Map();
+const SS_IMAGE_CACHE_TTL = 12 * 60 * 60 * 1000; // 12 hours
+
+async function fetchStyleImage(styleName) {
+  const cached = _ssImageCache.get(styleName);
+  if (cached && cached.expiresAt > Date.now()) return cached.url;
+
+  try {
+    const { data } = await ssClient.get('/products/', {
+      params: { style: styleName },
+      timeout: 10_000,
+    });
+    const first = Array.isArray(data) && data.length > 0 ? data[0] : null;
+    const url = first?.colorFrontImage ? ssImageUrl(first.colorFrontImage) : null;
+    _ssImageCache.set(styleName, { url, expiresAt: Date.now() + SS_IMAGE_CACHE_TTL });
+    return url;
+  } catch (_) {
+    return null;
+  }
+}
+
+exports.getSSImages = async (req, res) => {
+  try {
+    ensureSsCredentials();
+    const { styles } = req.query;
+    if (!styles) return res.json({ images: {} });
+
+    const styleList = String(styles).split(',').map((s) => s.trim()).filter(Boolean).slice(0, 50);
+    const results = await Promise.allSettled(
+      styleList.map(async (style) => {
+        const url = await fetchStyleImage(style);
+        return { style, url };
+      })
+    );
+
+    const images = {};
+    for (const r of results) {
+      if (r.status === 'fulfilled' && r.value.url) {
+        images[r.value.style] = r.value.url;
+      }
+    }
+
+    return res.json({ images });
+  } catch (err) {
+    console.error('getSSImages error:', err.message);
+    return res.status(500).json({ message: err.message });
+  }
+};
+
 const SS_POPULAR_BRANDS = [
   'Bella + Canvas', 'Gildan', 'Port & Company', 'Port Authority',
   'Sport-Tek', 'Next Level', 'Alternative Apparel', 'Hanes',
