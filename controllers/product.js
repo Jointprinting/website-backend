@@ -9,29 +9,15 @@ const Product = require('../models/Product');
 const { getGfs } = require('../gridfs');
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Pricing — "Starting at $X" model
+//  Pricing — "Starting at $X"
 // ─────────────────────────────────────────────────────────────────────────────
-//  One number per product, displayed as "Starting at $X". Computed from real
-//  blank cost × small markup, with a per-category minimum floor so a brand-new
-//  unsynced style still gets a sensible-looking number while we wait for the
-//  background sync to populate the real basePrice. Printing cost is NOT baked
-//  in — that's communicated to the customer separately when they request a
-//  quote, matching FreshPrints-style displayed pricing.
-
-const BLANK_MARKUP = 1.6; // basePrice × 1.6 = displayed "Starting at"
+const BLANK_MARKUP = 1.6;
 
 const CATEGORY_MIN_PRICE = {
-  'T-Shirts':    7,
-  'Long Sleeve': 9,
-  'Tanks':       7,
-  'Polos':       14,
-  'Hoodies':     16,
-  'Zip-Ups':     20,
-  'Crewnecks':   14,
-  'Jackets':     30,
-  'Pants':       14,
-  'Shorts':      11,
-  'Hats':        8,
+  'T-Shirts':    7,  'Long Sleeve': 9,  'Tanks':       7,
+  'Polos':       14, 'Hoodies':     16, 'Zip-Ups':     20,
+  'Crewnecks':   14, 'Jackets':     30, 'Pants':       14,
+  'Shorts':      11, 'Hats':        8,
 };
 
 function startingAt(basePrice, category) {
@@ -42,10 +28,6 @@ function startingAt(basePrice, category) {
   return Math.max(floor, computed);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Sensible size defaults — only used for the live fallback when we don't have
-//  real SKU data yet. Once a style is synced, real sizes from /products/ win.
-// ─────────────────────────────────────────────────────────────────────────────
 function defaultSizeRange(title, category, type) {
   const t = (title || '').toLowerCase();
   if (category === 'Hats')                                                       return { sizeRangeBottom: 'One Size', sizeRangeTop: 'One Size' };
@@ -57,7 +39,6 @@ function defaultSizeRange(title, category, type) {
   return { sizeRangeBottom: 'S', sizeRangeTop: '3XL' };
 }
 
-// Used by the detail page when S&S returns an empty `description` for a style.
 const CATEGORY_DESCRIPTIONS = {
   'T-Shirts':    'A classic short-sleeve t-shirt available in multiple colors and sizes. Perfect for screen printing or embroidery on the front, back, or sleeves.',
   'Long Sleeve': 'A versatile long-sleeve tee designed for layering or year-round wear. Ideal for custom printing or embroidery.',
@@ -115,7 +96,7 @@ function extractAlphaBroderMinPrice(item) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  S&S Activewear constants
+//  S&S constants
 // ─────────────────────────────────────────────────────────────────────────────
 const SS_API_BASE = process.env.SS_API_BASE || 'https://api.ssactivewear.com/V2';
 const SS_CDN_BASE = process.env.SS_CDN_BASE || 'https://cdn.ssactivewear.com/';
@@ -131,7 +112,7 @@ const ssClient = axios.create({
 
 function ensureSsCredentials() {
   if (!SS_ACCOUNT || !SS_API_KEY) {
-    throw new Error('S&S Activewear credentials are not configured. Set SS_ACCOUNT and SS_API_KEY env vars.');
+    throw new Error('S&S Activewear credentials are not configured.');
   }
 }
 
@@ -146,36 +127,18 @@ function pickSSImagePath(row) {
   return row.image || row.colorFrontImage || row.styleImage || row.styleImageFront || row.frontImage || null;
 }
 
-const SS_SIZE_ORDER = [
-  'NB', '0-3M', '3-6M', '6-12M', '6M', '12M', '12-18M', '18M', '18-24M', '24M',
-  '2T', '3T', '4T', '5T', '5/6', '6T', '6/7', '7', '8', '10', '12', '14', '16', '18',
-  'XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', '2XL', '3XL', '4XL', '5XL', '6XL', '7XL', '8XL',
-  'OS', 'OSFA', 'OSFM', 'One Size',
-];
-
-function sortSizes(sizes) {
-  return [...sizes].sort((a, b) => {
-    const ai = SS_SIZE_ORDER.indexOf(a);
-    const bi = SS_SIZE_ORDER.indexOf(b);
-    if (ai === -1 && bi === -1) return a.localeCompare(b);
-    if (ai === -1) return 1;
-    if (bi === -1) return -1;
-    return ai - bi;
-  });
-}
-
 function detectCategory(name = '') {
   const n = name.toLowerCase();
-  if (/(full[-\s]?zip|zip[-\s]?up)/.test(n))                                  return 'Zip-Ups';
-  if (/(hoodie|hooded)/.test(n))                                               return 'Hoodies';
-  if (/(crewneck|crew[-\s]?neck|sweatshirt|fleece|sherpa)/.test(n))           return 'Crewnecks';
-  if (/(tank|sleeveless|muscle)/.test(n))                                      return 'Tanks';
-  if (/\bpolo\b/.test(n))                                                      return 'Polos';
-  if (/(jacket|windbreaker|softshell|anorak|parka|vest|bomber|rain)/.test(n)) return 'Jackets';
-  if (/(long[-\s]?sleeve|ls\b)/.test(n))                                      return 'Long Sleeve';
-  if (/\bshort[s]?\b/.test(n))                                                 return 'Shorts';
-  if (/(pant|jogger|sweatpant|legging|trouser)/.test(n))                      return 'Pants';
-  if (/(cap|hat|beanie|trucker|snapback|bucket|visor)/.test(n))               return 'Hats';
+  if (/(full[-\s]?zip|zip[-\s]?up)/.test(n))                                   return 'Zip-Ups';
+  if (/(hoodie|hooded)/.test(n))                                                return 'Hoodies';
+  if (/(crewneck|crew[-\s]?neck|sweatshirt|fleece|sherpa)/.test(n))            return 'Crewnecks';
+  if (/(tank|sleeveless|muscle)/.test(n))                                       return 'Tanks';
+  if (/\bpolo\b/.test(n))                                                       return 'Polos';
+  if (/(jacket|windbreaker|softshell|anorak|parka|vest|bomber|rain)/.test(n))  return 'Jackets';
+  if (/(long[-\s]?sleeve|ls\b)/.test(n))                                       return 'Long Sleeve';
+  if (/\bshort[s]?\b/.test(n))                                                  return 'Shorts';
+  if (/(pant|jogger|sweatpant|legging|trouser)/.test(n))                       return 'Pants';
+  if (/(cap|hat|beanie|trucker|snapback|bucket|visor)/.test(n))                return 'Hats';
   return 'T-Shirts';
 }
 
@@ -188,7 +151,7 @@ function detectType(name = '') {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Image helpers (legacy GridFS path + new pass-through-URL path)
+//  GridFS helpers (legacy AlphaBroder path only — S&S doesn't use GridFS)
 // ─────────────────────────────────────────────────────────────────────────────
 async function uploadImageToGridFS(imageUrl) {
   if (!imageUrl) return null;
@@ -200,7 +163,7 @@ async function uploadImageToGridFS(imageUrl) {
     uploadStream.end(compressedBuffer);
     return uploadStream.id;
   } catch (err) {
-    console.error(`Error fetching image from URL: ${imageUrl}`, err.message);
+    console.error(`Error fetching image: ${imageUrl}`, err.message);
     return null;
   }
 }
@@ -216,21 +179,17 @@ async function getImageFromGridFS(imageId) {
       resolve(`data:image/webp;base64,${Buffer.concat(chunks).toString('base64')}`);
     });
     downloadStream.on('error', (err) => {
-      console.error(`Error retrieving image with ID ${imageId}:`, err.message);
+      console.error(`GridFS read failed for ${imageId}:`, err.message);
       resolve(null);
     });
   });
 }
 
-// Resolve productFrontImages/productBackImages to display-ready URLs.
-// New S&S records store CDN URLs as strings — pass through unchanged.
-// Old AlphaBroder records store GridFS ObjectIds — base64-encode them.
 async function populateImages(product) {
   const obj = product.toObject ? product.toObject() : product;
   const resolve = async (v) => {
     if (!v) return null;
     if (typeof v === 'string') return v;
-    // ObjectId or { $oid: '...' } — legacy GridFS path
     return getImageFromGridFS(v);
   };
   return {
@@ -314,7 +273,8 @@ exports.getTypes = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  AlphaBroder XML add (legacy admin path — untouched except for pricing)
+//  AlphaBroder XML add (unchanged behaviour — still uses GridFS for its own
+//  images because we have AB credentials and the path works)
 // ─────────────────────────────────────────────────────────────────────────────
 exports.createProductFromAlphaBroder = async (req, res) => {
   try {
@@ -399,259 +359,6 @@ async function parseAlphaBroderXML(xmlString, req) {
   return product;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  S&S Activewear — per-style SKU fetch (styleID primary, styleName fallback)
-// ─────────────────────────────────────────────────────────────────────────────
-//  S&S's `/v2/products/` filter accepts SKU, partNumber, styleID, styleName,
-//  or GTIN. The numeric styleID is the most reliable — we already get it from
-//  `/v2/styles/`. styleName fallbacks handle catalog rows where styleID got
-//  lost in transit.
-async function fetchSSProducts(styleName, styleID = null) {
-  ensureSsCredentials();
-  const target = String(styleName || '').trim();
-  if (!target && !styleID) throw new Error('styleName or styleID required');
-  const targetLower = target.toLowerCase();
-
-  const matchesTarget = (sku) => {
-    if (styleID != null && sku?.styleID === styleID) return true;
-    const sn = (sku?.styleName || '').trim().toLowerCase();
-    const pn = (sku?.partNumber || '').trim().toLowerCase();
-    return (target && sn === targetLower) || (target && pn === targetLower);
-  };
-
-  // Strategy 1: numeric styleID URL path (most authoritative)
-  if (styleID != null) {
-    try {
-      const { data } = await ssClient.get(`/products/${styleID}`);
-      if (Array.isArray(data) && data.length > 0) {
-        const matched = data.filter(matchesTarget);
-        if (matched.length > 0) return matched;
-      }
-    } catch (e) {
-      console.warn(`[fetchSSProducts] /products/${styleID} (styleID) failed:`, e.message);
-    }
-  }
-
-  // Strategy 2: styleName URL path
-  if (target) {
-    try {
-      const { data } = await ssClient.get(`/products/${encodeURIComponent(target)}`);
-      if (Array.isArray(data) && data.length > 0) {
-        const matched = data.filter(matchesTarget);
-        if (matched.length > 0) return matched;
-      }
-    } catch (e) {
-      console.warn(`[fetchSSProducts] /products/${target} failed:`, e.message);
-    }
-  }
-
-  // Strategy 3: query param
-  if (target) {
-    try {
-      const { data } = await ssClient.get('/products/', { params: { style: target } });
-      if (Array.isArray(data) && data.length > 0) {
-        const matched = data.filter(matchesTarget);
-        if (matched.length > 0) return matched;
-      }
-    } catch (e) {
-      console.warn(`[fetchSSProducts] /products/?style=${target} failed:`, e.message);
-    }
-  }
-
-  throw new Error(`No SKUs found for style "${target || styleID}".`);
-}
-
-function summarizeSsStyle(skus) {
-  const first = skus[0];
-  const styleName = first.styleName;
-  const brand = first.brandName;
-  const titleCandidate = first.title || first.styleTitle || first.styleDescription || `${brand} ${styleName}`;
-  const descCandidate  = first.description || first.styleDescription || null;
-
-  const colorMap = new Map();
-  const sizeSet = new Set();
-  let minPrice = Infinity;
-
-  for (const sku of skus) {
-    if (sku.sizeName) sizeSet.add(sku.sizeName);
-    if (typeof sku.piecePrice === 'number' && sku.piecePrice > 0) {
-      minPrice = Math.min(minPrice, sku.piecePrice);
-    }
-    if (sku.colorName && !colorMap.has(sku.colorName)) {
-      colorMap.set(sku.colorName, {
-        name: sku.colorName,
-        hex: sku.color1 || '#CCCCCC',
-        front: ssImageUrl(sku.colorFrontImage),
-        back:  ssImageUrl(sku.colorBackImage),
-      });
-    }
-  }
-
-  const orderedSizes = sortSizes(sizeSet);
-
-  return {
-    styleName, brand,
-    title: titleCandidate,
-    description: descCandidate,
-    minPrice: minPrice === Infinity ? null : minPrice,
-    sizeRangeBottom: orderedSizes[0] || null,
-    sizeRangeTop:    orderedSizes[orderedSizes.length - 1] || null,
-    colors: [...colorMap.values()],
-    ssStyleID: first.styleID,
-  };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Single-style sync — stores S&S CDN URLs directly (NO GridFS uploads).
-//  Memory + storage cost per style drops from ~50 MB image data to ~5 KB
-//  of strings, so the full ~5,500-style warm fits comfortably in Mongo M0.
-// ─────────────────────────────────────────────────────────────────────────────
-const _inflightSyncs = new Map();
-
-async function syncSingleStyle(styleName, opts = {}) {
-  ensureSsCredentials();
-  const skus    = await fetchSSProducts(styleName, opts.styleID || null);
-  const summary = summarizeSsStyle(skus);
-  const category = opts.overrideCategory || detectCategory(summary.title);
-  const type     = opts.overrideType     || detectType(summary.title);
-  const tag      = opts.tag || deriveTag(summary.brand, summary.styleName);
-
-  // Plain string arrays — S&S CDN URLs. No download, no Sharp, no GridFS.
-  const colors = [];
-  const colorCodes = [];
-  const productFrontImages = [];
-  const productBackImages = [];
-  for (const c of summary.colors) {
-    colors.push(c.name);
-    colorCodes.push((c.hex || '#CCCCCC').toUpperCase());
-    productFrontImages.push(c.front || null);
-    productBackImages.push(c.back || null);
-  }
-
-  const description = summary.description
-    || CATEGORY_DESCRIPTIONS[category]
-    || `${summary.brand} ${summary.styleName} — ${summary.title}`;
-
-  const update = {
-    name: summary.title,
-    vendor: summary.brand || 'S&S Activewear',
-    brandName: summary.brand,
-    style: summary.styleName,
-    ssStyleID: summary.ssStyleID,
-    source: 'ssactivewear',
-    basePrice: summary.minPrice,
-    priceFrom: startingAt(summary.minPrice, category),
-    description,
-    sizeRangeBottom: summary.sizeRangeBottom,
-    sizeRangeTop:    summary.sizeRangeTop,
-    colors, colorCodes,
-    productFrontImages, productBackImages,
-    rating: deriveRating(summary.styleName),
-    tag, category, type,
-  };
-
-  const existing = await Product.findOne({ style: summary.styleName });
-  let saved;
-  let created = false;
-  if (existing) {
-    // Preserve any admin-set priceFrom override on subsequent syncs.
-    if (existing.priceFrom && existing.priceFrom !== startingAt(existing.basePrice, existing.category)) {
-      delete update.priceFrom;
-    }
-    Object.assign(existing, update);
-    saved = await existing.save();
-  } else {
-    saved = await Product.create(update);
-    created = true;
-  }
-  return { saved, created };
-}
-
-function syncSingleStyleDeduped(styleName, opts = {}) {
-  const key = String(styleName);
-  if (_inflightSyncs.has(key)) return _inflightSyncs.get(key);
-  const p = syncSingleStyle(styleName, opts).finally(() => _inflightSyncs.delete(key));
-  _inflightSyncs.set(key, p);
-  return p;
-}
-
-exports.syncSingleStyle = syncSingleStyle;
-exports.syncSingleStyleDeduped = syncSingleStyleDeduped;
-
-async function refreshAllSSProducts() {
-  ensureSsCredentials();
-  const ssProducts = await Product.find({ source: 'ssactivewear' }).select('style ssStyleID').lean();
-  let updated = 0;
-  const failed = [];
-
-  for (const p of ssProducts) {
-    try {
-      const skus = await fetchSSProducts(p.style, p.ssStyleID || null);
-      const summary = summarizeSsStyle(skus);
-      const category = detectCategory(summary.title);
-      await Product.updateOne(
-        { style: p.style },
-        { $set: {
-            basePrice: summary.minPrice,
-            priceFrom: startingAt(summary.minPrice, category),
-            sizeRangeBottom: summary.sizeRangeBottom,
-            sizeRangeTop:    summary.sizeRangeTop,
-            updatedAt: new Date(),
-          }
-        }
-      );
-      updated++;
-    } catch (e) {
-      console.error(`[SS refresh] "${p.style}":`, e.message);
-      failed.push({ style: p.style, reason: e.message });
-    }
-    await new Promise((r) => setTimeout(r, 300));
-  }
-  return { updated, total: ssProducts.length, failed };
-}
-
-exports._refreshAllSSProducts = refreshAllSSProducts;
-
-exports.refreshAllSSProductsHandler = async (req, res) => {
-  try {
-    const results = await refreshAllSSProducts();
-    return res.status(200).json(results);
-  } catch (err) {
-    console.error('refreshAllSS error:', err);
-    return res.status(500).json({ message: err.message || 'Refresh failed.' });
-  }
-};
-
-exports.syncFromSS = async (req, res) => {
-  try {
-    ensureSsCredentials();
-    const { styles, tag, overrideCategory, overrideType } = req.body || {};
-    if (!Array.isArray(styles) || styles.length === 0) return res.status(400).json({ message: 'Provide a non-empty `styles` array.' });
-    if (styles.length > 50) return res.status(400).json({ message: 'Sync at most 50 styles per request.' });
-
-    let created = 0, updated = 0;
-    const products = [], failed = [];
-
-    for (const styleName of styles) {
-      try {
-        const { saved, created: wasCreated } = await syncSingleStyle(styleName, { tag, overrideCategory, overrideType });
-        if (wasCreated) created++; else updated++;
-        products.push({ style: saved.style, name: saved.name, vendor: saved.vendor, category: saved.category, type: saved.type });
-      } catch (e) {
-        console.error(`[SS sync] failed for "${styleName}":`, e.message);
-        failed.push({ style: styleName, reason: e.message || 'Unknown error' });
-      }
-    }
-    return res.status(200).json({ created, updated, products, failed });
-  } catch (err) {
-    console.error('syncFromSS error:', err);
-    return res.status(500).json({ message: err.message || 'S&S sync failed.' });
-  }
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Utility
-// ─────────────────────────────────────────────────────────────────────────────
 function capitalizeWords(s = '') {
   return s.split(' ').map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
 }
@@ -659,7 +366,7 @@ function capitalizeWords(s = '') {
 exports.createProduct = exports.createProductFromAlphaBroder;
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  importFromJson (admin) — untouched apart from priceFrom mapping
+//  importFromJson (admin)
 // ─────────────────────────────────────────────────────────────────────────────
 const ALLOWED_CATEGORIES = ['T-Shirts', 'Long Sleeve', 'Hoodies', 'Crewnecks', 'Zip-Ups', 'Tanks', 'Polos', 'Jackets', 'Pants', 'Shorts', 'Hats', 'Promo'];
 const ALLOWED_TYPES = ['Unisex', 'Male', 'Female', 'Kids'];
@@ -727,7 +434,14 @@ exports.importFromJson = async (req, res) => {
   }
 };
 
-// ─── S&S Live Browse ──────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+//  S&S Activewear data layer — /styles/ only (the only endpoint that works
+//  for our account; /products/ returns 404 across the board).
+//
+//  /styles/?brand=X is reliable. /styles/?style=X is BROKEN — it ignores the
+//  filter and returns the full catalog, so we never use it. Detail lookups
+//  go through brand caches we already populate.
+// ─────────────────────────────────────────────────────────────────────────────
 const _ssCache = new Map();
 const SS_CACHE_TTL = 4 * 60 * 60 * 1000;
 
@@ -739,10 +453,7 @@ const SS_POPULAR_BRANDS = [
 ];
 
 const SS_FEATURED_BRANDS = [
-  'Gildan',
-  'Bella + Canvas',
-  'Next Level',
-  'Hanes',
+  'Gildan', 'Bella + Canvas', 'Next Level', 'Hanes',
 ];
 
 exports._getSSPopularBrands = () => [...SS_POPULAR_BRANDS];
@@ -759,35 +470,38 @@ async function fetchAndGroupSSBrand(brand) {
 
   if (!Array.isArray(data)) {
     const detail = data?.Message || data?.message || JSON.stringify(data).slice(0, 200);
-    throw new Error(`S&S catalog unavailable for brand "${brand}". (${detail})`);
+    throw new Error(`S&S catalog unavailable for "${brand}". (${detail})`);
   }
   if (data.length === 0) {
-    throw new Error(`S&S returned no styles for brand "${brand}". Check SS_ACCOUNT / SS_API_KEY env vars.`);
+    throw new Error(`S&S returned no styles for "${brand}".`);
   }
 
   const styles = [];
   for (const style of data) {
-    const title = style.title || style.styleTitle || style.styleDescription
-      || `${style.brandName || brand} ${style.styleName}`;
+    const title    = style.title || style.styleTitle || style.styleDescription
+                  || `${style.brandName || brand} ${style.styleName}`;
     const imageUrl = ssImageUrl(pickSSImagePath(style));
     const vendor   = style.brandName || brand;
     const category = detectCategory(title);
     const type     = detectType(title);
     const { sizeRangeBottom, sizeRangeTop } = defaultSizeRange(title, category, type);
+    const description = style.description || CATEGORY_DESCRIPTIONS[category] || `${vendor} ${style.styleName}`;
 
     styles.push({
-      style: style.styleName,
-      styleID: style.styleID,                         // numeric, used for /products/ lookups
-      name: title,
+      style:        style.styleName,
+      styleID:      style.styleID,
+      partNumber:   style.partNumber,
+      name:         title,
       vendor,
       category,
       type,
-      priceFrom: startingAt(null, category),          // category min until sync writes real number
+      priceFrom:    startingAt(null, category),
       sizeRangeBottom, sizeRangeTop,
-      colorCount: style.colorCount || 0,
-      rating: deriveRating(style.styleName),
-      tag: deriveTag(vendor, title),
-      image: imageUrl,
+      colorCount:   style.colorCount || 0,
+      rating:       deriveRating(style.styleName),
+      tag:          deriveTag(vendor, title),
+      image:        imageUrl,
+      description,
     });
   }
 
@@ -808,17 +522,16 @@ async function fetchAllSSBrands() {
     SS_FEATURED_BRANDS.map((brand) => fetchAndGroupSSBrand(brand))
   );
 
-  const seenStyles = new Set();
-  const allStyles  = [];
-  const errors     = [];
+  const seen = new Set();
+  const allStyles = [];
+  const errors = [];
   for (const r of results) {
     if (r.status === 'fulfilled') {
       for (const s of r.value.styles) {
-        if (!seenStyles.has(s.style)) { seenStyles.add(s.style); allStyles.push(s); }
+        if (!seen.has(s.style)) { seen.add(s.style); allStyles.push(s); }
       }
     } else {
       errors.push(r.reason?.message || 'Unknown error');
-      console.error('[fetchAllSSBrands] brand failed:', r.reason?.message);
     }
   }
   if (allStyles.length === 0) {
@@ -838,6 +551,29 @@ async function fetchAllSSBrands() {
   return data;
 }
 
+// Cross-brand style finder — walks the featured brands' cached catalogs
+// first (covers ~95% of clicks), falls back to other popular brands.
+// Replaces the broken /styles/?style=X lookup.
+async function findStyleByName(styleName) {
+  const target = styleName.trim().toLowerCase();
+
+  try {
+    const all = await fetchAllSSBrands();
+    const m = all.styles.find((s) => s.style.toLowerCase() === target || (s.partNumber || '').toLowerCase() === target);
+    if (m) return m;
+  } catch (_) {}
+
+  for (const brand of SS_POPULAR_BRANDS) {
+    if (SS_FEATURED_BRANDS.includes(brand)) continue;
+    try {
+      const result = await fetchAndGroupSSBrand(brand);
+      const m = result.styles.find((s) => s.style.toLowerCase() === target || (s.partNumber || '').toLowerCase() === target);
+      if (m) return m;
+    } catch (_) {}
+  }
+  return null;
+}
+
 exports.warmSSCache = () => {
   if (!SS_ACCOUNT || !SS_API_KEY) return;
   console.log('[SS] Starting background /styles/ cache warm…');
@@ -846,15 +582,34 @@ exports.warmSSCache = () => {
     .catch((e) => console.warn('[SS] /styles/ cache warm failed:', e.message));
 };
 
-exports.warmAllStylesHandler = async (req, res) => {
-  require('../services/ssWarmAll').warmAllStyles()
-    .catch(e => console.error('[warmAll] background failure:', e.message));
-  return res.status(202).json({ message: 'Warm-all started in background. Check Render logs for progress.' });
+// ─────────────────────────────────────────────────────────────────────────────
+//  Public S&S endpoints
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getSSBrands = (_req, res) => {
+  res.json({ brands: SS_POPULAR_BRANDS });
 };
 
-// Catalog endpoint: live /styles/ data + Mongo enrichment when synced.
-// Synced styles get real priceFrom, sizes, color count, and first-color image
-// (eliminating the gray-image -> color-image flicker users saw).
+exports.testSSConnection = async (req, res) => {
+  const account = SS_ACCOUNT ? `${SS_ACCOUNT.slice(0, 3)}***` : '(not set)';
+  const keySet  = !!SS_API_KEY;
+  if (!SS_ACCOUNT || !SS_API_KEY) {
+    return res.status(200).json({ ok: false, account, keySet, error: 'Credentials missing' });
+  }
+  try {
+    const { data } = await ssClient.get('/styles/', { params: { brand: 'Gildan' }, timeout: 15_000 });
+    if (!Array.isArray(data)) {
+      return res.status(200).json({ ok: false, account, keySet, error: 'Non-array response', sample: JSON.stringify(data).slice(0, 300) });
+    }
+    return res.status(200).json({
+      ok: true, account, keySet, styleCount: data.length,
+      sampleStyle: data[0]?.styleName || null,
+      sampleStyleID: data[0]?.styleID || null,
+    });
+  } catch (err) {
+    return res.status(200).json({ ok: false, account, keySet, error: err.message });
+  }
+};
+
 exports.browseSS = async (req, res) => {
   try {
     ensureSsCredentials();
@@ -876,332 +631,302 @@ exports.browseSS = async (req, res) => {
     const start = (p - 1) * l;
     const pageSlice = styles.slice(start, start + l);
 
-    const styleNames = pageSlice.map((s) => s.style);
-    const synced = await Product.find({
-      style: { $in: styleNames },
-      source: 'ssactivewear',
-    })
-      .select('style priceFrom sizeRangeBottom sizeRangeTop colors productFrontImages ssStyleID')
-      .lean();
-    const bySN = new Map(synced.map((p) => [p.style, p]));
-
-    const enriched = pageSlice.map((s) => {
-      const m = bySN.get(s.style);
-      if (!m) return s;
-      const firstColorImg = (m.productFrontImages || []).find((v) => typeof v === 'string');
-      return {
-        ...s,
-        priceFrom:       m.priceFrom        || s.priceFrom,
-        sizeRangeBottom: m.sizeRangeBottom  || s.sizeRangeBottom,
-        sizeRangeTop:    m.sizeRangeTop     || s.sizeRangeTop,
-        colorCount:      (Array.isArray(m.colors) && m.colors.length) || s.colorCount,
-        image:           firstColorImg      || s.image,  // kills gray->color flicker
-        ssStyleID:       m.ssStyleID        || s.styleID,
-      };
-    });
-
-    return res.json({ products: enriched, total, page: p, totalPages: Math.ceil(total / l) });
+    return res.json({ products: pageSlice, total, page: p, totalPages: Math.ceil(total / l) });
   } catch (err) {
     console.error('browseSS error:', err.message);
     return res.status(500).json({ message: err.message || 'Browse failed.' });
   }
 };
 
-exports.getSSBrands = (_req, res) => {
-  res.json({ brands: SS_POPULAR_BRANDS });
-};
-
-exports.testSSConnection = async (req, res) => {
-  const account = SS_ACCOUNT ? `${SS_ACCOUNT.slice(0, 3)}***` : '(not set)';
-  const keySet  = !!SS_API_KEY;
-  if (!SS_ACCOUNT || !SS_API_KEY) {
-    return res.status(200).json({ ok: false, account, keySet, error: 'Credentials missing' });
-  }
-  try {
-    const { data } = await ssClient.get('/styles/', { params: { brand: 'Gildan' }, timeout: 15_000 });
-    if (!Array.isArray(data)) {
-      return res.status(200).json({ ok: false, account, keySet, error: 'S&S returned non-array', sample: JSON.stringify(data).slice(0, 300) });
-    }
-    return res.status(200).json({
-      ok: true, account, keySet,
-      styleCount: data.length,
-      sampleStyle: data[0]?.styleName || null,
-      sampleStyleID: data[0]?.styleID || null,
-      sampleFields: data[0] ? Object.keys(data[0]).slice(0, 15) : [],
-    });
-  } catch (err) {
-    return res.status(200).json({ ok: false, account, keySet, error: err.message });
-  }
-};
-
-// Diagnostic endpoint for debugging when /products/?style=X returns nothing.
-// Visit /api/products/ss/debug?style=G500 in browser; paste the JSON back to
-// me and I can see exactly what S&S returns for each strategy.
-exports.debugSSStyle = async (req, res) => {
-  try {
-    ensureSsCredentials();
-    const style = String(req.query.style || '').trim();
-    if (!style) return res.status(400).json({ message: 'Provide ?style=X' });
-
-    const report = { style, attempts: [] };
-
-    // Attempt 1: /styles/?style=X
-    try {
-      const { data } = await ssClient.get('/styles/', { params: { style }, timeout: 10_000 });
-      report.attempts.push({
-        endpoint: '/styles/?style=' + style,
-        rowCount: Array.isArray(data) ? data.length : 'non-array',
-        firstRow: Array.isArray(data) && data[0] ? {
-          styleID:    data[0].styleID,
-          styleName:  data[0].styleName,
-          partNumber: data[0].partNumber,
-          brandName:  data[0].brandName,
-          title:      data[0].title,
-          fields:     Object.keys(data[0]).slice(0, 20),
-        } : null,
-      });
-
-      const match = Array.isArray(data) ? data.find((r) => (r.styleName || '').toLowerCase() === style.toLowerCase()) || data[0] : null;
-      const styleID = match?.styleID;
-
-      // Attempt 2: /products/{styleID}
-      if (styleID) {
-        try {
-          const r = await ssClient.get(`/products/${styleID}`, { timeout: 15_000 });
-          report.attempts.push({
-            endpoint: '/products/' + styleID + ' (styleID)',
-            rowCount: Array.isArray(r.data) ? r.data.length : 'non-array',
-            firstRow: Array.isArray(r.data) && r.data[0] ? {
-              styleID:    r.data[0].styleID,
-              styleName:  r.data[0].styleName,
-              partNumber: r.data[0].partNumber,
-              sku:        r.data[0].sku,
-              colorName:  r.data[0].colorName,
-              sizeName:   r.data[0].sizeName,
-              piecePrice: r.data[0].piecePrice,
-              colorFrontImage: r.data[0].colorFrontImage,
-              fields:     Object.keys(r.data[0]).slice(0, 25),
-            } : null,
-          });
-        } catch (e) {
-          report.attempts.push({ endpoint: '/products/' + styleID, error: e.message });
-        }
-      }
-
-      // Attempt 3: /products/{styleName}
-      try {
-        const r = await ssClient.get(`/products/${encodeURIComponent(style)}`, { timeout: 15_000 });
-        report.attempts.push({
-          endpoint: '/products/' + style + ' (styleName)',
-          rowCount: Array.isArray(r.data) ? r.data.length : 'non-array',
-          firstRow: Array.isArray(r.data) && r.data[0] ? {
-            styleID:    r.data[0].styleID,
-            styleName:  r.data[0].styleName,
-            partNumber: r.data[0].partNumber,
-          } : null,
-        });
-      } catch (e) {
-        report.attempts.push({ endpoint: '/products/' + style, error: e.message });
-      }
-
-      // Attempt 4: /products/?style=X
-      try {
-        const r = await ssClient.get('/products/', { params: { style }, timeout: 15_000 });
-        report.attempts.push({
-          endpoint: '/products/?style=' + style,
-          rowCount: Array.isArray(r.data) ? r.data.length : 'non-array',
-          firstRow: Array.isArray(r.data) && r.data[0] ? {
-            styleID:    r.data[0].styleID,
-            styleName:  r.data[0].styleName,
-            partNumber: r.data[0].partNumber,
-          } : null,
-        });
-      } catch (e) {
-        report.attempts.push({ endpoint: '/products/?style=' + style, error: e.message });
-      }
-    } catch (e) {
-      report.attempts.push({ endpoint: '/styles/?style=' + style, error: e.message });
-    }
-
-    return res.json(report);
-  } catch (err) {
-    return res.status(500).json({ message: err.message });
-  }
-};
-
-// One-time cleanup: drop the GridFS images bucket and remove any S&S products
-// whose image arrays are still ObjectId-based (from the failed pre-warm
-// attempts). Admin-only. Free Mongo M0 reclaims the space afterwards.
-exports.dropGridfsAndStaleSync = async (req, res) => {
-  try {
-    let droppedFiles = 0;
-    let droppedChunks = 0;
-    let deletedProducts = 0;
-
-    try {
-      const db = mongoose.connection.db;
-      const filesCount = await db.collection('images.files').countDocuments();
-      const chunksCount = await db.collection('images.chunks').countDocuments();
-      await db.collection('images.files').drop().catch(() => {});
-      await db.collection('images.chunks').drop().catch(() => {});
-      droppedFiles = filesCount;
-      droppedChunks = chunksCount;
-    } catch (e) {
-      console.warn('[dropGridfs] bucket drop failed (may already be empty):', e.message);
-    }
-
-    // Re-sync any product whose images aren't all strings now.
-    const stale = await Product.find({ source: 'ssactivewear' }).select('style productFrontImages').lean();
-    const toDelete = stale.filter((p) =>
-      (p.productFrontImages || []).some((v) => v != null && typeof v !== 'string')
-    );
-    if (toDelete.length) {
-      const result = await Product.deleteMany({ _id: { $in: toDelete.map((p) => p._id) } });
-      deletedProducts = result.deletedCount || 0;
-    }
-
-    return res.status(200).json({ droppedFiles, droppedChunks, deletedProducts });
-  } catch (err) {
-    console.error('dropGridfsAndStaleSync error:', err);
-    return res.status(500).json({ message: err.message });
-  }
-};
-
-// Detail page handler: Mongo first → on-demand sync if missing → honest live
-// fallback (real /styles/ info, no faked colors/prices).
+// Detail handler — Mongo override first (admin-curated), then /styles/
+// brand-cache lookup. NO sync attempt on /products/ since that endpoint
+// returns 404 for our account. Returns dataQuality:'styles-only' so the
+// frontend can show a 'live colors come at quote time' note.
 exports.getProductByStyleCode = async (req, res) => {
   try {
     const styleName = req.params.style;
 
-    const existing = await Product.findOne({ style: styleName });
-    if (existing) {
-      return res.status(200).json(await populateImages(existing));
+    const stored = await Product.findOne({ style: styleName });
+    if (stored) {
+      return res.status(200).json(await populateImages(stored));
     }
 
-    // Look up styleID from /styles/ so the sync's /products/ call has the
-    // most reliable identifier available.
-    let styleID = null;
-    try {
-      const { data } = await ssClient.get('/styles/', { params: { style: styleName }, timeout: 10_000 });
-      const match = Array.isArray(data)
-        ? data.find((s) => (s.styleName || '').toLowerCase() === styleName.toLowerCase()) || data[0]
-        : null;
-      styleID = match?.styleID || null;
-    } catch (_) {}
-
-    try {
-      const { saved } = await syncSingleStyleDeduped(styleName, { styleID });
-      if (saved) {
-        return res.status(200).json(await populateImages(saved));
-      }
-    } catch (e) {
-      console.warn(`[getProductByStyleCode] sync failed for "${styleName}":`, e.message);
+    const match = await findStyleByName(styleName);
+    if (!match) {
+      return res.status(404).json({ message: `Could not find style "${styleName}".` });
     }
 
-    return exports.getSSStyleDetail(req, res);
+    return res.json({
+      style:               match.style,
+      ssStyleID:           match.styleID,
+      name:                match.name,
+      vendor:              match.vendor,
+      category:            match.category,
+      type:                match.type,
+      priceFrom:           match.priceFrom,
+      sizeRangeBottom:     match.sizeRangeBottom,
+      sizeRangeTop:        match.sizeRangeTop,
+      colors:              [],
+      colorCodes:          [],
+      productFrontImages:  match.image ? [match.image] : [],
+      productBackImages:   [],
+      colorCount:          match.colorCount,
+      rating:              match.rating,
+      tag:                 match.tag,
+      description:         match.description,
+      dataQuality:         'styles-only',
+    });
   } catch (err) {
     console.error('getProductByStyleCode error:', err);
     return res.status(500).json({ message: err.message || 'Could not load product.' });
   }
 };
 
-// Honest live fallback. Returns title/brand/image/description from /styles/.
-// NO fake colors. priceFrom comes from category minimum.
-exports.getSSStyleDetail = async (req, res) => {
+// Alias: same as the Mongo-aware detail handler.
+exports.getSSStyleDetail = exports.getProductByStyleCode;
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  syncFromSS — kept for the day S&S unlocks /products/ for this account.
+//  Tries the per-style fetch; throws on 404 (which is what happens today).
+// ─────────────────────────────────────────────────────────────────────────────
+async function fetchSSProducts(styleName, styleID = null) {
+  ensureSsCredentials();
+  const target = String(styleName || '').trim();
+  if (!target && !styleID) throw new Error('styleName or styleID required');
+
+  if (styleID != null) {
+    try {
+      const { data } = await ssClient.get(`/products/${styleID}`);
+      if (Array.isArray(data) && data.length > 0) return data;
+    } catch (e) { /* fall through to next strategy */ }
+  }
+  if (target) {
+    try {
+      const { data } = await ssClient.get(`/products/${encodeURIComponent(target)}`);
+      if (Array.isArray(data) && data.length > 0) return data;
+    } catch (e) { /* fall through */ }
+  }
+  if (target) {
+    try {
+      const { data } = await ssClient.get('/products/', { params: { style: target } });
+      if (Array.isArray(data) && data.length > 0) return data;
+    } catch (e) { /* fall through */ }
+  }
+  throw new Error(`No SKUs available for "${target || styleID}" (S&S /products/ is currently unavailable for this account).`);
+}
+
+function summarizeSsStyle(skus) {
+  const first = skus[0];
+  const colorMap = new Map();
+  const sizeSet = new Set();
+  let minPrice = Infinity;
+  for (const sku of skus) {
+    if (sku.sizeName) sizeSet.add(sku.sizeName);
+    if (typeof sku.piecePrice === 'number' && sku.piecePrice > 0) {
+      minPrice = Math.min(minPrice, sku.piecePrice);
+    }
+    if (sku.colorName && !colorMap.has(sku.colorName)) {
+      colorMap.set(sku.colorName, {
+        name: sku.colorName,
+        hex: sku.color1 || '#CCCCCC',
+        front: ssImageUrl(sku.colorFrontImage),
+        back:  ssImageUrl(sku.colorBackImage),
+      });
+    }
+  }
+  const sortedSizes = [...sizeSet].sort();
+  return {
+    styleName: first.styleName,
+    brand: first.brandName,
+    title: first.title || first.styleTitle || `${first.brandName} ${first.styleName}`,
+    description: first.description || null,
+    minPrice: minPrice === Infinity ? null : minPrice,
+    sizeRangeBottom: sortedSizes[0] || null,
+    sizeRangeTop:    sortedSizes[sortedSizes.length - 1] || null,
+    colors: [...colorMap.values()],
+    ssStyleID: first.styleID,
+  };
+}
+
+exports.syncFromSS = async (req, res) => {
   try {
     ensureSsCredentials();
-    const styleName = req.params.style;
+    const { styles, tag } = req.body || {};
+    if (!Array.isArray(styles) || styles.length === 0) return res.status(400).json({ message: 'Provide a non-empty `styles` array.' });
 
-    const { data: stylesData } = await ssClient.get('/styles/', { params: { style: styleName }, timeout: 10_000 });
-    const match = Array.isArray(stylesData)
-      ? (stylesData.find((s) => (s.styleName || '').trim().toLowerCase() === styleName.trim().toLowerCase()) || stylesData[0])
-      : null;
-
-    if (!match) return res.status(404).json({ message: `Could not find style "${styleName}".` });
-
-    const title = match.title || match.styleTitle || match.styleDescription || `${match.brandName || ''} ${match.styleName || styleName}`.trim();
-    const brand = match.brandName || 'S&S Activewear';
-    const category = detectCategory(title);
-    const type = detectType(title);
-    const { sizeRangeBottom, sizeRangeTop } = defaultSizeRange(title, category, type);
-    const description = match.description || CATEGORY_DESCRIPTIONS[category] || `${brand} ${styleName}`;
-    const imageUrl = ssImageUrl(pickSSImagePath(match));
-
-    return res.json({
-      style: match.styleName || styleName,
-      ssStyleID: match.styleID,
-      name: title,
-      vendor: brand,
-      category,
-      type,
-      priceFrom: startingAt(null, category),
-      sizeRangeBottom,
-      sizeRangeTop,
-      colorCount: match.colorCount || 0,
-      colors: [],
-      colorCodes: [],
-      productFrontImages: imageUrl ? [imageUrl] : [],
-      productBackImages: [],
-      rating: deriveRating(styleName),
-      tag: deriveTag(brand, title),
-      description,
-      // Honest signal so the frontend can show "request a quote" instead of
-      // pretending we have full data.
-      dataQuality: 'fallback',
-    });
-  } catch (err) {
-    console.error('getSSStyleDetail error:', err.message);
-    return res.status(500).json({ message: err.message || 'Could not fetch style detail.' });
-  }
-};
-
-// Kept for backward-compat with frontend's lazy /ss/details fetch. Now reads
-// from Mongo only (no live S&S retry — that's what /ss/style/:style handles).
-exports.getSSDetails = async (req, res) => {
-  try {
-    const { styles } = req.query;
-    if (!styles) return res.json({ details: {} });
-    const styleList = String(styles).split(',').map((s) => s.trim()).filter(Boolean).slice(0, 50);
-    const synced = await Product.find({ style: { $in: styleList }, source: 'ssactivewear' })
-      .select('style priceFrom sizeRangeBottom sizeRangeTop colors productFrontImages')
-      .lean();
-    const details = {};
-    for (const m of synced) {
-      const firstColorImg = (m.productFrontImages || []).find((v) => typeof v === 'string');
-      details[m.style] = {
-        style: m.style,
-        priceFrom: m.priceFrom,
-        sizeRangeBottom: m.sizeRangeBottom,
-        sizeRangeTop: m.sizeRangeTop,
-        colorCount: Array.isArray(m.colors) ? m.colors.length : 0,
-        image: firstColorImg || null,
-      };
+    let created = 0, updated = 0;
+    const products = [], failed = [];
+    for (const styleName of styles) {
+      try {
+        const skus = await fetchSSProducts(styleName);
+        const summary = summarizeSsStyle(skus);
+        const category = detectCategory(summary.title);
+        const update = {
+          name: summary.title, vendor: summary.brand || 'S&S Activewear',
+          brandName: summary.brand, style: summary.styleName, ssStyleID: summary.ssStyleID,
+          source: 'ssactivewear', basePrice: summary.minPrice,
+          priceFrom: startingAt(summary.minPrice, category),
+          description: summary.description || CATEGORY_DESCRIPTIONS[category] || `${summary.brand} ${summary.styleName}`,
+          sizeRangeBottom: summary.sizeRangeBottom, sizeRangeTop: summary.sizeRangeTop,
+          colors: summary.colors.map((c) => c.name),
+          colorCodes: summary.colors.map((c) => (c.hex || '#CCCCCC').toUpperCase()),
+          productFrontImages: summary.colors.map((c) => c.front || null),
+          productBackImages:  summary.colors.map((c) => c.back  || null),
+          rating: deriveRating(summary.styleName),
+          tag: tag || deriveTag(summary.brand, summary.styleName),
+          category, type: detectType(summary.title),
+        };
+        const existing = await Product.findOne({ style: summary.styleName });
+        let saved;
+        if (existing) { Object.assign(existing, update); saved = await existing.save(); updated++; }
+        else { saved = await Product.create(update); created++; }
+        products.push({ style: saved.style, name: saved.name });
+      } catch (e) {
+        failed.push({ style: styleName, reason: e.message });
+      }
     }
-    return res.json({ details });
+    return res.status(200).json({ created, updated, products, failed });
   } catch (err) {
-    console.error('getSSDetails error:', err.message);
     return res.status(500).json({ message: err.message });
   }
 };
 
-// Image lookup kept for any old frontend calls to /ss/images. Just returns
-// Mongo's first-color URL for each synced style; missing-style returns null.
+exports.refreshAllSSProductsHandler = async (req, res) => {
+  // /products/ doesn't work for our account; nothing to refresh per-SKU.
+  // Just refresh the /styles/ caches.
+  _ssCache.clear();
+  try {
+    const data = await fetchAllSSBrands();
+    return res.status(200).json({ message: 'Catalog caches refreshed.', styleCount: data.total });
+  } catch (e) {
+    return res.status(500).json({ message: e.message });
+  }
+};
+
+// Backwards-compat batch endpoints used by the catalog. Now both read from
+// the brand caches (no /products/ calls anywhere).
 exports.getSSImages = async (req, res) => {
   try {
     const { styles } = req.query;
     if (!styles) return res.json({ images: {} });
     const styleList = String(styles).split(',').map((s) => s.trim()).filter(Boolean).slice(0, 50);
-    const synced = await Product.find({ style: { $in: styleList }, source: 'ssactivewear' })
-      .select('style productFrontImages')
-      .lean();
-    const images = {};
-    for (const m of synced) {
-      const first = (m.productFrontImages || []).find((v) => typeof v === 'string');
-      if (first) images[m.style] = first;
+    const out = {};
+    for (const s of styleList) {
+      const m = await findStyleByName(s);
+      if (m && m.image) out[s] = m.image;
     }
-    return res.json({ images });
+    return res.json({ images: out });
   } catch (err) {
-    console.error('getSSImages error:', err.message);
     return res.status(500).json({ message: err.message });
   }
+};
+
+exports.getSSDetails = async (req, res) => {
+  try {
+    const { styles } = req.query;
+    if (!styles) return res.json({ details: {} });
+    const styleList = String(styles).split(',').map((s) => s.trim()).filter(Boolean).slice(0, 50);
+    const out = {};
+    for (const s of styleList) {
+      const m = await findStyleByName(s);
+      if (m) {
+        out[s] = {
+          style: s,
+          priceFrom: m.priceFrom,
+          sizeRangeBottom: m.sizeRangeBottom,
+          sizeRangeTop: m.sizeRangeTop,
+          colorCount: m.colorCount,
+          image: m.image,
+        };
+      }
+    }
+    return res.json({ details: out });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+// Debug endpoint kept (read-only) so future S&S tweaks can be verified.
+exports.debugSSStyle = async (req, res) => {
+  try {
+    ensureSsCredentials();
+    const style = String(req.query.style || '').trim();
+    if (!style) return res.status(400).json({ message: 'Provide ?style=X' });
+    const cacheHit = await findStyleByName(style);
+    return res.json({
+      style,
+      cacheHit: cacheHit ? {
+        styleID:    cacheHit.styleID,
+        styleName:  cacheHit.style,
+        partNumber: cacheHit.partNumber,
+        vendor:     cacheHit.vendor,
+        name:       cacheHit.name,
+        category:   cacheHit.category,
+        colorCount: cacheHit.colorCount,
+        image:      cacheHit.image,
+      } : null,
+      note: 'S&S /products/ returns 404 for our account, so per-color SKU data is not available. Catalog uses /styles/ data only.',
+    });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  One-time on-boot cleanup — runs idempotently each startup, dropping the
+//  old GridFS image bucket and removing S&S products whose images are still
+//  ObjectIds (from the abandoned sync attempt). Free Mongo M0 reclaims the
+//  space and the catalog stays clean. Idempotent: collections-already-gone
+//  and zero-products-to-delete are no-ops.
+// ─────────────────────────────────────────────────────────────────────────────
+async function runOneTimeCleanup() {
+  try {
+    const db = mongoose.connection.db;
+    if (!db) return;
+
+    // Drop the legacy GridFS bucket if it exists.
+    const cols = await db.listCollections({}).toArray();
+    const colNames = cols.map((c) => c.name);
+    for (const name of ['images.files', 'images.chunks']) {
+      if (colNames.includes(name)) {
+        try {
+          await db.collection(name).drop();
+          console.log(`[cleanup] dropped ${name}`);
+        } catch (_) {}
+      }
+    }
+
+    // Remove S&S products whose first image entry is an ObjectId rather than
+    // a URL string — those are stale from the abandoned sync.
+    const result = await Product.deleteMany({
+      source: 'ssactivewear',
+      $or: [
+        { 'productFrontImages.0': { $type: 'objectId' } },
+        { 'productBackImages.0':  { $type: 'objectId' } },
+      ],
+    });
+    if (result.deletedCount) {
+      console.log(`[cleanup] removed ${result.deletedCount} stale S&S products with ObjectId images`);
+    }
+  } catch (e) {
+    console.warn('[cleanup] non-fatal failure:', e.message);
+  }
+}
+
+exports.runOneTimeCleanup = runOneTimeCleanup;
+
+// Manual admin trigger kept so you can re-run from a button later if needed,
+// but the work happens automatically at boot now.
+exports.dropGridfsAndStaleSync = async (req, res) => {
+  await runOneTimeCleanup();
+  return res.status(200).json({ message: 'Cleanup complete.' });
+};
+
+// No-op warmAll — kept as a route handler so the old admin button doesn't
+// 404, but /products/ doesn't work for us so there's nothing to warm
+// beyond the /styles/ cache that warmSSCache already handles.
+exports.warmAllStylesHandler = async (req, res) => {
+  return res.status(200).json({
+    message: 'Per-style warm is disabled (S&S /products/ is unavailable for this account). /styles/ caches are kept fresh automatically every 4 hours.',
+  });
 };
