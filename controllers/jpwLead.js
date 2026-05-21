@@ -564,11 +564,13 @@ async function sweepPlaces(req, res) {
       }
     }
 
-    // Async — returns immediately with the queued pair count. The actual
-    // work runs via setImmediate; the frontend polls /search/sweep/status
-    // to render live progress.
+    // When `max` isn't provided in the body, pass `undefined` through so
+    // startSweepInBackground computes it from the remaining daily API
+    // budget (typically ~100 pairs at the start of a day). The old
+    // `parseInt(max) || 30` was silently capping every sweep at 30, which
+    // is why the user's "exhaust the budget" goal wasn't working.
     const result = await startSweepInBackground({
-      maxSearches: parseInt(max, 10) || 30,
+      maxSearches: (max === undefined || max === null || max === '') ? undefined : parseInt(max, 10),
       pairs,
     });
     res.json(result);
