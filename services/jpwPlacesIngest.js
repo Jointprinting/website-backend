@@ -538,9 +538,11 @@ async function startSweepInBackground({ maxSearches = null, pairs = null, pagesP
   if (maxSearches === null || maxSearches === undefined) {
     const usage = await getTodayUsage();
     const remainingCalls = Math.max(0, PLACES_DAILY_CAP - usage.places_calls);
-    const callsPerPair = 3;
-    // Hard cap of 200 just means "no artificial cap" — daily budget
-    // dictates the real ceiling.
+    // Estimate aggressively (2 calls/pair). Actual averages ~2.5, so the
+    // sweep loop will halt naturally a bit before the cap when budget is
+    // truly exhausted. Goal: a single daily click fully consumes the API
+    // budget instead of leaving 30-40% on the table.
+    const callsPerPair = 2;
     cap = Math.min(Math.max(Math.floor(remainingCalls / callsPerPair), 1), 200);
   } else {
     cap = Math.min(Math.max(parseInt(maxSearches, 10) || 30, 1), 200);
