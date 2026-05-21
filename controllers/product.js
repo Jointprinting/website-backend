@@ -10,11 +10,8 @@ const { getGfs } = require('../gridfs');
 // ─────────────────────────────────────────────────────────────────────────────
 //  Pricing config
 // ─────────────────────────────────────────────────────────────────────────────
-//  Markup is the cost multiplier (final blank ≈ cost × markup). Spread is the
-//  width of the visible price range — final card shows [markup, markup × spread].
 const PRICE_MARKUP = 2.0;
 const PRICE_SPREAD = 1.2;
-// Whole-dollar rounding, $5 floor. Avoids price tags like "$13.5 – $16.5".
 const roundDollar = (n) => Math.max(5, Math.round(n));
 
 function deriveRating(styleName = '') {
@@ -367,35 +364,70 @@ async function parseAlphaBroderXML(xmlString, req) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  S&S Activewear — per-style SKU fetch (bounded memory, cached aggressively)
+//  S&S Activewear — per-style SKU fetch
 // ─────────────────────────────────────────────────────────────────────────────
-// S&S's /products/?style= filter is loose: it can return SKUs from related or
-// unrelated styles mixed in. If we trust the raw response, summarizeSsStyle's
-// `first = skus[0]` picks the wrong style as the "representative", which then
-// poisons the cache (we saw a Kati cap's pricing+title+images stamped onto a
-// Gildan sweatshirt). Filter strictly on styleName so cross-contamination is
-// impossible.
+// S&S V2 supports two ways to fetch SKUs for one style:
+//   1. GET /v2/products/{identifier}  — URL path, accepts styleName / partNumber
+//      / styleID / SKU. This is the documented, scoped-to-one-style version.
+//   2. GET /v2/products/?style=X      — query filter. Behaviour varies; we've
+//      seen it return SKUs from unrelated styles mixed in.
+//
+// We try (1) first. If it fails or returns nothing, we fall back to (2) with
+// a relaxed filter that matches styleName OR partNumber (S&S sometimes stores
+// the user-facing code in partNumber and the SS-internal name in styleName,
+// e.g. partNumber="12500", styleName="G185000" for the same Gildan style).
+//
+// Diagnostic logging on the first call so we can see what S&S actually
+// returns when matches fail — easier to debug from Render logs than guessing.
 async function fetchSSProducts(styleName) {
   ensureSsCredentials();
-  const target = String(styleName || '').trim().toLowerCase();
-  const strictFilter = (arr) => Array.isArray(arr)
-    ? arr.filter((s) => (s.styleName || '').trim().toLowerCase() === target)
-    : [];
+  const target = String(styleName || '').trim();
+  if (!target) throw new Error('styleName required');
+  const targetLower = target.toLowerCase();
 
-  let raw = (await ssClient.get('/products/', { params: { style: styleName } })).data;
-  let matched = strictFilter(raw);
+  const matchesTarget = (sku) => {
+    const sn = (sku?.styleName || '').trim().toLowerCase();
+    const pn = (sku?.partNumber || '').trim().toLowerCase();
+    return sn === targetLower || pn === targetLower;
+  };
 
-  if (matched.length === 0) {
-    try {
-      const retry = await ssClient.get('/products/', { params: { styleName } });
-      matched = strictFilter(retry.data);
-    } catch (_) { /* fall through */ }
+  // Strategy 1: URL path (canonical, scoped).
+  try {
+    const { data } = await ssClient.get(`/products/${encodeURIComponent(target)}`);
+    if (Array.isArray(data) && data.length > 0) {
+      // URL path is supposed to be tightly scoped — if it returned anything,
+      // it's almost certainly for the requested style. But still apply a
+      // sanity filter; if zero rows match the requested style, fall through.
+      const matched = data.filter(matchesTarget);
+      if (matched.length > 0) return matched;
+      if (!fetchSSProducts._urlPathLogged) {
+        fetchSSProducts._urlPathLogged = true;
+        console.log(`[fetchSSProducts] /products/${target} returned ${data.length} rows but none matched styleName/partNumber.`,
+          `Sample row keys: ${Object.keys(data[0]).slice(0, 12).join(', ')}.`,
+          `Sample styleName="${data[0]?.styleName}", partNumber="${data[0]?.partNumber}".`);
+      }
+    }
+  } catch (e) {
+    console.warn(`[fetchSSProducts] path /products/${target} failed:`, e.message);
   }
 
-  if (matched.length === 0) {
-    throw new Error(`No SKUs found for style "${styleName}".`);
+  // Strategy 2: query param (legacy, looser).
+  try {
+    const { data } = await ssClient.get('/products/', { params: { style: target } });
+    if (Array.isArray(data) && data.length > 0) {
+      const matched = data.filter(matchesTarget);
+      if (matched.length > 0) return matched;
+      if (!fetchSSProducts._queryLogged) {
+        fetchSSProducts._queryLogged = true;
+        console.log(`[fetchSSProducts] /products/?style=${target} returned ${data.length} rows but none matched styleName/partNumber.`,
+          `Sample styleName="${data[0]?.styleName}", partNumber="${data[0]?.partNumber}".`);
+      }
+    }
+  } catch (e) {
+    console.warn(`[fetchSSProducts] /products/?style=${target} failed:`, e.message);
   }
-  return matched;
+
+  throw new Error(`No SKUs found for style "${target}".`);
 }
 
 function summarizeSsStyle(skus) {
@@ -958,10 +990,6 @@ exports.getSSStyleDetail = async (req, res) => {
     ensureSsCredentials();
     const styleName = req.params.style;
 
-    // basicInfo comes from /styles/?style=X which is the authoritative source
-    // for the requested style's title, brand, and description. Use that as
-    // the primary source so wrong cached SKU data can never overwrite the
-    // identity of the page.
     let basicInfo = null;
     try {
       const { data: stylesData } = await ssClient.get('/styles/', {
@@ -994,8 +1022,6 @@ exports.getSSStyleDetail = async (req, res) => {
       return res.status(404).json({ message: `Could not find style "${styleName}".` });
     }
 
-    // Prefer basicInfo for identity fields (title/brand) — these come from a
-    // style-keyed lookup. Fall back to details only if /styles/ failed.
     const title = basicInfo?.title || details?.title || styleName;
     const brand = basicInfo?.brand || details?.brand || 'S&S Activewear';
     const { priceRangeBottom, priceRangeTop } = details ? deriveRange(details.minPrice) : { priceRangeBottom: null, priceRangeTop: null };
