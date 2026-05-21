@@ -58,8 +58,12 @@ db.once('open', () => {
   // Nightly S&S price refresh
   if (process.env.SS_ACCOUNT && process.env.SS_API_KEY) {
     require('./services/ssAutoSync').startSSAutoSync();
-    // Pre-warm the S&S product catalog cache so the first visitor doesn't wait
+    // Pre-warm the S&S /styles/ cache so the first visitor doesn't wait
     setTimeout(() => require('./controllers/product').warmSSCache(), 5_000);
+    // Then 30 s later kick off the full per-style warm — populates Mongo
+    // with real colors/sizes/prices/images for every popular-brand style.
+    // Runs serial in the background; safe on a 512 MB dyno.
+    setTimeout(() => require('./services/ssWarmAll').warmAllStyles(), 30_000);
   }
 
   require('./services/jpwScheduler').startJpwScheduler();
