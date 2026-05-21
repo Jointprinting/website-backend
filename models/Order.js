@@ -6,6 +6,7 @@ function deriveCompanyKey(companyName, clientName) {
 }
 
 const OrderSchema = new mongoose.Schema({
+  projectNumber: { type: String, index: true },
   orderNumber:   { type: String, index: true },
   clientName:    { type: String, default: '', index: true },
   companyName:   { type: String, default: '', index: true },
@@ -15,12 +16,13 @@ const OrderSchema = new mongoose.Schema({
     enum: ['quoted', 'approved', 'placed', 'in_production', 'shipped', 'delivered', 'cancelled'],
     default: 'quoted',
   },
+  paid:          { type: Boolean, default: false },
   totalValue:    { type: Number, default: 0 },
   cogs:          { type: Number, default: 0 },
   printerName:   { type: String, default: '' },
+  supplier:      { type: String, default: '' },
   notes:         { type: String, default: '' },
   mockupNumbers: [{ type: String }],
-  projectId:           { type: mongoose.Schema.Types.ObjectId, default: null, index: true },
   contactSubmissionId: { type: mongoose.Schema.Types.ObjectId, ref: 'ContactSubmission', default: null },
   items: [{
     description: { type: String, default: '' },

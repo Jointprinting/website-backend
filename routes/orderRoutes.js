@@ -1,12 +1,11 @@
 const express = require('express');
 const multer  = require('multer');
-const path    = require('path');
 const router  = express.Router();
 const { requireAdmin } = require('../middleware/auth');
 const {
-  listOrders, listClients, getOrder, createOrder, updateOrder, deleteOrder,
-  listByCompany, seedHistorical, nextOrderNumber, uploadFile, deleteFile, serveFile,
-  importQuotes, renameCompany, deleteByCompany, dashboard, createFromSubmission,
+  listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
+  seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
+  dashboard, createFromSubmission,
 } = require('../controllers/orders');
 
 router.use(requireAdmin);
@@ -18,14 +17,10 @@ const storage = multer.diskStorage({
 const upload = multer({ storage, limits: { fileSize: 25 * 1024 * 1024 } });
 
 router.post('/seed-historical',           seedHistorical);
-router.post('/import-quotes',             importQuotes);
-router.post('/rename-company',            renameCompany);
 router.post('/from-submission/:submissionId', createFromSubmission);
-router.delete('/by-company/:name',        deleteByCompany);
 router.get('/dashboard',                  dashboard);
-router.get('/next-number',                nextOrderNumber);
-router.get('/clients',                    listClients);
-router.get('/company/:name',              listByCompany);
+router.get('/next-numbers',               nextNumbers);
+router.get('/projects',                   listProjects);
 router.get('/',                           listOrders);
 router.get('/:id',                        getOrder);
 router.post('/',                          createOrder);

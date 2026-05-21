@@ -3,135 +3,154 @@ const ContactSubmission = require('../models/ContactSubmission');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
 const { deriveCompanyKey } = require('../models/Order');
 
-// ─── Historical seed data ─────────────────────────────────────────────────────
-
-const CLIENT_COMPANIES = {
-  'Ryan Jotkoff':               'Jotkoff Financial Services',
-  'Mike Woods':                 'Electric Starship Arcade',
-  'Rita Tsalyuk':               'Stadium Gardens',
-  'Alex Gelman':                '',
-  'Nicole Romero':              "Earl and Tom's",
-  'Jocelyn Melo':               'Cannapi',
-  'Daequan Langhorn':           'OS NYC',
-  'Elizabeth Brockmann':        'Point in Time Studios',
-  'Jill Cohen':                 'The Cannaboss Lady',
-  'Keegan Lapointe':            "Shaggy's Baggy",
-  'Thomas Calmese':             'Green Gold',
-  'Jason Grandizio':            'Sauce Me A Fry',
-  'Shawn Hill / Amber Theurer': 'Human AF',
-  "Ma'or Hemo":                 '',
-  'Logan Davis':                '',
-  'Maji':                       'M4JI',
-  'Dredo':                      'Lean Gang Merch',
-};
+// ─── Notion seed data ─────────────────────────────────────────────────────────
+// Exported from the Notion "Orders" database (the source of truth). Project #
+// is what Notion calls "Order #" — the canonical project ID, sequential and
+// gappy. Invoice # is assigned at approval (= when client signs off the
+// confirmation page), continuing from Notion's last invoice.
 
 function _parseMockupNumbers(raw) {
-  if (!raw || ['N/A (Tekweld)', 'N/A (Cannabis Promotions)', 'N/A (RedTupid)', 'N/A', ''].includes(raw)) return [];
-  const parts = raw.replace(/\s/g, '').split(/[+,]/);
-  const m = parts[0].match(/^(\d+)([A-Za-z]*)$/);
-  if (!m) return [];
-  const base = m[1].padStart(6, '0');
-  const letters = [m[2], ...parts.slice(1)].filter(Boolean);
-  return letters.map(l => `#${base}${l}`);
+  if (!raw) return [];
+  const s = String(raw).trim();
+  if (!s) return [];
+  if (/^N\/A/i.test(s)) return [];
+  // Strip leading hash if any, split on + or , — accept "41C,K,M,G", "000005A+B",
+  // "000064A-R" (range), "000062A,B,C,D,...,O" (long list), etc.
+  const stripped = s.replace(/\s/g, '').replace(/^#/, '');
+  // Range form: "000064A-R" → expand A through R as separate mockups
+  const rangeMatch = stripped.match(/^(\d+)([A-Za-z])-([A-Za-z])$/);
+  if (rangeMatch) {
+    const base = rangeMatch[1].padStart(6, '0');
+    const start = rangeMatch[2].toUpperCase().charCodeAt(0);
+    const end   = rangeMatch[3].toUpperCase().charCodeAt(0);
+    const out = [];
+    for (let c = start; c <= end; c++) out.push(`#${base}${String.fromCharCode(c)}`);
+    return out;
+  }
+  const parts = stripped.split(/[+,]/);
+  const head = parts[0].match(/^(\d+)([A-Za-z]*)$/);
+  if (!head) return [];
+  const base = head[1].padStart(6, '0');
+  const letters = [head[2], ...parts.slice(1)].filter(Boolean);
+  if (letters.length === 0) return [`#${base}`];
+  return letters.map(l => `#${base}${l.toUpperCase()}`);
 }
 
 function _parseDate(str) {
-  if (!str || str === 'N/A' || str === '') return null;
+  if (!str) return null;
   const d = new Date(str);
   return isNaN(d.getTime()) ? null : d;
 }
 
-function _statusFromPaid(paidStr, invoiceNum) {
-  const s = (paidStr || '').toLowerCase();
-  if (s === 'paid') return 'delivered';
-  if (s === 'voided') return 'cancelled';
-  if (s === 'unpaid') return 'approved';
-  if (!paidStr) return invoiceNum === '0000114' ? 'in_production' : 'placed';
-  return 'placed';
+function _statusFrom(row) {
+  const ship = (row.shipment || '').toLowerCase();
+  const pay  = (row.paid || '').toLowerCase();
+  if (pay === 'voided') return 'cancelled';
+  if (ship === 'arrived') return 'delivered';
+  if (ship === 'at printer') return 'in_production';
+  if (ship === 'not started') return 'placed';
+  if (row.invoice && pay === 'paid') return 'delivered'; // service/consulting paid
+  if (row.invoice) return 'approved';
+  return 'quoted';
 }
 
+// Full extract from the Notion Orders database (CSV export, May 2026).
+// Project # column comes straight from Notion as "Order #".
 const HISTORICAL_ORDERS = [
-  { invoiceNum: '1001',    clientName: 'Ryan Jotkoff',              items: '50 polos, pocket embroidery',                         mockup: '000001B',           dateOfSale: '6/5/2024',   cogs: 844.21,  invoiced: 1682.86, paid: 'Paid',   printer: 'Apollo East' },
-  { invoiceNum: '1002',    clientName: 'Mike Woods',                items: '100 shirts, chest screen print',                      mockup: '000005A+B',         dateOfSale: '7/4/2024',   cogs: 776.58,  invoiced: 1338.87, paid: 'Paid',   printer: 'Apollo East' },
-  { invoiceNum: '1003',    clientName: 'Ryan Jotkoff',              items: "24 women's polos, pocket embroidery",                 mockup: '000010A',           dateOfSale: '9/12/2024',  cogs: 248.88,  invoiced: 416.49,  paid: 'Paid',   printer: 'Apollo East' },
-  { invoiceNum: '1004',    clientName: 'Rita Tsalyuk',              items: '30,000 paper bags',                                   mockup: '000019C',           dateOfSale: '10/31/2024', cogs: 3984.94, invoiced: 4545.00, paid: 'Paid',   printer: '' },
-  { invoiceNum: '1005',    clientName: 'Alex Gelman',               items: '500 toothbrushes',                                    mockup: '',                  dateOfSale: '11/20/2024', cogs: 443.24,  invoiced: 841.69,  paid: 'Paid',   printer: 'Tekweld' },
-  { invoiceNum: '1009',    clientName: 'Nicole Romero',             items: '250 glass pipes (chillums)',                          mockup: '',                  dateOfSale: '',           cogs: 362.93,  invoiced: 551.00,  paid: 'Voided', printer: 'Cannabis Promotions' },
-  { invoiceNum: '1012',    clientName: 'Jocelyn Melo',              items: '50 beanies embroidery + 50 hoodies screen print',     mockup: '000024F+D+E+H+I',   dateOfSale: '12/13/2024', cogs: 1454.79, invoiced: 1906.34, paid: 'Paid',   printer: 'Apollo East' },
-  { invoiceNum: '1014',    clientName: 'Daequan Langhorn',          items: '54 hoodies + long sleeves, screen print',             mockup: '000023A+B',         dateOfSale: '1/19/2025',  cogs: 942.78,  invoiced: 1117.14, paid: 'Paid',   printer: 'Apollo East' },
-  { invoiceNum: '1015',    clientName: 'Elizabeth Brockmann',       items: '20 shirts + 20 hats, screen print',                   mockup: '000029D+E',         dateOfSale: '2/20/2025',  cogs: 716.58,  invoiced: 1065.53, paid: 'Paid',   printer: 'Ace Screen Printing' },
-  { invoiceNum: '1016',    clientName: 'Jill Cohen',                items: '300 lighters + 2 buttermint cases',                   mockup: '',                  dateOfSale: '2/24/2025',  cogs: 820.56,  invoiced: 907.05,  paid: 'Paid',   printer: 'Cannabis Promotions' },
-  { invoiceNum: '1018',    clientName: 'Keegan Lapointe',           items: '300 lighters',                                        mockup: '',                  dateOfSale: '3/11/2025',  cogs: 564.91,  invoiced: 689.00,  paid: 'Paid',   printer: 'Cannabis Promotions' },
-  { invoiceNum: '1020',    clientName: 'Keegan Lapointe',           items: '30 hoodies',                                          mockup: '000021H',           dateOfSale: '3/27/2025',  cogs: 846.58,  invoiced: 918.57,  paid: 'Paid',   printer: 'Ace Screen Printing' },
-  { invoiceNum: '1019',    clientName: 'Nicole Romero',             items: '250 glass pipes (chillums)',                          mockup: '',                  dateOfSale: '3/27/2025',  cogs: 347.93,  invoiced: 545.85,  paid: 'Paid',   printer: 'Cannabis Promotions' },
-  { invoiceNum: '1021',    clientName: 'Thomas Calmese',            items: '1,100 T-shirts',                                      mockup: '000033L',           dateOfSale: '3/28/2025',  cogs: 7714.24, invoiced: 8321.39, paid: 'Paid',   printer: 'Ace Screen Printing' },
-  { invoiceNum: '1022',    clientName: 'Jason Grandizio',           items: '100 T-shirts',                                        mockup: '000040E+F',         dateOfSale: '5/14/2025',  cogs: 1191.48, invoiced: 1875.26, paid: 'Paid',   printer: 'Heritage Screen Printing' },
-  { invoiceNum: '1023',    clientName: 'Jill Cohen',                items: '200 T-shirts, 250 lip balm',                          mockup: '000041C,K,M,G',     dateOfSale: '5/30/2025',  cogs: 2466.04, invoiced: 3318.34, paid: 'Paid',   printer: 'Contract-DTG' },
-  { invoiceNum: '1025',    clientName: 'Jill Cohen',                items: '250 totes, 600 Bic lighters',                         mockup: '000043A,B',         dateOfSale: '6/30/2025',  cogs: 2194.98, invoiced: 2756.30, paid: 'Paid',   printer: 'Heritage Screen Printing' },
-  { invoiceNum: '1023B',   clientName: 'Jill Cohen',                items: '200 T-shirts, 250 lip balm (add-on)',                 mockup: '000041C,K,M,G',     dateOfSale: '7/2/2025',   cogs: 107.55,  invoiced: 143.51,  paid: 'Paid',   printer: 'Contract-DTG' },
-  { invoiceNum: '1027',    clientName: 'Daequan Langhorn',          items: '25 jerseys + 25 T-shirts',                            mockup: '000049A,B',         dateOfSale: '7/9/2025',   cogs: 698.93,  invoiced: 913.01,  paid: 'Paid',   printer: 'Heritage Screen Printing' },
-  { invoiceNum: '1030',    clientName: 'Shawn Hill / Amber Theurer', items: '1 hoodie + 1 hat',                                   mockup: '000055B,D',         dateOfSale: '9/17/2025',  cogs: 0,       invoiced: 218.53,  paid: 'Paid',   printer: 'Heritage Screen Printing' },
-  { invoiceNum: '1029',    clientName: 'Rita Tsalyuk',              items: '40,000 paper bags',                                   mockup: '000056A',           dateOfSale: '9/17/2025',  cogs: 4758.14, invoiced: 5600.00, paid: 'Paid',   printer: '' },
-  { invoiceNum: '1031',    clientName: 'Alex Gelman',               items: '500 toothbrushes',                                    mockup: '',                  dateOfSale: '10/1/2025',  cogs: 374.00,  invoiced: 642.41,  paid: 'Paid',   printer: 'Tekweld' },
-  { invoiceNum: '1032',    clientName: "Ma'or Hemo",                items: '20 linen kippahs',                                    mockup: '',                  dateOfSale: '11/3/2025',  cogs: 142.21,  invoiced: 180.65,  paid: 'Paid',   printer: 'RedTupid' },
-  { invoiceNum: '1034',    clientName: 'Logan Davis',               items: 'Brand consulting',                                    mockup: '',                  dateOfSale: '12/3/2025',  cogs: 0,       invoiced: 4289.70, paid: 'Paid',   printer: '' },
-  { invoiceNum: '1035',    clientName: 'Logan Davis',               items: 'Brand consulting',                                    mockup: '',                  dateOfSale: '',           cogs: 0,       invoiced: 2101.00, paid: 'Unpaid', printer: '' },
-  { invoiceNum: '1036',    clientName: 'Jill Cohen',                items: '200 hoodies',                                         mockup: '000062A,B,C,D,E,F,G,H', dateOfSale: '12/6/2025', cogs: 3262.08, invoiced: 4852.89, paid: '', printer: 'Contract-DTG' },
-  { invoiceNum: 'UNK-111', clientName: 'Maji',                      items: '25 hoodies + 25 T-shirts',                            mockup: '000060A+B',         dateOfSale: '',           cogs: 0,       invoiced: 1070.58, paid: '', printer: '' },
-  // Lean Gang / Dredo — historical
-  { invoiceNum: 'LG-2025-1', clientName: 'Dredo', items: '25 CC C1717 shirts (Graphite, DTG), 25 CC C1717 shirts (Grape, DTG), 15 BC 3727 sweatpants (DTG), 15 TT11SH shorts (DTF), 25 snapback hats (embroidery), 25 beanies (embroidery)', mockup: '000028D,E,F,G,H,I', dateOfSale: '2/25/2025', cogs: 0, invoiced: 3099.43, paid: 'Paid', printer: 'Cole Apparel' },
-  { invoiceNum: 'LG-2025-2', clientName: 'Dredo', items: '15 BC 3727 sweatpants (DTG), 15 TT11SH shorts (DTF)', mockup: '000028H,I', dateOfSale: '2/26/2025', cogs: 0, invoiced: 724.58, paid: 'Paid', printer: 'Cole Apparel' },
-  // Lean Gang / Dredo — new order May 2026
-  { invoiceNum: 'LG-2026-1', clientName: 'Dredo', items: '25 Paragon 500 polos (Screen Printing, Turquoise), 25 Bella Canvas 3001 tees (Screen Printing, Clay), 25 SS3000 crewnecks (Screen Printing)', mockup: '', dateOfSale: '5/20/2026', cogs: 0, invoiced: 1651.19, paid: 'Unpaid', printer: '' },
+  { project: '1',     company: 'Jotkoff Financial Services',    clientName: 'Ryan Jotkoff',           invoice: '1001', invoiced: 1682.86, cogs: 844.21,  dateOfSale: '6/5/2024',    items: '50 polos, pocket embroidery',                                  mockup: '000001B',                  printer: 'Apollo East',             supplier: 'Alphabroder',                       paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '6/20/2024',  arriveAtPrinter: '6/10/2024' },
+  { project: '5',     company: 'Electric Starship Arcade',      clientName: 'Mike Woods',             invoice: '1002', invoiced: 1338.87, cogs: 776.58,  dateOfSale: '7/4/2024',    items: '100 shirts, chest screen print',                               mockup: '000005A+B',                printer: 'Apollo East',             supplier: 'Alphabroder',                       paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '7/23/2024',  arriveAtPrinter: '7/8/2024'  },
+  { project: '10',    company: 'Jotkoff Financial Services',    clientName: 'Ryan Jotkoff',           invoice: '1003', invoiced: 416.49,  cogs: 248.88,  dateOfSale: '9/12/2024',   items: "24 women's polos, pocket embroidery",                          mockup: '000010A',                  printer: 'Ace Screen Printing',     supplier: 'S&S Activewear',                    paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '9/24/2024',  arriveAtPrinter: '9/17/2024' },
+  { project: '20',    company: 'Stadium Gardens',               clientName: 'Rita Tsalyuk',           invoice: '1004', invoiced: 4545.00, cogs: 3984.94, dateOfSale: '10/31/2024',  items: '30,000 paper bags',                                            mockup: '000019C',                  printer: '',                        supplier: 'Alibaba',                           paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '12/20/2024', notes: 'FUTURE $100 DISCOUNT' },
+  { project: '21',    company: 'NJ Dental 1',                   clientName: 'Alex Gelman',            invoice: '1005', invoiced: 841.69,  cogs: 443.24,  dateOfSale: '11/20/2024',  items: '500 toothbrushes',                                             mockup: 'N/A',                      printer: '',                        supplier: 'Tekweld',                           paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '12/1/2024'  },
+  { project: '24',    company: "Earl and Tom's Dispensary",     clientName: 'Nicole Romero',          invoice: '1009', invoiced: 551.00,  cogs: 362.93,  dateOfSale: '3/15/2025',   items: '250 glass pipes (chillums)',                                   mockup: 'N/A',                      printer: '',                        supplier: 'Cannabis Promotions',               paid: 'Voided', shipment: 'Arrived',     arriveAtClient: '4/4/2025'   },
+  { project: '24-2',  company: "Earl and Tom's Dispensary",     clientName: 'Nicole Romero',          invoice: '1019', invoiced: 545.85,  cogs: 347.93,  dateOfSale: '3/27/2025',   items: '250 glass pipes (chillums)',                                   mockup: 'N/A',                      printer: '',                        supplier: 'Cannabis Promotions',               paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '4/4/2025'   },
+  { project: '22-1',  company: "Shaggy's Baggy",                clientName: 'Keegan Lapointe',        invoice: '1018', invoiced: 689.00,  cogs: 564.91,  dateOfSale: '3/11/2025',   items: '300 lighters',                                                 mockup: 'N/A',                      printer: '',                        supplier: 'Cannabis Promotions',               paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '3/29/2025'  },
+  { project: '22-2',  company: "Shaggy's Baggy",                clientName: 'Keegan Lapointe',        invoice: '1020', invoiced: 918.57,  cogs: 846.58,  dateOfSale: '3/27/2025',   items: '30 hoodies',                                                   mockup: '21H',                      printer: 'Ace Screen Printing',     supplier: 'S&S Activewear',                    paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '4/13/2025'  },
+  { project: '30',    company: 'Bract House',                   clientName: 'Thomas Calmese',         invoice: '1021', invoiced: 8321.39, cogs: 7714.24, dateOfSale: '3/28/2025',   items: '1,100 T-shirts',                                               mockup: '33L',                      printer: 'Ace Screen Printing',     supplier: 'Alphabroder',                       paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '4/17/2025',  arriveAtPrinter: '4/5/2025'  },
+  { project: '31',    company: 'Cannapi',                       clientName: 'Jocelyn Melo',           invoice: '1012', invoiced: 1906.34, cogs: 1454.79, dateOfSale: '12/13/2024',  items: '50 beanies embroidery + 50 hoodies screen print',              mockup: '000024F+D+E+H+I',          printer: 'Apollo East',             supplier: 'Alphabroder',                       paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '12/29/2024' },
+  { project: '39',    company: 'OS NYC',                        clientName: 'Daequan Langhorn',       invoice: '1014', invoiced: 1117.14, cogs: 942.78,  dateOfSale: '1/19/2025',   items: '54 hoodies + long sleeves, screen print',                      mockup: '000023A+B',                printer: 'Apollo East',             supplier: 'Alphabroder',                       paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '2/2/2025'   },
+  { project: '61',    company: 'The CannaBoss Lady',            clientName: 'Jill Cohen',             invoice: '1016', invoiced: 907.05,  cogs: 820.56,  dateOfSale: '2/24/2025',   items: '300 lighters + 2 buttermint cases',                            mockup: 'N/A',                      printer: '',                        supplier: 'Cannabis Promotions + Mount Franklin Foods', paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '3/10/2025'  },
+  { project: '65',    company: 'Point In Time Studios',         clientName: 'Elizabeth Brockmann',    invoice: '1015', invoiced: 1065.53, cogs: 716.58,  dateOfSale: '2/20/2025',   items: '20 shirts + 20 hats, screen print',                            mockup: '29D+E',                    printer: 'Ace Screen Printing',     supplier: 'Alphabroder + S&S Activewear',      paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '3/10/2025'  },
+  { project: '82',    company: 'OS NYC',                        clientName: 'Daequan Langhorn',       invoice: '1027', invoiced: 913.01,  cogs: 698.93,  dateOfSale: '7/9/2025',    items: '25 jerseys + 25 T-shirts',                                     mockup: '49A,B',                    printer: 'Heritage Screen Printing',supplier: 'S&S Activewear + Sanmar',           paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '7/23/2025'  },
+  { project: '83-1',  company: 'The CannaBoss Lady',            clientName: 'Jill Cohen',             invoice: '1023', invoiced: 3318.34, cogs: 2466.04, dateOfSale: '5/30/2025',   items: '200 T-shirts, 250 lip balm',                                   mockup: '41C,K,M,G',                printer: 'Contract-DTG',            supplier: 'S&S Activewear + Tekweld',          paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '6/17/2025'  },
+  { project: '83-2',  company: 'The CannaBoss Lady',            clientName: 'Jill Cohen',             invoice: '1023', invoiced: 143.51,  cogs: 107.55,  dateOfSale: '7/2/2025',    items: '200 T-shirts, 250 lip balm (add-on)',                          mockup: '41C,K,M,G',                printer: 'Contract-DTG',            supplier: 'S&S Activewear',                    paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '7/18/2025'  },
+  { project: '91',    company: 'Sauce Me A Fry',                clientName: 'Jason Grandizio',        invoice: '1022', invoiced: 1875.26, cogs: 1191.48, dateOfSale: '5/14/2025',   items: '100 T-shirts',                                                 mockup: '40E+F',                    printer: 'Heritage Screen Printing',supplier: 'S&S Activewear',                    paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '5/29/2025',  arriveAtPrinter: '5/20/2025' },
+  { project: '93',    company: 'The CannaBoss Lady',            clientName: 'Jill Cohen',             invoice: '1025', invoiced: 2756.30, cogs: 2194.98, dateOfSale: '6/30/2025',   items: '250 totes, 600 Bic lighters',                                  mockup: '43A,B',                    printer: 'Heritage Screen Printing',supplier: 'S&S Activewear + Cannabis Promotions', paid: 'Paid', shipment: 'Arrived',    arriveAtClient: '7/15/2025'  },
+  { project: '106',   company: 'Human AF',                      clientName: 'Shawn Hill / Amber Theurer', invoice: '1030', invoiced: 218.53, cogs: 0,    dateOfSale: '9/17/2025',   items: '1 hoodie + 1 hat',                                             mockup: '55B,D',                    printer: 'Heritage Screen Printing',supplier: 'S&S Activewear + Sanmar',           paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '9/30/2025'  },
+  { project: '107',   company: 'Stadium Gardens',               clientName: 'Rita Tsalyuk',           invoice: '1029', invoiced: 5600.00, cogs: 4758.14, dateOfSale: '9/17/2025',   items: '40,000 paper bags',                                            mockup: '56A',                      printer: '',                        supplier: 'Alibaba',                           paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '11/27/2025', notes: 'FUTURE $100 DISCOUNT' },
+  { project: '108',   company: 'NJ Dental 1',                   clientName: 'Alex Gelman',            invoice: '1031', invoiced: 642.41,  cogs: 374.00,  dateOfSale: '10/1/2025',   items: '500 toothbrushes',                                             mockup: 'N/A',                      printer: '',                        supplier: 'Tekweld',                           paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '10/20/2025' },
+  { project: '109',   company: 'Vantage Real Estate',           clientName: "Ma'or Hemo",             invoice: '1032', invoiced: 180.65,  cogs: 142.21,  dateOfSale: '11/3/2025',   items: '20 linen kippahs',                                             mockup: 'N/A',                      printer: '',                        supplier: 'RedTupid',                          paid: 'Paid',   shipment: 'Arrived',     arriveAtClient: '11/20/2025' },
+  { project: '111',   company: 'M4JI',                          clientName: 'Maji',                   invoice: '',     invoiced: 0,       cogs: 1070.58, dateOfSale: '',            items: '25 hoodies + 25 T-shirts',                                     mockup: '000060A+B',                printer: '',                        supplier: '',                                  paid: '',       shipment: 'Not Started' },
+  { project: '112',   company: 'VT3D',                          clientName: '',                       invoice: '1034', invoiced: 4289.70, cogs: 0,       dateOfSale: '12/3/2025',   items: 'Brand consulting',                                             mockup: 'N/A',                      printer: '',                        supplier: '',                                  paid: 'Paid',   shipment: 'Arrived' },
+  { project: '113',   company: 'VT3D',                          clientName: '',                       invoice: '1035', invoiced: 2101.00, cogs: 0,       dateOfSale: '1/5/2026',    items: 'Brand consulting',                                             mockup: 'N/A',                      printer: '',                        supplier: '',                                  paid: 'Paid',   shipment: '' },
+  { project: '114',   company: 'The CannaBoss Lady',            clientName: 'Jill Cohen',             invoice: '1036', invoiced: 4852.89, cogs: 3262.08, dateOfSale: '12/8/2025',   items: '200 hoodies',                                                  mockup: '000061A,B,C,D',            printer: 'Contract-DTG',            supplier: 'S&S Activewear',                    paid: 'Paid',   shipment: 'At Printer',  arriveAtClient: '1/6/2026',   arriveAtPrinter: '12/17/2025' },
+  { project: '115',   company: 'Voodoo Brewing Co -> Good Company', clientName: '',                  invoice: '1037', invoiced: 5405.06, cogs: 0,       dateOfSale: '12/11/2025',  items: '146 long sleeves, 20 hoodies, 20 crewnecks, 40 hats, 40 beanies', mockup: '000062A-O',                printer: 'BlueFrog',                supplier: 'S&S + Sanmar (hats)',               paid: 'Paid',   shipment: 'At Printer',  arriveAtClient: '1/9/2026',   arriveAtPrinter: '1/2/2026'  },
+  { project: '120',   company: 'Duckies Revenge Arcade',        clientName: '',                       invoice: '1038', invoiced: 1436.73, cogs: 0,       dateOfSale: '12/15/2025',  items: '50 T-shirts + 25 hoodies',                                     mockup: '000063B,E',                printer: 'Oklahoma Ink',            supplier: 'S&S Activewear',                    paid: 'Paid',   shipment: 'At Printer',  arriveAtClient: '1/4/2026',   arriveAtPrinter: '12/29/2025' },
+  { project: '121',   company: 'VT3D',                          clientName: '',                       invoice: '1039', invoiced: 1746.10, cogs: 0,       dateOfSale: '2/2/2026',    items: 'Brand consulting',                                             mockup: 'N/A',                      printer: '',                        supplier: '',                                  paid: 'Paid',   shipment: '' },
+  { project: '122',   company: 'Mad Martian Farms',             clientName: '',                       invoice: '1040', invoiced: 3557.27, cogs: 0,       dateOfSale: '2/1/2026',    items: 'Trays, lighters, stickers, grinders, ash trays',               mockup: 'N/A',                      printer: '',                        supplier: 'Cannabis Promotions, Full Designs', paid: 'Unpaid', shipment: 'Not Started' },
+  { project: '123',   company: 'VT3D',                          clientName: '',                       invoice: '1041', invoiced: 1773.00, cogs: 0,       dateOfSale: '',            items: 'Brand consulting',                                             mockup: 'N/A',                      printer: '',                        supplier: '',                                  paid: 'Paid',   shipment: '' },
+  { project: '124',   company: 'VT3D',                          clientName: '',                       invoice: '1041', invoiced: 788.27,  cogs: 0,       dateOfSale: '',            items: 'Brand consulting',                                             mockup: '',                         printer: '',                        supplier: '',                                  paid: 'Paid',   shipment: '' },
+  { project: '125',   company: 'The CannaBoss Lady',            clientName: 'Jill Cohen',             invoice: '',     invoiced: 0,       cogs: 0,       dateOfSale: '',            items: '',                                                             mockup: '',                         printer: '',                        supplier: '',                                  paid: '',       shipment: '' },
+  { project: '126',   company: "Shaggy's Baggy",                clientName: 'Keegan Lapointe',        invoice: '1042', invoiced: 815.68,  cogs: 576.49,  dateOfSale: '2/25/2026',   items: '300 lighters',                                                 mockup: 'N/A',                      printer: 'Bic World',               supplier: 'Bic World',                         paid: 'Paid',   shipment: 'Arrived' },
+  { project: '127',   company: 'Swan Rose Holdings',            clientName: '',                       invoice: '',     invoiced: 0,       cogs: 0,       dateOfSale: '',            items: 'Merch line (Cannabis Connoisseur / Premier High Life / Mush Love / New Era / Alter Ego)', mockup: '000064A-R',                printer: '',                        supplier: '',                                  paid: '',       shipment: '' },
+  { project: '128',   company: 'VT3D',                          clientName: '',                       invoice: '1043', invoiced: 676.61,  cogs: 0,       dateOfSale: '',            items: 'Brand consulting',                                             mockup: '',                         printer: '',                        supplier: '',                                  paid: 'Paid',   shipment: '' },
+  { project: '129',   company: 'Stadium Gardens',               clientName: 'Rita Tsalyuk',           invoice: '1044', invoiced: 5600.00, cogs: 4787.44, dateOfSale: '',            items: '40,000 paper bags',                                            mockup: '56A',                      printer: '',                        supplier: 'Alibaba',                           paid: 'Paid',   shipment: 'Arrived',     notes: 'JP pays 167.44 (2.99%) QB CC fee' },
+  { project: '130',   company: 'Harvest Moon Farms',            clientName: '',                       invoice: '',     invoiced: 0,       cogs: 0,       dateOfSale: '',            items: 'stands, shelves',                                              mockup: '',                         printer: '',                        supplier: '',                                  paid: '',       shipment: '' },
+  { project: '131',   company: 'Sauce Me A Fry',                clientName: 'Jason Grandizio',        invoice: '1045', invoiced: 477.36,  cogs: 0,       dateOfSale: '',            items: 'embroidered hats',                                             mockup: '000066A',                  printer: 'Heritage Screen Printing',supplier: 'S&S Activewear',                    paid: 'Paid',   shipment: 'At Printer',  notes: 'waived CC fee - 2.99%' },
+  { project: '132',   company: 'Bleu Leaf Dispensary',          clientName: '',                       invoice: '',     invoiced: 0,       cogs: 0,       dateOfSale: '',            items: 'womens shirts + shorts',                                       mockup: '000067',                   printer: '',                        supplier: '',                                  paid: '',       shipment: '' },
+  { project: '133',   company: 'Dredo',                         clientName: 'Dredo',                  invoice: '1046', invoiced: 1651.19, cogs: 0,       dateOfSale: '',            items: 'shirts, polos, hoodies, crewnecks',                            mockup: '000068E,G,I',              printer: 'Heritage Screen Printing',supplier: 'S&S Activewear',                    paid: 'Unpaid', shipment: 'Not Started', notes: 'CC fee - 2.99%' },
+  { project: '134',   company: 'Enlighten Dispensary',          clientName: '',                       invoice: '',     invoiced: 0,       cogs: 0,       dateOfSale: '',            items: 'tshirts, crewnecks',                                           mockup: '000069',                   printer: '',                        supplier: '',                                  paid: '',       shipment: '' },
+  { project: '135',   company: 'Highway 90',                    clientName: '',                       invoice: '',     invoiced: 0,       cogs: 0,       dateOfSale: '',            items: 'tshirts',                                                      mockup: '000070',                   printer: '',                        supplier: '',                                  paid: '',       shipment: '' },
 ];
 
 // POST /api/orders/seed-historical
-//   - creates orders that don't exist yet
-//   - backfills empty mockupNumbers / printerName on orders that do exist
-//     (so users who seeded before mockup parsing existed pick up the data)
+// Idempotent re-seed from Notion: wipes any stale gdrive_quoter junk, then for
+// every row in HISTORICAL_ORDERS either creates a new Order or updates the
+// existing one (matched by projectNumber). Safe to run repeatedly.
 const seedHistorical = async (req, res) => {
   try {
-    let created = 0, skipped = 0, backfilled = 0;
-    for (const raw of HISTORICAL_ORDERS) {
-      const companyName = CLIENT_COMPANIES[raw.clientName] ?? '';
-      const mockupNumbers = _parseMockupNumbers(raw.mockup);
-      const existing = await Order.findOne({ orderNumber: raw.invoiceNum });
+    const gdriveWiped = await Order.deleteMany({ importedFrom: 'gdrive_quoter' });
 
-      if (existing) {
-        const patch = {};
-        if ((!existing.mockupNumbers || existing.mockupNumbers.length === 0)
-            && mockupNumbers.length > 0) {
-          patch.mockupNumbers = mockupNumbers;
-        }
-        if (!existing.printerName && raw.printer) {
-          patch.printerName = raw.printer;
-        }
-        if (Object.keys(patch).length > 0) {
-          await Order.updateOne({ _id: existing._id }, { $set: patch });
-          backfilled++;
-        } else {
-          skipped++;
-        }
-        continue;
-      }
-
-      const status = _statusFromPaid(raw.paid, raw.invoiceNum);
-      await Order.create({
-        orderNumber:  raw.invoiceNum,
-        clientName:   raw.clientName,
-        companyName,
+    let created = 0, updated = 0;
+    for (const row of HISTORICAL_ORDERS) {
+      const mockupNumbers = _parseMockupNumbers(row.mockup);
+      const status        = _statusFrom(row);
+      const fields = {
+        projectNumber:  row.project,
+        orderNumber:    row.invoice || '',
+        companyName:    row.company || '',
+        clientName:     row.clientName || '',
+        companyKey:     deriveCompanyKey(row.company, row.clientName),
         status,
-        totalValue:   raw.invoiced,
-        cogs:         raw.cogs,
-        printerName:  raw.printer || '',
+        paid:           (row.paid || '').toLowerCase() === 'paid',
+        totalValue:     Number(row.invoiced) || 0,
+        cogs:           Number(row.cogs) || 0,
+        printerName:    row.printer || '',
+        supplier:       row.supplier || '',
+        notes:          row.notes || '',
         mockupNumbers,
-        items: [{ description: raw.items, qty: 0, unitPrice: 0 }],
-        orderDate:    _parseDate(raw.dateOfSale),
-        importedFrom: 'order_tracker',
-      });
-      created++;
+        items:          row.items ? [{ description: row.items, qty: 0, unitPrice: 0 }] : [],
+        orderDate:      _parseDate(row.dateOfSale),
+        shipDate:       _parseDate(row.arriveAtPrinter),
+        deliveredDate:  _parseDate(row.arriveAtClient),
+        importedFrom:   'notion',
+      };
+
+      const existing = await Order.findOne({ projectNumber: row.project });
+      if (existing) {
+        await Order.updateOne({ _id: existing._id }, { $set: fields });
+        updated++;
+      } else {
+        await Order.create(fields);
+        created++;
+      }
     }
-    res.json({ created, backfilled, skipped, total: HISTORICAL_ORDERS.length });
+    res.json({
+      gdriveWiped: gdriveWiped.deletedCount,
+      created,
+      updated,
+      total: HISTORICAL_ORDERS.length,
+    });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -140,15 +159,21 @@ const seedHistorical = async (req, res) => {
 // GET /api/orders?search=&status=&page=&limit=
 const listOrders = async (req, res) => {
   try {
-    const { search = '', status, page = 1, limit = 100 } = req.query;
+    const { search = '', status, page = 1, limit = 200 } = req.query;
     const filter = {};
     if (search.trim()) {
       const re = new RegExp(search.trim(), 'i');
-      filter.$or = [{ clientName: re }, { companyName: re }, { orderNumber: re }];
+      filter.$or = [
+        { clientName:    re },
+        { companyName:   re },
+        { orderNumber:   re },
+        { projectNumber: re },
+        { mockupNumbers: re },
+      ];
     }
     if (status) filter.status = status;
     const orders = await Order.find(filter)
-      .sort({ orderDate: -1, createdAt: -1 })
+      .sort({ createdAt: -1 })
       .skip((Number(page) - 1) * Number(limit))
       .limit(Number(limit))
       .lean();
@@ -159,53 +184,45 @@ const listOrders = async (req, res) => {
   }
 };
 
-// GET /api/orders/clients — distinct companies with stats + tier (lead | client)
-// Cancelled excluded from counts/revenue. Tier = 'client' if any order is placed+, else 'lead'.
-const CLIENT_TIER_STATUSES = ['placed', 'in_production', 'shipped', 'delivered'];
-const listClients = async (req, res) => {
+// GET /api/orders/projects — every project (= every Order) ordered newest first.
+// This is the canonical feed for the new project-first UI.
+const listProjects = async (req, res) => {
   try {
-    const pipeline = [
-      { $group: {
-        _id: {
-          $cond: [
-            { $gt: [{ $strLenCP: { $ifNull: ['$companyKey', ''] } }, 0] },
-            '$companyKey',
-            { $toLower: { $ifNull: ['$companyName', '$clientName'] } },
-          ],
-        },
-        companyName:    { $first: '$companyName' },
-        clientName:     { $first: '$clientName' },
-        orderCount:     { $sum: { $cond: [{ $ne: ['$status', 'cancelled'] }, 1, 0] } },
-        allOrderCount:  { $sum: 1 },
-        totalRevenue:   { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, '$totalValue', 0] } },
-        lastOrderDate:  { $max: '$orderDate' },
-        lastActivity:   { $max: '$createdAt' },
-        statuses:       { $addToSet: '$status' },
-      }},
-      { $addFields: {
-        tier: {
-          $cond: [
-            { $gt: [{ $size: { $setIntersection: ['$statuses', CLIENT_TIER_STATUSES] } }, 0] },
-            'client',
-            'lead',
-          ],
-        },
-      }},
-      { $sort: { lastActivity: -1 } },
-    ];
-    const clients = await Order.aggregate(pipeline);
-    res.json({ clients });
+    const orders = await Order.find({})
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Sort by numeric portion of projectNumber descending (so 135 > 134 > ... > 22-2 > 22-1 > 21).
+    orders.sort((a, b) => {
+      const an = parseInt((a.projectNumber || '0').split('-')[0], 10) || 0;
+      const bn = parseInt((b.projectNumber || '0').split('-')[0], 10) || 0;
+      if (an !== bn) return bn - an;
+      return (b.projectNumber || '').localeCompare(a.projectNumber || '');
+    });
+
+    res.json({ projects: orders });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
 };
 
-// GET /api/orders/next-number — returns next available numeric invoice number
-const nextOrderNumber = async (req, res) => {
+// GET /api/orders/next-numbers — returns the next project # and next invoice #
+// so the UI can pre-fill them when starting a project or moving one to approved.
+const nextNumbers = async (req, res) => {
   try {
-    const orders = await Order.find({ orderNumber: /^\d+$/ }).select('orderNumber').lean();
-    const max = orders.reduce((m, o) => Math.max(m, parseInt(o.orderNumber, 10) || 0), 1036);
-    res.json({ next: String(max + 1) });
+    const all = await Order.find({}).select('projectNumber orderNumber').lean();
+    const maxProject = all.reduce((m, o) => {
+      const n = parseInt((o.projectNumber || '0').split('-')[0], 10) || 0;
+      return Math.max(m, n);
+    }, 0);
+    const maxInvoice = all.reduce((m, o) => {
+      const n = parseInt(o.orderNumber || '0', 10) || 0;
+      return Math.max(m, n);
+    }, 0);
+    res.json({
+      nextProject: String(maxProject + 1),
+      nextInvoice: String(maxInvoice + 1),
+    });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -222,22 +239,47 @@ const getOrder = async (req, res) => {
   }
 };
 
-// POST /api/orders
+// POST /api/orders — create a new project. If projectNumber is not supplied,
+// auto-assign the next one.
 const createOrder = async (req, res) => {
   try {
-    const order = await Order.create(req.body);
+    const body = { ...req.body };
+    if (!body.projectNumber) {
+      const all = await Order.find({}).select('projectNumber').lean();
+      const max = all.reduce((m, o) => {
+        const n = parseInt((o.projectNumber || '0').split('-')[0], 10) || 0;
+        return Math.max(m, n);
+      }, 0);
+      body.projectNumber = String(max + 1);
+    }
+    const order = await Order.create(body);
     res.status(201).json(order);
   } catch (e) {
     res.status(400).json({ message: e.message });
   }
 };
 
-// PUT /api/orders/:id
+// PUT /api/orders/:id — update a project. When status transitions to
+// 'approved' and there's no invoice number yet, auto-assign one.
 const updateOrder = async (req, res) => {
   try {
+    const body = { ...req.body };
+
+    if (body.status === 'approved' || ['placed', 'in_production', 'shipped', 'delivered'].includes(body.status)) {
+      const current = await Order.findById(req.params.id).select('orderNumber').lean();
+      if (current && !current.orderNumber && !body.orderNumber) {
+        const all = await Order.find({}).select('orderNumber').lean();
+        const max = all.reduce((m, o) => {
+          const n = parseInt(o.orderNumber || '0', 10) || 0;
+          return Math.max(m, n);
+        }, 0);
+        body.orderNumber = String(max + 1);
+      }
+    }
+
     const order = await Order.findByIdAndUpdate(
       req.params.id,
-      { $set: req.body },
+      { $set: body },
       { new: true, runValidators: true },
     ).lean();
     if (!order) return res.status(404).json({ message: 'Not found' });
@@ -257,84 +299,33 @@ const deleteOrder = async (req, res) => {
   }
 };
 
-// GET /api/orders/company/:name — orders for one company (for Client Hub)
-const listByCompany = async (req, res) => {
+// GET /api/orders/dashboard — light stats used by the header strip on the new UI.
+const dashboard = async (req, res) => {
   try {
-    const name = decodeURIComponent(req.params.name);
-    const re = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
-    const orders = await Order.find({
-      $or: [{ companyName: re }, { clientName: re }],
-    }).sort({ orderDate: -1, createdAt: -1 }).lean();
-    res.json({ orders });
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
-};
+    const now = new Date();
+    const startOfYear  = new Date(now.getFullYear(), 0, 1);
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-// POST /api/orders/rename-company — merge one company name into another.
-// Also retargets mockup library items so their thumbnails follow the rename.
-const renameCompany = async (req, res) => {
-  try {
-    const { from, to } = req.body;
-    if (!from || !to) return res.status(400).json({ message: 'from and to are required' });
-    const ordersResult = await Order.updateMany(
-      { $or: [{ companyName: from }, { clientName: from }] },
-      { $set: { companyName: to, companyKey: deriveCompanyKey(to, '') } },
-    );
-    const mockupsResult = await StudioLibraryItem.updateMany(
-      { store: 'mockups', client: from },
-      { $set: { client: to } },
-    );
+    const [stats] = await Order.aggregate([
+      { $group: {
+        _id: null,
+        revenueAllTime: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, '$totalValue', 0] } },
+        revenueThisYear: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'delivered'] }, { $gte: ['$orderDate', startOfYear] }] }, '$totalValue', 0] } },
+        revenueThisMonth: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'delivered'] }, { $gte: ['$orderDate', startOfMonth] }] }, '$totalValue', 0] } },
+        openOrders: { $sum: { $cond: [{ $in: ['$status', ['approved', 'placed', 'in_production', 'shipped']] }, 1, 0] } },
+        openQuotes: { $sum: { $cond: [{ $eq: ['$status', 'quoted'] }, 1, 0] } },
+        unpaidTotal: { $sum: { $cond: [{ $and: [{ $eq: ['$paid', false] }, { $ne: ['$status', 'quoted'] }, { $ne: ['$status', 'cancelled'] }] }, '$totalValue', 0] } },
+      }},
+    ]);
+
     res.json({
-      updated: ordersResult.modifiedCount,
-      mockupsUpdated: mockupsResult.modifiedCount,
+      revenueAllTime:   (stats && stats.revenueAllTime)   || 0,
+      revenueThisYear:  (stats && stats.revenueThisYear)  || 0,
+      revenueThisMonth: (stats && stats.revenueThisMonth) || 0,
+      openOrders:       (stats && stats.openOrders)       || 0,
+      openQuotes:       (stats && stats.openQuotes)       || 0,
+      unpaidTotal:      (stats && stats.unpaidTotal)      || 0,
     });
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
-};
-
-// DELETE /api/orders/by-company/:name — delete all orders for a company (used in dedupe cleanup)
-const deleteByCompany = async (req, res) => {
-  try {
-    const name = decodeURIComponent(req.params.name);
-    const result = await Order.deleteMany({ companyName: name });
-    res.json({ deleted: result.deletedCount });
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
-};
-
-// POST /api/orders/import-quotes — bulk import from Google Drive Apps Script export
-const importQuotes = async (req, res) => {
-  try {
-    const quotes = req.body;
-    if (!Array.isArray(quotes)) return res.status(400).json({ message: 'Expected a JSON array' });
-
-    let created = 0, skipped = 0;
-    for (const q of quotes) {
-      if (!q.companyName) { skipped++; continue; }
-      // Deduplicate by companyName + notes (which encodes the source file + sheet)
-      const exists = await Order.findOne({
-        companyName: q.companyName,
-        notes: q.notes,
-        importedFrom: 'gdrive_quoter',
-      }).lean();
-      if (exists) { skipped++; continue; }
-      await Order.create({
-        companyName:   q.companyName || '',
-        clientName:    q.clientName  || '',
-        status:        'quoted',
-        totalValue:    Number(q.totalValue) || 0,
-        cogs:          Number(q.cogs)       || 0,
-        notes:         q.notes       || '',
-        items:         Array.isArray(q.items) ? q.items : [],
-        importedFrom:  'gdrive_quoter',
-        orderDate:     q.orderDate ? new Date(q.orderDate) : null,
-      });
-      created++;
-    }
-    res.json({ created, skipped });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -390,130 +381,7 @@ const serveFile = async (req, res) => {
   }
 };
 
-// GET /api/orders/dashboard — single-roundtrip overview for the new home screen.
-// Returns: { actionQueue, kpis, recentActivity, topClients }.
-const dashboard = async (req, res) => {
-  try {
-    const now = new Date();
-    const sevenDaysAgo = new Date(now.getTime() - 7  * 24 * 60 * 60 * 1000);
-    const fiveDaysAgo  = new Date(now.getTime() - 5  * 24 * 60 * 60 * 1000);
-    const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
-    const startOfYear  = new Date(now.getFullYear(), 0, 1);
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-
-    const [facet] = await Order.aggregate([
-      { $facet: {
-        kpis: [
-          { $group: {
-            _id: null,
-            revenueAllTime:   { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, '$totalValue', 0] } },
-            revenueThisYear:  { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'delivered'] }, { $gte: ['$orderDate', startOfYear] }] }, '$totalValue', 0] } },
-            revenueThisMonth: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'delivered'] }, { $gte: ['$orderDate', startOfMonth] }] }, '$totalValue', 0] } },
-            openOrders:       { $sum: { $cond: [{ $in: ['$status', ['approved', 'placed', 'in_production', 'shipped']] }, 1, 0] } },
-            openQuotes:       { $sum: { $cond: [{ $eq: ['$status', 'quoted'] }, 1, 0] } },
-          }},
-        ],
-        staleQuotes: [
-          { $match: { status: 'quoted', createdAt: { $lt: sevenDaysAgo }, $or: [{ mockupNumbers: { $size: 0 } }, { mockupNumbers: { $exists: false } }] } },
-          { $sort: { createdAt: 1 } },
-          { $limit: 10 },
-          { $project: { _id: 1, companyName: 1, clientName: 1, totalValue: 1, createdAt: 1 } },
-        ],
-        missingMockups: [
-          { $match: { status: { $in: ['placed', 'in_production'] }, $or: [{ mockupNumbers: { $size: 0 } }, { mockupNumbers: { $exists: false } }] } },
-          { $sort: { orderDate: 1 } },
-          { $limit: 10 },
-          { $project: { _id: 1, orderNumber: 1, companyName: 1, clientName: 1, status: 1, orderDate: 1 } },
-        ],
-        overdueShipped: [
-          { $match: { status: 'shipped', shipDate: { $lt: fiveDaysAgo }, deliveredDate: { $in: [null, undefined] } } },
-          { $sort: { shipDate: 1 } },
-          { $limit: 10 },
-          { $project: { _id: 1, orderNumber: 1, companyName: 1, clientName: 1, shipDate: 1 } },
-        ],
-        atRiskProjects: [
-          { $match: { status: 'in_production', updatedAt: { $lt: fourteenDaysAgo } } },
-          { $sort: { updatedAt: 1 } },
-          { $limit: 10 },
-          { $project: { _id: 1, orderNumber: 1, companyName: 1, clientName: 1, updatedAt: 1 } },
-        ],
-        recentActivity: [
-          { $sort: { updatedAt: -1 } },
-          { $limit: 15 },
-          { $project: { _id: 1, orderNumber: 1, companyName: 1, clientName: 1, status: 1, totalValue: 1, updatedAt: 1 } },
-        ],
-        topClients: [
-          { $match: { status: 'delivered' } },
-          { $group: {
-            _id: {
-              $cond: [
-                { $gt: [{ $strLenCP: { $ifNull: ['$companyKey', ''] } }, 0] },
-                '$companyKey',
-                { $toLower: { $ifNull: ['$companyName', '$clientName'] } },
-              ],
-            },
-            companyName:  { $first: '$companyName' },
-            clientName:   { $first: '$clientName' },
-            totalRevenue: { $sum: '$totalValue' },
-            orderCount:   { $sum: 1 },
-          }},
-          { $sort: { totalRevenue: -1 } },
-          { $limit: 5 },
-        ],
-        activeLeads: [
-          { $group: {
-            _id: {
-              $cond: [
-                { $gt: [{ $strLenCP: { $ifNull: ['$companyKey', ''] } }, 0] },
-                '$companyKey',
-                { $toLower: { $ifNull: ['$companyName', '$clientName'] } },
-              ],
-            },
-            statuses: { $addToSet: '$status' },
-          }},
-          { $match: { 'statuses': { $not: { $elemMatch: { $in: CLIENT_TIER_STATUSES } } } } },
-          { $count: 'count' },
-        ],
-      }},
-    ]);
-
-    const [newInquiries, totalNewInquiries] = await Promise.all([
-      ContactSubmission.find({ status: 'new', honeypot: { $ne: true } })
-        .sort({ createdAt: -1 }).limit(10)
-        .select('_id name companyName email createdAt seenByAdmin')
-        .lean(),
-      ContactSubmission.countDocuments({ status: 'new', honeypot: { $ne: true } }),
-    ]);
-
-    const kpis = facet.kpis[0] || {};
-    res.json({
-      actionQueue: {
-        newInquiries,
-        newInquiriesTotal: totalNewInquiries,
-        staleQuotes:     facet.staleQuotes,
-        missingMockups:  facet.missingMockups,
-        overdueShipped:  facet.overdueShipped,
-        atRiskProjects:  facet.atRiskProjects,
-      },
-      kpis: {
-        revenueAllTime:   kpis.revenueAllTime   || 0,
-        revenueThisYear:  kpis.revenueThisYear  || 0,
-        revenueThisMonth: kpis.revenueThisMonth || 0,
-        openOrders:       kpis.openOrders       || 0,
-        openQuotes:       kpis.openQuotes       || 0,
-        activeLeads:      (facet.activeLeads[0] && facet.activeLeads[0].count) || 0,
-      },
-      recentActivity: facet.recentActivity,
-      topClients:     facet.topClients,
-    });
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
-};
-
 // POST /api/orders/from-submission/:submissionId — manual inquiry → project bridge.
-// Creates an Order(status='quoted', contactSubmissionId, prefilled from submission),
-// flips the submission to status='quoted' and stores orderId.
 const createFromSubmission = async (req, res) => {
   try {
     const sub = await ContactSubmission.findById(req.params.submissionId);
@@ -523,6 +391,12 @@ const createFromSubmission = async (req, res) => {
       if (existing) return res.json({ order: existing, alreadyLinked: true });
     }
 
+    const all = await Order.find({}).select('projectNumber').lean();
+    const max = all.reduce((m, o) => {
+      const n = parseInt((o.projectNumber || '0').split('-')[0], 10) || 0;
+      return Math.max(m, n);
+    }, 0);
+
     const notes = [
       sub.notes && `Inquiry notes: ${sub.notes}`,
       sub.quantity && `Quantity: ${sub.quantity}`,
@@ -531,6 +405,7 @@ const createFromSubmission = async (req, res) => {
     ].filter(Boolean).join('\n');
 
     const order = await Order.create({
+      projectNumber:       String(max + 1),
       companyName:         sub.companyName || '',
       clientName:          sub.name || '',
       status:              'quoted',
@@ -550,7 +425,7 @@ const createFromSubmission = async (req, res) => {
 };
 
 module.exports = {
-  listOrders, listClients, getOrder, createOrder, updateOrder, deleteOrder,
-  listByCompany, seedHistorical, nextOrderNumber, uploadFile, deleteFile, serveFile,
-  importQuotes, renameCompany, deleteByCompany, dashboard, createFromSubmission,
+  listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
+  seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
+  dashboard, createFromSubmission,
 };
