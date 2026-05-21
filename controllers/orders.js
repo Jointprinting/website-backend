@@ -1,4 +1,7 @@
 const Order = require('../models/Order');
+const ContactSubmission = require('../models/ContactSubmission');
+const StudioLibraryItem = require('../models/StudioLibraryItem');
+const { deriveCompanyKey } = require('../models/Order');
 
 // ─── Historical seed data ─────────────────────────────────────────────────────
 
@@ -156,12 +159,20 @@ const listOrders = async (req, res) => {
   }
 };
 
-// GET /api/orders/clients — distinct companies with stats (cancelled excluded from counts/revenue)
+// GET /api/orders/clients — distinct companies with stats + tier (lead | client)
+// Cancelled excluded from counts/revenue. Tier = 'client' if any order is placed+, else 'lead'.
+const CLIENT_TIER_STATUSES = ['placed', 'in_production', 'shipped', 'delivered'];
 const listClients = async (req, res) => {
   try {
     const pipeline = [
       { $group: {
-        _id: { $toLower: { $ifNull: ['$companyName', '$clientName'] } },
+        _id: {
+          $cond: [
+            { $gt: [{ $strLenCP: { $ifNull: ['$companyKey', ''] } }, 0] },
+            '$companyKey',
+            { $toLower: { $ifNull: ['$companyName', '$clientName'] } },
+          ],
+        },
         companyName:    { $first: '$companyName' },
         clientName:     { $first: '$clientName' },
         orderCount:     { $sum: { $cond: [{ $ne: ['$status', 'cancelled'] }, 1, 0] } },
@@ -170,6 +181,15 @@ const listClients = async (req, res) => {
         lastOrderDate:  { $max: '$orderDate' },
         lastActivity:   { $max: '$createdAt' },
         statuses:       { $addToSet: '$status' },
+      }},
+      { $addFields: {
+        tier: {
+          $cond: [
+            { $gt: [{ $size: { $setIntersection: ['$statuses', CLIENT_TIER_STATUSES] } }, 0] },
+            'client',
+            'lead',
+          ],
+        },
       }},
       { $sort: { lastActivity: -1 } },
     ];
@@ -251,16 +271,24 @@ const listByCompany = async (req, res) => {
   }
 };
 
-// POST /api/orders/rename-company — merge one company name into another
+// POST /api/orders/rename-company — merge one company name into another.
+// Also retargets mockup library items so their thumbnails follow the rename.
 const renameCompany = async (req, res) => {
   try {
     const { from, to } = req.body;
     if (!from || !to) return res.status(400).json({ message: 'from and to are required' });
-    const result = await Order.updateMany(
+    const ordersResult = await Order.updateMany(
       { $or: [{ companyName: from }, { clientName: from }] },
-      { $set: { companyName: to } },
+      { $set: { companyName: to, companyKey: deriveCompanyKey(to, '') } },
     );
-    res.json({ updated: result.modifiedCount });
+    const mockupsResult = await StudioLibraryItem.updateMany(
+      { store: 'mockups', client: from },
+      { $set: { client: to } },
+    );
+    res.json({
+      updated: ordersResult.modifiedCount,
+      mockupsUpdated: mockupsResult.modifiedCount,
+    });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -362,8 +390,167 @@ const serveFile = async (req, res) => {
   }
 };
 
+// GET /api/orders/dashboard — single-roundtrip overview for the new home screen.
+// Returns: { actionQueue, kpis, recentActivity, topClients }.
+const dashboard = async (req, res) => {
+  try {
+    const now = new Date();
+    const sevenDaysAgo = new Date(now.getTime() - 7  * 24 * 60 * 60 * 1000);
+    const fiveDaysAgo  = new Date(now.getTime() - 5  * 24 * 60 * 60 * 1000);
+    const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+    const startOfYear  = new Date(now.getFullYear(), 0, 1);
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const [facet] = await Order.aggregate([
+      { $facet: {
+        kpis: [
+          { $group: {
+            _id: null,
+            revenueAllTime:   { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, '$totalValue', 0] } },
+            revenueThisYear:  { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'delivered'] }, { $gte: ['$orderDate', startOfYear] }] }, '$totalValue', 0] } },
+            revenueThisMonth: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'delivered'] }, { $gte: ['$orderDate', startOfMonth] }] }, '$totalValue', 0] } },
+            openOrders:       { $sum: { $cond: [{ $in: ['$status', ['approved', 'placed', 'in_production', 'shipped']] }, 1, 0] } },
+            openQuotes:       { $sum: { $cond: [{ $eq: ['$status', 'quoted'] }, 1, 0] } },
+          }},
+        ],
+        staleQuotes: [
+          { $match: { status: 'quoted', createdAt: { $lt: sevenDaysAgo }, $or: [{ mockupNumbers: { $size: 0 } }, { mockupNumbers: { $exists: false } }] } },
+          { $sort: { createdAt: 1 } },
+          { $limit: 10 },
+          { $project: { _id: 1, companyName: 1, clientName: 1, totalValue: 1, createdAt: 1 } },
+        ],
+        missingMockups: [
+          { $match: { status: { $in: ['placed', 'in_production'] }, $or: [{ mockupNumbers: { $size: 0 } }, { mockupNumbers: { $exists: false } }] } },
+          { $sort: { orderDate: 1 } },
+          { $limit: 10 },
+          { $project: { _id: 1, orderNumber: 1, companyName: 1, clientName: 1, status: 1, orderDate: 1 } },
+        ],
+        overdueShipped: [
+          { $match: { status: 'shipped', shipDate: { $lt: fiveDaysAgo }, deliveredDate: { $in: [null, undefined] } } },
+          { $sort: { shipDate: 1 } },
+          { $limit: 10 },
+          { $project: { _id: 1, orderNumber: 1, companyName: 1, clientName: 1, shipDate: 1 } },
+        ],
+        atRiskProjects: [
+          { $match: { status: 'in_production', updatedAt: { $lt: fourteenDaysAgo } } },
+          { $sort: { updatedAt: 1 } },
+          { $limit: 10 },
+          { $project: { _id: 1, orderNumber: 1, companyName: 1, clientName: 1, updatedAt: 1 } },
+        ],
+        recentActivity: [
+          { $sort: { updatedAt: -1 } },
+          { $limit: 15 },
+          { $project: { _id: 1, orderNumber: 1, companyName: 1, clientName: 1, status: 1, totalValue: 1, updatedAt: 1 } },
+        ],
+        topClients: [
+          { $match: { status: 'delivered' } },
+          { $group: {
+            _id: {
+              $cond: [
+                { $gt: [{ $strLenCP: { $ifNull: ['$companyKey', ''] } }, 0] },
+                '$companyKey',
+                { $toLower: { $ifNull: ['$companyName', '$clientName'] } },
+              ],
+            },
+            companyName:  { $first: '$companyName' },
+            clientName:   { $first: '$clientName' },
+            totalRevenue: { $sum: '$totalValue' },
+            orderCount:   { $sum: 1 },
+          }},
+          { $sort: { totalRevenue: -1 } },
+          { $limit: 5 },
+        ],
+        activeLeads: [
+          { $group: {
+            _id: {
+              $cond: [
+                { $gt: [{ $strLenCP: { $ifNull: ['$companyKey', ''] } }, 0] },
+                '$companyKey',
+                { $toLower: { $ifNull: ['$companyName', '$clientName'] } },
+              ],
+            },
+            statuses: { $addToSet: '$status' },
+          }},
+          { $match: { 'statuses': { $not: { $elemMatch: { $in: CLIENT_TIER_STATUSES } } } } },
+          { $count: 'count' },
+        ],
+      }},
+    ]);
+
+    const [newInquiries, totalNewInquiries] = await Promise.all([
+      ContactSubmission.find({ status: 'new', honeypot: { $ne: true } })
+        .sort({ createdAt: -1 }).limit(10)
+        .select('_id name companyName email createdAt seenByAdmin')
+        .lean(),
+      ContactSubmission.countDocuments({ status: 'new', honeypot: { $ne: true } }),
+    ]);
+
+    const kpis = facet.kpis[0] || {};
+    res.json({
+      actionQueue: {
+        newInquiries,
+        newInquiriesTotal: totalNewInquiries,
+        staleQuotes:     facet.staleQuotes,
+        missingMockups:  facet.missingMockups,
+        overdueShipped:  facet.overdueShipped,
+        atRiskProjects:  facet.atRiskProjects,
+      },
+      kpis: {
+        revenueAllTime:   kpis.revenueAllTime   || 0,
+        revenueThisYear:  kpis.revenueThisYear  || 0,
+        revenueThisMonth: kpis.revenueThisMonth || 0,
+        openOrders:       kpis.openOrders       || 0,
+        openQuotes:       kpis.openQuotes       || 0,
+        activeLeads:      (facet.activeLeads[0] && facet.activeLeads[0].count) || 0,
+      },
+      recentActivity: facet.recentActivity,
+      topClients:     facet.topClients,
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+// POST /api/orders/from-submission/:submissionId — manual inquiry → project bridge.
+// Creates an Order(status='quoted', contactSubmissionId, prefilled from submission),
+// flips the submission to status='quoted' and stores orderId.
+const createFromSubmission = async (req, res) => {
+  try {
+    const sub = await ContactSubmission.findById(req.params.submissionId);
+    if (!sub) return res.status(404).json({ message: 'Submission not found' });
+    if (sub.orderId) {
+      const existing = await Order.findById(sub.orderId).lean();
+      if (existing) return res.json({ order: existing, alreadyLinked: true });
+    }
+
+    const notes = [
+      sub.notes && `Inquiry notes: ${sub.notes}`,
+      sub.quantity && `Quantity: ${sub.quantity}`,
+      sub.inHandDate && `In-hand by: ${sub.inHandDate}`,
+      sub.shipToState && `Ship to: ${sub.shipToState}`,
+    ].filter(Boolean).join('\n');
+
+    const order = await Order.create({
+      companyName:         sub.companyName || '',
+      clientName:          sub.name || '',
+      status:              'quoted',
+      notes,
+      contactSubmissionId: sub._id,
+      importedFrom:        'inquiry',
+    });
+
+    sub.status  = 'quoted';
+    sub.orderId = order._id;
+    await sub.save();
+
+    res.status(201).json({ order: order.toObject() });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 module.exports = {
   listOrders, listClients, getOrder, createOrder, updateOrder, deleteOrder,
   listByCompany, seedHistorical, nextOrderNumber, uploadFile, deleteFile, serveFile,
-  importQuotes, renameCompany, deleteByCompany,
+  importQuotes, renameCompany, deleteByCompany, dashboard, createFromSubmission,
 };

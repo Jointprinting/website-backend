@@ -47,6 +47,7 @@ const ContactSubmissionSchema = new mongoose.Schema({
   // ── NEW: CRM fields ──
   status:       { type: String, enum: STATUSES, default: 'new', index: true },
   notesAdmin:   { type: String, trim: true, maxlength: 10000, default: '' },
+  orderId:      { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null },
 
   createdAt:    { type: Date, default: Date.now, index: true },
   updatedAt:    { type: Date, default: Date.now },
