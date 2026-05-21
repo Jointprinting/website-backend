@@ -8,11 +8,39 @@ const Product = require('../models/Product');
 const { getGfs } = require('../gridfs');
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Pricing config
+//  Pricing — real cost + printing markup with per-category retail floors
 // ─────────────────────────────────────────────────────────────────────────────
-const PRICE_MARKUP = 2.5;
-const PRICE_SPREAD = 1.4;
+//  Displayed range = max(category floor, (blank cost + printing) × markup).
+//  Premium brands (B+C, Next Level, etc.) get a 15% bump on both.
+//  These match small-order (24-48 pcs, one-color print) retail expectations.
+const PRINTING_ADD_USD = 5;     // ballpark one-color print add per garment
+const MARKUP_ON_TOTAL  = 1.8;   // (blank + printing) × markup
+const PRICE_SPREAD     = 1.4;   // top of range = bottom × spread
+const PREMIUM_MULT     = 1.15;  // applied when brand is in PREMIUM_BRANDS
+
+const CATEGORY_PRICE_FLOOR = {
+  'T-Shirts':    { lo: 13, hi: 18 },
+  'Long Sleeve': { lo: 17, hi: 24 },
+  'Tanks':       { lo: 13, hi: 18 },
+  'Polos':       { lo: 22, hi: 32 },
+  'Hoodies':     { lo: 28, hi: 38 },
+  'Zip-Ups':     { lo: 34, hi: 46 },
+  'Crewnecks':   { lo: 24, hi: 34 },
+  'Jackets':     { lo: 48, hi: 72 },
+  'Pants':       { lo: 26, hi: 38 },
+  'Shorts':      { lo: 22, hi: 32 },
+  'Hats':        { lo: 18, hi: 26 },
+};
+
+const PREMIUM_BRANDS = ['bella', 'canvas', 'next level', 'alternative', 'district', 'american apparel'];
+const POPULAR_BRANDS_TAG = ['gildan', 'port', 'hanes', 'jerzees', 'sport-tek', 'carhartt'];
+
 const roundDollar = (n) => Math.max(5, Math.round(n));
+
+function isPremiumBrand(brand) {
+  const b = (brand || '').toLowerCase();
+  return PREMIUM_BRANDS.some((p) => b.includes(p));
+}
 
 function deriveRating(styleName = '') {
   let h = 0;
@@ -21,8 +49,6 @@ function deriveRating(styleName = '') {
   return Math.round(r * 2) / 2;
 }
 
-const PREMIUM_BRANDS = ['bella', 'canvas', 'next level', 'alternative', 'district', 'american apparel'];
-const POPULAR_BRANDS_TAG = ['gildan', 'port', 'hanes', 'jerzees', 'sport-tek', 'carhartt'];
 function deriveTag(brand = '', styleName = '') {
   const b = brand.toLowerCase();
   if (PREMIUM_BRANDS.some(p => b.includes(p))) return 'Our Favorite';
@@ -30,54 +56,24 @@ function deriveTag(brand = '', styleName = '') {
   return 'New Arrival';
 }
 
-function deriveRange(basePrice) {
-  if (typeof basePrice !== 'number' || !(basePrice > 0)) {
-    return { priceRangeBottom: null, priceRangeTop: null };
-  }
-  const lo = basePrice * PRICE_MARKUP;
-  const hi = lo * PRICE_SPREAD;
+// Single source of truth for displayed price ranges. Pass real S&S
+// `basePrice` (lowest piece price across SKUs) when known; pass null/undefined
+// for "no real data yet, use category floor."
+function deriveRange(basePrice, category, brand) {
+  const floor   = CATEGORY_PRICE_FLOOR[category] || CATEGORY_PRICE_FLOOR['T-Shirts'];
+  const premium = isPremiumBrand(brand) ? PREMIUM_MULT : 1.0;
+  const floorLo = floor.lo * premium;
+  const floorHi = floor.hi * premium;
+  const computedLo = (typeof basePrice === 'number' && basePrice > 0)
+    ? (basePrice + PRINTING_ADD_USD) * MARKUP_ON_TOTAL
+    : 0;
+  const lo = Math.max(floorLo, computedLo);
+  const hi = Math.max(floorHi, lo * PRICE_SPREAD);
   return { priceRangeBottom: roundDollar(lo), priceRangeTop: roundDollar(hi) };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Category-aware defaults for price + size (FreshPrints-style ballpark)
-// ─────────────────────────────────────────────────────────────────────────────
-//  When S&S's per-style SKU lookup fails, every card uses these defaults so
-//  the catalog is fully usable. Real SKU pricing from /ss/details overrides
-//  them whenever it's available. Tuned to small-order pricing (~24-48 pcs,
-//  one-color print): tees $11-16, hoodies $22-28, polos $18-25, etc.
-//  Premium brands (B+C, Next Level, etc.) get a 15% bump on the base.
-// ─────────────────────────────────────────────────────────────────────────────
-const CATEGORY_DEFAULT_PRICE = {
-  'T-Shirts':    { low: 11, high: 16 },
-  'Long Sleeve': { low: 15, high: 22 },
-  'Hoodies':     { low: 22, high: 28 },
-  'Crewnecks':   { low: 20, high: 26 },
-  'Zip-Ups':     { low: 28, high: 38 },
-  'Tanks':       { low: 11, high: 15 },
-  'Polos':       { low: 18, high: 25 },
-  'Jackets':     { low: 40, high: 58 },
-  'Pants':       { low: 20, high: 28 },
-  'Shorts':      { low: 16, high: 22 },
-  'Hats':        { low: 12, high: 17 },
-};
-
-function isPremiumBrand(brand) {
-  const b = (brand || '').toLowerCase();
-  return PREMIUM_BRANDS.some((p) => b.includes(p));
-}
-
-function defaultPriceRange(category, brand) {
-  const base = CATEGORY_DEFAULT_PRICE[category] || CATEGORY_DEFAULT_PRICE['T-Shirts'];
-  const mult = isPremiumBrand(brand) ? 1.15 : 1.0;
-  return {
-    priceRangeBottom: roundDollar(base.low * mult),
-    priceRangeTop:    roundDollar(base.high * mult),
-  };
-}
-
-// Title-aware size defaults. Catches kids/toddler/infant/ladies/tall variants
-// so we don't show "S - XL" on a toddler tee or an infant onesie.
+// Title-aware size defaults so the catalog never shows "S - 3XL" on a
+// toddler tee, infant onesie, tall cut, ladies fit, or hat.
 function defaultSizeRange(title, category, type) {
   const t = (title || '').toLowerCase();
   if (category === 'Hats')                            return { sizeRangeBottom: 'One Size', sizeRangeTop: 'One Size' };
@@ -88,6 +84,22 @@ function defaultSizeRange(title, category, type) {
   if (type === 'Female' || /\bladies\b|\bwomens?\b|\bwoman\b/.test(t)) return { sizeRangeBottom: 'XS', sizeRangeTop: '2XL' };
   return { sizeRangeBottom: 'S', sizeRangeTop: '3XL' };
 }
+
+// Used by the detail page and sync when S&S returns an empty `description`.
+// Same canned copy per category, keyed by detectCategory output.
+const CATEGORY_DESCRIPTIONS = {
+  'T-Shirts':    'A classic short-sleeve t-shirt available in multiple colors and sizes. Perfect for screen printing or embroidery on the front, back, or sleeves.',
+  'Long Sleeve': 'A versatile long-sleeve tee designed for layering or year-round wear. Ideal for custom printing or embroidery, available in many colors.',
+  'Tanks':       'A breathable sleeveless tank available in multiple colors. Great for team apparel, summer events, and printing on the front or back.',
+  'Polos':       'A polished short-sleeve polo with a button placket. Excellent for team uniforms, corporate apparel, and embroidered logos.',
+  'Hoodies':     'A cozy pullover hoodie with a roomy front pocket. Perfect for screen printing on the chest or back, or embroidery on the front.',
+  'Zip-Ups':     'A full-zip hoodie that layers easily and shows off custom designs front and back. Ideal for team apparel and branded merch.',
+  'Crewnecks':   'A classic crewneck sweatshirt — comfortable, durable, and ready for printing or embroidery. Available in a wide range of colors.',
+  'Jackets':     'A weather-ready jacket built for durability. Great for company uniforms, team outerwear, and embroidered branding.',
+  'Pants':       'Comfortable pants designed for fit and movement. Perfect for team uniforms or branded apparel with custom prints or embroidery.',
+  'Shorts':      'Versatile athletic shorts available in multiple colors. Great for sports teams, summer events, or casual branded apparel.',
+  'Hats':        'A structured cap available in multiple colors and styles. Ideal for embroidered logos, custom prints, and event giveaways.',
+};
 
 function extractAlphaBroderMinPrice(item) {
   const PRICE_FIELDS = [
@@ -178,9 +190,6 @@ function sortSizes(sizes) {
   });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Granular category/type detection.
-// ─────────────────────────────────────────────────────────────────────────────
 function detectCategory(name = '') {
   const n = name.toLowerCase();
   if (/(full[-\s]?zip|zip[-\s]?up)/.test(n))                                      return 'Zip-Ups';
@@ -297,13 +306,37 @@ exports.getProductById = async (req, res) => {
   }
 };
 
+// Detail page handler: Mongo first → on-demand sync if missing → live S&S
+// detail (category defaults) as last resort. This is what makes color swatches
+// + per-color images actually work — the synced Mongo doc has GridFS images
+// the frontend hero-swap binds to.
 exports.getProductByStyleCode = async (req, res) => {
   try {
-    const product = await Product.findOne({ style: req.params.style });
-    if (!product) return res.status(404).json({ message: 'Product not found' });
-    res.status(200).json(await populateImages(product));
+    const styleName = req.params.style;
+
+    // 1. Already-synced product in Mongo
+    const existing = await Product.findOne({ style: styleName });
+    if (existing) {
+      return res.status(200).json(await populateImages(existing));
+    }
+
+    // 2. Sync this single style on demand (deduped — concurrent clicks on the
+    //    same uncached style only run one sync)
+    try {
+      const { saved } = await syncSingleStyleDeduped(styleName);
+      if (saved) {
+        return res.status(200).json(await populateImages(saved));
+      }
+    } catch (e) {
+      console.warn(`[getProductByStyleCode] sync failed for "${styleName}", falling back to live:`, e.message);
+    }
+
+    // 3. Live S&S fallback — category defaults, no GridFS colors, but page
+    //    still renders something.
+    return exports.getSSStyleDetail(req, res);
   } catch (err) {
-    res.status(404).json({ message: err.message });
+    console.error('getProductByStyleCode error:', err);
+    return res.status(500).json({ message: err.message || 'Could not load product.' });
   }
 };
 
@@ -390,7 +423,8 @@ async function parseAlphaBroderXML(xmlString, req) {
   }
 
   const xmlMinPrice = extractAlphaBroderMinPrice(item);
-  const derived = deriveRange(xmlMinPrice);
+  const category   = req.body.category || detectCategory(name);
+  const derived = deriveRange(xmlMinPrice, category, vendor);
   const priceRangeBottom = req.body.priceRangeBottom != null && req.body.priceRangeBottom !== '' ? Number(req.body.priceRangeBottom) : derived.priceRangeBottom;
   const priceRangeTop    = req.body.priceRangeTop    != null && req.body.priceRangeTop    !== '' ? Number(req.body.priceRangeTop)    : derived.priceRangeTop;
 
@@ -400,7 +434,7 @@ async function parseAlphaBroderXML(xmlString, req) {
     sizeRangeTop:    sizeNames[sizeNames.length - 1] || 'XL',
     colors: colorArray, colorCodes,
     productFrontImages, productBackImages,
-    category: req.body.category,
+    category,
     priceRangeBottom, priceRangeTop,
     basePrice: xmlMinPrice || undefined,
     rating: req.body.rating || 5,
@@ -434,12 +468,6 @@ async function fetchSSProducts(styleName) {
     if (Array.isArray(data) && data.length > 0) {
       const matched = data.filter(matchesTarget);
       if (matched.length > 0) return matched;
-      if (!fetchSSProducts._urlPathLogged) {
-        fetchSSProducts._urlPathLogged = true;
-        console.log(`[fetchSSProducts] /products/${target} returned ${data.length} rows but none matched styleName/partNumber.`,
-          `Sample row keys: ${Object.keys(data[0]).slice(0, 12).join(', ')}.`,
-          `Sample styleName="${data[0]?.styleName}", partNumber="${data[0]?.partNumber}".`);
-      }
     }
   } catch (e) {
     console.warn(`[fetchSSProducts] path /products/${target} failed:`, e.message);
@@ -451,11 +479,6 @@ async function fetchSSProducts(styleName) {
     if (Array.isArray(data) && data.length > 0) {
       const matched = data.filter(matchesTarget);
       if (matched.length > 0) return matched;
-      if (!fetchSSProducts._queryLogged) {
-        fetchSSProducts._queryLogged = true;
-        console.log(`[fetchSSProducts] /products/?style=${target} returned ${data.length} rows but none matched styleName/partNumber.`,
-          `Sample styleName="${data[0]?.styleName}", partNumber="${data[0]?.partNumber}".`);
-      }
     }
   } catch (e) {
     console.warn(`[fetchSSProducts] /products/?style=${target} failed:`, e.message);
@@ -469,6 +492,7 @@ function summarizeSsStyle(skus) {
   const styleName = first.styleName;
   const brand = first.brandName;
   const titleCandidate = first.title || first.styleTitle || first.styleDescription || `${brand} ${styleName}`;
+  const descCandidate = first.description || first.styleDescription || null;
 
   const colorMap = new Map();
   const sizeSet = new Set();
@@ -494,6 +518,7 @@ function summarizeSsStyle(skus) {
   return {
     styleName, brand,
     title: titleCandidate,
+    description: descCandidate,
     minPrice: minPrice === Infinity ? null : minPrice,
     sizeRangeBottom: orderedSizes[0] || null,
     sizeRangeTop:    orderedSizes[orderedSizes.length - 1] || null,
@@ -501,6 +526,82 @@ function summarizeSsStyle(skus) {
     ssStyleID: first.styleID,
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Single-style sync (extracted from syncFromSS so it can be called from the
+//  on-demand detail page AND the background warm loop).
+// ─────────────────────────────────────────────────────────────────────────────
+const _inflightSyncs = new Map();
+
+async function syncSingleStyle(styleName, opts = {}) {
+  ensureSsCredentials();
+  const skus    = await fetchSSProducts(styleName);
+  const summary = summarizeSsStyle(skus);
+  const category = opts.overrideCategory || detectCategory(summary.title);
+  const type     = opts.overrideType     || detectType(summary.title);
+  const tag      = opts.tag || deriveTag(summary.brand, summary.styleName);
+  const { priceRangeBottom, priceRangeTop } = deriveRange(summary.minPrice, category, summary.brand);
+
+  const productFrontImages = [];
+  const productBackImages  = [];
+  const colors = [];
+  const colorCodes = [];
+  for (const c of summary.colors) {
+    colors.push(c.name);
+    colorCodes.push((c.hex || '#CCCCCC').toUpperCase());
+    productFrontImages.push(c.front ? await uploadImageToGridFS(c.front) : null);
+    productBackImages.push(c.back  ? await uploadImageToGridFS(c.back)  : null);
+  }
+
+  const description = summary.description
+    || CATEGORY_DESCRIPTIONS[category]
+    || `${summary.brand} ${summary.styleName} — ${summary.title}`;
+
+  const update = {
+    name: summary.title,
+    vendor: summary.brand || 'S&S Activewear',
+    brandName: summary.brand,
+    style: summary.styleName,
+    ssStyleID: summary.ssStyleID,
+    source: 'ssactivewear',
+    basePrice: summary.minPrice,
+    description,
+    sizeRangeBottom: summary.sizeRangeBottom || 'S',
+    sizeRangeTop:    summary.sizeRangeTop || 'XL',
+    colors, colorCodes,
+    productFrontImages, productBackImages,
+    rating: deriveRating(summary.styleName),
+    tag,
+    category, type,
+    priceRangeBottom, priceRangeTop,
+  };
+
+  const existing = await Product.findOne({ style: summary.styleName });
+  let saved;
+  let created = false;
+  if (existing) {
+    // Preserve admin-set prices on subsequent syncs (matches existing
+    // syncFromSS behaviour).
+    delete update.priceRangeBottom;
+    delete update.priceRangeTop;
+    Object.assign(existing, update);
+    saved = await existing.save();
+  } else {
+    saved = await Product.create(update);
+    created = true;
+  }
+  return { saved, created };
+}
+
+function syncSingleStyleDeduped(styleName) {
+  if (_inflightSyncs.has(styleName)) return _inflightSyncs.get(styleName);
+  const p = syncSingleStyle(styleName).finally(() => _inflightSyncs.delete(styleName));
+  _inflightSyncs.set(styleName, p);
+  return p;
+}
+
+exports.syncSingleStyle = syncSingleStyle;
+exports.syncSingleStyleDeduped = syncSingleStyleDeduped;
 
 async function refreshAllSSProducts() {
   ensureSsCredentials();
@@ -512,7 +613,8 @@ async function refreshAllSSProducts() {
     try {
       const skus = await fetchSSProducts(p.style);
       const summary = summarizeSsStyle(skus);
-      const { priceRangeBottom, priceRangeTop } = deriveRange(summary.minPrice);
+      const category = detectCategory(summary.title);
+      const { priceRangeBottom, priceRangeTop } = deriveRange(summary.minPrice, category, summary.brand);
       await Product.updateOne(
         { style: p.style },
         { $set: { basePrice: summary.minPrice, priceRangeBottom, priceRangeTop,
@@ -541,61 +643,21 @@ exports.refreshAllSSProductsHandler = async (req, res) => {
   }
 };
 
+// Bulk admin sync — now a thin loop over syncSingleStyle.
 exports.syncFromSS = async (req, res) => {
   try {
     ensureSsCredentials();
-    const { styles, tag, markup, overrideCategory, overrideType } = req.body || {};
+    const { styles, tag, overrideCategory, overrideType } = req.body || {};
     if (!Array.isArray(styles) || styles.length === 0) return res.status(400).json({ message: 'Provide a non-empty `styles` array.' });
     if (styles.length > 50) return res.status(400).json({ message: 'Sync at most 50 styles per request.' });
 
-    const markupNum = Number.isFinite(Number(markup)) && Number(markup) > 0 ? Number(markup) : PRICE_MARKUP;
-    const tagToUse  = typeof tag === 'string' && tag ? tag : 'New Arrival';
     let created = 0, updated = 0;
     const products = [], failed = [];
 
     for (const styleName of styles) {
       try {
-        const skus    = await fetchSSProducts(styleName);
-        const summary = summarizeSsStyle(skus);
-        const category = overrideCategory || detectCategory(summary.title);
-        const type     = overrideType     || detectType(summary.title);
-        const baseLo = (summary.minPrice || 8) * markupNum;
-        const baseHi = baseLo * PRICE_SPREAD;
-        const priceRangeBottom = roundDollar(baseLo);
-        const priceRangeTop    = roundDollar(baseHi);
-
-        const productFrontImages = [], productBackImages = [], colors = [], colorCodes = [];
-        for (const c of summary.colors) {
-          colors.push(c.name);
-          colorCodes.push((c.hex || '#CCCCCC').toUpperCase());
-          productFrontImages.push(c.front ? await uploadImageToGridFS(c.front) : null);
-          productBackImages.push(c.back  ? await uploadImageToGridFS(c.back)  : null);
-        }
-
-        const update = {
-          name: summary.title, vendor: summary.brand || 'S&S Activewear',
-          brandName: summary.brand, style: summary.styleName, ssStyleID: summary.ssStyleID,
-          source: 'ssactivewear', basePrice: summary.minPrice,
-          description: `${summary.brand} ${summary.styleName} — ${summary.title}`,
-          sizeRangeBottom: summary.sizeRangeBottom || 'S',
-          sizeRangeTop:    summary.sizeRangeTop || 'XL',
-          colors, colorCodes, productFrontImages, productBackImages,
-          rating: deriveRating(summary.styleName), tag: tagToUse,
-          category, type, priceRangeBottom, priceRangeTop,
-        };
-
-        const existing = await Product.findOne({ style: summary.styleName });
-        let saved;
-        if (existing) {
-          delete update.priceRangeBottom;
-          delete update.priceRangeTop;
-          Object.assign(existing, update);
-          saved = await existing.save();
-          updated++;
-        } else {
-          saved = await Product.create(update);
-          created++;
-        }
+        const { saved, created: wasCreated } = await syncSingleStyle(styleName, { tag, overrideCategory, overrideType });
+        if (wasCreated) created++; else updated++;
         products.push({ style: saved.style, name: saved.name, vendor: saved.vendor, category: saved.category, type: saved.type });
       } catch (e) {
         console.error(`[SS sync] failed for "${styleName}":`, e.message);
@@ -692,10 +754,8 @@ exports.importFromJson = async (req, res) => {
 
 // ─── S&S Live Browse ──────────────────────────────────────────────────────────
 const _ssCache         = new Map();
-const _ssDetailsCache  = new Map();
 const _ssImageCache    = new Map();
 const SS_CACHE_TTL          = 4 * 60 * 60 * 1000;
-const SS_DETAILS_CACHE_TTL  = 12 * 60 * 60 * 1000;
 const SS_IMAGE_CACHE_TTL    = 12 * 60 * 60 * 1000;
 
 async function fetchStyleImage(styleName) {
@@ -761,6 +821,8 @@ const SS_FEATURED_BRANDS = [
   'Hanes',
 ];
 
+exports._getSSPopularBrands = () => [...SS_POPULAR_BRANDS];
+
 async function fetchAndGroupSSBrand(brand) {
   const cacheKey = `brand:${brand}`;
   const cached   = _ssCache.get(cacheKey);
@@ -782,11 +844,6 @@ async function fetchAndGroupSSBrand(brand) {
     throw new Error(`S&S returned no styles for brand "${brand}". Check SS_ACCOUNT / SS_API_KEY env vars.`);
   }
 
-  if (!fetchAndGroupSSBrand._fieldsLogged) {
-    fetchAndGroupSSBrand._fieldsLogged = true;
-    console.log('[S&S /styles/ available fields]:', Object.keys(data[0]).join(', '));
-  }
-
   const styles = [];
   for (const style of data) {
     const title = style.title || style.styleTitle || style.styleDescription
@@ -800,7 +857,7 @@ async function fetchAndGroupSSBrand(brand) {
     const vendor   = style.brandName || brand;
     const category = detectCategory(title);
     const type     = detectType(title);
-    const { priceRangeBottom, priceRangeTop } = defaultPriceRange(category, vendor);
+    const { priceRangeBottom, priceRangeTop } = deriveRange(null, category, vendor);
     const { sizeRangeBottom, sizeRangeTop }   = defaultSizeRange(title, category, type);
 
     styles.push({
@@ -825,6 +882,8 @@ async function fetchAndGroupSSBrand(brand) {
   _ssCache.set(cacheKey, { data: result, expiresAt: Date.now() + SS_CACHE_TTL });
   return result;
 }
+
+exports._fetchSSBrandStyles = fetchAndGroupSSBrand;
 
 async function fetchAllSSBrands() {
   const cacheKey = 'all-brands';
@@ -875,6 +934,18 @@ exports.warmSSCache = () => {
     .catch((e) => console.warn('[SS] Cache warm-up failed:', e.message));
 };
 
+// Admin trigger for the full per-style warm (the heavy one that populates
+// Mongo with real colors/images for every style across SS_POPULAR_BRANDS).
+exports.warmAllStylesHandler = async (req, res) => {
+  require('../services/ssWarmAll').warmAllStyles()
+    .catch(e => console.error('[warmAll] background failure:', e.message));
+  return res.status(202).json({ message: 'Warm-all started in background. Check Render logs for progress.' });
+};
+
+// Catalog browse: returns styles from the /styles/ cache, decorated with
+// MongoDB data for any style that's already been synced (real price, real
+// size range, real color count). Unsynced styles keep their category-default
+// values, which the warm loop fills in over time.
 exports.browseSS = async (req, res) => {
   try {
     ensureSsCredentials();
@@ -894,24 +965,33 @@ exports.browseSS = async (req, res) => {
     const p = Math.max(1, parseInt(page, 10));
     const l = Math.min(48, Math.max(1, parseInt(limit, 10)));
     const start = (p - 1) * l;
+    const pageSlice = styles.slice(start, start + l);
 
-    const pageSlice = styles.slice(start, start + l).map((s) => {
-      const cached = _ssDetailsCache.get(s.style);
-      if (cached && cached.expiresAt > Date.now() && cached.minPrice != null) {
-        const { priceRangeBottom, priceRangeTop } = deriveRange(cached.minPrice);
-        return {
-          ...s,
-          priceRangeBottom,
-          priceRangeTop,
-          sizeRangeBottom: cached.sizeRangeBottom || s.sizeRangeBottom,
-          sizeRangeTop: cached.sizeRangeTop || s.sizeRangeTop,
-          colorCount: cached.colorCount || s.colorCount,
-        };
-      }
-      return s;
+    // Mongo override: for any style already synced, prefer the real SKU
+    // data (price, sizes, colorCount) over the category-default fallback.
+    const styleNames = pageSlice.map((s) => s.style);
+    const synced = await Product.find({
+      style: { $in: styleNames },
+      source: 'ssactivewear',
+    })
+      .select('style priceRangeBottom priceRangeTop sizeRangeBottom sizeRangeTop colors')
+      .lean();
+    const bySN = new Map(synced.map((p) => [p.style, p]));
+
+    const enriched = pageSlice.map((s) => {
+      const m = bySN.get(s.style);
+      if (!m) return s;
+      return {
+        ...s,
+        priceRangeBottom: m.priceRangeBottom || s.priceRangeBottom,
+        priceRangeTop:    m.priceRangeTop    || s.priceRangeTop,
+        sizeRangeBottom:  m.sizeRangeBottom  || s.sizeRangeBottom,
+        sizeRangeTop:     m.sizeRangeTop     || s.sizeRangeTop,
+        colorCount:       (Array.isArray(m.colors) && m.colors.length) || s.colorCount,
+      };
     });
 
-    return res.json({ products: pageSlice, total, page: p, totalPages: Math.ceil(total / l) });
+    return res.json({ products: enriched, total, page: p, totalPages: Math.ceil(total / l) });
   } catch (err) {
     console.error('browseSS error:', err.message);
     return res.status(500).json({ message: err.message || 'Browse failed.' });
@@ -947,76 +1027,30 @@ exports.testSSConnection = async (req, res) => {
   }
 };
 
-async function fetchStyleDetails(styleName) {
-  const cached = _ssDetailsCache.get(styleName);
-  if (cached && cached.expiresAt > Date.now()) return cached;
-
-  try {
-    const skus = await fetchSSProducts(styleName);
-    const summary = summarizeSsStyle(skus);
-    const entry = {
-      minPrice: summary.minPrice,
-      sizeRangeBottom: summary.sizeRangeBottom,
-      sizeRangeTop: summary.sizeRangeTop,
-      colors: summary.colors,
-      colorCount: summary.colors.length,
-      title: summary.title,
-      brand: summary.brand,
-      expiresAt: Date.now() + SS_DETAILS_CACHE_TTL,
-    };
-    _ssDetailsCache.set(styleName, entry);
-    return entry;
-  } catch (e) {
-    console.warn(`[fetchStyleDetails] "${styleName}" failed:`, e.message);
-    return null;
-  }
-}
-
-async function mapWithConcurrency(items, concurrency, worker) {
-  const results = new Array(items.length);
-  let cursor = 0;
-  async function next() {
-    while (true) {
-      const i = cursor++;
-      if (i >= items.length) return;
-      try { results[i] = await worker(items[i], i); }
-      catch (e) { results[i] = { _error: e?.message || 'error' }; }
-    }
-  }
-  const lanes = Array(Math.min(concurrency, items.length)).fill(0).map(next);
-  await Promise.all(lanes);
-  return results;
-}
-
+// Batch enrich endpoint kept for backwards compatibility with the catalog's
+// lazy fetch — now backed by Mongo so it returns instantly for synced styles.
 exports.getSSDetails = async (req, res) => {
   try {
     ensureSsCredentials();
     const { styles } = req.query;
     if (!styles) return res.json({ details: {} });
-
-    const styleList = String(styles)
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .slice(0, 50);
-
-    const results = await mapWithConcurrency(styleList, 6, async (styleName) => {
-      const d = await fetchStyleDetails(styleName);
-      if (!d || d.minPrice == null) return null;
-      const { priceRangeBottom, priceRangeTop } = deriveRange(d.minPrice);
-      return {
-        style: styleName,
-        priceRangeBottom,
-        priceRangeTop,
-        sizeRangeBottom: d.sizeRangeBottom,
-        sizeRangeTop: d.sizeRangeTop,
-        colorCount: d.colorCount,
-      };
-    });
-
+    const styleList = String(styles).split(',').map((s) => s.trim()).filter(Boolean).slice(0, 50);
+    const synced = await Product.find({
+      style: { $in: styleList },
+      source: 'ssactivewear',
+    })
+      .select('style priceRangeBottom priceRangeTop sizeRangeBottom sizeRangeTop colors')
+      .lean();
     const details = {};
-    for (const r of results) {
-      if (r && r.style) details[r.style] = r;
+    for (const m of synced) {
+      details[m.style] = {
+        style: m.style,
+        priceRangeBottom: m.priceRangeBottom,
+        priceRangeTop:    m.priceRangeTop,
+        sizeRangeBottom:  m.sizeRangeBottom,
+        sizeRangeTop:     m.sizeRangeTop,
+        colorCount:       Array.isArray(m.colors) ? m.colors.length : 0,
+      };
     }
     return res.json({ details });
   } catch (err) {
@@ -1025,6 +1059,9 @@ exports.getSSDetails = async (req, res) => {
   }
 };
 
+// Live S&S fallback for the detail page when on-demand sync fails. Returns
+// category-default price/size and live /styles/ description, so the page
+// always renders something rather than 500ing.
 exports.getSSStyleDetail = async (req, res) => {
   try {
     ensureSsCredentials();
@@ -1048,7 +1085,7 @@ exports.getSSStyleDetail = async (req, res) => {
           styleName: match.styleName || styleName,
           brand,
           title,
-          description: match.description || `${brand} ${match.styleName || styleName}`,
+          description: match.description || null,
           image: ssImageUrl(pickSSImagePath(match)),
         };
       }
@@ -1056,41 +1093,17 @@ exports.getSSStyleDetail = async (req, res) => {
       console.warn(`[getSSStyleDetail] /styles/ lookup failed for "${styleName}":`, e.message);
     }
 
-    const details = await fetchStyleDetails(styleName);
-
-    if (!basicInfo && !details) {
+    if (!basicInfo) {
       return res.status(404).json({ message: `Could not find style "${styleName}".` });
     }
 
-    const title    = basicInfo?.title || details?.title || styleName;
-    const brand    = basicInfo?.brand || details?.brand || 'S&S Activewear';
+    const title    = basicInfo.title || styleName;
+    const brand    = basicInfo.brand || 'S&S Activewear';
     const category = detectCategory(title);
     const type     = detectType(title);
-
-    let priceRangeBottom = null;
-    let priceRangeTop    = null;
-    if (details && details.minPrice != null) {
-      const r = deriveRange(details.minPrice);
-      priceRangeBottom = r.priceRangeBottom;
-      priceRangeTop    = r.priceRangeTop;
-    } else {
-      const r = defaultPriceRange(category, brand);
-      priceRangeBottom = r.priceRangeBottom;
-      priceRangeTop    = r.priceRangeTop;
-    }
-
-    let sizeRangeBottom = details?.sizeRangeBottom ?? null;
-    let sizeRangeTop    = details?.sizeRangeTop ?? null;
-    if (!sizeRangeBottom || !sizeRangeTop) {
-      const r = defaultSizeRange(title, category, type);
-      sizeRangeBottom = sizeRangeBottom || r.sizeRangeBottom;
-      sizeRangeTop    = sizeRangeTop || r.sizeRangeTop;
-    }
-
-    const colors = details?.colors || [];
-    const productFrontImages = colors.length
-      ? colors.map((c) => c.front || null)
-      : (basicInfo?.image ? [basicInfo.image] : []);
+    const { priceRangeBottom, priceRangeTop } = deriveRange(null, category, brand);
+    const { sizeRangeBottom, sizeRangeTop }   = defaultSizeRange(title, category, type);
+    const description = basicInfo.description || CATEGORY_DESCRIPTIONS[category] || `${brand} ${styleName}`;
 
     return res.json({
       style: styleName,
@@ -1102,13 +1115,13 @@ exports.getSSStyleDetail = async (req, res) => {
       priceRangeTop,
       sizeRangeBottom,
       sizeRangeTop,
-      colors: colors.map((c) => c.name),
-      colorCodes: colors.map((c) => (c.hex || '#CCCCCC').toUpperCase()),
-      productFrontImages,
-      productBackImages: colors.map((c) => c.back || null),
+      colors: [],
+      colorCodes: [],
+      productFrontImages: basicInfo.image ? [basicInfo.image] : [],
+      productBackImages: [],
       rating: deriveRating(styleName),
       tag: deriveTag(brand, title),
-      description: basicInfo?.description || `${brand} ${styleName} — ${title}`,
+      description,
     });
   } catch (err) {
     console.error('getSSStyleDetail error:', err.message);
