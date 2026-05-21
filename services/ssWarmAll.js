@@ -1,22 +1,22 @@
 // services/ssWarmAll.js
 //
-// Background warm loop: walks every style across SS_POPULAR_BRANDS and syncs
-// each into MongoDB with full color list, per-color images (compressed WebP
-// in GridFS), real piece prices, and real size ranges. Once a style is in
-// Mongo, the product detail page renders instantly with clickable color
-// swatches that swap the hero image — no on-demand sync needed.
+// Background warm loop: walks every style across SS_POPULAR_BRANDS and
+// upserts a MongoDB record for each via syncSingleStyleDeduped. Each
+// record stores S&S CDN URLs (not GridFS blobs) so the whole catalog
+// fits comfortably in free Mongo M0 (~50 MB total, vs ~5 GB if we
+// stored images).
 //
-// Designed for Render's 512 MB free dyno:
-//   - Serial (concurrency 1) so Sharp/WebP encoding peaks at ~30 MB per
-//     style, then GCs before the next call.
-//   - 500 ms delay between styles to avoid bursting S&S's rate limits.
-//   - Skips styles already synced within the last 7 days.
-//   - Per-style failures (e.g. fetchSSProducts can't find matching SKUs)
-//     are logged and skipped — the loop never aborts.
+// Pacing: serial with 200 ms gap between styles. With image downloads
+// removed, each sync is just one S&S /products/ call + one Mongo upsert,
+// so a single style takes ~300-800 ms. Full catalog (~3,000 popular-brand
+// styles) warms in roughly 30-60 minutes. Per-style failures are logged
+// and the loop continues.
 
 const Product = require('../models/Product');
 
-const FRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000; // skip styles synced in last 7d
+const FRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const PER_STYLE_PAUSE_MS = 200;
+const PER_BRAND_PAUSE_MS = 500;
 
 let _running = false;
 
@@ -28,7 +28,6 @@ async function warmAllStyles() {
   _running = true;
   const startedAt = Date.now();
 
-  // Pulled lazily to avoid a require-cycle with controllers/product.js
   const ctl = require('../controllers/product');
   if (!process.env.SS_ACCOUNT || !process.env.SS_API_KEY) {
     console.log('[warmAll] S&S credentials missing — skipping.');
@@ -38,11 +37,8 @@ async function warmAllStyles() {
 
   console.log('[warmAll] starting full S&S catalog warm — gathering style list…');
 
-  // Get every style across the popular brands. fetchSSBrandStyles is the
-  // existing fetchAndGroupSSBrand which caches per-brand for 4 hours, so this
-  // is cheap if the catalog has been browsed recently.
   const brands = ctl._getSSPopularBrands();
-  const allStyles = [];
+  const allStyles = [];   // [{ style, styleID }]
   const seen = new Set();
 
   for (const brand of brands) {
@@ -51,14 +47,13 @@ async function warmAllStyles() {
       for (const s of styles) {
         if (s.style && !seen.has(s.style)) {
           seen.add(s.style);
-          allStyles.push(s.style);
+          allStyles.push({ style: s.style, styleID: s.styleID });
         }
       }
     } catch (e) {
       console.warn(`[warmAll] couldn't list brand "${brand}": ${e.message}`);
     }
-    // Brief pause between brand fetches so we don't burst.
-    await new Promise((r) => setTimeout(r, 1000));
+    await new Promise((r) => setTimeout(r, PER_BRAND_PAUSE_MS));
   }
 
   console.log(`[warmAll] ${allStyles.length} unique styles to consider.`);
@@ -69,35 +64,43 @@ async function warmAllStyles() {
   const freshCutoff = new Date(Date.now() - FRESH_TTL_MS);
 
   for (let i = 0; i < allStyles.length; i++) {
-    const styleName = allStyles[i];
+    const { style, styleID } = allStyles[i];
 
     try {
-      const existing = await Product.findOne({ style: styleName })
-        .select('updatedAt source')
+      const existing = await Product.findOne({ style })
+        .select('updatedAt source priceFrom')
         .lean();
-      if (existing && existing.source === 'ssactivewear' && existing.updatedAt > freshCutoff) {
+      // Skip if synced recently AND has a real priceFrom (not just placeholder)
+      if (
+        existing &&
+        existing.source === 'ssactivewear' &&
+        existing.updatedAt > freshCutoff &&
+        existing.priceFrom != null
+      ) {
         skipped++;
       } else {
-        await ctl.syncSingleStyleDeduped(styleName);
+        await ctl.syncSingleStyleDeduped(style, { styleID });
         synced++;
       }
     } catch (e) {
       failed++;
-      console.warn(`[warmAll] skipped "${styleName}": ${e.message}`);
+      console.warn(`[warmAll] skipped "${style}": ${e.message}`);
     }
 
-    // Progress log every 50 styles.
     if ((i + 1) % 50 === 0) {
       const pct = Math.round(((i + 1) / allStyles.length) * 100);
-      console.log(`[warmAll] ${i + 1}/${allStyles.length} processed (${pct}%) — synced ${synced}, skipped ${skipped}, failed ${failed}`);
+      console.log(
+        `[warmAll] ${i + 1}/${allStyles.length} processed (${pct}%) — synced ${synced}, skipped ${skipped}, failed ${failed}`
+      );
     }
 
-    // Serial pacing: 500 ms between styles keeps memory + S&S rate steady.
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, PER_STYLE_PAUSE_MS));
   }
 
   const elapsedMin = Math.round((Date.now() - startedAt) / 60_000);
-  console.log(`[warmAll] DONE in ${elapsedMin} min — synced ${synced}, skipped ${skipped}, failed ${failed}.`);
+  console.log(
+    `[warmAll] DONE in ${elapsedMin} min — synced ${synced}, skipped ${skipped}, failed ${failed}.`
+  );
   _running = false;
 }
 
