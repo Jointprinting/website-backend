@@ -6,7 +6,7 @@ const { requireAdmin } = require('../middleware/auth');
 const {
   listOrders, listClients, getOrder, createOrder, updateOrder, deleteOrder,
   listByCompany, seedHistorical, nextOrderNumber, uploadFile, deleteFile, serveFile,
-  importQuotes,
+  importQuotes, renameCompany, deleteByCompany,
 } = require('../controllers/orders');
 
 router.use(requireAdmin);
@@ -19,6 +19,8 @@ const upload = multer({ storage, limits: { fileSize: 25 * 1024 * 1024 } });
 
 router.post('/seed-historical',           seedHistorical);
 router.post('/import-quotes',             importQuotes);
+router.post('/rename-company',            renameCompany);
+router.delete('/by-company/:name',        deleteByCompany);
 router.get('/next-number',                nextOrderNumber);
 router.get('/clients',                    listClients);
 router.get('/company/:name',              listByCompany);

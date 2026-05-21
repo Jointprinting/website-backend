@@ -230,6 +230,32 @@ const listByCompany = async (req, res) => {
   }
 };
 
+// POST /api/orders/rename-company — merge one company name into another
+const renameCompany = async (req, res) => {
+  try {
+    const { from, to } = req.body;
+    if (!from || !to) return res.status(400).json({ message: 'from and to are required' });
+    const result = await Order.updateMany(
+      { $or: [{ companyName: from }, { clientName: from }] },
+      { $set: { companyName: to } },
+    );
+    res.json({ updated: result.modifiedCount });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+// DELETE /api/orders/by-company/:name — delete all orders for a company (used in dedupe cleanup)
+const deleteByCompany = async (req, res) => {
+  try {
+    const name = decodeURIComponent(req.params.name);
+    const result = await Order.deleteMany({ companyName: name });
+    res.json({ deleted: result.deletedCount });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 // POST /api/orders/import-quotes — bulk import from Google Drive Apps Script export
 const importQuotes = async (req, res) => {
   try {
@@ -318,5 +344,5 @@ const serveFile = async (req, res) => {
 module.exports = {
   listOrders, listClients, getOrder, createOrder, updateOrder, deleteOrder,
   listByCompany, seedHistorical, nextOrderNumber, uploadFile, deleteFile, serveFile,
-  importQuotes,
+  importQuotes, renameCompany, deleteByCompany,
 };
