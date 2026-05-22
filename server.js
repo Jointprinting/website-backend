@@ -109,6 +109,7 @@ const clientRoutes         = require('./routes/clientRoutes');
 const publicApprovalRoutes = require('./routes/publicApprovalRoutes');
 const backupRoutes         = require('./routes/backupRoutes');
 const jpwRoutes            = require('./routes/jpwRoutes');
+const quickbooksRoutes     = require('./routes/quickbooksRoutes');
 
 app.use('/api/products', productRoutes);
 app.use('/api/auth', authRoutes);
@@ -124,6 +125,7 @@ app.use('/api/clients', express.json(), clientRoutes);
 app.use('/api/public', express.json(), publicApprovalRoutes);
 app.use('/api/admin/backup', backupRoutes);
 app.use('/api/jpw', express.json({ limit: '20mb' }), jpwRoutes);
+app.use('/api/quickbooks', express.json(), quickbooksRoutes);
 app.use('/api/email', contactLimiter, upload.array('files', 10), emailRoutes);
 
 app.use((err, _req, res, next) => {
