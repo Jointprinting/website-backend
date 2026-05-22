@@ -29,6 +29,17 @@ const VALIDATORS = {
     };
     return clean;
   },
+
+  // Brand logo (base64 data URL). Rendered on the approval page and confirmation
+  // page. Pass { dataUrl: '' } to clear.
+  brandLogo: (v) => {
+    if (v === null || v === undefined) return { dataUrl: '' };
+    if (typeof v !== 'object') throw new Error('Expected { dataUrl }.');
+    const dataUrl = typeof v.dataUrl === 'string' ? v.dataUrl : '';
+    if (dataUrl && !dataUrl.startsWith('data:')) throw new Error('dataUrl must be a base64 data: URL.');
+    if (dataUrl.length > 800 * 1024) throw new Error('Brand logo too large — keep under ~600 KB.');
+    return { dataUrl };
+  },
 };
 
 const DEFAULTS = {
@@ -39,6 +50,7 @@ const DEFAULTS = {
     subtext:     'Use this code at checkout — fresh prints, fresh discount.',
     accentColor: '#1a3d2b',
   },
+  brandLogo: { dataUrl: '' },
 };
 
 async function getSetting(req, res) {

@@ -535,6 +535,119 @@ const analytics = async (req, res) => {
   }
 };
 
+// GET /api/orders/cleanup-candidates — surfaces stuff that's safe to clean:
+// - empty projects (no client/company, no items, no quote, no mockup, no $)
+// - company-name collisions (different companyName strings resolving to the
+//   same companyKey — usually typos like "Bract House" vs "Bract House Inc")
+const cleanupCandidates = async (req, res) => {
+  try {
+    const orders = await Order.find({}).select(
+      'projectNumber orderNumber companyName clientName companyKey ' +
+      'totalValue items quoteLines mockupNumbers files status createdAt'
+    ).lean();
+
+    const empty = orders.filter(o =>
+      !o.companyName && !o.clientName &&
+      !(o.items || []).length &&
+      !(o.quoteLines || []).length &&
+      !(o.mockupNumbers || []).length &&
+      !(o.files || []).length &&
+      (!o.totalValue || o.totalValue === 0) &&
+      !o.orderNumber
+    );
+
+    // Group by companyKey, flag keys with >1 distinct companyName
+    const byKey = {};
+    orders.forEach(o => {
+      const k = o.companyKey || '';
+      if (!k) return;
+      if (!byKey[k]) byKey[k] = { companyKey: k, variants: new Map(), projectCount: 0 };
+      const name = o.companyName || o.clientName || '';
+      const cur = byKey[k].variants.get(name) || 0;
+      byKey[k].variants.set(name, cur + 1);
+      byKey[k].projectCount++;
+    });
+    const nameCollisions = Object.values(byKey)
+      .filter(g => g.variants.size > 1)
+      .map(g => ({
+        companyKey: g.companyKey,
+        projectCount: g.projectCount,
+        variants: [...g.variants.entries()].map(([name, count]) => ({ name, count })),
+      }));
+
+    res.json({
+      empty: empty.map(o => ({
+        _id: o._id, projectNumber: o.projectNumber, createdAt: o.createdAt, status: o.status,
+      })),
+      nameCollisions,
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+// POST /api/orders/cleanup-delete — bulk-delete by ids
+const cleanupDelete = async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body && req.body.ids) ? req.body.ids : [];
+    if (ids.length === 0) return res.json({ deleted: 0 });
+    const result = await Order.deleteMany({ _id: { $in: ids } });
+    res.json({ deleted: result.deletedCount });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+// POST /api/orders/merge-company — renames every order matching `from` to use
+// the canonical `to` companyName. companyKey is re-derived by the pre-save hook
+// via findOneAndUpdate, so this is also the path to dedupe variants. Also
+// re-points any ClientLogo + StudioLibraryItem record so logos / mockups follow.
+const mergeCompany = async (req, res) => {
+  try {
+    const { from, to } = req.body || {};
+    if (!from || !to) return res.status(400).json({ message: 'from and to are required' });
+    if (from === to) return res.json({ ordersUpdated: 0, mockupsUpdated: 0, logosMerged: 0 });
+
+    const ordersResult = await Order.updateMany(
+      { $or: [{ companyName: from }, { clientName: from }] },
+      { $set: { companyName: to, companyKey: deriveCompanyKey(to, '') } },
+    );
+    const mockupsResult = await StudioLibraryItem.updateMany(
+      { store: 'mockups', client: from },
+      { $set: { client: to } },
+    );
+
+    // Consolidate logos: if 'from' has a logo and 'to' doesn't, move it; else
+    // drop the 'from' logo so it can't shadow the 'to' logo by companyKey.
+    const fromKey = deriveCompanyKey(from, '');
+    const toKey   = deriveCompanyKey(to, '');
+    const ClientLogo = require('../models/ClientLogo');
+    let logosMerged = 0;
+    if (fromKey && fromKey !== toKey) {
+      const [fromLogo, toLogo] = await Promise.all([
+        ClientLogo.findOne({ companyKey: fromKey }),
+        ClientLogo.findOne({ companyKey: toKey }),
+      ]);
+      if (fromLogo && !toLogo) {
+        await ClientLogo.create({ companyKey: toKey, companyName: to,
+          imageDataUrl: fromLogo.imageDataUrl, uploadedAt: new Date() });
+        logosMerged = 1;
+      }
+      if (fromLogo) {
+        await ClientLogo.deleteOne({ companyKey: fromKey });
+      }
+    }
+
+    res.json({
+      ordersUpdated:  ordersResult.modifiedCount,
+      mockupsUpdated: mockupsResult.modifiedCount,
+      logosMerged,
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 // POST /api/orders/:id/duplicate — clones a project. Use cases:
 // - Re-order: same artwork, new run
 // - Template: starting point for a similar request
@@ -719,4 +832,5 @@ module.exports = {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
   dashboard, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
+  cleanupCandidates, cleanupDelete, mergeCompany,
 };
