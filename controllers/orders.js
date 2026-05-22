@@ -411,6 +411,58 @@ const serveFile = async (req, res) => {
   }
 };
 
+// GET /api/orders/clients-summary — one row per unique company. Used by the
+// new Clients overview dialog.
+const clientsSummary = async (req, res) => {
+  try {
+    const orders = await Order.find({}).select('status totalValue companyName clientName companyKey updatedAt orderDate paid').lean();
+
+    const byKey = {};
+    orders.forEach(o => {
+      const key = o.companyKey || (o.companyName || o.clientName || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+      if (!key) return;
+      if (!byKey[key]) {
+        byKey[key] = {
+          companyKey: key,
+          companyName: o.companyName || '',
+          clientName:  o.clientName  || '',
+          projectCount: 0,
+          deliveredCount: 0,
+          deliveredRevenue: 0,
+          openValue: 0,
+          unpaidValue: 0,
+          lastActivity: null,
+          statuses: {},
+        };
+      }
+      const c = byKey[key];
+      c.projectCount++;
+      c.statuses[o.status] = (c.statuses[o.status] || 0) + 1;
+      if (o.status === 'delivered') {
+        c.deliveredCount++;
+        c.deliveredRevenue += Number(o.totalValue) || 0;
+      }
+      if (['approved', 'placed', 'in_production', 'shipped'].includes(o.status)) {
+        c.openValue += Number(o.totalValue) || 0;
+        if (!o.paid) c.unpaidValue += Number(o.totalValue) || 0;
+      }
+      const when = o.updatedAt || o.orderDate;
+      if (when && (!c.lastActivity || new Date(when) > new Date(c.lastActivity))) {
+        c.lastActivity = when;
+      }
+      // Keep richer name if any project has it
+      if (!c.companyName && o.companyName) c.companyName = o.companyName;
+      if (!c.clientName  && o.clientName)  c.clientName  = o.clientName;
+    });
+
+    const clients = Object.values(byKey).sort((a, b) =>
+      new Date(b.lastActivity || 0).getTime() - new Date(a.lastActivity || 0).getTime());
+    res.json({ clients });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 // GET /api/orders/analytics — single-roundtrip analytics for the dashboard
 // view: revenue by month, top clients, top garment styles, margin breakdown.
 const analytics = async (req, res) => {
@@ -666,5 +718,5 @@ const mockupHealth = async (req, res) => {
 module.exports = {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
-  dashboard, createFromSubmission, mockupHealth, duplicateOrder, analytics,
+  dashboard, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
 };
