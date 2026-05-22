@@ -667,34 +667,72 @@ exports.browseSS = async (req, res) => {
 // brand-cache lookup. NO sync attempt on /products/ since that endpoint
 // returns 404 for our account. Returns dataQuality:'styles-only' so the
 // frontend can show a 'live colors come at quote time' note.
+// Resolve a style code -> { match, summary } from S&S. Cached for 10 min so
+// repeat detail-page hits don't re-scan 5,736 styles + re-fetch SKU rows.
+async function resolveSSEnrichment(styleName) {
+  const cacheKey = `enrich:${String(styleName || '').toLowerCase()}`;
+  const cached = _ssCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.data;
+  let data = null;
+  try {
+    const match = await findStyleByName(styleName);
+    if (match) {
+      const skus = await fetchSSProducts(null, match.styleID);
+      const summary = summarizeSsStyle(skus);
+      data = { match, summary };
+    }
+  } catch (e) {
+    console.warn(`[SS] enrichment failed for "${styleName}":`, e.message);
+  }
+  _ssCache.set(cacheKey, { data, expiresAt: Date.now() + 10 * 60 * 1000 });
+  return data;
+}
+
 exports.getProductByStyleCode = async (req, res) => {
   try {
     const styleName = req.params.style;
 
+    // Always probe S&S so we can overlay real color/size data onto the
+    // (possibly bare) Mongo record below. Cached, so cost is one slow call
+    // every 10 minutes per style.
+    const enrichment = await resolveSSEnrichment(styleName);
+    const summary    = enrichment?.summary;
+    const match      = enrichment?.match;
+
     const stored = await Product.findOne({ style: styleName });
+
     if (stored) {
-      return res.status(200).json(await populateImages(stored));
+      const base = await populateImages(stored);
+      if (summary) {
+        // Mongo keeps authority over name/description/price/tag. S&S takes
+        // authority over colors/sizes/per-color photos — those are objective
+        // and the Mongo import had them blank or stale.
+        const baseFrontFiltered = (base.productFrontImages || []).filter(Boolean);
+        const liveFront = summary.colors.find((c) => c.front)?.front;
+        return res.status(200).json({
+          ...base,
+          ssStyleID:           match.styleID,
+          colors:              summary.colors.map((c) => c.name),
+          colorCodes:          summary.colors.map((c) => c.hex),
+          colorSwatches:       summary.colors,
+          sizes:               summary.sizes,
+          sizeRangeBottom:     summary.sizeRangeBottom || base.sizeRangeBottom,
+          sizeRangeTop:        summary.sizeRangeTop    || base.sizeRangeTop,
+          productFrontImages:  baseFrontFiltered.length > 0
+                                 ? baseFrontFiltered
+                                 : (liveFront ? [liveFront] : []),
+          colorCount:          summary.colors.length,
+          dataQuality:         'mongo+live-products',
+        });
+      }
+      return res.status(200).json(base);
     }
 
-    const match = await findStyleByName(styleName);
     if (!match) {
       return res.status(404).json({ message: `Could not find style "${styleName}".` });
     }
 
-    // Pull real SKU rows from /products/?styleid={ID}. We've confirmed this
-    // returns one row per color x size (e.g. 589 rows / 82 colors / 8 sizes
-    // for Gildan G500 = S&S styleID 16). If the call fails, fall through
-    // with empty colors/sizes — never invent fallback data.
-    let summary = null;
-    try {
-      const skus = await fetchSSProducts(null, match.styleID);
-      summary = summarizeSsStyle(skus);
-    } catch (e) {
-      console.warn(`[SS] /products/?styleid=${match.styleID} failed for "${styleName}":`, e.message);
-    }
-
     const liveFront = summary?.colors?.find((c) => c.front)?.front;
-
     return res.json({
       style:               match.style,
       ssStyleID:           match.styleID,
