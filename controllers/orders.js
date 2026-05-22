@@ -411,6 +411,78 @@ const serveFile = async (req, res) => {
   }
 };
 
+// GET /api/orders/analytics — single-roundtrip analytics for the dashboard
+// view: revenue by month, top clients, top garment styles, margin breakdown.
+const analytics = async (req, res) => {
+  try {
+    const now = new Date();
+    const oneYearAgo = new Date(now.getFullYear() - 1, now.getMonth(), 1);
+
+    const orders = await Order.find({}).select('status totalValue cogs orderDate companyName clientName companyKey quoteLines').lean();
+
+    // Revenue by month (delivered only, last 12 months)
+    const monthBuckets = {};
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      monthBuckets[k] = { month: k, revenue: 0, orders: 0, cogs: 0 };
+    }
+    orders.forEach(o => {
+      if (o.status !== 'delivered' || !o.orderDate) return;
+      const d = new Date(o.orderDate);
+      if (d < oneYearAgo) return;
+      const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      if (!monthBuckets[k]) return;
+      monthBuckets[k].revenue += Number(o.totalValue) || 0;
+      monthBuckets[k].cogs    += Number(o.cogs) || 0;
+      monthBuckets[k].orders  += 1;
+    });
+    const revenueByMonth = Object.values(monthBuckets);
+
+    // Top clients (delivered revenue)
+    const byClient = {};
+    orders.forEach(o => {
+      if (o.status !== 'delivered') return;
+      const key = o.companyKey || (o.companyName || o.clientName || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+      if (!key) return;
+      if (!byClient[key]) byClient[key] = { companyKey: key, companyName: o.companyName, clientName: o.clientName, revenue: 0, orders: 0 };
+      byClient[key].revenue += Number(o.totalValue) || 0;
+      byClient[key].orders  += 1;
+    });
+    const topClients = Object.values(byClient).sort((a, b) => b.revenue - a.revenue).slice(0, 5);
+
+    // Top garment styles (qty across all quoteLines)
+    const byStyle = {};
+    orders.forEach(o => {
+      (o.quoteLines || []).forEach(l => {
+        const code = (l.styleCode || '').trim();
+        if (!code) return;
+        if (!byStyle[code]) byStyle[code] = { styleCode: code, qty: 0, lineCount: 0, sample: l.description };
+        byStyle[code].qty       += Number(l.qty) || 0;
+        byStyle[code].lineCount += 1;
+      });
+    });
+    const topStyles = Object.values(byStyle).sort((a, b) => b.qty - a.qty).slice(0, 10);
+
+    // Overall margin (delivered only)
+    let totalRevenue = 0, totalCogs = 0;
+    orders.forEach(o => {
+      if (o.status !== 'delivered') return;
+      totalRevenue += Number(o.totalValue) || 0;
+      totalCogs    += Number(o.cogs) || 0;
+    });
+    const overallMargin    = totalRevenue - totalCogs;
+    const overallMarginPct = totalRevenue > 0 ? (overallMargin / totalRevenue) * 100 : 0;
+
+    res.json({
+      revenueByMonth, topClients, topStyles,
+      overall: { revenue: totalRevenue, cogs: totalCogs, margin: overallMargin, marginPct: overallMarginPct },
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 // POST /api/orders/:id/duplicate — clones a project. Use cases:
 // - Re-order: same artwork, new run
 // - Template: starting point for a similar request
@@ -594,5 +666,5 @@ const mockupHealth = async (req, res) => {
 module.exports = {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
-  dashboard, createFromSubmission, mockupHealth, duplicateOrder,
+  dashboard, createFromSubmission, mockupHealth, duplicateOrder, analytics,
 };
