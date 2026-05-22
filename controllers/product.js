@@ -555,20 +555,45 @@ async function fetchAllSSBrands() {
 // first (covers ~95% of clicks), falls back to other popular brands.
 // Replaces the broken /styles/?style=X lookup.
 async function findStyleByName(styleName) {
-  const target = styleName.trim().toLowerCase();
+  // S&S strips brand-letter prefixes from styleNames: marketing "G500" is
+  // stored as "5000", "G2000" as "2000", "G185" as "18500". The mapping
+  // isn't a single rule, so we try a small variant set and take the first
+  // exact match.
+  const raw = String(styleName || '').trim();
+  const variants = new Set();
+  const add = (v) => { if (v) variants.add(String(v).toLowerCase().trim()); };
+  add(raw);
+  const m = raw.match(/^([A-Za-z])(\d.*)$/);
+  if (m) {
+    const stripped = m[2];
+    add(stripped);        // G500 -> 500
+    add(stripped + '0');  // G500 -> 5000
+    add(stripped + '00'); // G50  -> 5000
+  }
+
+  const findMatch = (haystack) => {
+    for (const v of variants) {
+      const hit = haystack.find((s) =>
+        String(s.style || s.styleName || '').toLowerCase() === v ||
+        String(s.partNumber || '').toLowerCase() === v
+      );
+      if (hit) return hit;
+    }
+    return null;
+  };
 
   try {
     const all = await fetchAllSSBrands();
-    const m = all.styles.find((s) => s.style.toLowerCase() === target || (s.partNumber || '').toLowerCase() === target);
-    if (m) return m;
+    const hit = findMatch(all.styles);
+    if (hit) return hit;
   } catch (_) {}
 
   for (const brand of SS_POPULAR_BRANDS) {
     if (SS_FEATURED_BRANDS.includes(brand)) continue;
     try {
       const result = await fetchAndGroupSSBrand(brand);
-      const m = result.styles.find((s) => s.style.toLowerCase() === target || (s.partNumber || '').toLowerCase() === target);
-      if (m) return m;
+      const hit = findMatch(result.styles);
+      if (hit) return hit;
     } catch (_) {}
   }
   return null;
@@ -656,25 +681,41 @@ exports.getProductByStyleCode = async (req, res) => {
       return res.status(404).json({ message: `Could not find style "${styleName}".` });
     }
 
+    // Pull real SKU rows from /products/?styleid={ID}. We've confirmed this
+    // returns one row per color x size (e.g. 589 rows / 82 colors / 8 sizes
+    // for Gildan G500 = S&S styleID 16). If the call fails, fall through
+    // with empty colors/sizes — never invent fallback data.
+    let summary = null;
+    try {
+      const skus = await fetchSSProducts(null, match.styleID);
+      summary = summarizeSsStyle(skus);
+    } catch (e) {
+      console.warn(`[SS] /products/?styleid=${match.styleID} failed for "${styleName}":`, e.message);
+    }
+
+    const liveFront = summary?.colors?.find((c) => c.front)?.front;
+
     return res.json({
       style:               match.style,
       ssStyleID:           match.styleID,
-      name:                match.name,
-      vendor:              match.vendor,
+      name:                summary?.title || match.name,
+      vendor:              summary?.brand || match.vendor,
       category:            match.category,
       type:                match.type,
-      priceFrom:           match.priceFrom,
-      sizeRangeBottom:     match.sizeRangeBottom,
-      sizeRangeTop:        match.sizeRangeTop,
-      colors:              [],
-      colorCodes:          [],
-      productFrontImages:  match.image ? [match.image] : [],
+      priceFrom:           summary?.minPrice != null ? startingAt(summary.minPrice, match.category) : match.priceFrom,
+      sizeRangeBottom:     summary?.sizeRangeBottom ?? null,
+      sizeRangeTop:        summary?.sizeRangeTop    ?? null,
+      sizes:               summary?.sizes  || [],
+      colors:              summary?.colors?.map((c) => c.name) || [],
+      colorCodes:          summary?.colors?.map((c) => c.hex)  || [],
+      colorSwatches:       summary?.colors || [],
+      productFrontImages:  liveFront ? [liveFront] : (match.image ? [match.image] : []),
       productBackImages:   [],
-      colorCount:          match.colorCount,
+      colorCount:          summary?.colors?.length ?? match.colorCount,
       rating:              match.rating,
       tag:                 match.tag,
-      description:         match.description,
-      dataQuality:         'styles-only',
+      description:         summary?.description || match.description,
+      dataQuality:         summary ? 'live-products' : 'styles-only',
     });
   } catch (err) {
     console.error('getProductByStyleCode error:', err);
@@ -691,60 +732,77 @@ exports.getSSStyleDetail = exports.getProductByStyleCode;
 // ─────────────────────────────────────────────────────────────────────────────
 async function fetchSSProducts(styleName, styleID = null) {
   ensureSsCredentials();
-  const target = String(styleName || '').trim();
-  if (!target && !styleID) throw new Error('styleName or styleID required');
 
+  // Per S&S official docs (/V2/Products.aspx):
+  //   - /products/{x}      expects a SKU identifier (Sku/SkuID/Gtin/YourSku).
+  //   - /products/?styleid={N}  returns all SKU rows for a numeric styleID.
+  //   - /products/?style={s}    accepts StyleID, PartNumber, or "Brand Name".
+  // The styleid path is the most deterministic; use it whenever we have a
+  // numeric ID. Otherwise resolve styleName -> styleID via findStyleByName
+  // first (which already knows about Gildan's stripped-prefix naming).
   if (styleID != null) {
-    try {
-      const { data } = await ssClient.get(`/products/${styleID}`);
-      if (Array.isArray(data) && data.length > 0) return data;
-    } catch (e) { /* fall through to next strategy */ }
+    const { data } = await ssClient.get('/products/', { params: { styleid: styleID } });
+    if (Array.isArray(data) && data.length > 0) return data;
+    throw new Error(`S&S returned no SKUs for styleID ${styleID}.`);
   }
-  if (target) {
-    try {
-      const { data } = await ssClient.get(`/products/${encodeURIComponent(target)}`);
-      if (Array.isArray(data) && data.length > 0) return data;
-    } catch (e) { /* fall through */ }
+
+  const target = String(styleName || '').trim();
+  if (!target) throw new Error('styleName or styleID required');
+
+  const match = await findStyleByName(target);
+  if (!match) throw new Error(`No S&S style matches "${target}".`);
+  const { data } = await ssClient.get('/products/', { params: { styleid: match.styleID } });
+  if (!Array.isArray(data) || data.length === 0) {
+    throw new Error(`S&S returned no SKUs for ${match.style || match.styleName} (styleID ${match.styleID}).`);
   }
-  if (target) {
-    try {
-      const { data } = await ssClient.get('/products/', { params: { style: target } });
-      if (Array.isArray(data) && data.length > 0) return data;
-    } catch (e) { /* fall through */ }
-  }
-  throw new Error(`No SKUs available for "${target || styleID}" (S&S /products/ is currently unavailable for this account).`);
+  return data;
 }
 
 function summarizeSsStyle(skus) {
   const first = skus[0];
   const colorMap = new Map();
-  const sizeSet = new Set();
+  const sizeMap = new Map();
   let minPrice = Infinity;
   for (const sku of skus) {
-    if (sku.sizeName) sizeSet.add(sku.sizeName);
+    if (sku.sizeName && !sizeMap.has(sku.sizeName)) {
+      sizeMap.set(sku.sizeName, {
+        name:  sku.sizeName,
+        code:  sku.sizeCode,
+        order: sku.sizeOrder,
+      });
+    }
     if (typeof sku.piecePrice === 'number' && sku.piecePrice > 0) {
       minPrice = Math.min(minPrice, sku.piecePrice);
     }
     if (sku.colorName && !colorMap.has(sku.colorName)) {
       colorMap.set(sku.colorName, {
-        name: sku.colorName,
-        hex: sku.color1 || '#CCCCCC',
-        front: ssImageUrl(sku.colorFrontImage),
-        back:  ssImageUrl(sku.colorBackImage),
+        name:        sku.colorName,
+        hex:         sku.color1 || '#CCCCCC',
+        front:       ssImageUrl(sku.colorFrontImage),
+        back:        ssImageUrl(sku.colorBackImage),
+        side:        ssImageUrl(sku.colorSideImage),
+        swatch:      ssImageUrl(sku.colorSwatchImage),
+        colorFamily: sku.colorFamily || null,
+        colorGroup:  sku.colorGroup  || null,
+        colorCode:   sku.colorCode   || null,
       });
     }
   }
-  const sortedSizes = [...sizeSet].sort();
+  const sizes = [...sizeMap.values()].sort((a, b) =>
+    String(a.order || '').localeCompare(String(b.order || ''))
+  );
+  const colors = [...colorMap.values()];
   return {
-    styleName: first.styleName,
-    brand: first.brandName,
-    title: first.title || first.styleTitle || `${first.brandName} ${first.styleName}`,
-    description: first.description || null,
-    minPrice: minPrice === Infinity ? null : minPrice,
-    sizeRangeBottom: sortedSizes[0] || null,
-    sizeRangeTop:    sortedSizes[sortedSizes.length - 1] || null,
-    colors: [...colorMap.values()],
-    ssStyleID: first.styleID,
+    styleName:       first.styleName,
+    brand:           first.brandName,
+    title:           first.title || first.styleTitle || `${first.brandName} ${first.styleName}`,
+    description:     first.description || null,
+    minPrice:        minPrice === Infinity ? null : minPrice,
+    sizes,
+    sizeRangeBottom: sizes[0]?.name || null,
+    sizeRangeTop:    sizes[sizes.length - 1]?.name || null,
+    colors,
+    ssStyleID:       first.styleID,
   };
 }
 
