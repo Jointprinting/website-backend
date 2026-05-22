@@ -554,30 +554,52 @@ async function fetchAllSSBrands() {
 // Cross-brand style finder — walks the featured brands' cached catalogs
 // first (covers ~95% of clicks), falls back to other popular brands.
 // Replaces the broken /styles/?style=X lookup.
-async function findStyleByName(styleName) {
+async function findStyleByName(styleName, brandHint = null) {
   // S&S strips brand-letter prefixes from styleNames: marketing "G500" is
   // stored as "5000", "G2000" as "2000", "G185" as "18500". The mapping
   // isn't a single rule, so we try a small variant set and take the first
-  // exact match.
+  // BRAND-CORRECT exact match. brandHint comes from the Mongo record's
+  // vendor field; if provided, we require the matched style to share that
+  // brand (case-insensitive) so "G500" with brandHint "Gildan" never picks
+  // a Hanes or Holloway "500".
   const raw = String(styleName || '').trim();
-  const variants = new Set();
-  const add = (v) => { if (v) variants.add(String(v).toLowerCase().trim()); };
-  add(raw);
+  const variants = [];
+  const seen = new Set();
+  const add = (v) => {
+    const lc = String(v || '').toLowerCase().trim();
+    if (lc && !seen.has(lc)) { seen.add(lc); variants.push(lc); }
+  };
+  add(raw);                       // exact match wins first
   const m = raw.match(/^([A-Za-z])(\d.*)$/);
   if (m) {
     const stripped = m[2];
-    add(stripped);        // G500 -> 500
-    add(stripped + '0');  // G500 -> 5000
-    add(stripped + '00'); // G50  -> 5000
+    add(stripped + '0');          // G500 -> 5000  (most common S&S form)
+    add(stripped);                // G500 -> 500
+    add(stripped + '00');         // G50  -> 5000
   }
 
+  const brandLc = brandHint ? String(brandHint).toLowerCase().trim() : null;
+  const brandMatches = (s) => {
+    if (!brandLc) return true;
+    const v = String(s.vendor || s.brandName || '').toLowerCase();
+    return v === brandLc || v.includes(brandLc) || brandLc.includes(v);
+  };
+
   const findMatch = (haystack) => {
+    // Iterate variants in declared order so the most-specific candidate
+    // wins (raw input, then 5000, then 500, then 50000).
     for (const v of variants) {
-      const hit = haystack.find((s) =>
+      const candidates = haystack.filter((s) =>
         String(s.style || s.styleName || '').toLowerCase() === v ||
         String(s.partNumber || '').toLowerCase() === v
       );
-      if (hit) return hit;
+      if (candidates.length === 0) continue;
+      const brandHit = candidates.find(brandMatches);
+      if (brandHit) return brandHit;
+      // No brand hint? Take the first candidate. Otherwise keep scanning
+      // variants — never return a cross-brand match when caller asked for
+      // a specific brand.
+      if (!brandLc) return candidates[0];
     }
     return null;
   };
@@ -667,22 +689,23 @@ exports.browseSS = async (req, res) => {
 // brand-cache lookup. NO sync attempt on /products/ since that endpoint
 // returns 404 for our account. Returns dataQuality:'styles-only' so the
 // frontend can show a 'live colors come at quote time' note.
-// Resolve a style code -> { match, summary } from S&S. Cached for 10 min so
-// repeat detail-page hits don't re-scan 5,736 styles + re-fetch SKU rows.
-async function resolveSSEnrichment(styleName) {
-  const cacheKey = `enrich:${String(styleName || '').toLowerCase()}`;
+// Resolve a style code -> { match, summary } from S&S. Cached for 10 min
+// per (styleCode, brand) pair so we don't accidentally serve a Hanes
+// "500" for a Gildan "G500" lookup.
+async function resolveSSEnrichment(styleName, brandHint = null) {
+  const cacheKey = `enrich:${String(styleName || '').toLowerCase()}:${String(brandHint || '').toLowerCase()}`;
   const cached = _ssCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.data;
   let data = null;
   try {
-    const match = await findStyleByName(styleName);
+    const match = await findStyleByName(styleName, brandHint);
     if (match) {
       const skus = await fetchSSProducts(null, match.styleID);
       const summary = summarizeSsStyle(skus);
       data = { match, summary };
     }
   } catch (e) {
-    console.warn(`[SS] enrichment failed for "${styleName}":`, e.message);
+    console.warn(`[SS] enrichment failed for "${styleName}" (${brandHint || 'no brand'}):`, e.message);
   }
   _ssCache.set(cacheKey, { data, expiresAt: Date.now() + 10 * 60 * 1000 });
   return data;
@@ -692,14 +715,15 @@ exports.getProductByStyleCode = async (req, res) => {
   try {
     const styleName = req.params.style;
 
-    // Always probe S&S so we can overlay real color/size data onto the
-    // (possibly bare) Mongo record below. Cached, so cost is one slow call
-    // every 10 minutes per style.
-    const enrichment = await resolveSSEnrichment(styleName);
+    // Look up the Mongo record FIRST so we can pass its vendor hint into
+    // the S&S resolver — otherwise "G500" might match a Hanes/Holloway
+    // style "500" before getting to Gildan's actual "5000".
+    const stored = await Product.findOne({ style: styleName });
+    const brandHint = stored?.vendor || null;
+
+    const enrichment = await resolveSSEnrichment(styleName, brandHint);
     const summary    = enrichment?.summary;
     const match      = enrichment?.match;
-
-    const stored = await Product.findOne({ style: styleName });
 
     if (stored) {
       const base = await populateImages(stored);
@@ -787,6 +811,9 @@ async function fetchSSProducts(styleName, styleID = null) {
   const target = String(styleName || '').trim();
   if (!target) throw new Error('styleName or styleID required');
 
+  // No brand hint here — caller-aware paths (getProductByStyleCode,
+  // resolveSSEnrichment) pre-resolve via findStyleByName themselves and
+  // pass the resulting styleID directly above.
   const match = await findStyleByName(target);
   if (!match) throw new Error(`No S&S style matches "${target}".`);
   const { data } = await ssClient.get('/products/', { params: { styleid: match.styleID } });
