@@ -5,7 +5,7 @@ const { requireAdmin } = require('../middleware/auth');
 const {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
-  dashboard, createFromSubmission, mockupHealth,
+  dashboard, createFromSubmission, mockupHealth, duplicateOrder,
 } = require('../controllers/orders');
 const { ensureApprovalToken } = require('../controllers/approval');
 
@@ -20,6 +20,7 @@ const upload = multer({ storage, limits: { fileSize: 25 * 1024 * 1024 } });
 router.post('/seed-historical',           seedHistorical);
 router.post('/from-submission/:submissionId', createFromSubmission);
 router.post('/:id/approval-link',         ensureApprovalToken);
+router.post('/:id/duplicate',             duplicateOrder);
 router.get('/dashboard',                  dashboard);
 router.get('/mockup-health',              mockupHealth);
 router.get('/next-numbers',               nextNumbers);
