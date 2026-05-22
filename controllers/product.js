@@ -818,10 +818,40 @@ exports.browseSS = async (req, res) => {
     const start = (p - 1) * l;
     const pageSlice = styles.slice(start, start + l);
 
+    // Featured: a curated cross-brand set, computed against the FULL
+    // catalog (not just the visible page) so we don't miss picks that
+    // sort below the page limit. Only computed for the unfiltered top
+    // of /products — the marquee never shows on filtered/searched views.
+    const FEATURED_PICKS = [
+      { brand: 'gildan',                  style: '5000'   },
+      { brand: 'bella + canvas',          style: '3001'   },
+      { brand: 'comfort colors',          style: '1717'   },
+      { brand: 'next level',              style: '3600'   },
+      { brand: 'gildan',                  style: '18500'  },
+      { brand: 'hanes',                   style: '5250'   },
+      { brand: 'independent trading co.', style: 'ss4500' },
+      { brand: 'bella + canvas',          style: '6004'   },
+      { brand: 'gildan',                  style: '64000'  },
+      { brand: 'next level',              style: '6210'   },
+    ];
+    const normalizeBrand = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9+]/g, '');
+    let featured = [];
+    if (!search && !category && !type && p === 1) {
+      featured = FEATURED_PICKS.map((pick) => {
+        const tb = normalizeBrand(pick.brand);
+        return allStyles.find((row) => {
+          const vb = normalizeBrand(row.vendor);
+          const vs = String(row.style || '').toLowerCase();
+          return (vb === tb || vb.startsWith(tb) || tb.startsWith(vb)) && vs === pick.style;
+        });
+      }).filter(Boolean);
+    }
+
     return res.json({
       products: pageSlice, total, page: p,
       totalPages: Math.ceil(total / l),
       relaxedFilter,
+      featured,
     });
   } catch (err) {
     console.error('browseSS error:', err.message);
