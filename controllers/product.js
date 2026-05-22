@@ -583,7 +583,12 @@ async function fetchAllSSBrands() {
   for (const r of results) {
     if (r.status === 'fulfilled') {
       for (const s of r.value.styles) {
-        if (!seen.has(s.style)) { seen.add(s.style); allStyles.push(s); }
+        // Dedup by brand+style — many style numbers collide across brands
+        // (Gildan 5000 vs Bayside 5000 vs Paragon 500). The previous
+        // styleName-only key silently dropped whichever brand S&S returned
+        // second, which usually meant Gildan got eaten.
+        const key = `${String(s.vendor || '').toLowerCase()}::${String(s.style || '').toLowerCase()}`;
+        if (!seen.has(key)) { seen.add(key); allStyles.push(s); }
       }
     } else {
       errors.push(r.reason?.message || 'Unknown error');
@@ -724,17 +729,33 @@ exports.browseSS = async (req, res) => {
     if (type)     styles = styles.filter((s) => s.type === type);
     if (search) {
       // Build variant set so 'g500' matches S&S 'styleName: 5000', 'g185'
-      // matches '18500', etc. Same prefix-strip logic as the detail-page
-      // resolver — keeps marketing names searchable even though S&S stores
-      // them without the brand letter.
+      // matches '18500', etc. ALSO detect the leading brand letters so
+      // 'g500' clearly means Gildan and ranks Gildan above Bayside/Paragon
+      // styles that happen to share a number.
       const q = String(search).toLowerCase().trim();
       const variants = new Set([q]);
-      const m = q.match(/^([a-z])(\d.*)$/i);
+      let brandHint = null;
+      const m = q.match(/^([a-z]+)(\d.*)$/i);
       if (m) {
-        const stripped = m[2];
-        variants.add(stripped);
-        variants.add(stripped + '0');
-        variants.add(stripped + '00');
+        const prefix = m[1].toLowerCase();
+        const stem   = m[2];
+        variants.add(stem);
+        variants.add(stem + '0');
+        variants.add(stem + '00');
+        const BRAND_PREFIX_MAP = {
+          g:   'gildan',
+          bc:  'bella + canvas',
+          nl:  'next level',
+          pc:  'port & company',
+          pa:  'port authority',
+          st:  'sport-tek',
+          h:   'hanes',
+          cc:  'comfort colors',
+          dt:  'district',
+          ind: 'independent',
+          aa:  'alternative',
+        };
+        brandHint = BRAND_PREFIX_MAP[prefix] || null;
       }
       styles = styles.filter((s) => {
         const name  = String(s.name       || '').toLowerCase();
@@ -746,6 +767,20 @@ exports.browseSS = async (req, res) => {
         }
         return false;
       });
+      // Brand-prefix detected? Float matching-brand results to the top.
+      // Doesn't filter out other brands — they just sink below. So 'g500'
+      // shows Gildan G500 first, then Paragon 500 / Bayside 5000 after.
+      if (brandHint) {
+        styles = styles.slice().sort((a, b) => {
+          const av = String(a.vendor || '').toLowerCase();
+          const bv = String(b.vendor || '').toLowerCase();
+          const aHit = av.includes(brandHint) || brandHint.includes(av);
+          const bHit = bv.includes(brandHint) || brandHint.includes(bv);
+          if (aHit && !bHit) return -1;
+          if (!aHit && bHit) return 1;
+          return 0;
+        });
+      }
     }
 
     const total = styles.length;
