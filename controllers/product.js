@@ -558,6 +558,7 @@ async function fetchAndGroupSSBrand(brand) {
       tag:          deriveTag(vendor, style.styleName, style.newStyle === true),
       image:        imageUrl,
       styleImage:   imageUrl,
+      brandImage:   style.brandImage ? ssImageUrl(style.brandImage) : null,
       description,
     });
   }
