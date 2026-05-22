@@ -252,6 +252,7 @@ const createOrder = async (req, res) => {
       }, 0);
       body.projectNumber = String(max + 1);
     }
+    body.activity = [{ kind: 'created', actor: 'admin', message: `Project #${body.projectNumber} created`, at: new Date() }];
     const order = await Order.create(body);
     res.status(201).json(order);
   } catch (e) {
@@ -264,10 +265,12 @@ const createOrder = async (req, res) => {
 const updateOrder = async (req, res) => {
   try {
     const body = { ...req.body };
+    const current = await Order.findById(req.params.id).select('status paid orderNumber').lean();
+    if (!current) return res.status(404).json({ message: 'Not found' });
 
+    // Auto-assign invoice number on first transition to approved+.
     if (body.status === 'approved' || ['placed', 'in_production', 'shipped', 'delivered'].includes(body.status)) {
-      const current = await Order.findById(req.params.id).select('orderNumber').lean();
-      if (current && !current.orderNumber && !body.orderNumber) {
+      if (!current.orderNumber && !body.orderNumber) {
         const all = await Order.find({}).select('orderNumber').lean();
         const max = all.reduce((m, o) => {
           const n = parseInt(o.orderNumber || '0', 10) || 0;
@@ -277,9 +280,33 @@ const updateOrder = async (req, res) => {
       }
     }
 
+    // Log notable changes as activity events (status, paid).
+    const newEvents = [];
+    if (body.status !== undefined && body.status !== current.status) {
+      newEvents.push({
+        kind: 'status_changed', actor: 'admin',
+        message: `Status: ${current.status} → ${body.status}`,
+        meta: { from: current.status, to: body.status },
+        at: new Date(),
+      });
+    }
+    if (body.paid !== undefined && body.paid !== current.paid) {
+      newEvents.push({
+        kind: 'paid_changed', actor: 'admin',
+        message: body.paid ? 'Marked paid' : 'Marked unpaid',
+        meta: { paid: body.paid },
+        at: new Date(),
+      });
+    }
+
+    const update = { $set: body };
+    if (newEvents.length > 0) {
+      update.$push = { activity: { $each: newEvents } };
+    }
+
     const order = await Order.findByIdAndUpdate(
       req.params.id,
-      { $set: body },
+      update,
       { new: true, runValidators: true },
     ).lean();
     if (!order) return res.status(404).json({ message: 'Not found' });
@@ -344,7 +371,10 @@ const uploadFile = async (req, res) => {
     };
     const order = await Order.findByIdAndUpdate(
       req.params.id,
-      { $push: { files: meta } },
+      { $push: {
+        files: meta,
+        activity: { kind: 'file_uploaded', actor: 'admin', message: `Uploaded ${meta.originalName}`, meta: { filename: meta.filename }, at: new Date() },
+      }},
       { new: true },
     ).lean();
     if (!order) return res.status(404).json({ message: 'Order not found' });
@@ -426,6 +456,12 @@ const duplicateOrder = async (req, res) => {
       shipDate:      null,
       deliveredDate: null,
       importedFrom:  `duplicate:${src.projectNumber || src._id}`,
+      activity: [{
+        kind: 'duplicated_from', actor: 'admin',
+        message: `Cloned from project #${src.projectNumber || src._id}`,
+        meta: { sourceProjectNumber: src.projectNumber, sourceProjectId: String(src._id), carryMockups: !!(req.body && req.body.carryMockups) },
+        at: new Date(),
+      }],
     };
 
     const created = await Order.create(fresh);

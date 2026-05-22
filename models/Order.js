@@ -31,6 +31,17 @@ const OrderSchema = new mongoose.Schema({
     at:      { type: Date, default: Date.now },
     _id: false,
   }],
+  // General-purpose activity log. New event kinds (status changes, paid
+  // toggles, files uploaded, etc.) land here as they get tracked. Render
+  // in the drawer as a merged timeline with approvalEvents.
+  activity: [{
+    kind:    { type: String },          // 'created' | 'status_changed' | 'paid_changed' | 'duplicated_from' | 'file_uploaded' | 'mockups_linked'
+    actor:   { type: String, default: 'admin' },        // 'admin' | 'client' | 'system'
+    message: { type: String, default: '' },
+    meta:    { type: mongoose.Schema.Types.Mixed, default: {} },
+    at:      { type: Date,   default: Date.now },
+    _id: false,
+  }],
   mockupNumbers: [{ type: String }],
   contactSubmissionId: { type: mongoose.Schema.Types.ObjectId, ref: 'ContactSubmission', default: null },
   items: [{
