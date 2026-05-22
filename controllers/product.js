@@ -65,13 +65,13 @@ function deriveRating(styleName = '') {
 }
 
 function deriveTag(brand = '', styleName = '', newStyle = false) {
-  // Only tag when it actually means something. Tagging by brand alone
-  // produces 'Best Seller' on every Gildan card, 'Our Favorite' on every
-  // Bella+Canvas card, etc. — which is visually identical to no tag.
-  // POPULAR_STYLES is the same ~60-item evergreen list used for sort
-  // ranking, so the badge agrees with the ordering.
+  // Only tag when it actually means something. Brand-only tagging put a
+  // 'Best Seller' chip on every Gildan card. The full POPULAR_STYLES list
+  // is ~80 items used for sort ranking — too many to all be 'Best Seller'.
+  // BEST_SELLER_STYLES is a tighter ~10-item subset of the truly top
+  // picks across brands, so the badge is actually exclusive.
   const sn = String(styleName || '').toLowerCase();
-  if (POPULAR_STYLES.has(sn)) return 'Best Seller';
+  if (BEST_SELLER_STYLES.has(sn)) return 'Best Seller';
   if (newStyle === true) return 'New Arrival';
   return null;
 }
@@ -472,6 +472,23 @@ exports._getSSPopularBrands = () => [...SS_POPULAR_BRANDS];
 //   - Adult/unisex copy gets a small boost. Infant/toddler/youth/tall/
 //     women's variants get pushed down (they're real inventory, just not
 //     what new visitors are looking for first).
+// A tight, truly-bestselling subset across brands. Used ONLY for the
+// 'Best Seller' chip on cards / detail page so the badge actually means
+// something. The larger POPULAR_STYLES list below stays the source of
+// truth for sort ranking and the featured marquee.
+const BEST_SELLER_STYLES = new Set([
+  '5000',   // Gildan G500 — Heavy Cotton
+  '64000',  // Gildan G64000 — Softstyle
+  '18500',  // Gildan G185 — Heavy Blend Hoodie
+  '3001',   // Bella+Canvas BC3001 — Jersey Tee
+  '3600',   // Next Level NL3600 — Premium Fitted
+  '1717',   // Comfort Colors C1717 — Heavyweight Garment-Dyed
+  'ss4500', // Independent SS4500 — Fleece Hoodie
+  '5250',   // Hanes H5250 — Authentic Tee
+  '2000',   // Gildan G2000 — Ultra Cotton
+  'pc54',   // Port & Company PC54 — Core Cotton
+]);
+
 const POPULAR_STYLES = new Set([
   // Gildan
   '5000','64000','18500','2000','18000','8000','64v00','64200','64400','5400','2400','5300','64800','65000',
