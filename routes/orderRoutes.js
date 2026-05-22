@@ -5,7 +5,7 @@ const { requireAdmin } = require('../middleware/auth');
 const {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
-  dashboard, createFromSubmission, mockupHealth, duplicateOrder, analytics,
+  dashboard, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
 } = require('../controllers/orders');
 const { ensureApprovalToken } = require('../controllers/approval');
 
@@ -23,6 +23,7 @@ router.post('/:id/approval-link',         ensureApprovalToken);
 router.post('/:id/duplicate',             duplicateOrder);
 router.get('/dashboard',                  dashboard);
 router.get('/analytics',                  analytics);
+router.get('/clients-summary',            clientsSummary);
 router.get('/mockup-health',              mockupHealth);
 router.get('/next-numbers',               nextNumbers);
 router.get('/projects',                   listProjects);
