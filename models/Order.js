@@ -42,6 +42,47 @@ const OrderSchema = new mongoose.Schema({
     at:      { type: Date,   default: Date.now },
     _id: false,
   }],
+
+  // Final confirmation page — the operational doc sent to the client AFTER
+  // they approve and pick a subset of the quote. Structure mirrors the user's
+  // existing Excel template: header info, shipping, items with size breakdowns
+  // and per-item mockup snapshot, plus custom add-on lines (shipping reserve,
+  // CC fee, discounts, taxes).
+  confirmation: {
+    orderTitle:  { type: String, default: '' },
+    orderDate:   { type: Date,   default: null },
+    shipping: {
+      name:         { type: String, default: '' },
+      attention:    { type: String, default: '' },
+      streetAddress:{ type: String, default: '' },
+      cityStateZip: { type: String, default: '' },
+    },
+    items: [{
+      mockupNum:           { type: String, default: '' },   // ref into project's saved mockups
+      customMockupDataUrl: { type: String, default: '' },   // optional override (base64)
+      showBack:            { type: Boolean, default: false },
+      brandName:           { type: String, default: '' },
+      styleCode:           { type: String, default: '' },
+      printType:           { type: String, default: '' },
+      color:               { type: String, default: '' },
+      sizes: [{
+        label:     { type: String, default: '' },  // 'XS', 'S', ..., 'OS', or any custom
+        qty:       { type: Number, default: 0 },
+        unitPrice: { type: Number, default: 0 },
+        _id: false,
+      }],
+      _id: false,
+    }],
+    // Add-on lines applied to the subtotal of all item sizes. Order matters
+    // (discounts before tax, CC fee last, etc.). Each line is either a flat
+    // amount or a percent of the running subtotal-so-far.
+    customLines: [{
+      label:     { type: String, default: '' },
+      amount:    { type: Number, default: 0 },
+      isPercent: { type: Boolean, default: false },
+      _id: false,
+    }],
+  },
   mockupNumbers: [{ type: String }],
   contactSubmissionId: { type: mongoose.Schema.Types.ObjectId, ref: 'ContactSubmission', default: null },
   items: [{
