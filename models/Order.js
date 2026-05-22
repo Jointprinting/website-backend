@@ -30,6 +30,20 @@ const OrderSchema = new mongoose.Schema({
     unitPrice:   { type: Number, default: 0 },
     _id: false,
   }],
+  quoteLines: [{
+    qty:          { type: Number, default: 0 },
+    styleCode:    { type: String, default: '' },
+    description:  { type: String, default: '' },
+    color:        { type: String, default: '' },
+    supplier:     { type: String, default: '' },
+    blankCost:    { type: Number, default: 0 },   // per unit
+    printType:    { type: String, default: '' },  // e.g. "Screen Print", "DTG", "Embroidery"
+    printDetails: { type: String, default: '' },  // e.g. "1 color front + 2 color back"
+    printCost:    { type: Number, default: 0 },   // per unit
+    markup:       { type: Number, default: 2 },   // multiplier; unit price = (blankCost + printCost) * markup
+    unitPrice:    { type: Number, default: 0 },   // computed but stored so user can override
+    _id: false,
+  }],
   orderDate:     { type: Date },
   shipDate:      { type: Date },
   deliveredDate: { type: Date },
@@ -46,6 +60,14 @@ const OrderSchema = new mongoose.Schema({
 
 OrderSchema.pre('save', function (next) {
   this.companyKey = deriveCompanyKey(this.companyName, this.clientName);
+  // If a structured quote exists, derive the headline total from it so the
+  // card / dashboard / confirmation all agree.
+  if (Array.isArray(this.quoteLines) && this.quoteLines.length > 0) {
+    this.totalValue = this.quoteLines.reduce((s, l) => {
+      const unit = Number(l.unitPrice) || ((Number(l.blankCost) || 0) + (Number(l.printCost) || 0)) * (Number(l.markup) || 1);
+      return s + (Number(l.qty) || 0) * unit;
+    }, 0);
+  }
   next();
 });
 
@@ -54,9 +76,15 @@ OrderSchema.pre('findOneAndUpdate', function (next) {
   const set = u.$set || u;
   if (set.companyName !== undefined || set.clientName !== undefined) {
     set.companyKey = deriveCompanyKey(set.companyName, set.clientName);
-    if (u.$set) u.$set = set; else Object.assign(u, set);
-    this.setUpdate(u);
   }
+  if (Array.isArray(set.quoteLines) && set.quoteLines.length > 0) {
+    set.totalValue = set.quoteLines.reduce((s, l) => {
+      const unit = Number(l.unitPrice) || ((Number(l.blankCost) || 0) + (Number(l.printCost) || 0)) * (Number(l.markup) || 1);
+      return s + (Number(l.qty) || 0) * unit;
+    }, 0);
+  }
+  if (u.$set) u.$set = set; else Object.assign(u, set);
+  this.setUpdate(u);
   next();
 });
 
