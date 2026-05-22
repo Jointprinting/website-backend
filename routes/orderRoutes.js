@@ -9,6 +9,7 @@ const {
   cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups,
 } = require('../controllers/orders');
 const { ensureApprovalToken } = require('../controllers/approval');
+const { confirmationPdf } = require('../controllers/confirmationPdf');
 
 router.use(requireAdmin);
 
@@ -37,6 +38,7 @@ router.get('/:id',                        getOrder);
 router.post('/',                          createOrder);
 router.put('/:id',                        updateOrder);
 router.delete('/:id',                     deleteOrder);
+router.post('/:id/confirmation/pdf',      confirmationPdf);
 router.post('/:id/files', upload.single('file'), uploadFile);
 router.get('/:id/files/:filename',        serveFile);
 router.delete('/:id/files/:filename',     deleteFile);
