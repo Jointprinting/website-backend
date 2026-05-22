@@ -381,6 +381,60 @@ const serveFile = async (req, res) => {
   }
 };
 
+// POST /api/orders/:id/duplicate — clones a project. Use cases:
+// - Re-order: same artwork, new run
+// - Template: starting point for a similar request
+// Carries over: company, client, items, quoteLines, supplier, printer, markup
+// fields, confirmation message + terms, mockupNumbers.
+// Resets: orderNumber, status='quoted', orderDate/shipDate/deliveredDate=null,
+// paid=false, files=[], approvalToken='', approvalEvents=[]. Auto-assigns the
+// next projectNumber.
+const duplicateOrder = async (req, res) => {
+  try {
+    const src = await Order.findById(req.params.id).lean();
+    if (!src) return res.status(404).json({ message: 'Project not found' });
+
+    const all = await Order.find({}).select('projectNumber').lean();
+    const max = all.reduce((m, o) => {
+      const n = parseInt((o.projectNumber || '0').split('-')[0], 10) || 0;
+      return Math.max(m, n);
+    }, 0);
+
+    const fresh = {
+      projectNumber:       String(max + 1),
+      orderNumber:         '',
+      clientName:          src.clientName  || '',
+      companyName:         src.companyName || '',
+      status:              'quoted',
+      paid:                false,
+      totalValue:          src.totalValue,
+      cogs:                src.cogs,
+      printerName:         src.printerName || '',
+      supplier:            src.supplier    || '',
+      notes:               src.notes       || '',
+      confirmationMessage: src.confirmationMessage || '',
+      confirmationTerms:   src.confirmationTerms   || '',
+      mockupNumbers:       Array.isArray(req.body && req.body.carryMockups) ? src.mockupNumbers : [],
+      items:               (src.items || []).map(i => ({ description: i.description, qty: i.qty, unitPrice: i.unitPrice })),
+      quoteLines:          (src.quoteLines || []).map(l => ({
+        qty: l.qty, styleCode: l.styleCode, description: l.description, color: l.color,
+        supplier: l.supplier, blankCost: l.blankCost,
+        printType: l.printType, printDetails: l.printDetails, printCost: l.printCost,
+        markup: l.markup, unitPrice: l.unitPrice,
+      })),
+      orderDate:     null,
+      shipDate:      null,
+      deliveredDate: null,
+      importedFrom:  `duplicate:${src.projectNumber || src._id}`,
+    };
+
+    const created = await Order.create(fresh);
+    res.status(201).json(created);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 // POST /api/orders/from-submission/:submissionId — manual inquiry → project bridge.
 const createFromSubmission = async (req, res) => {
   try {
@@ -504,5 +558,5 @@ const mockupHealth = async (req, res) => {
 module.exports = {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
-  dashboard, createFromSubmission, mockupHealth,
+  dashboard, createFromSubmission, mockupHealth, duplicateOrder,
 };
