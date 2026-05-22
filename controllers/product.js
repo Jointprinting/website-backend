@@ -978,57 +978,95 @@ exports.debugSSStyle = async (req, res) => {
   }
 };
 
-// Real-data S&S diagnostic: find a style's true styleID by scanning the
-// full /styles list, then pull its /products SKU rows. Visit
-//   /api/products/ss/find?styleName=G500&brandName=Gildan
-// to confirm whether color/size data exists for that style.
+// S&S identity probe. Per the official docs:
+//   - GET /v2/styles  returns ALL styles (no brand filter param exists)
+//   - GET /v2/products/?style={id} accepts StyleID OR PartNumber OR "BrandName StyleName"
+//   - styleName has NO brand prefix: Gildan's "G2000" is stored as styleName "2000"
+//
+// This endpoint resolves whatever the caller asks for to the real S&S record(s):
+//   /api/products/ss/find?styleName=5000&brandName=Gildan
+//   /api/products/ss/find?partnumber=00760
+//   /api/products/ss/find?brandName=Gildan         (lists all Gildan styles)
 exports.findSSStyle = async (req, res) => {
   try {
     ensureSsCredentials();
-    const styleName = String(req.query.styleName || '').trim();
-    const brandName = String(req.query.brandName || '').trim();
-    if (!styleName) {
-      return res.status(400).json({ message: 'Provide ?styleName=X (optionally &brandName=Y).' });
+    const styleName  = String(req.query.styleName  || '').trim();
+    const brandName  = String(req.query.brandName  || '').trim();
+    const partnumber = String(req.query.partnumber || '').trim();
+    if (!styleName && !brandName && !partnumber) {
+      return res.status(400).json({
+        message: 'Provide at least one of ?styleName=X, ?brandName=Y, ?partnumber=Z.',
+      });
     }
 
-    // 1. Pull the full styles list. S&S returns ~5,700 rows.
     const t0 = Date.now();
     const stylesResp = await ssClient.get('/styles');
     const allStyles = Array.isArray(stylesResp.data) ? stylesResp.data : [];
     const stylesMs = Date.now() - t0;
 
-    // 2. Filter client-side for matching styleName (and brand if given).
-    const matches = allStyles.filter((s) => {
-      const nameOk = String(s.styleName || '').toLowerCase() === styleName.toLowerCase();
-      if (!brandName) return nameOk;
-      return nameOk && String(s.brandName || '').toLowerCase() === brandName.toLowerCase();
-    });
+    const norm = (v) => String(v || '').toLowerCase().trim();
+    const exact = (a, b) => norm(a) === norm(b);
 
-    if (matches.length === 0) {
-      // Show near-misses so we know if styleName casing or punctuation differs.
-      const near = allStyles
-        .filter((s) => String(s.styleName || '').toLowerCase().includes(styleName.toLowerCase().slice(0, 3)))
-        .slice(0, 10)
-        .map((s) => ({ styleID: s.styleID, styleName: s.styleName, brandName: s.brandName, title: s.title }));
-      return res.json({
-        query: { styleName, brandName },
-        totalStylesScanned: allStyles.length,
-        stylesMs,
-        matchedCount: 0,
-        nearMisses: near,
-      });
+    // Tiered matching:
+    //   1. exact styleName + brandName
+    //   2. exact partNumber
+    //   3. exact styleName alone
+    //   4. all rows for brandName (browse mode)
+    let matches = [];
+    let matchMode = null;
+    if (styleName && brandName) {
+      matches = allStyles.filter((s) => exact(s.styleName, styleName) && exact(s.brandName, brandName));
+      matchMode = 'styleName+brandName exact';
+    }
+    if (!matches.length && partnumber) {
+      matches = allStyles.filter((s) => exact(s.partNumber, partnumber));
+      matchMode = 'partNumber exact';
+    }
+    if (!matches.length && styleName) {
+      matches = allStyles.filter((s) => exact(s.styleName, styleName));
+      matchMode = 'styleName exact (any brand)';
     }
 
-    // 3. For each match (usually 1), pull its /products SKU rows.
+    // Browse mode: list all styles for the given brand if we didn't find a hit.
+    let brandCatalog = null;
+    if (!matches.length && brandName) {
+      const brandStyles = allStyles
+        .filter((s) => exact(s.brandName, brandName))
+        .map((s) => ({
+          styleID: s.styleID,
+          partNumber: s.partNumber,
+          brandName: s.brandName,
+          styleName: s.styleName,
+          title: s.title,
+          baseCategory: s.baseCategory,
+        }));
+      brandCatalog = {
+        brandName,
+        count: brandStyles.length,
+        styles: brandStyles,
+      };
+      matchMode = matchMode || 'brand-only browse';
+    }
+
+    // Near-miss suggestions if still nothing useful.
+    let nearMisses = null;
+    if (!matches.length && styleName && (!brandCatalog || brandCatalog.count === 0)) {
+      const needle = styleName.toLowerCase();
+      nearMisses = allStyles
+        .filter((s) => norm(s.styleName).includes(needle) || norm(s.partNumber).includes(needle))
+        .slice(0, 20)
+        .map((s) => ({ styleID: s.styleID, styleName: s.styleName, brandName: s.brandName, partNumber: s.partNumber, title: s.title }));
+    }
+
+    // For real matches, enrich with the products call (color/size SKU rows).
     const enriched = [];
     for (const m of matches.slice(0, 3)) {
       const t1 = Date.now();
       try {
-        const prodResp = await ssClient.get('/products', { params: { styleid: m.styleID } });
+        const prodResp = await ssClient.get('/products/', { params: { styleid: m.styleID } });
         const skus = Array.isArray(prodResp.data) ? prodResp.data : [];
         const productsMs = Date.now() - t1;
 
-        // Unique colors (preserve order of first appearance).
         const colorMap = new Map();
         for (const s of skus) {
           if (!s.colorName || colorMap.has(s.colorName)) continue;
@@ -1039,28 +1077,28 @@ exports.findSSStyle = async (req, res) => {
             colorFamily: s.colorFamily,
             colorSwatchImage: s.colorSwatchImage,
             colorFrontImage: s.colorFrontImage,
+            color1: s.color1,
           });
         }
-        // Unique sizes (sorted by sizeOrder).
         const sizeMap = new Map();
         for (const s of skus) {
           if (!s.sizeName || sizeMap.has(s.sizeName)) continue;
           sizeMap.set(s.sizeName, { sizeName: s.sizeName, sizeCode: s.sizeCode, sizeOrder: s.sizeOrder });
         }
-        const sizes = [...sizeMap.values()].sort((a, b) => (a.sizeOrder ?? 0) - (b.sizeOrder ?? 0));
+        const sizes = [...sizeMap.values()].sort((a, b) => String(a.sizeOrder).localeCompare(String(b.sizeOrder)));
 
         enriched.push({
           styleID: m.styleID,
-          styleName: m.styleName,
+          partNumber: m.partNumber,
           brandName: m.brandName,
+          styleName: m.styleName,
           title: m.title,
           productsMs,
           skuCount: skus.length,
           uniqueColorCount: colorMap.size,
           uniqueSizeCount: sizeMap.size,
-          colors: [...colorMap.values()].slice(0, 25),
+          colors: [...colorMap.values()],
           sizes,
-          firstSku: skus[0] || null,
         });
       } catch (e) {
         enriched.push({
@@ -1071,11 +1109,14 @@ exports.findSSStyle = async (req, res) => {
     }
 
     return res.json({
-      query: { styleName, brandName },
+      query: { styleName, brandName, partnumber },
       totalStylesScanned: allStyles.length,
       stylesMs,
+      matchMode,
       matchedCount: matches.length,
       results: enriched,
+      brandCatalog,
+      nearMisses,
     });
   } catch (err) {
     return res.status(500).json({ message: err.message });
