@@ -22,6 +22,8 @@ const OrderSchema = new mongoose.Schema({
   printerName:   { type: String, default: '' },
   supplier:      { type: String, default: '' },
   notes:         { type: String, default: '' },
+  confirmationMessage: { type: String, default: '' },  // personal note on the client-facing confirmation
+  confirmationTerms:   { type: String, default: '' },  // payment / turnaround terms
   mockupNumbers: [{ type: String }],
   contactSubmissionId: { type: mongoose.Schema.Types.ObjectId, ref: 'ContactSubmission', default: null },
   items: [{
