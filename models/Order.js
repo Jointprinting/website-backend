@@ -67,12 +67,19 @@ const OrderSchema = new mongoose.Schema({
     },
     items: [{
       mockupNum:           { type: String, default: '' },   // ref into project's saved mockups
-      customMockupDataUrl: { type: String, default: '' },   // optional override (base64)
+      customMockupDataUrl: { type: String, default: '' },   // legacy single-image (kept for back-compat)
+      mockupSnapshots: [{                                   // multiple variant images (e.g. headbands in 3 colors)
+        dataUrl: { type: String, default: '' },
+        label:   { type: String, default: '' },
+        _id: false,
+      }],
       showBack:            { type: Boolean, default: false },
+      productName:         { type: String, default: '' },    // overrides brand+style label for non-garment items
       brandName:           { type: String, default: '' },
       styleCode:           { type: String, default: '' },
       printType:           { type: String, default: '' },
       color:               { type: String, default: '' },
+      printerName:         { type: String, default: '' },    // who's actually printing this item
       sizes: [{
         label:     { type: String, default: '' },  // 'XS', 'S', ..., 'OS', or any custom
         qty:       { type: Number, default: 0 },
