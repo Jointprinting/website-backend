@@ -5,7 +5,7 @@ const { requireAdmin } = require('../middleware/auth');
 const {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
-  dashboard, createFromSubmission,
+  dashboard, createFromSubmission, mockupHealth,
 } = require('../controllers/orders');
 
 router.use(requireAdmin);
@@ -19,6 +19,7 @@ const upload = multer({ storage, limits: { fileSize: 25 * 1024 * 1024 } });
 router.post('/seed-historical',           seedHistorical);
 router.post('/from-submission/:submissionId', createFromSubmission);
 router.get('/dashboard',                  dashboard);
+router.get('/mockup-health',              mockupHealth);
 router.get('/next-numbers',               nextNumbers);
 router.get('/projects',                   listProjects);
 router.get('/',                           listOrders);

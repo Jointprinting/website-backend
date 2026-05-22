@@ -424,8 +424,85 @@ const createFromSubmission = async (req, res) => {
   }
 };
 
+// GET /api/orders/mockup-health — diagnostic report: which project mockup #s
+// are backed by a Studio library item, which aren't, and which library items
+// don't belong to any project. Used by the Order Tracker "Mockup health"
+// button so the user can see the real state of mockup linking at a glance.
+const mockupHealth = async (req, res) => {
+  try {
+    const norm = (n) => String(n || '').replace(/^#/, '').replace(/^0+/, '').toUpperCase();
+
+    const [projects, library] = await Promise.all([
+      Order.find({}).select('projectNumber orderNumber companyName clientName mockupNumbers').lean(),
+      StudioLibraryItem.find({ store: 'mockups' })
+        .select('name client pageState.mockupNum thumbnail savedAt')
+        .lean(),
+    ]);
+
+    // Build a lookup: normalized mockup# → library item
+    const libByNorm = {};
+    library.forEach(m => {
+      const k = norm(m.pageState && m.pageState.mockupNum);
+      if (k) libByNorm[k] = m;
+    });
+
+    // For each project, classify its mockup #s as matched or missing
+    const matched = [];        // { projectNumber, companyName, mockupNum, item: { _id, name } }
+    const missing = [];        // { projectNumber, companyName, mockupNum }
+    projects.forEach(p => {
+      (p.mockupNumbers || []).forEach(num => {
+        const item = libByNorm[norm(num)];
+        if (item) {
+          matched.push({
+            projectNumber: p.projectNumber, orderNumber: p.orderNumber,
+            companyName: p.companyName, clientName: p.clientName,
+            mockupNum: num,
+            itemId: item._id, itemName: item.name,
+          });
+        } else {
+          missing.push({
+            projectNumber: p.projectNumber, orderNumber: p.orderNumber,
+            companyName: p.companyName, clientName: p.clientName,
+            mockupNum: num,
+          });
+        }
+      });
+    });
+
+    // Set of normalized mockup #s referenced by any project
+    const referencedNorms = new Set();
+    projects.forEach(p => (p.mockupNumbers || []).forEach(n => referencedNorms.add(norm(n))));
+
+    // Library items whose mockup# isn't referenced anywhere
+    const orphans = library
+      .filter(m => {
+        const k = norm(m.pageState && m.pageState.mockupNum);
+        return !k || !referencedNorms.has(k);
+      })
+      .map(m => ({
+        _id: m._id, name: m.name, client: m.client,
+        mockupNum: (m.pageState && m.pageState.mockupNum) || '',
+        savedAt: m.savedAt,
+      }));
+
+    res.json({
+      summary: {
+        projects:           projects.length,
+        libraryItems:       library.length,
+        projectMockupRefs:  matched.length + missing.length,
+        linked:             matched.length,
+        missing:            missing.length,
+        orphans:            orphans.length,
+      },
+      matched, missing, orphans,
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 module.exports = {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
-  dashboard, createFromSubmission,
+  dashboard, createFromSubmission, mockupHealth,
 };
