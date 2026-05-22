@@ -20,6 +20,7 @@ const {
   testSSConnection,
   warmAllStylesHandler,
   debugSSStyle,
+  findSSStyle,
   dropGridfsAndStaleSync,
 } = require('../controllers/product');
 
@@ -35,7 +36,7 @@ router.get('/ss/images', getSSImages);                  // legacy fallback
 router.get('/ss/details', getSSDetails);                // Mongo-backed batch enrichment
 router.get('/ss/test', testSSConnection);
 router.get('/ss/debug', debugSSStyle);                  // ?style=X — see raw S&S responses
-router.get('/ss/find', productController.findSSStyle);
+router.get('/ss/find', findSSStyle);
 router.get('/ss/style/:style', getSSStyleDetail);       // honest live fallback
 router.get('/style/:style', getProductByStyleCode);     // Mongo -> sync -> fallback
 router.get('/:id', getProductById);
