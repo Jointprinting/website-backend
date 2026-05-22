@@ -840,9 +840,136 @@ const mockupHealth = async (req, res) => {
   }
 };
 
+// POST /api/orders/mockups/auto-link  { commit?: boolean }
+// Links orphan jpstudio mockups (saved before the Project dropdown existed) to
+// their projects. Two signals, in priority order:
+//   1. base number — every project gets its own batch number, so #000061A..D
+//      all belong to one project. An orphan #000061E links to whatever project
+//      already references #000061*.
+//   2. company name — the library item's name/client text contains a project's
+//      companyKey (e.g. "Bleu Leaf Dispensary Merch" → bleuleafdispensary).
+// Without commit:true this is a dry run and only returns the proposed links.
+const autoLinkMockups = async (req, res) => {
+  try {
+    const commit = !!(req.body && req.body.commit);
+    const norm   = (n) => String(n || '').replace(/^#/, '').replace(/^0+/, '').toUpperCase();
+    const baseOf = (n) => { const m = norm(n).match(/^(\d+)/); return m ? m[1] : ''; };
+    const slug   = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+    const [projects, library] = await Promise.all([
+      Order.find({}).select('projectNumber companyName clientName companyKey mockupNumbers').lean(),
+      StudioLibraryItem.find({ store: 'mockups' }).select('name client pageState.mockupNum').lean(),
+    ]);
+
+    // Index projects: every mockup# already referenced, and projects by base #.
+    const referencedNorms = new Set();
+    const projectsByBase  = {};
+    projects.forEach(p => {
+      (p.mockupNumbers || []).forEach(n => {
+        const nn = norm(n);
+        if (nn) referencedNorms.add(nn);
+        const b = baseOf(n);
+        if (b) {
+          if (!projectsByBase[b]) projectsByBase[b] = [];
+          if (!projectsByBase[b].some(x => String(x._id) === String(p._id))) projectsByBase[b].push(p);
+        }
+      });
+    });
+    const companyKeys = [...new Set(projects.map(p => p.companyKey).filter(k => k && k.length >= 4))];
+
+    const links = [], ambiguous = [], unmatched = [];
+    let alreadyLinked = 0;
+
+    for (const item of library) {
+      const rawNum = (item.pageState && item.pageState.mockupNum) || '';
+      const nn = norm(rawNum);
+      if (!nn) { unmatched.push({ itemId: item._id, itemName: item.name || '', mockupNum: rawNum, reason: 'no mockup #' }); continue; }
+      if (referencedNorms.has(nn)) { alreadyLinked++; continue; }
+
+      const base = baseOf(rawNum);
+      const baseHits = (base && projectsByBase[base]) || [];
+      let target = null, via = null;
+
+      if (baseHits.length === 1) {
+        target = baseHits[0]; via = 'base';
+      } else {
+        const itemSlug = slug(`${item.name || ''} ${item.client || ''}`);
+        let bestKey = '';
+        companyKeys.forEach(k => { if (itemSlug.includes(k) && k.length > bestKey.length) bestKey = k; });
+        if (bestKey) {
+          const nameHits = projects.filter(p => p.companyKey === bestKey);
+          if (nameHits.length === 1) { target = nameHits[0]; via = 'name'; }
+          else if (nameHits.length > 1) {
+            ambiguous.push({ itemId: item._id, itemName: item.name || '', mockupNum: rawNum,
+              candidates: nameHits.map(p => ({ projectNumber: p.projectNumber, companyName: p.companyName || p.clientName || '' })) });
+            continue;
+          }
+        }
+      }
+
+      if (!target && baseHits.length > 1) {
+        ambiguous.push({ itemId: item._id, itemName: item.name || '', mockupNum: rawNum,
+          candidates: baseHits.map(p => ({ projectNumber: p.projectNumber, companyName: p.companyName || p.clientName || '' })) });
+        continue;
+      }
+      if (!target) { unmatched.push({ itemId: item._id, itemName: item.name || '', mockupNum: rawNum, reason: 'no match' }); continue; }
+
+      links.push({
+        itemId: item._id, itemName: item.name || '', mockupNum: rawNum,
+        projectId: target._id, projectNumber: target.projectNumber,
+        projectCompany: target.companyName || target.clientName || '', via,
+      });
+    }
+
+    let projectsAffected = 0, mockupsLinked = 0;
+    if (commit && links.length) {
+      const byProject = {};
+      links.forEach(l => {
+        const k = String(l.projectId);
+        if (!byProject[k]) byProject[k] = { projectId: l.projectId, nums: [] };
+        if (!byProject[k].nums.includes(l.mockupNum)) byProject[k].nums.push(l.mockupNum);
+      });
+      for (const grp of Object.values(byProject)) {
+        await Order.updateOne(
+          { _id: grp.projectId },
+          {
+            $addToSet: { mockupNumbers: { $each: grp.nums } },
+            $push: { activity: {
+              kind: 'mockups_linked', actor: 'system',
+              message: `Auto-linked ${grp.nums.length} mockup${grp.nums.length === 1 ? '' : 's'}: ${grp.nums.join(', ')}`,
+              meta: { mockupNumbers: grp.nums, source: 'auto-link' },
+              at: new Date(),
+            } },
+          },
+        );
+        projectsAffected++;
+        mockupsLinked += grp.nums.length;
+      }
+    }
+
+    res.json({
+      committed: commit,
+      summary: {
+        libraryMockups:   library.length,
+        alreadyLinked,
+        proposed:         links.length,
+        byBase:           links.filter(l => l.via === 'base').length,
+        byName:           links.filter(l => l.via === 'name').length,
+        ambiguous:        ambiguous.length,
+        unmatched:        unmatched.length,
+        projectsAffected: commit ? projectsAffected : new Set(links.map(l => String(l.projectId))).size,
+        mockupsLinked:    commit ? mockupsLinked : links.length,
+      },
+      links, ambiguous, unmatched,
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 module.exports = {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
   dashboard, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
-  cleanupCandidates, cleanupDelete, mergeCompany,
+  cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups,
 };
