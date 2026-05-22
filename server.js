@@ -118,7 +118,7 @@ app.use('/api/catalogs', catalogRoutes);
 app.use('/api/site-settings', express.json({ limit: '2mb' }), siteSettingRoutes);
 app.use('/api/roadtrip', roadTripRoutes);
 app.use('/api/studio', studioRoutes);
-app.use('/api/orders', express.json({ limit: '25mb' }), orderRoutes);
+app.use('/api/orders', express.json({ limit: '100mb' }), orderRoutes);
 app.use('/api/client-logos', express.json({ limit: '2mb' }), clientLogoRoutes);
 app.use('/api/clients', express.json(), clientRoutes);
 app.use('/api/public', express.json(), publicApprovalRoutes);
