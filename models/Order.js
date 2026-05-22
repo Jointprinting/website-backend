@@ -24,6 +24,13 @@ const OrderSchema = new mongoose.Schema({
   notes:         { type: String, default: '' },
   confirmationMessage: { type: String, default: '' },  // personal note on the client-facing confirmation
   confirmationTerms:   { type: String, default: '' },  // payment / turnaround terms
+  approvalToken:       { type: String, default: '' },  // random token used to gate public approval page
+  approvalEvents: [{                                    // log of client interactions on the approval page
+    kind:    { type: String },          // 'viewed' | 'approved' | 'requested_changes'
+    message: { type: String, default: '' },
+    at:      { type: Date, default: Date.now },
+    _id: false,
+  }],
   mockupNumbers: [{ type: String }],
   contactSubmissionId: { type: mongoose.Schema.Types.ObjectId, ref: 'ContactSubmission', default: null },
   items: [{
