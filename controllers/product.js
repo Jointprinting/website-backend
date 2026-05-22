@@ -740,19 +740,17 @@ exports.browseSS = async (req, res) => {
     const { brand, page = 1, limit = 24, search = '', category = '', type = '' } = req.query;
 
     const result = brand ? await fetchAndGroupSSBrand(brand) : await fetchAllSSBrands();
-    let { styles } = result;
+    const allStyles = result.styles;
 
-    if (category) styles = styles.filter((s) => s.category === category);
-    if (type)     styles = styles.filter((s) => s.type === type);
-    if (search) {
-      // Build variant set so 'g500' matches S&S 'styleName: 5000', 'g185'
-      // matches '18500', etc. ALSO detect the leading brand letters so
-      // 'g500' clearly means Gildan and ranks Gildan above Bayside/Paragon
-      // styles that happen to share a number.
-      const q = String(search).toLowerCase().trim();
-      const variants = new Set([q]);
+    // Search helper — same brand-aware variant logic as before, factored
+    // out so we can run it against either the category-filtered slice or
+    // the full catalog (for the smart-relax retry below).
+    const applySearch = (input, q) => {
+      if (!q) return input;
+      const lq = String(q).toLowerCase().trim();
+      const variants = new Set([lq]);
       let brandHint = null;
-      const m = q.match(/^([a-z]+)(\d.*)$/i);
+      const m = lq.match(/^([a-z]+)(\d.*)$/i);
       if (m) {
         const prefix = m[1].toLowerCase();
         const stem   = m[2];
@@ -760,21 +758,14 @@ exports.browseSS = async (req, res) => {
         variants.add(stem + '0');
         variants.add(stem + '00');
         const BRAND_PREFIX_MAP = {
-          g:   'gildan',
-          bc:  'bella + canvas',
-          nl:  'next level',
-          pc:  'port & company',
-          pa:  'port authority',
-          st:  'sport-tek',
-          h:   'hanes',
-          cc:  'comfort colors',
-          dt:  'district',
-          ind: 'independent',
-          aa:  'alternative',
+          g: 'gildan', bc: 'bella + canvas', nl: 'next level',
+          pc: 'port & company', pa: 'port authority', st: 'sport-tek',
+          h: 'hanes', cc: 'comfort colors', dt: 'district',
+          ind: 'independent', aa: 'alternative',
         };
         brandHint = BRAND_PREFIX_MAP[prefix] || null;
       }
-      styles = styles.filter((s) => {
+      let matched = input.filter((s) => {
         const name  = String(s.name       || '').toLowerCase();
         const style = String(s.style      || '').toLowerCase();
         const part  = String(s.partNumber || '').toLowerCase();
@@ -784,11 +775,8 @@ exports.browseSS = async (req, res) => {
         }
         return false;
       });
-      // Brand-prefix detected? Float matching-brand results to the top.
-      // Doesn't filter out other brands — they just sink below. So 'g500'
-      // shows Gildan G500 first, then Paragon 500 / Bayside 5000 after.
       if (brandHint) {
-        styles = styles.slice().sort((a, b) => {
+        matched = matched.slice().sort((a, b) => {
           const av = String(a.vendor || '').toLowerCase();
           const bv = String(b.vendor || '').toLowerCase();
           const aHit = av.includes(brandHint) || brandHint.includes(av);
@@ -798,6 +786,30 @@ exports.browseSS = async (req, res) => {
           return 0;
         });
       }
+      return matched;
+    };
+
+    const applyFilters = (input) => {
+      let f = input;
+      if (category) f = f.filter((s) => s.category === category);
+      if (type)     f = f.filter((s) => s.type === type);
+      return f;
+    };
+
+    // First pass: apply category/type filter, then search inside it.
+    let styles = applySearch(applyFilters(allStyles), search);
+    let relaxedFilter = null;
+
+    // Smart relax: if user searched and the category/type filter killed all
+    // matches, retry against the full catalog so a 'tshirt' query from the
+    // Shorts page still surfaces tees. Tell the frontend which filters
+    // were ignored so it can render a 'showing all styles instead' notice.
+    if (search && styles.length === 0 && (category || type)) {
+      const globalMatches = applySearch(allStyles, search);
+      if (globalMatches.length > 0) {
+        styles = globalMatches;
+        relaxedFilter = { ignored: { category: category || null, type: type || null }, search };
+      }
     }
 
     const total = styles.length;
@@ -806,7 +818,11 @@ exports.browseSS = async (req, res) => {
     const start = (p - 1) * l;
     const pageSlice = styles.slice(start, start + l);
 
-    return res.json({ products: pageSlice, total, page: p, totalPages: Math.ceil(total / l) });
+    return res.json({
+      products: pageSlice, total, page: p,
+      totalPages: Math.ceil(total / l),
+      relaxedFilter,
+    });
   } catch (err) {
     console.error('browseSS error:', err.message);
     return res.status(500).json({ message: err.message || 'Browse failed.' });
