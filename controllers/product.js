@@ -599,11 +599,19 @@ async function fetchAllSSBrands() {
   }
 
   allStyles.sort((a, b) => {
+    // First: featured-brand priority (Gildan/Bella+Canvas/Next Level/Hanes first).
     const aPri = SS_FEATURED_BRANDS.findIndex((bp) => (a.vendor || '').toLowerCase().includes(bp.toLowerCase()));
     const bPri = SS_FEATURED_BRANDS.findIndex((bp) => (b.vendor || '').toLowerCase().includes(bp.toLowerCase()));
     const ai = aPri === -1 ? SS_FEATURED_BRANDS.length : aPri;
     const bi = bPri === -1 ? SS_FEATURED_BRANDS.length : bPri;
     if (ai !== bi) return ai - bi;
+    // Then: popularity score (evergreen silhouettes float, infant/toddler/tall sink).
+    // Without this, the previous a.name.localeCompare overrode the per-brand
+    // popularity sort done in fetchAndGroupSSBrand and infant/blanket items
+    // bubbled to the top.
+    const psA = popularityScore(a);
+    const psB = popularityScore(b);
+    if (psA !== psB) return psB - psA;
     return a.name.localeCompare(b.name);
   });
   const data = { styles: allStyles, total: allStyles.length };
