@@ -458,6 +458,56 @@ const SS_FEATURED_BRANDS = [
 
 exports._getSSPopularBrands = () => [...SS_POPULAR_BRANDS];
 
+// Popularity ranking for the catalog grid. Heuristic, not personalized:
+//   - Hard-coded set of evergreen silhouettes that account for the vast
+//     majority of orders across customers (T-shirts, hoodies, basics).
+//     Anything in POPULAR_STYLES floats to the top within its brand.
+//   - Adult/unisex copy gets a small boost. Infant/toddler/youth/tall/
+//     women's variants get pushed down (they're real inventory, just not
+//     what new visitors are looking for first).
+const POPULAR_STYLES = new Set([
+  // Gildan
+  '5000','64000','18500','2000','18000','8000','64v00','64200','64400','5400','2400','5300','64800','65000',
+  // Bella + Canvas
+  '3001','3001cvc','3501','3413','3911','3680','3739','3719','3001y','3001ycvc','3480','3724','3739','6004',
+  // Next Level
+  '3600','6210','6211','3600l','9001','6212','3601','6210cvc','6710',
+  // Hanes
+  '5250','7980','4980','5180','f170','5280','5286','f260','5170','5286t',
+  // Comfort Colors
+  '1717','1717l','1567','c1467','1566','4017','c1717','9018',
+  // Independent Trading Co.
+  'ss4500','ss1000','prm90ht','prm15ysb','ss3000','ind5000p',
+  // Port & Company / Port Authority
+  'pc54','pc61','pc090','pc55','pc78','pc78h','pc450',
+  // Champion
+  's700','s101','s149','t525c',
+  // Alternative Apparel
+  '1973','1270','5114','4400','aa1973',
+  // District
+  'dt6000','dt5000','dt8000','dt2000',
+  // Sport-Tek
+  'st350','st650','st550','st850',
+]);
+
+const POPULARITY_PENALTY_RE = /\b(infant|toddler|baby|newborn|youth|kids?|tall|tot|ladies'?|women'?s|girls?|boys?|maternity)\b/i;
+const POPULARITY_BOOST_RE   = /\b(unisex|men'?s|adult|classic)\b/i;
+
+function popularityScore(style) {
+  const sn  = String(style.style || style.styleName || '').toLowerCase();
+  const nm  = String(style.name  || style.title     || '').toLowerCase();
+  let score = 0;
+  if (POPULAR_STYLES.has(sn)) score += 200;
+  if (POPULARITY_BOOST_RE.test(nm)) score += 5;
+  if (POPULARITY_PENALTY_RE.test(nm)) score -= 60;
+  // Core T-Shirts beat fleece beat polos beat accessories when neither
+  // hits the popular list — keeps the top of the grid recognisable.
+  const cat = String(style.category || '').toLowerCase();
+  if (cat === 'shirts' || cat === 't-shirts') score += 3;
+  else if (cat === 'hoodies' || cat === 'crewnecks') score += 2;
+  return score;
+}
+
 async function fetchAndGroupSSBrand(brand) {
   const cacheKey = `brand:${brand}`;
   const cached   = _ssCache.get(cacheKey);
@@ -505,7 +555,12 @@ async function fetchAndGroupSSBrand(brand) {
     });
   }
 
-  styles.sort((a, b) => a.style.localeCompare(b.style));
+  styles.sort((a, b) => {
+    const sa = popularityScore(a);
+    const sb = popularityScore(b);
+    if (sa !== sb) return sb - sa;
+    return String(a.style || '').localeCompare(String(b.style || ''));
+  });
   const result = { styles, total: styles.length };
   _ssCache.set(cacheKey, { data: result, expiresAt: Date.now() + SS_CACHE_TTL });
   return result;
@@ -668,8 +723,29 @@ exports.browseSS = async (req, res) => {
     if (category) styles = styles.filter((s) => s.category === category);
     if (type)     styles = styles.filter((s) => s.type === type);
     if (search) {
-      const q = search.toLowerCase();
-      styles = styles.filter((s) => s.name.toLowerCase().includes(q) || s.style.toLowerCase().includes(q));
+      // Build variant set so 'g500' matches S&S 'styleName: 5000', 'g185'
+      // matches '18500', etc. Same prefix-strip logic as the detail-page
+      // resolver — keeps marketing names searchable even though S&S stores
+      // them without the brand letter.
+      const q = String(search).toLowerCase().trim();
+      const variants = new Set([q]);
+      const m = q.match(/^([a-z])(\d.*)$/i);
+      if (m) {
+        const stripped = m[2];
+        variants.add(stripped);
+        variants.add(stripped + '0');
+        variants.add(stripped + '00');
+      }
+      styles = styles.filter((s) => {
+        const name  = String(s.name       || '').toLowerCase();
+        const style = String(s.style      || '').toLowerCase();
+        const part  = String(s.partNumber || '').toLowerCase();
+        for (const v of variants) {
+          if (style === v || part === v) return true;
+          if (name.includes(v)) return true;
+        }
+        return false;
+      });
     }
 
     const total = styles.length;
@@ -718,7 +794,28 @@ exports.getProductByStyleCode = async (req, res) => {
     // Look up the Mongo record FIRST so we can pass its vendor hint into
     // the S&S resolver — otherwise "G500" might match a Hanes/Holloway
     // style "500" before getting to Gildan's actual "5000".
-    const stored = await Product.findOne({ style: styleName });
+    //
+    // Also try common prefix variants when looking up Mongo: a card whose
+    // S&S name is "5000" should still find the Mongo doc stored as "G500"
+    // (and vice versa) so admin-curated descriptions/tags carry over.
+    const storedVariants = [styleName];
+    const sm = String(styleName || '').match(/^([A-Za-z])(\d.*)$/);
+    if (sm) {
+      storedVariants.push(sm[2]);          // G500 -> 500
+      storedVariants.push(sm[2] + '0');    // G500 -> 5000
+    } else if (/^\d/.test(styleName)) {
+      // Numeric input: try common brand-letter prefixes back on top.
+      ['G','B','C','N','H','PC'].forEach((p) => storedVariants.push(p + styleName));
+      // Also try stripping a single trailing zero in case caller passed "5000"
+      if (styleName.length > 1 && styleName.endsWith('0')) {
+        storedVariants.push('G' + styleName.slice(0, -1));
+      }
+    }
+    let stored = null;
+    for (const v of storedVariants) {
+      stored = await Product.findOne({ style: v });
+      if (stored) break;
+    }
     const brandHint = stored?.vendor || null;
 
     const enrichment = await resolveSSEnrichment(styleName, brandHint);
