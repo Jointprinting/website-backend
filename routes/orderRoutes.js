@@ -6,7 +6,7 @@ const {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
   dashboard, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
-  cleanupCandidates, cleanupDelete, mergeCompany,
+  cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups,
 } = require('../controllers/orders');
 const { ensureApprovalToken } = require('../controllers/approval');
 
@@ -25,6 +25,7 @@ router.post('/:id/duplicate',             duplicateOrder);
 router.get('/cleanup-candidates',         cleanupCandidates);
 router.post('/cleanup-delete',            cleanupDelete);
 router.post('/merge-company',             mergeCompany);
+router.post('/mockups/auto-link',         autoLinkMockups);
 router.get('/dashboard',                  dashboard);
 router.get('/analytics',                  analytics);
 router.get('/clients-summary',            clientsSummary);
