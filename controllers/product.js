@@ -978,6 +978,110 @@ exports.debugSSStyle = async (req, res) => {
   }
 };
 
+// Real-data S&S diagnostic: find a style's true styleID by scanning the
+// full /styles list, then pull its /products SKU rows. Visit
+//   /api/products/ss/find?styleName=G500&brandName=Gildan
+// to confirm whether color/size data exists for that style.
+exports.findSSStyle = async (req, res) => {
+  try {
+    ensureSsCredentials();
+    const styleName = String(req.query.styleName || '').trim();
+    const brandName = String(req.query.brandName || '').trim();
+    if (!styleName) {
+      return res.status(400).json({ message: 'Provide ?styleName=X (optionally &brandName=Y).' });
+    }
+
+    // 1. Pull the full styles list. S&S returns ~5,700 rows.
+    const t0 = Date.now();
+    const stylesResp = await ssClient.get('/styles');
+    const allStyles = Array.isArray(stylesResp.data) ? stylesResp.data : [];
+    const stylesMs = Date.now() - t0;
+
+    // 2. Filter client-side for matching styleName (and brand if given).
+    const matches = allStyles.filter((s) => {
+      const nameOk = String(s.styleName || '').toLowerCase() === styleName.toLowerCase();
+      if (!brandName) return nameOk;
+      return nameOk && String(s.brandName || '').toLowerCase() === brandName.toLowerCase();
+    });
+
+    if (matches.length === 0) {
+      // Show near-misses so we know if styleName casing or punctuation differs.
+      const near = allStyles
+        .filter((s) => String(s.styleName || '').toLowerCase().includes(styleName.toLowerCase().slice(0, 3)))
+        .slice(0, 10)
+        .map((s) => ({ styleID: s.styleID, styleName: s.styleName, brandName: s.brandName, title: s.title }));
+      return res.json({
+        query: { styleName, brandName },
+        totalStylesScanned: allStyles.length,
+        stylesMs,
+        matchedCount: 0,
+        nearMisses: near,
+      });
+    }
+
+    // 3. For each match (usually 1), pull its /products SKU rows.
+    const enriched = [];
+    for (const m of matches.slice(0, 3)) {
+      const t1 = Date.now();
+      try {
+        const prodResp = await ssClient.get('/products', { params: { styleid: m.styleID } });
+        const skus = Array.isArray(prodResp.data) ? prodResp.data : [];
+        const productsMs = Date.now() - t1;
+
+        // Unique colors (preserve order of first appearance).
+        const colorMap = new Map();
+        for (const s of skus) {
+          if (!s.colorName || colorMap.has(s.colorName)) continue;
+          colorMap.set(s.colorName, {
+            colorName: s.colorName,
+            colorCode: s.colorCode,
+            colorGroup: s.colorGroup,
+            colorFamily: s.colorFamily,
+            colorSwatchImage: s.colorSwatchImage,
+            colorFrontImage: s.colorFrontImage,
+          });
+        }
+        // Unique sizes (sorted by sizeOrder).
+        const sizeMap = new Map();
+        for (const s of skus) {
+          if (!s.sizeName || sizeMap.has(s.sizeName)) continue;
+          sizeMap.set(s.sizeName, { sizeName: s.sizeName, sizeCode: s.sizeCode, sizeOrder: s.sizeOrder });
+        }
+        const sizes = [...sizeMap.values()].sort((a, b) => (a.sizeOrder ?? 0) - (b.sizeOrder ?? 0));
+
+        enriched.push({
+          styleID: m.styleID,
+          styleName: m.styleName,
+          brandName: m.brandName,
+          title: m.title,
+          productsMs,
+          skuCount: skus.length,
+          uniqueColorCount: colorMap.size,
+          uniqueSizeCount: sizeMap.size,
+          colors: [...colorMap.values()].slice(0, 25),
+          sizes,
+          firstSku: skus[0] || null,
+        });
+      } catch (e) {
+        enriched.push({
+          styleID: m.styleID, styleName: m.styleName, brandName: m.brandName,
+          error: e.message, status: e?.response?.status,
+        });
+      }
+    }
+
+    return res.json({
+      query: { styleName, brandName },
+      totalStylesScanned: allStyles.length,
+      stylesMs,
+      matchedCount: matches.length,
+      results: enriched,
+    });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  One-time on-boot cleanup — runs idempotently each startup, dropping the
 //  old GridFS image bucket and removing S&S products whose images are still
