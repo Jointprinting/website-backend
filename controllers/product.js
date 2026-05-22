@@ -460,6 +460,7 @@ const SS_POPULAR_BRANDS = [
 
 const SS_FEATURED_BRANDS = [
   'Gildan', 'Bella + Canvas', 'Next Level', 'Hanes',
+  'Comfort Colors', 'Independent Trading Co.',
 ];
 
 exports._getSSPopularBrands = () => [...SS_POPULAR_BRANDS];
