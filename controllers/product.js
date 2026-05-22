@@ -57,17 +57,23 @@ const PREMIUM_BRANDS     = ['bella', 'canvas', 'next level', 'alternative', 'dis
 const POPULAR_BRANDS_TAG = ['gildan', 'port', 'hanes', 'jerzees', 'sport-tek', 'carhartt'];
 
 function deriveRating(styleName = '') {
-  let h = 0;
-  for (let i = 0; i < styleName.length; i++) h = (h * 31 + styleName.charCodeAt(i)) | 0;
-  const r = ((Math.abs(h) % 11) / 10) + 4;
-  return Math.round(r * 2) / 2;
+  // Stop pseudo-randomly star-rating every product. Only popular silhouettes
+  // earn a visible rating; everything else returns 0 and the UI hides the
+  // Rating component (frontend already gates on rating > 0).
+  const sn = String(styleName || '').toLowerCase();
+  return POPULAR_STYLES.has(sn) ? 5 : 0;
 }
 
-function deriveTag(brand = '', styleName = '') {
-  const b = brand.toLowerCase();
-  if (PREMIUM_BRANDS.some(p => b.includes(p))) return 'Our Favorite';
-  if (POPULAR_BRANDS_TAG.some(p => b.includes(p))) return 'Best Seller';
-  return 'New Arrival';
+function deriveTag(brand = '', styleName = '', newStyle = false) {
+  // Only tag when it actually means something. Tagging by brand alone
+  // produces 'Best Seller' on every Gildan card, 'Our Favorite' on every
+  // Bella+Canvas card, etc. — which is visually identical to no tag.
+  // POPULAR_STYLES is the same ~60-item evergreen list used for sort
+  // ranking, so the badge agrees with the ordering.
+  const sn = String(styleName || '').toLowerCase();
+  if (POPULAR_STYLES.has(sn)) return 'Best Seller';
+  if (newStyle === true) return 'New Arrival';
+  return null;
 }
 
 function extractAlphaBroderMinPrice(item) {
@@ -549,8 +555,9 @@ async function fetchAndGroupSSBrand(brand) {
       sizeRangeBottom, sizeRangeTop,
       colorCount:   style.colorCount || 0,
       rating:       deriveRating(style.styleName),
-      tag:          deriveTag(vendor, title),
+      tag:          deriveTag(vendor, style.styleName, style.newStyle === true),
       image:        imageUrl,
+      styleImage:   imageUrl,
       description,
     });
   }
@@ -876,6 +883,7 @@ exports.getProductByStyleCode = async (req, res) => {
         return res.status(200).json({
           ...base,
           ssStyleID:           match.styleID,
+          styleImage:          match.image || base.image || null,
           colors:              summary.colors.map((c) => c.name),
           colorCodes:          summary.colors.map((c) => c.hex),
           colorSwatches:       summary.colors,
@@ -900,6 +908,7 @@ exports.getProductByStyleCode = async (req, res) => {
     return res.json({
       style:               match.style,
       ssStyleID:           match.styleID,
+      styleImage:          match.image || null,
       name:                summary?.title || match.name,
       vendor:              summary?.brand || match.vendor,
       category:            match.category,
