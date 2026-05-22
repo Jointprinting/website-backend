@@ -2,6 +2,7 @@ const Order = require('../models/Order');
 const ContactSubmission = require('../models/ContactSubmission');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
 const { deriveCompanyKey } = require('../models/Order');
+const { getDefaultsFor } = require('./clients');
 
 // ─── Notion seed data ─────────────────────────────────────────────────────────
 // Exported from the Notion "Orders" database (the source of truth). Project #
@@ -252,6 +253,17 @@ const createOrder = async (req, res) => {
       }, 0);
       body.projectNumber = String(max + 1);
     }
+
+    // Prefill from the client profile if one exists for this company. Only
+    // fills empty fields — never overwrites anything the caller passed in.
+    try {
+      const profile = await getDefaultsFor(body.companyName || '', body.clientName || '');
+      if (profile) {
+        if (!body.printerName && profile.defaultPrinter)  body.printerName = profile.defaultPrinter;
+        if (!body.supplier    && profile.defaultSupplier) body.supplier    = profile.defaultSupplier;
+      }
+    } catch (_) { /* best-effort */ }
+
     body.activity = [{ kind: 'created', actor: 'admin', message: `Project #${body.projectNumber} created`, at: new Date() }];
     const order = await Order.create(body);
     res.status(201).json(order);

@@ -13,6 +13,7 @@ const Order            = require('../models/Order');
 const ContactSubmission = require('../models/ContactSubmission');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
 const ClientLogo       = require('../models/ClientLogo');
+const Client           = require('../models/Client');
 const SiteSetting      = require('../models/SiteSetting');
 const Catalog          = require('../models/Catalog');
 const Product          = require('../models/Product');
@@ -35,6 +36,7 @@ const COLLECTIONS = [
   { name: 'ContactSubmission', Model: ContactSubmission },
   { name: 'StudioLibraryItem', Model: StudioLibraryItem },
   { name: 'ClientLogo',        Model: ClientLogo        },
+  { name: 'Client',            Model: Client            },
   { name: 'SiteSetting',       Model: SiteSetting       },
   { name: 'Catalog',           Model: Catalog           },
   { name: 'Product',           Model: Product           },

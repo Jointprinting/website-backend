@@ -24,6 +24,14 @@ const OrderSchema = new mongoose.Schema({
   notes:         { type: String, default: '' },
   confirmationMessage: { type: String, default: '' },  // personal note on the client-facing confirmation
   confirmationTerms:   { type: String, default: '' },  // payment / turnaround terms
+  quickbooksInvoiceUrl: { type: String, default: '' }, // link to the QB invoice for this project
+  tasks: [{                                            // per-project checklist
+    text:        { type: String, default: '' },
+    done:        { type: Boolean, default: false },
+    dueDate:     { type: Date,   default: null },
+    completedAt: { type: Date,   default: null },
+    _id: false,
+  }],
   approvalToken:       { type: String, default: '' },  // random token used to gate public approval page
   approvalEvents: [{                                    // log of client interactions on the approval page
     kind:    { type: String },          // 'viewed' | 'approved' | 'requested_changes'
