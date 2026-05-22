@@ -113,7 +113,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/submissions', submissionRoutes);
 app.use('/api/script-versions', scriptVersionRoutes);
 app.use('/api/catalogs', catalogRoutes);
-app.use('/api/site-settings', siteSettingRoutes);
+app.use('/api/site-settings', express.json({ limit: '2mb' }), siteSettingRoutes);
 app.use('/api/roadtrip', roadTripRoutes);
 app.use('/api/studio', studioRoutes);
 app.use('/api/orders', orderRoutes);
