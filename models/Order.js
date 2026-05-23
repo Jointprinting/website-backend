@@ -32,7 +32,8 @@ const OrderSchema = new mongoose.Schema({
     completedAt: { type: Date,   default: null },
     _id: false,
   }],
-  approvalToken:       { type: String, default: '' },  // random token used to gate public approval page
+  approvalToken:          { type: String, default: '' },  // random token used to gate public approval page
+  approvalTokenExpiresAt: { type: Date,   default: null }, // null = never expires; non-null = strict cutoff
   approvalEvents: [{                                    // log of client interactions on the approval page
     kind:    { type: String },          // 'viewed' | 'approved' | 'requested_changes'
     message: { type: String, default: '' },
