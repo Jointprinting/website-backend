@@ -94,16 +94,16 @@ const confirmationPdf = async (req, res) => {
     items.forEach((it, idx) => {
       ensure(150);
 
+      // Always surface the style code alongside the product/brand label.
+      // Printer is internal — never on the client-facing confirmation.
+      const productLabel = it.productName || it.brandName || '';
       const titleParts = [
-        it.productName || [it.brandName, it.styleCode].filter(Boolean).join(' '),
+        productLabel && it.styleCode ? `${productLabel} (${it.styleCode})` : (productLabel || it.styleCode),
         it.color,
         it.printType,
       ].filter(Boolean);
       doc.font('Helvetica-Bold').fontSize(11).fillColor(C.ink)
         .text(titleParts.join('   ·   ') || `Item ${idx + 1}`);
-      if (it.printerName) {
-        doc.font('Helvetica').fontSize(8).fillColor(C.muted).text(`Printer: ${it.printerName}`);
-      }
       doc.moveDown(0.3);
 
       // mockup thumbnails
