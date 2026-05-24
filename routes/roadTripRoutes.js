@@ -21,7 +21,7 @@ const {
 } = require('../controllers/roadTripLead');
 
 const {
-  densityArea, corridorLeads,
+  densityArea, corridorLeads, corridorScan,
   listDensityCache, clearDensityCacheEntry,
 } = require('../controllers/roadTripRoute');
 
@@ -50,6 +50,7 @@ router.delete('/denylist/:placeId', removeDenylist);
 // ── Density + corridor (GO TONIGHT) ────────────────────────────────────────
 router.post  ('/density/area',             densityArea);
 router.post  ('/corridor/leads',           corridorLeads);
+router.post  ('/corridor/scan',            corridorScan);
 router.get   ('/density/cache',            listDensityCache);
 router.delete('/density/cache/:cellKey',   clearDensityCacheEntry);
 

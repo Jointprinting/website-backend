@@ -326,9 +326,119 @@ async function clearDensityCacheEntry(req, res) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/roadtrip/corridor/scan
+//
+// "Intelligent" pitch — when the user opens the PITCH planner and the
+// corridor of saved leads is sparse, this auto-scans Google along the
+// route to surface dispensaries the user hasn't pinned yet.
+//
+// Strategy: walk the from→to line in ~6mi chunks, run the dispensary text
+// search at each sample point, dedupe by externalId, project each result
+// onto the corridor (cross-track + progress), drop anything more than
+// `corridorMi` off-line, return sorted by progress.
+//
+// Heavily cached: every sample point hits the same DispensaryDensityCache
+// rows used by /density/area. A typical day's corridor reuses cache cells
+// from prior validations and from previous days' scans, so steady-state
+// cost is ~1-2 Google calls per never-before-seen day.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function corridorScan(req, res) {
+  try {
+    const from = req.body.from || {};
+    const to   = req.body.to   || {};
+    const fLat = parseFloat(from.lat), fLng = parseFloat(from.lng);
+    const tLat = parseFloat(to.lat),   tLng = parseFloat(to.lng);
+    if (!isFinite(fLat) || !isFinite(fLng) || !isFinite(tLat) || !isFinite(tLng)) {
+      return res.status(400).json({ message: 'from {lat,lng} and to {lat,lng} are required.' });
+    }
+    const corridorMi   = Math.max(1, parseFloat(req.body.corridorMi)   || 8);
+    const sampleSpacingMi = Math.max(3, parseFloat(req.body.spacingMi) || 6);
+
+    const A = { lat: fLat, lng: fLng };
+    const B = { lat: tLat, lng: tLng };
+    const totalMi = haversineMeters(A.lat, A.lng, B.lat, B.lng) / M_PER_MI;
+    if (totalMi < 0.5) {
+      return res.json({ count: 0, leads: [], googleCalls: 0, cachedCalls: 0 });
+    }
+    const nSamples = Math.min(8, Math.max(2, Math.ceil(totalMi / sampleSpacingMi)));
+
+    // 5mi radius scans (smaller than validate's 20mi) — bounded cost; the
+    // overlap from adjacent samples covers any gaps.
+    const scanRadiusM = 8047;
+
+    const { runDispensaryTextScan } = require('./placeSearch');
+    const seen = new Map();
+    let googleCalls = 0;
+    let cachedCalls = 0;
+
+    for (let i = 0; i < nSamples; i++) {
+      const t = nSamples === 1 ? 0.5 : i / (nSamples - 1);
+      const lat = A.lat + (B.lat - A.lat) * t;
+      const lng = A.lng + (B.lng - A.lng) * t;
+      const cellKey = makeCellKey(lat, lng, scanRadiusM);
+
+      let results;
+      const cached = await DispensaryDensityCache.findOne({ cellKey }).lean();
+      if (cached) {
+        results = cached.results;
+        cachedCalls++;
+      } else {
+        results = await runDispensaryTextScan({ lat, lng, radius: scanRadiusM });
+        googleCalls++;
+        await DispensaryDensityCache.findOneAndUpdate(
+          { cellKey },
+          {
+            $set: {
+              cellKey, centerLat: lat, centerLng: lng, radiusM: scanRadiusM,
+              results, count: results.length,
+              countWithinRadius: results.length,
+              fetchedAt: new Date(),
+              expiresAt: new Date(Date.now() + DispensaryDensityCache.SEVEN_DAYS_MS),
+            },
+          },
+          { upsert: true, new: true }
+        );
+      }
+      for (const p of results) {
+        if (!p.externalId || seen.has(p.externalId)) continue;
+        seen.set(p.externalId, p);
+      }
+    }
+
+    // Project all candidates onto the A→B line; keep ones inside the corridor.
+    const inCorridor = [];
+    for (const p of seen.values()) {
+      if (!isFinite(p.lat) || !isFinite(p.lng)) continue;
+      const { progress, crossTrackMi } = corridorProject(A, B, p);
+      if (crossTrackMi > corridorMi) continue;
+      if (progress < 0 || progress > 1) continue;
+      inCorridor.push({ ...p, progress, crossTrackMi, detourMi: crossTrackMi * 2 });
+    }
+    inCorridor.sort((a, b) => a.progress - b.progress);
+
+    res.json({
+      count: inCorridor.length,
+      leads: inCorridor,
+      googleCalls, cachedCalls,
+      message: googleCalls === 0
+        ? 'All scans served from cache (free).'
+        : `${googleCalls} fresh Google call(s); ${cachedCalls} cached.`,
+    });
+  } catch (err) {
+    console.error('[roadTripRoute] corridorScan error:', err.response?.data || err.message);
+    res.status(err.statusCode || 500).json({
+      message: err.message || 'Corridor scan failed.',
+      detail: err.response?.data || null,
+    });
+  }
+}
+
 module.exports = {
   densityArea,
   corridorLeads,
+  corridorScan,
   listDensityCache,
   clearDensityCacheEntry,
 };
