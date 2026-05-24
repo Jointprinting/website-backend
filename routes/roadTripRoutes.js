@@ -20,6 +20,11 @@ const {
   listDenylist, addDenylist, removeDenylist,
 } = require('../controllers/roadTripLead');
 
+const {
+  densityArea, corridorLeads,
+  listDensityCache, clearDensityCacheEntry,
+} = require('../controllers/roadTripRoute');
+
 const { requireAdmin } = require('../middleware/auth');
 
 // All endpoints admin-only.
@@ -41,5 +46,11 @@ router.delete('/leads/:id', deleteLead);
 router.get('/denylist',            listDenylist);
 router.post('/denylist',           addDenylist);
 router.delete('/denylist/:placeId', removeDenylist);
+
+// ── Density + corridor (GO TONIGHT) ────────────────────────────────────────
+router.post  ('/density/area',             densityArea);
+router.post  ('/corridor/leads',           corridorLeads);
+router.get   ('/density/cache',            listDensityCache);
+router.delete('/density/cache/:cellKey',   clearDensityCacheEntry);
 
 module.exports = router;

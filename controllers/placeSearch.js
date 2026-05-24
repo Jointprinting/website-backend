@@ -212,36 +212,44 @@ function normalizeGoogle(place, type) {
 }
 
 // ── Endpoint: dispensaries ───────────────────────────────────────────────────
+
+/**
+ * Core dispensary text search reused by both the HTTP endpoint and the
+ * density/area tool. Two text-search passes (different queries catch
+ * different result sets), then dedupe by place_id, drop denylisted IDs,
+ * drop names that look like smoke shops / doctor referrals, and tag chains.
+ */
+async function runDispensaryTextScan({ lat, lng, radius }) {
+  const [rawA, rawB] = await Promise.all([
+    googleTextSearch({ textQuery: 'marijuana dispensary recreational', lat, lng, radius }),
+    googleTextSearch({ textQuery: 'cannabis dispensary',                lat, lng, radius }),
+  ]);
+
+  const denied = new Set(
+    (await DispensaryDenylist.find({}, { placeId: 1 }).lean()).map((d) => d.placeId)
+  );
+
+  const seen = new Set();
+  const merged = [];
+  for (const p of [...rawA, ...rawB]) {
+    if (!p.id || seen.has(p.id)) continue;
+    if (denied.has(p.id)) continue;
+    const name = p.displayName?.text || '';
+    if (looksLikeSmokeShop(name)) continue;
+    seen.add(p.id);
+    const normalized = normalizeGoogle(p, 'dispensary');
+    const chainName = detectChain(name);
+    normalized.isChain   = !!chainName;
+    normalized.chainName = chainName; // null for one-offs
+    merged.push(normalized);
+  }
+  return merged;
+}
+
 async function searchDispensaries(req, res) {
   try {
     const { lat, lng, radius } = parseGeoQuery(req);
-
-    // Two passes — text searches catch different result sets. Dedupe by
-    // place_id at the end.
-    const [rawA, rawB] = await Promise.all([
-      googleTextSearch({ textQuery: 'marijuana dispensary recreational', lat, lng, radius }),
-      googleTextSearch({ textQuery: 'cannabis dispensary',                lat, lng, radius }),
-    ]);
-
-    const denied = new Set(
-      (await DispensaryDenylist.find({}, { placeId: 1 }).lean()).map((d) => d.placeId)
-    );
-
-    const seen = new Set();
-    const merged = [];
-    for (const p of [...rawA, ...rawB]) {
-      if (!p.id || seen.has(p.id)) continue;
-      if (denied.has(p.id)) continue;
-      const name = p.displayName?.text || '';
-      if (looksLikeSmokeShop(name)) continue;
-      seen.add(p.id);
-      const normalized = normalizeGoogle(p, 'dispensary');
-      const chainName = detectChain(name);
-      normalized.isChain   = !!chainName;
-      normalized.chainName = chainName; // null for one-offs
-      merged.push(normalized);
-    }
-
+    const merged = await runDispensaryTextScan({ lat, lng, radius });
     res.json({ count: merged.length, results: merged });
   } catch (err) {
     console.error('[placeSearch] dispensaries error:', err.response?.data || err.message);
@@ -560,4 +568,6 @@ module.exports = {
   searchCoffee,
   searchNpsParks,
   searchCampgrounds,
+  // Exposed for use by controllers/roadTripRoute.js (density/area):
+  runDispensaryTextScan,
 };
