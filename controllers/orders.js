@@ -812,17 +812,56 @@ const mockupHealth = async (req, res) => {
     const referencedNorms = new Set();
     projects.forEach(p => (p.mockupNumbers || []).forEach(n => referencedNorms.add(norm(n))));
 
-    // Library items whose mockup# isn't referenced anywhere
-    const orphans = library
-      .filter(m => {
-        const k = norm(m.pageState && m.pageState.mockupNum);
-        return !k || !referencedNorms.has(k);
-      })
-      .map(m => ({
+    // Auto-match orphans by client slug so the report reflects what the
+    // OrderTracker drawer actually displays (green AUTO tiles). A library
+    // item whose mockup# isn't linked but whose client name slug-matches a
+    // project is classified as "autoMatched", not "orphan".
+    const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const projectSlugIndex = {};
+    projects.forEach(p => {
+      [p.companyName, p.clientName].forEach(raw => {
+        const k = slug(raw);
+        if (k) projectSlugIndex[k] = projectSlugIndex[k] || p;
+      });
+    });
+    const findProjectFor = (libItem) => {
+      const titleClient = String(libItem.name || '').replace(/\s+merch\s*$/i, '').trim();
+      const candidates = [
+        slug(libItem.client || (libItem.pageState && libItem.pageState.client) || ''),
+        slug(titleClient),
+      ].filter(Boolean);
+      // Exact slug
+      for (const k of candidates) if (projectSlugIndex[k]) return projectSlugIndex[k];
+      // Fuzzy: prefix / substring (min 4 chars on both sides)
+      for (const k of candidates) {
+        if (k.length < 4) continue;
+        for (const pk of Object.keys(projectSlugIndex)) {
+          if (pk.length < 4) continue;
+          if (pk.startsWith(k) || k.startsWith(pk) || pk.includes(k) || k.includes(pk)) {
+            return projectSlugIndex[pk];
+          }
+        }
+      }
+      return null;
+    };
+
+    const orphans = [];
+    const autoMatched = [];
+    for (const m of library) {
+      const k = norm(m.pageState && m.pageState.mockupNum);
+      if (k && referencedNorms.has(k)) continue;          // already linked
+      const proj = findProjectFor(m);
+      const entry = {
         _id: m._id, name: m.name, client: m.client,
         mockupNum: (m.pageState && m.pageState.mockupNum) || '',
         savedAt: m.savedAt,
-      }));
+      };
+      if (proj) {
+        autoMatched.push({ ...entry, projectNumber: proj.projectNumber, companyName: proj.companyName });
+      } else {
+        orphans.push(entry);
+      }
+    }
 
     res.json({
       summary: {
@@ -830,10 +869,11 @@ const mockupHealth = async (req, res) => {
         libraryItems:       library.length,
         projectMockupRefs:  matched.length + missing.length,
         linked:             matched.length,
+        autoMatched:        autoMatched.length,
         missing:            missing.length,
         orphans:            orphans.length,
       },
-      matched, missing, orphans,
+      matched, autoMatched, missing, orphans,
     });
   } catch (e) {
     res.status(500).json({ message: e.message });
