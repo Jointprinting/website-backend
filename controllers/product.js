@@ -960,6 +960,7 @@ exports.getProductByStyleCode = async (req, res) => {
           type:                effectiveType,
           ssStyleID:           match.styleID,
           styleImage:          match.image || base.image || null,
+          brandImage:          match.brandImage || null,
           colors:              summary.colors.map((c) => c.name),
           colorCodes:          summary.colors.map((c) => c.hex),
           colorSwatches:       summary.colors,
@@ -973,7 +974,11 @@ exports.getProductByStyleCode = async (req, res) => {
           dataQuality:         'mongo+live-products',
         });
       }
-      return res.status(200).json({ ...base, type: effectiveType });
+      return res.status(200).json({
+        ...base,
+        type: effectiveType,
+        brandImage: match?.brandImage || null,
+      });
     }
 
     if (!match) {
@@ -993,6 +998,7 @@ exports.getProductByStyleCode = async (req, res) => {
       style:               match.style,
       ssStyleID:           match.styleID,
       styleImage:          match.image || null,
+      brandImage:          match.brandImage || null,
       name:                summary?.title || match.name,
       vendor:              summary?.brand || match.vendor,
       category:            match.category,
