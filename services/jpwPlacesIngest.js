@@ -402,24 +402,82 @@ async function runSearch({
 // runs them through the auditor with concurrency 4. The auditor itself
 // skips leads audited within 14 days. PSI is left off here because it
 // adds 20s+ per lead — too slow for a "freshly searched" UX.
+//
+// Progress is published to JpwSchedulerState (job: 'bg_audit') so the
+// frontend sweep dialog can show a live "Auditing N/M new leads…"
+// indicator after the sweep itself completes. Each batch from a sweep
+// adds to the running totals; the doc is cleared once everything in
+// flight is done.
+const BG_AUDIT_JOB = 'bg_audit';
+
+async function _bumpBgAuditState(patch, inc = {}) {
+  const update = { $set: { job: BG_AUDIT_JOB, ...patch } };
+  if (Object.keys(inc).length) update.$inc = inc;
+  return JpwSchedulerState.findOneAndUpdate(
+    { job: BG_AUDIT_JOB }, update, { upsert: true, new: true },
+  );
+}
+
+async function getBgAuditState() {
+  return JpwSchedulerState.findOne({ job: BG_AUDIT_JOB }).lean();
+}
+
 async function triggerBackgroundAudit(leadIds) {
   if (!leadIds || !leadIds.length) return;
   const leads = await JpwLead.find({ _id: { $in: leadIds }, website_url: { $ne: '' } });
   if (!leads.length) return;
-  const results = await auditLeadsConcurrent(leads, {
-    concurrency: 4,
-    usePageSpeed: false,
-    skipIfAuditedWithinDays: 14,
-  });
-  // Save each audited lead — auditLeadsConcurrent mutates `audit` only, the
-  // controller is normally responsible for saving. Since we're the
-  // controller here, do it inline.
-  for (const { lead, audit, error } of results) {
-    if (error || !audit) continue;
-    lead.website_audit = audit;
-    lead.lead_score = scoreLead(lead.toObject());
-    try { await lead.save(); }
-    catch (e) { console.warn('[jpwPlaces] bg-audit save failed:', e.message); }
+
+  // If a previous batch is still running, this batch piles on — bump total
+  // and process. Once everything is processed, mark complete. If the
+  // previous batch had already finished, reset counters so the UI starts
+  // at 0 / N instead of carrying stale totals from the last sweep.
+  const prior = await getBgAuditState();
+  const wasRunning = prior?.status === 'running';
+  if (wasRunning) {
+    await _bumpBgAuditState(
+      { status: 'running', finished_at: null, error: '' },
+      { total: leads.length },
+    );
+  } else {
+    await _bumpBgAuditState({
+      status: 'running',
+      total: leads.length,
+      audited: 0,
+      started_at: new Date(),
+      finished_at: null,
+      error: '',
+    });
+  }
+
+  try {
+    const results = await auditLeadsConcurrent(leads, {
+      concurrency: 4,
+      usePageSpeed: false,
+      skipIfAuditedWithinDays: 14,
+      onProgress: () => _bumpBgAuditState({}, { audited: 1 }).catch(() => {}),
+    });
+    // Save each audited lead — auditLeadsConcurrent mutates `audit` only, the
+    // controller is normally responsible for saving. Since we're the
+    // controller here, do it inline.
+    for (const { lead, audit, error } of results) {
+      if (error || !audit) continue;
+      lead.website_audit = audit;
+      lead.lead_score = scoreLead(lead.toObject());
+      try { await lead.save(); }
+      catch (e) { console.warn('[jpwPlaces] bg-audit save failed:', e.message); }
+    }
+  } finally {
+    // If `onProgress` isn't wired (older auditor), force the counter so the
+    // UI still terminates.
+    const cur = await getBgAuditState();
+    const total = cur?.total || 0;
+    const audited = cur?.audited || 0;
+    const allDone = audited >= total;
+    await _bumpBgAuditState({
+      status: allDone ? 'completed' : 'running',
+      finished_at: allDone ? new Date() : null,
+      ...(allDone ? { audited: total } : {}),
+    });
   }
 }
 
@@ -670,8 +728,23 @@ async function _runSweepLoop(queue, pagesPerPhrase) {
 }
 
 async function getSweepStatus() {
-  const state = await _getSweepState();
-  return state || { status: 'idle' };
+  const [state, bgAudit] = await Promise.all([
+    _getSweepState(),
+    getBgAuditState(),
+  ]);
+  const out = state ? { ...state } : { status: 'idle' };
+  // Surface background-audit progress on the same poll the sweep dialog
+  // already uses — avoids a second endpoint and keeps the UI in sync.
+  if (bgAudit && bgAudit.status) {
+    out.bg_audit = {
+      status:    bgAudit.status,
+      total:     bgAudit.total || 0,
+      audited:   bgAudit.audited || 0,
+      started_at:  bgAudit.started_at || null,
+      finished_at: bgAudit.finished_at || null,
+    };
+  }
+  return out;
 }
 
 async function requestSweepStop() {
@@ -738,5 +811,6 @@ module.exports = {
   upsertPlace,
   getTodayUsage,
   triggerBackgroundAudit,
+  getBgAuditState,
   PLACES_DAILY_CAP,
 };

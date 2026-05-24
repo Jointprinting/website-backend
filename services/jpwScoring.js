@@ -115,6 +115,18 @@ function scoreBuyingIntent(lead) {
     s += 2;
     reasons.push('Multiple service areas listed');
   }
+  // v2 — online booking tool installed = the owner already wants the phone
+  // to ring less. They're investing in conversion infrastructure, which is
+  // strong intent.
+  if (audit.has_online_booking && audit.appointment_tool) {
+    s += 2;
+    reasons.push(`${audit.appointment_tool} installed — actively booking online`);
+  }
+  // Live chat = same idea, weaker signal.
+  if (audit.has_live_chat && audit.chat_widget) {
+    s += 1;
+    reasons.push(`${audit.chat_widget} chat installed`);
+  }
 
   return { value: cap(s, SCORE_CAPS.buyingIntent), reasons };
 }
@@ -174,6 +186,49 @@ function scorePain(lead) {
     if (isExplicitlyFalsy(audit.has_localbusiness_schema)) {
       s += 3;
       reasons.push('No LocalBusiness schema');
+    }
+    // ── v2 signals ────────────────────────────────────────────────────
+    // Viewport tag present but malformed = looks broken on mobile.
+    if (audit.has_mobile_viewport && audit.viewport_valid === false) {
+      s += 3;
+      reasons.push('Mobile viewport tag is malformed');
+    }
+    // Default Squarespace/Wix theme — strong "they never customized" tell.
+    if (audit.is_default_template) {
+      s += 3;
+      reasons.push(`Using ${audit.is_default_template} — never customized`);
+    }
+    // Mixed content on an HTTPS site = browser shows scary "Not secure" UI.
+    if ((audit.mixed_content_count || 0) >= 3) {
+      s += 2;
+      reasons.push(`${audit.mixed_content_count} insecure HTTP resources on HTTPS page`);
+    }
+    // Form that POSTs to http:// — passwords/email in the clear.
+    if (audit.forms_post_https === false) {
+      s += 2;
+      reasons.push('Contact form posts to insecure HTTP');
+    }
+    // jQuery 1.x = site untouched for ~10 years.
+    if (Array.isArray(audit.tech_stack) && audit.tech_stack.some((t) => /^jQuery 1\./.test(t))) {
+      s += 2;
+      reasons.push('Running jQuery 1.x — site is ~10 years stale');
+    }
+    // LocalBusiness schema exists but is missing telephone/address fields.
+    if (audit.has_localbusiness_schema && audit.localbusiness_schema_valid === false) {
+      s += 2;
+      reasons.push('LocalBusiness schema missing telephone/address');
+    }
+    // The lead's known phone doesn't appear anywhere on the site —
+    // either bad listing data, a stale site, or a site that's actually
+    // someone else's. Worth surfacing.
+    if (audit.lead_phone_matches_site === false && (audit.phones_found || []).length > 0) {
+      s += 2;
+      reasons.push("Lead phone doesn't appear on the website");
+    }
+    // No favicon + no OG tags = nobody ever finished setting it up.
+    if (isExplicitlyFalsy(audit.has_favicon) && isExplicitlyFalsy(audit.has_og_tags)) {
+      s += 2;
+      reasons.push('No favicon and no social-share tags');
     }
   }
 
@@ -235,6 +290,12 @@ function scoreAbilityToPay(lead) {
   if (meta?.emergency) {
     s += 2;
     reasons.push('Emergency-service category — high per-job value');
+  }
+  // v2 — paid SaaS conversion tools = the owner has discretionary budget
+  // for marketing-adjacent software. Strong "has money to spend" signal.
+  if (audit.appointment_tool || audit.chat_widget) {
+    s += 2;
+    reasons.push('Paying for SaaS conversion tools (chat / booking)');
   }
 
   return { value: cap(s, SCORE_CAPS.abilityToPay), reasons };
