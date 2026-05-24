@@ -159,7 +159,7 @@ const sync = async (req, res) => {
     });
     const invoices = (r.data && r.data.QueryResponse && r.data.QueryResponse.Invoice) || [];
 
-    let matched = 0, markedPaid = 0;
+    let matched = 0, markedPaid = 0, markedProcessing = 0;
     const details = [];
     for (const inv of invoices) {
       const docNum = String(inv.DocNumber || '').trim();
@@ -167,23 +167,48 @@ const sync = async (req, res) => {
       const order = await Order.findOne({ orderNumber: docNum });
       if (!order) continue;
       matched++;
-      const fullyPaid = Number(inv.Balance) === 0 && Number(inv.TotalAmt) > 0;
+
+      const total = Number(inv.TotalAmt) || 0;
+      const bal   = Number(inv.Balance);
+      const fullyPaid = bal === 0 && total > 0;
+      const hasOpenBalance = total > 0 && bal > 0 && bal <= total;
+
+      let saved = false;
       if (fullyPaid && !order.paid) {
         order.paid = true;
+        order.paymentInProgress = false;
         order.activity = order.activity || [];
         order.activity.push({
           kind: 'paid_changed', actor: 'system',
           message: `Marked paid — QuickBooks invoice #${docNum} fully paid`,
           meta: { source: 'quickbooks', invoiceId: inv.Id }, at: new Date(),
         });
-        await order.save();
         markedPaid++;
-        details.push({ orderNumber: docNum, projectNumber: order.projectNumber });
+        details.push({ orderNumber: docNum, projectNumber: order.projectNumber, status: 'paid' });
+        saved = true;
+      } else if (hasOpenBalance && !order.paid && !order.paymentInProgress) {
+        // Invoice exists with an outstanding balance — payment is in progress
+        // (or invoice is sent, not paid). Don't touch the paid flag.
+        order.paymentInProgress = true;
+        order.activity = order.activity || [];
+        order.activity.push({
+          kind: 'paid_changed', actor: 'system',
+          message: `Payment in progress — QuickBooks invoice #${docNum} has an open balance of $${bal.toFixed(2)}`,
+          meta: { source: 'quickbooks', invoiceId: inv.Id, balance: bal, total }, at: new Date(),
+        });
+        markedProcessing++;
+        details.push({ orderNumber: docNum, projectNumber: order.projectNumber, status: 'processing' });
+        saved = true;
+      } else if (fullyPaid && order.paymentInProgress) {
+        // Tidy-up: it was marked processing and is now fully paid.
+        order.paymentInProgress = false;
+        saved = true;
       }
+      if (saved) await order.save();
     }
     auth.lastSyncAt = new Date();
     await auth.save();
-    res.json({ invoicesChecked: invoices.length, matched, markedPaid, details });
+    res.json({ invoicesChecked: invoices.length, matched, markedPaid, markedProcessing, details });
   } catch (e) {
     const detail = e.response && e.response.data ? JSON.stringify(e.response.data) : e.message;
     res.status(500).json({ message: detail });
