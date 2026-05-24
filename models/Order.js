@@ -21,6 +21,9 @@ const OrderSchema = new mongoose.Schema({
   cogs:          { type: Number, default: 0 },
   printerName:   { type: String, default: '' },
   supplier:      { type: String, default: '' },
+  shipToState:   { type: String, default: '' },  // quote-level destination state ("PA", "NY"); stays with the quote so re-quotes don't forget
+  setupCost:     { type: Number, default: 0 },   // one-time setup fee (screens, digitizing, etc.) — flows into both COGS and client total
+  shippingCost:  { type: Number, default: 0 },   // pass-through shipping
   notes:         { type: String, default: '' },
   confirmationMessage: { type: String, default: '' },  // personal note on the client-facing confirmation
   confirmationTerms:   { type: String, default: '' },  // payment / turnaround terms
@@ -137,13 +140,19 @@ const OrderSchema = new mongoose.Schema({
 
 OrderSchema.pre('save', function (next) {
   this.companyKey = deriveCompanyKey(this.companyName, this.clientName);
-  // If a structured quote exists, derive the headline total from it so the
-  // card / dashboard / confirmation all agree.
+  // If a structured quote exists, derive headline total + COGS from it so
+  // every surface (card / dashboard / confirmation) agrees. Setup and
+  // shipping are pass-through: they hit both the client total and COGS.
   if (Array.isArray(this.quoteLines) && this.quoteLines.length > 0) {
-    this.totalValue = this.quoteLines.reduce((s, l) => {
+    const linesTotal = this.quoteLines.reduce((s, l) => {
       const unit = Number(l.unitPrice) || ((Number(l.blankCost) || 0) + (Number(l.printCost) || 0)) * (Number(l.markup) || 1);
       return s + (Number(l.qty) || 0) * unit;
     }, 0);
+    const linesCogs = this.quoteLines.reduce((s, l) =>
+      s + (Number(l.qty) || 0) * ((Number(l.blankCost) || 0) + (Number(l.printCost) || 0)), 0);
+    const extras = (Number(this.setupCost) || 0) + (Number(this.shippingCost) || 0);
+    this.totalValue = linesTotal + extras;
+    this.cogs       = linesCogs + extras;
   }
   next();
 });
@@ -155,10 +164,14 @@ OrderSchema.pre('findOneAndUpdate', function (next) {
     set.companyKey = deriveCompanyKey(set.companyName, set.clientName);
   }
   if (Array.isArray(set.quoteLines) && set.quoteLines.length > 0) {
+    const extras = (Number(set.setupCost) || 0) + (Number(set.shippingCost) || 0);
+    const linesCogs = set.quoteLines.reduce((s, l) =>
+      s + (Number(l.qty) || 0) * ((Number(l.blankCost) || 0) + (Number(l.printCost) || 0)), 0);
+    set.cogs = linesCogs + extras;
     set.totalValue = set.quoteLines.reduce((s, l) => {
       const unit = Number(l.unitPrice) || ((Number(l.blankCost) || 0) + (Number(l.printCost) || 0)) * (Number(l.markup) || 1);
       return s + (Number(l.qty) || 0) * unit;
-    }, 0);
+    }, 0) + extras;
   }
   if (u.$set) u.$set = set; else Object.assign(u, set);
   this.setUpdate(u);
