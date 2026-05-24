@@ -168,12 +168,16 @@ const confirmationPdf = async (req, res) => {
 
     // ── Footer ──────────────────────────────────────────────────────────────
     doc.moveDown(1.2);
-    if (doc.y < bottom - 40) {
+    if (doc.y < bottom - 60) {
       hr(doc.y);
       doc.moveDown(0.5);
-      doc.font('Helvetica').fontSize(8).fillColor(C.muted)
-        .text('Thank you for your order. Payment accepted via QuickBooks invoice, check, Zelle, or card.',
-          left, doc.y, { width: pageW, align: 'center' });
+      doc.font('Helvetica').fontSize(8).fillColor(C.muted);
+      const footerLines = [
+        'Credit Card Payments: 2.99% charge added to total',
+        'ACH Bank Transfers: 1% charge added to total',
+        'Venmo: 1.9% + $0.10    @jointprinting',
+      ];
+      footerLines.forEach(l => doc.text(l, left, doc.y, { width: pageW, align: 'left' }));
     }
 
     doc.end();
