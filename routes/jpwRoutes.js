@@ -19,6 +19,11 @@ const {
 
 router.use(requireAdmin);
 
+// Cold Call Tree state — backend-persisted edits + notes (formerly localStorage)
+const { getState: getCcState, updateState: updateCcState } = require('../controllers/coldCallState');
+router.get('/cold-call-state', getCcState);
+router.put('/cold-call-state', updateCcState);
+
 // Reference data — towns, counties, categories, score caps
 router.get('/reference', getReferenceData);
 
