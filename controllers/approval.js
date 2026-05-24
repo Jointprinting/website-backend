@@ -46,13 +46,19 @@ const ensureApprovalToken = async (req, res) => {
 };
 
 // ── Public approval surface (no auth — token-gated) ───────────────────────────
+// Returns one of:
+//   { ok: true, order }          — valid, not expired
+//   { ok: false, reason: 'expired' }  — token matches but past expiry
+//   { ok: false, reason: 'invalid' }  — missing or wrong token / project gone
 async function _loadProjectByToken(projectId, token) {
-  if (!projectId || !token) return null;
+  if (!projectId || !token) return { ok: false, reason: 'invalid' };
   const order = await Order.findById(projectId).lean();
-  if (!order) return null;
-  if (!order.approvalToken || order.approvalToken !== token) return null;
-  if (order.approvalTokenExpiresAt && order.approvalTokenExpiresAt.getTime() < Date.now()) return null;
-  return order;
+  if (!order) return { ok: false, reason: 'invalid' };
+  if (!order.approvalToken || order.approvalToken !== token) return { ok: false, reason: 'invalid' };
+  if (order.approvalTokenExpiresAt && order.approvalTokenExpiresAt.getTime() < Date.now()) {
+    return { ok: false, reason: 'expired', expiresAt: order.approvalTokenExpiresAt };
+  }
+  return { ok: true, order };
 }
 
 // Best-effort admin notification. Logs and swallows errors so a stuck SMTP
@@ -69,8 +75,14 @@ async function notifyAdmin(subject, body) {
 // GET /api/public/projects/:id?token=... — read-only project view (mockups, items, totals)
 const publicGetProject = async (req, res) => {
   try {
-    const order = await _loadProjectByToken(req.params.id, req.query.token);
-    if (!order) return res.status(404).json({ message: 'Not found or invalid link.' });
+    const lookup = await _loadProjectByToken(req.params.id, req.query.token);
+    if (!lookup.ok) {
+      if (lookup.reason === 'expired') {
+        return res.status(410).json({ message: 'This approval link has expired.', reason: 'expired', expiresAt: lookup.expiresAt });
+      }
+      return res.status(404).json({ message: 'This link is invalid or no longer available.', reason: 'invalid' });
+    }
+    const order = lookup.order;
 
     const norm = (n) => String(n || '').replace(/^#/, '').replace(/^0+/, '').toUpperCase();
     const mockupRefs = order.mockupNumbers || [];
@@ -144,8 +156,12 @@ function _alreadyDecided(order) {
 // POST /api/public/projects/:id/approve?token=... — client approval action
 const publicApprove = async (req, res) => {
   try {
-    const order = await _loadProjectByToken(req.params.id, req.query.token);
-    if (!order) return res.status(404).json({ message: 'Not found or invalid link.' });
+    const lookup = await _loadProjectByToken(req.params.id, req.query.token);
+    if (!lookup.ok) {
+      if (lookup.reason === 'expired') return res.status(410).json({ message: 'This approval link has expired — ask us for a new one.', reason: 'expired' });
+      return res.status(404).json({ message: 'This link is invalid or no longer available.', reason: 'invalid' });
+    }
+    const order = lookup.order;
     if (_alreadyDecided(order)) {
       return res.status(409).json({ message: 'This project has already been approved or sent for changes.' });
     }
@@ -172,8 +188,12 @@ const publicApprove = async (req, res) => {
 // POST /api/public/projects/:id/feedback?token=... — body: { message }
 const publicRequestChanges = async (req, res) => {
   try {
-    const order = await _loadProjectByToken(req.params.id, req.query.token);
-    if (!order) return res.status(404).json({ message: 'Not found or invalid link.' });
+    const lookup = await _loadProjectByToken(req.params.id, req.query.token);
+    if (!lookup.ok) {
+      if (lookup.reason === 'expired') return res.status(410).json({ message: 'This approval link has expired — ask us for a new one.', reason: 'expired' });
+      return res.status(404).json({ message: 'This link is invalid or no longer available.', reason: 'invalid' });
+    }
+    const order = lookup.order;
     if (_alreadyDecided(order)) {
       return res.status(409).json({ message: 'This project has already been approved or sent for changes.' });
     }
