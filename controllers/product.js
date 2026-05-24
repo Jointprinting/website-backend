@@ -939,6 +939,16 @@ exports.getProductByStyleCode = async (req, res) => {
 
     if (stored) {
       const base = await populateImages(stored);
+      // If the stored record's type is the default-fallback "Unisex" but
+      // S&S's richer title makes the gender obvious (e.g. "Ladies Favorite
+      // Tee"), re-detect from the live title. Catches mass-imported
+      // records like "BELLA + CANVAS 6004" whose minimal stored name
+      // never gave detectType anything to match on.
+      let effectiveType = stored.type;
+      if ((!effectiveType || effectiveType === 'Unisex') && summary?.title) {
+        const detected = detectType(summary.title);
+        if (detected && detected !== 'Unisex') effectiveType = detected;
+      }
       if (summary) {
         // Mongo keeps authority over name/description/price/tag. S&S takes
         // authority over colors/sizes/per-color photos — those are objective
@@ -947,6 +957,7 @@ exports.getProductByStyleCode = async (req, res) => {
         const liveFront = summary.colors.find((c) => c.front)?.front;
         return res.status(200).json({
           ...base,
+          type:                effectiveType,
           ssStyleID:           match.styleID,
           styleImage:          match.image || base.image || null,
           colors:              summary.colors.map((c) => c.name),
@@ -962,7 +973,7 @@ exports.getProductByStyleCode = async (req, res) => {
           dataQuality:         'mongo+live-products',
         });
       }
-      return res.status(200).json(base);
+      return res.status(200).json({ ...base, type: effectiveType });
     }
 
     if (!match) {
@@ -970,6 +981,14 @@ exports.getProductByStyleCode = async (req, res) => {
     }
 
     const liveFront = summary?.colors?.find((c) => c.front)?.front;
+    // Same gender-recovery as the stored-record path: if the cached match
+    // says Unisex but the live S&S title says Ladies/Men's/Youth, trust the
+    // live title.
+    let matchType = match.type;
+    if ((!matchType || matchType === 'Unisex') && summary?.title) {
+      const detected = detectType(summary.title);
+      if (detected && detected !== 'Unisex') matchType = detected;
+    }
     return res.json({
       style:               match.style,
       ssStyleID:           match.styleID,
@@ -977,7 +996,7 @@ exports.getProductByStyleCode = async (req, res) => {
       name:                summary?.title || match.name,
       vendor:              summary?.brand || match.vendor,
       category:            match.category,
-      type:                match.type,
+      type:                matchType,
       priceFrom:           summary?.minPrice != null ? startingAt(summary.minPrice, match.category) : match.priceFrom,
       sizeRangeBottom:     summary?.sizeRangeBottom ?? null,
       sizeRangeTop:        summary?.sizeRangeTop    ?? null,
