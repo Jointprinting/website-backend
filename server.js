@@ -33,7 +33,7 @@ app.use(cors({
 }));
 
 app.use(express.json({ limit: '1mb' }));
-app.use('/api/studio', express.json({ limit: '20mb' }));
+app.use('/api/studio', express.json({ limit: '100mb' }));
 
 if (!fs.existsSync('uploads')) fs.mkdirSync('uploads');
 
