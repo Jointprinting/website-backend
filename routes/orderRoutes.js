@@ -8,7 +8,7 @@ const {
   dashboard, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
   cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups,
 } = require('../controllers/orders');
-const { ensureApprovalToken } = require('../controllers/approval');
+const { ensureApprovalToken, sendApprovalLink } = require('../controllers/approval');
 const { confirmationPdf } = require('../controllers/confirmationPdf');
 
 router.use(requireAdmin);
@@ -22,6 +22,7 @@ const upload = multer({ storage, limits: { fileSize: 25 * 1024 * 1024 } });
 router.post('/seed-historical',           seedHistorical);
 router.post('/from-submission/:submissionId', createFromSubmission);
 router.post('/:id/approval-link',         ensureApprovalToken);
+router.post('/:id/approval-link/send',    sendApprovalLink);
 router.post('/:id/duplicate',             duplicateOrder);
 router.get('/cleanup-candidates',         cleanupCandidates);
 router.post('/cleanup-delete',            cleanupDelete);

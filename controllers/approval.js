@@ -196,7 +196,72 @@ const publicRequestChanges = async (req, res) => {
   }
 };
 
+// POST /api/orders/:id/approval-link/send
+// Body: { email, ttlDays?, rotate?, frontendOrigin? }
+// Mints a token (rotating to expire any older link) and emails the link
+// directly to the client. The frontendOrigin is supplied by the browser
+// since the backend doesn't know the public URL it's hosted under.
+const sendApprovalLink = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Project not found' });
+
+    const email = String((req.body && req.body.email) || '').trim();
+    if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
+      return res.status(400).json({ message: 'A valid email address is required.' });
+    }
+    const ttlDays = Math.max(1, Math.min(MAX_TTL_DAYS,
+      Math.round(Number((req.body && req.body.ttlDays) || DEFAULT_TTL_DAYS))));
+    const rotate = req.body && req.body.rotate !== false;   // default rotate=true
+    const frontendOrigin = String((req.body && req.body.frontendOrigin) || '').replace(/\/+$/, '');
+    if (!frontendOrigin || !/^https?:\/\//i.test(frontendOrigin)) {
+      return res.status(400).json({ message: 'frontendOrigin is required.' });
+    }
+
+    const now = Date.now();
+    const expired = order.approvalTokenExpiresAt && order.approvalTokenExpiresAt.getTime() < now;
+    if (rotate || expired || !order.approvalToken) {
+      order.approvalToken = crypto.randomBytes(16).toString('hex');
+    }
+    order.approvalTokenExpiresAt = new Date(now + ttlDays * 24 * 60 * 60 * 1000);
+    await order.save();
+
+    const url = `${frontendOrigin}/approve/${order._id}?token=${order.approvalToken}`;
+    const expiry = order.approvalTokenExpiresAt.toLocaleString();
+    const greeting = order.clientName ? `Hi ${String(order.clientName).split(/\s+/)[0]},` : 'Hi,';
+    const projectLabel = order.companyName || order.clientName || `Project #${order.projectNumber || ''}`;
+    const html = `
+      <p>${greeting}</p>
+      <p>Your mockups + quote for <strong>${String(projectLabel).replace(/</g,'&lt;')}</strong> are ready to review.</p>
+      <p><a href="${url}" style="display:inline-block;background:#1a3d2b;color:#fff;font-weight:700;padding:10px 20px;border-radius:6px;text-decoration:none">Open your approval page</a></p>
+      <p style="color:#666;font-size:12px">Or copy this link: <a href="${url}">${url}</a></p>
+      <p style="color:#999;font-size:11px">This link expires ${expiry}.</p>
+      <p style="color:#999;font-size:11px">— Joint Printing</p>
+    `;
+
+    try {
+      await sendEmail({
+        to: email,
+        subject: `${projectLabel} — proofs ready for your approval`,
+        html,
+      });
+    } catch (e) {
+      return res.status(500).json({ message: `Email send failed: ${e.message}` });
+    }
+
+    res.json({
+      ok: true,
+      sentTo: email,
+      url,
+      expiresAt: order.approvalTokenExpiresAt,
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 module.exports = {
   ensureApprovalToken,
+  sendApprovalLink,
   publicGetProject, publicApprove, publicRequestChanges,
 };
