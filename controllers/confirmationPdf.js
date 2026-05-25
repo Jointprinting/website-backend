@@ -45,7 +45,14 @@ const confirmationPdf = async (req, res) => {
     const grandTotal = running;
 
     const doc = new PDFDocument({ size: 'LETTER', margin: 48 });
-    const filename = `confirmation-project-${order.projectNumber || order._id}.pdf`;
+    // Filename uses the company name first — easier to spot in a Downloads
+    // folder than "confirmation-project-132". Sanitized to filesystem-safe
+    // characters; falls back to project # then _id if no name is set.
+    const slug = (s) => String(s || '').toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const nameSlug = slug(order.companyName) || slug(order.clientName)
+      || `project-${order.projectNumber || order._id}`;
+    const filename = `confirmation-${nameSlug}.pdf`;
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     doc.pipe(res);

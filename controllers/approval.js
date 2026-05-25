@@ -299,10 +299,11 @@ const sendApprovalLink = async (req, res) => {
     const expiry = order.approvalTokenExpiresAt.toLocaleString();
     const greeting = order.clientName ? `Hi ${String(order.clientName).split(/\s+/)[0]},` : 'Hi,';
     const projectLabel = order.companyName || order.clientName || `Project #${order.projectNumber || ''}`;
+    const safeLabel = String(projectLabel).replace(/</g,'&lt;');
     const html = `
       <p>${greeting}</p>
-      <p>Your mockups + quote for <strong>${String(projectLabel).replace(/</g,'&lt;')}</strong> are ready to review.</p>
-      <p><a href="${url}" style="display:inline-block;background:#1a3d2b;color:#fff;font-weight:700;padding:10px 20px;border-radius:6px;text-decoration:none">Open your approval page</a></p>
+      <p>Your confirmation page for <strong>${safeLabel}</strong> is ready for review.</p>
+      <p><a href="${url}" style="display:inline-block;background:#1a3d2b;color:#fff;font-weight:700;padding:10px 20px;border-radius:6px;text-decoration:none">Open your confirmation page</a></p>
       <p style="color:#666;font-size:12px">Or copy this link: <a href="${url}">${url}</a></p>
       <p style="color:#999;font-size:11px">This link expires ${expiry}.</p>
       <p style="color:#999;font-size:11px">— Joint Printing</p>
@@ -311,7 +312,7 @@ const sendApprovalLink = async (req, res) => {
     try {
       await sendEmail({
         to: email,
-        subject: `${projectLabel} — proofs ready for your approval`,
+        subject: `Your confirmation page for ${projectLabel} is ready for review`,
         html,
       });
     } catch (e) {
