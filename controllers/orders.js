@@ -916,15 +916,21 @@ const autoLinkMockups = async (req, res) => {
       return bn - an;
     });
 
-    // Index projects: every mockup# already referenced, and projects by base #.
-    // We DON'T count closed projects' references — that lets a new auto-link
-    // move a stale reference from an old closed order to the new active one.
+    // Index projects: every mockup# already referenced (active OR closed), and
+    // projects by base #. The earlier "active-only" rule was too clever — it
+    // tried to let stale links migrate from a closed order to the new active
+    // one, but it also meant any mockup linked to a closed project showed up
+    // as orphan FOREVER. Each auto-link run would re-link the same 10 mockups
+    // to the same closed project, and they'd stay in the "to link" bucket on
+    // the next scan. Now: once a mockup is in ANY project's mockupNumbers,
+    // it's treated as linked. Stale-link migration is a separate concern handled
+    // by the project drawer's auto-cleanup pass.
     const referencedNorms = new Set();
     const projectsByBase  = {};
     projects.forEach(p => {
       (p.mockupNumbers || []).forEach(n => {
         const nn = norm(n);
-        if (nn && isActive(p)) referencedNorms.add(nn);
+        if (nn) referencedNorms.add(nn);
         const b = baseOf(n);
         if (b) {
           if (!projectsByBase[b]) projectsByBase[b] = [];

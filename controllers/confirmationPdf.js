@@ -8,6 +8,7 @@
 
 const PDFDocument = require('pdfkit');
 const Order = require('../models/Order');
+const StudioLibraryItem = require('../models/StudioLibraryItem');
 
 const money = (n) =>
   '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -30,6 +31,25 @@ const confirmationPdf = async (req, res) => {
 
     const conf  = order.confirmation || {};
     const items = Array.isArray(conf.items) ? conf.items : [];
+
+    // Build a lookup of mockup thumbnails by mockupNum so items that reference
+    // a saved studio mockup (via the picker dropdown) can have their thumbnail
+    // embedded in the PDF even when mockupSnapshots[] is empty. Previously the
+    // PDF only knew about images explicitly attached via the upload path or
+    // legacy customMockupDataUrl — a dropdown-picked mockup rendered as a
+    // headerless block with size tables and no image at all.
+    const norm = (n) => String(n || '').replace(/^#/, '').replace(/^0+/, '').toUpperCase();
+    const referenced = new Set();
+    items.forEach((it) => { if (it && it.mockupNum) referenced.add(norm(it.mockupNum)); });
+    const thumbByNorm = {};
+    if (referenced.size > 0) {
+      const libs = await StudioLibraryItem.find({ store: 'mockups' })
+        .select('thumbnail pageState.mockupNum').lean();
+      libs.forEach((m) => {
+        const k = norm(m.pageState && m.pageState.mockupNum);
+        if (k && referenced.has(k) && m.thumbnail) thumbByNorm[k] = m.thumbnail;
+      });
+    }
 
     // ── Totals (mirror client computeTotals) ────────────────────────────────
     const itemsSubtotal = items.reduce((s, it) =>
@@ -131,10 +151,12 @@ const confirmationPdf = async (req, res) => {
         .text(titleParts.join('   ·   ') || fallbackTitle);
       doc.moveDown(0.3);
 
-      // mockup thumbnails
+      // mockup thumbnails — prefer explicit attachments, fall back to the
+      // library thumbnail for items that just reference a mockupNum.
       const snaps  = (it.mockupSnapshots || []).map(s => dataUrlToBuffer(s && s.dataUrl)).filter(Boolean);
       const legacy = dataUrlToBuffer(it.customMockupDataUrl);
-      const imgs   = snaps.length ? snaps : (legacy ? [legacy] : []);
+      const libThumb = it.mockupNum ? dataUrlToBuffer(thumbByNorm[norm(it.mockupNum)]) : null;
+      const imgs   = snaps.length ? snaps : (legacy ? [legacy] : (libThumb ? [libThumb] : []));
       if (imgs.length) {
         ensure(110);
         const rowY = doc.y;
