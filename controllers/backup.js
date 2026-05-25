@@ -21,6 +21,8 @@ const AdminUser        = require('../models/AdminUser');
 const RoadTripLead     = require('../models/RoadTripLead');
 const ScriptVersion    = require('../models/ScriptVersion');
 const DispensaryDenylist = require('../models/DispensaryDenylist');
+const JpwLead          = require('../models/JpwLead');
+const ColdCallState    = require('../models/ColdCallState');
 
 // Collections included in a backup. Order matters on restore — anything
 // referenced by another collection should come first, but since we're not
@@ -28,9 +30,10 @@ const DispensaryDenylist = require('../models/DispensaryDenylist');
 // about restore-step reporting clarity.
 //
 // SKIPPED (intentionally): JpwApiUsage, JpwSchedulerState,
-// JpwSweepPairHistory, BackupLog (these are either transient rate-limit
-// data or ephemeral scheduler state — restoring them is pointless and
-// dragging them along inflates the archive).
+// JpwSweepPairHistory, DispensaryDensityCache, QuickBooksAuth, BackupLog.
+// These are either transient rate-limit data, ephemeral scheduler state,
+// short-lived caches, or OAuth tokens that shouldn't move between
+// environments and can be re-obtained by reconnecting the integration.
 const COLLECTIONS = [
   { name: 'Order',             Model: Order             },
   { name: 'ContactSubmission', Model: ContactSubmission },
@@ -44,6 +47,8 @@ const COLLECTIONS = [
   { name: 'RoadTripLead',      Model: RoadTripLead      },
   { name: 'ScriptVersion',     Model: ScriptVersion     },
   { name: 'DispensaryDenylist',Model: DispensaryDenylist },
+  { name: 'JpwLead',           Model: JpwLead           },
+  { name: 'ColdCallState',     Model: ColdCallState     },
 ];
 
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
@@ -163,11 +168,17 @@ const restoreAll = async (req, res) => {
       throw new Error('Backup file is missing manifest.json — wrong format?');
     }
 
-    // Per-collection restores — full replace (deleteMany + insertMany).
+    // SAFETY: parse + validate every collection JSON in the archive BEFORE
+    // we delete anything. Earlier versions of this code did delete-then-
+    // insert inside a single loop, so a corrupt Product.json (caught on the
+    // 7th collection) would leave the first 6 collections wiped with no
+    // recovery. Now an unreadable archive aborts cleanly with the DB intact.
+    const prepared = [];
     for (const { name, Model } of COLLECTIONS) {
       const file = directory.files.find(f => f.path === `data/${name}.json`);
       if (!file) {
         counts[name] = 0;
+        prepared.push({ name, Model, docs: null });  // null = collection wasn't in archive
         continue;
       }
       const json = (await file.buffer()).toString('utf-8');
@@ -176,6 +187,12 @@ const restoreAll = async (req, res) => {
         throw new Error(`${name}.json is not valid JSON: ${e.message}`);
       }
       if (!Array.isArray(docs)) throw new Error(`${name}.json is not an array`);
+      prepared.push({ name, Model, docs });
+    }
+
+    // Apply restores now that every JSON has been validated.
+    for (const { name, Model, docs } of prepared) {
+      if (docs === null) continue;  // collection missing from archive — leave existing rows alone
       await Model.deleteMany({});
       if (docs.length > 0) {
         // Insert in chunks of 500 to avoid Mongo limits on huge collections
