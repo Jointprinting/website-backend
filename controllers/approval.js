@@ -104,7 +104,19 @@ const publicGetProject = async (req, res) => {
     const order = lookup.order;
 
     const norm = (n) => String(n || '').replace(/^#/, '').replace(/^0+/, '').toUpperCase();
-    const mockupRefs = order.mockupNumbers || [];
+    // Only return mockups that are actually IN the confirmation page the client
+    // is reviewing — i.e. referenced by an item in order.confirmation.items.
+    // Previously this returned everything in order.mockupNumbers, which is the
+    // admin's full per-project library (early proofs, alternates, scrapped
+    // versions). Clients were seeing the unfiltered pile.
+    //
+    // Fall back to order.mockupNumbers when no confirmation has been built yet
+    // (legacy projects, pre-confirmation share links) so those keep working.
+    const confItems = (order.confirmation && order.confirmation.items) || [];
+    const confRefs = confItems
+      .map(it => it && it.mockupNum)
+      .filter(Boolean);
+    const mockupRefs = confRefs.length > 0 ? confRefs : (order.mockupNumbers || []);
     const mockupItems = await StudioLibraryItem
       .find({ store: 'mockups' })
       .select('name pageState.mockupNum thumbnail')
@@ -114,8 +126,14 @@ const publicGetProject = async (req, res) => {
       const k = norm(m.pageState && m.pageState.mockupNum);
       if (k) byNorm[k] = m;
     });
+    // Preserve confirmation item order + dedupe (an item might be listed twice
+    // in confirmation.items if the user added the same product as separate
+    // line items for sizing — we still only want one tile per mockup).
+    const seen = new Set();
     const mockups = mockupRefs
-      .map(n => byNorm[norm(n)])
+      .map(n => norm(n))
+      .filter(k => { if (seen.has(k)) return false; seen.add(k); return true; })
+      .map(k => byNorm[k])
       .filter(Boolean)
       .map(m => ({ name: m.name, thumbnail: m.thumbnail, mockupNum: m.pageState?.mockupNum }));
 
