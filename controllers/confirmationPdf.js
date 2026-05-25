@@ -109,8 +109,26 @@ const confirmationPdf = async (req, res) => {
         it.color,
         it.printType,
       ].filter(Boolean);
+      // Last-resort fallback: if nobody filled in productName / brand /
+      // styleCode / color / printType, infer SOMETHING from the sizes
+      // breakdown so the PDF doesn't render as a row of nameless "Item 1"
+      // / "Item 2" blocks (the user got bit by this with 2 pairs of
+      // shorts that came out as anonymous tables). One unit = "1 piece",
+      // mixed sizes = "N pieces across M sizes".
+      let fallbackTitle = '';
+      if (titleParts.length === 0) {
+        const live = (it.sizes || []).filter(sz => Number(sz.qty) > 0);
+        const totalQty = live.reduce((s, sz) => s + (Number(sz.qty) || 0), 0);
+        if (totalQty > 0) {
+          fallbackTitle = live.length > 1
+            ? `${totalQty} pieces across ${live.length} sizes`
+            : `${totalQty} × ${live[0].label || 'size'}`;
+        } else {
+          fallbackTitle = `Line item ${idx + 1}`;
+        }
+      }
       doc.font('Helvetica-Bold').fontSize(11).fillColor(C.ink)
-        .text(titleParts.join('   ·   ') || `Item ${idx + 1}`);
+        .text(titleParts.join('   ·   ') || fallbackTitle);
       doc.moveDown(0.3);
 
       // mockup thumbnails
