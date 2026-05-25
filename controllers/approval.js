@@ -13,12 +13,12 @@ const MAX_TTL_DAYS     = 365;
 // Order Tracker. Keep the ids stable — they're how the UI knows which
 // step is which when rendering icons and the auto-tick on approval.
 const DEFAULT_TRACKING_STEPS = () => ([
-  { id: 'confirmation_approved', label: 'Confirmation approved', completedAt: null, note: '', hidden: false },
-  { id: 'order_paid',            label: 'Order paid',            completedAt: null, note: '', hidden: false },
-  { id: 'blanks_shipping',       label: 'Blanks shipping',       completedAt: null, note: '', hidden: false },
-  { id: 'blanks_at_printer',     label: 'Blanks at the printer', completedAt: null, note: '', hidden: false },
-  { id: 'on_the_way',            label: 'On the way to you',     completedAt: null, note: '', hidden: false },
-  { id: 'arrived',               label: 'Arrived',               completedAt: null, note: '', hidden: false },
+  { id: 'confirmation_approved', label: 'Confirmation approved', completedAt: null, note: '', hidden: false, link: '' },
+  { id: 'order_paid',            label: 'Order paid',            completedAt: null, note: '', hidden: false, link: '' },
+  { id: 'blanks_shipping',       label: 'Blanks shipping',       completedAt: null, note: '', hidden: false, link: '' },
+  { id: 'blanks_at_printer',     label: 'Blanks at the printer', completedAt: null, note: '', hidden: false, link: '' },
+  { id: 'on_the_way',            label: 'On the way to you',     completedAt: null, note: '', hidden: false, link: '' },
+  { id: 'arrived',               label: 'Arrived',               completedAt: null, note: '', hidden: false, link: '' },
 ]);
 
 // Notification target. Override with APPROVAL_NOTIFY_EMAIL.
@@ -42,6 +42,11 @@ const ensureApprovalToken = async (req, res) => {
     if (rotate || expired || !order.approvalToken) {
       order.approvalToken = crypto.randomBytes(16).toString('hex');
       order.approvalTokenExpiresAt = new Date(now + requestedDays * 24 * 60 * 60 * 1000);
+      // Re-share = fresh approval cycle. Bump the supersede timestamp so
+      // the previously-approved client lock doesn't carry over and block
+      // the re-approval. Prior approvalEvents stay in history; they're
+      // just no longer treated as "the current state".
+      order.approvalSupersededAt = new Date(now);
       await order.save();
     } else if (req.body && req.body.ttlDays) {
       // Reuse the token but bump expiry to the new TTL.
@@ -125,11 +130,12 @@ const publicGetProject = async (req, res) => {
     }
 
     // Reduce approvalEvents to a single "current status" the client UI uses
-    // for the persistent locked state on reload (so re-opening the link after
-    // approving still shows "approved", not the buttons again).
-    const events = order.approvalEvents || [];
-    const lastTerminal = [...events].reverse().find(e => e.kind === 'approved' || e.kind === 'requested_changes');
-    const currentStatus = lastTerminal ? lastTerminal.kind : 'pending';
+    // for the persistent locked state on reload. Filtered by
+    // approvalSupersededAt so a re-shared link doesn't keep showing the
+    // previous "approved" lock — the client gets a fresh ask.
+    const cur = _currentApprovalStatus(order);
+    const currentStatus = cur.status;
+    const lastTerminal = cur.status === 'pending' ? null : { at: cur.at, message: cur.message };
 
     // Strip hidden steps before sending to the client — admin uses
     // hidden=true to keep a step in their own view but suppress it from
@@ -141,6 +147,7 @@ const publicGetProject = async (req, res) => {
         id: s.id, label: s.label,
         completedAt: s.completedAt || null,
         note: s.note || '',
+        link: s.link || '',
       }));
 
     res.json({
@@ -173,11 +180,33 @@ const publicGetProject = async (req, res) => {
 };
 
 // Stop accepting actions once the client has either approved or requested
-// changes. Reopening the link should show the locked state, not re-let them
-// flip-flop.
+// changes IN THE CURRENT CYCLE. When admin re-shares the link with new
+// confirmation content (approvalSupersededAt bumped), older approvals no
+// longer lock the page so the client can approve the new version.
 function _alreadyDecided(order) {
   const events = order.approvalEvents || [];
-  return events.some(e => e.kind === 'approved' || e.kind === 'requested_changes');
+  const cutoff = order.approvalSupersededAt ? new Date(order.approvalSupersededAt).getTime() : 0;
+  return events.some(e =>
+    (e.kind === 'approved' || e.kind === 'requested_changes') &&
+    new Date(e.at).getTime() > cutoff
+  );
+}
+
+// Same cutoff applied when computing the "current status" the client sees on
+// the public page. Without this, re-opening the link after a re-share would
+// still render the old "approved" timeline instead of the new approval ask.
+function _currentApprovalStatus(order) {
+  const events = order.approvalEvents || [];
+  const cutoff = order.approvalSupersededAt ? new Date(order.approvalSupersededAt).getTime() : 0;
+  const lastTerminal = [...events].reverse().find(e =>
+    (e.kind === 'approved' || e.kind === 'requested_changes') &&
+    new Date(e.at).getTime() > cutoff
+  );
+  return {
+    status: lastTerminal ? lastTerminal.kind : 'pending',
+    at:     lastTerminal ? lastTerminal.at : null,
+    message: lastTerminal ? lastTerminal.message : '',
+  };
 }
 
 // POST /api/public/projects/:id/approve?token=... — client approval action
@@ -291,6 +320,10 @@ const sendApprovalLink = async (req, res) => {
     const expired = order.approvalTokenExpiresAt && order.approvalTokenExpiresAt.getTime() < now;
     if (rotate || expired || !order.approvalToken) {
       order.approvalToken = crypto.randomBytes(16).toString('hex');
+      // Fresh token = fresh approval cycle. Prior approved/requested_changes
+      // events are now historical, not the current state. See _alreadyDecided
+      // and _currentApprovalStatus for how this is read.
+      order.approvalSupersededAt = new Date(now);
     }
     order.approvalTokenExpiresAt = new Date(now + ttlDays * 24 * 60 * 60 * 1000);
     await order.save();
@@ -299,10 +332,11 @@ const sendApprovalLink = async (req, res) => {
     const expiry = order.approvalTokenExpiresAt.toLocaleString();
     const greeting = order.clientName ? `Hi ${String(order.clientName).split(/\s+/)[0]},` : 'Hi,';
     const projectLabel = order.companyName || order.clientName || `Project #${order.projectNumber || ''}`;
+    const safeLabel = String(projectLabel).replace(/</g,'&lt;');
     const html = `
       <p>${greeting}</p>
-      <p>Your mockups + quote for <strong>${String(projectLabel).replace(/</g,'&lt;')}</strong> are ready to review.</p>
-      <p><a href="${url}" style="display:inline-block;background:#1a3d2b;color:#fff;font-weight:700;padding:10px 20px;border-radius:6px;text-decoration:none">Open your approval page</a></p>
+      <p>Your confirmation page for <strong>${safeLabel}</strong> is ready for review.</p>
+      <p><a href="${url}" style="display:inline-block;background:#1a3d2b;color:#fff;font-weight:700;padding:10px 20px;border-radius:6px;text-decoration:none">Open your confirmation page</a></p>
       <p style="color:#666;font-size:12px">Or copy this link: <a href="${url}">${url}</a></p>
       <p style="color:#999;font-size:11px">This link expires ${expiry}.</p>
       <p style="color:#999;font-size:11px">— Joint Printing</p>
@@ -311,7 +345,7 @@ const sendApprovalLink = async (req, res) => {
     try {
       await sendEmail({
         to: email,
-        subject: `${projectLabel} — proofs ready for your approval`,
+        subject: `Your confirmation page for ${projectLabel} is ready for review`,
         html,
       });
     } catch (e) {
@@ -355,12 +389,18 @@ const updateTracking = async (req, res) => {
         const d = new Date(s.completedAt);
         if (!isNaN(d.getTime())) completedAt = d;
       }
+      // Only accept http(s) links — never javascript:, data:, etc. The
+      // client renders these as <a target="_blank"> so anything else
+      // would be a vector for funny stuff.
+      let link = String(s.link || '').trim().slice(0, 500);
+      if (link && !/^https?:\/\//i.test(link)) link = '';
       return {
         id,
         label,
         completedAt,
         note: String(s.note || '').slice(0, 500),
         hidden: !!s.hidden,
+        link,
       };
     });
 
