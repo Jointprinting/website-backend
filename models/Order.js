@@ -41,6 +41,13 @@ const OrderSchema = new mongoose.Schema({
   }],
   approvalToken:          { type: String, default: '' },  // random token used to gate public approval page
   approvalTokenExpiresAt: { type: Date,   default: null }, // null = never expires; non-null = strict cutoff
+  // When admin re-shares the approval link with a fresh confirmation, we
+  // bump approvalSupersededAt to "now". Any approvalEvents older than this
+  // timestamp are treated as historical — the client lands on a fresh
+  // approval ask, not the locked "you already approved" view. Approvals
+  // history is preserved (still visible in the activity drawer), but the
+  // gate logic only looks at events newer than supersededAt.
+  approvalSupersededAt:   { type: Date,   default: null },
   approvalEvents: [{                                    // log of client interactions on the approval page
     kind:    { type: String },          // 'viewed' | 'approved' | 'requested_changes'
     message: { type: String, default: '' },
@@ -119,6 +126,10 @@ const OrderSchema = new mongoose.Schema({
       completedAt: { type: Date,   default: null },
       note:        { type: String, default: '' },
       hidden:      { type: Boolean, default: false },
+      // Optional URL — e.g. carrier tracking page for "Blanks shipping" or
+      // "On the way to you". Rendered as a clickable button on the client
+      // timeline under the step it belongs to.
+      link:        { type: String, default: '' },
       _id: false,
     }],
   },
