@@ -5,11 +5,13 @@
 
 const fs       = require('fs');
 const path     = require('path');
-// archiver@8 changed the default export from a callable function to an
-// object of named classes ({ Archiver, ZipArchive, ... }). Older versions
-// (5.x–7.x) let you call `archiver('zip', opts)` directly. We use the
-// constructor form so this works against any 8.x and is forward-compatible.
-const { Archiver } = require('archiver');
+// archiver@8 ships as ESM-only and dropped the callable factory. The base
+// Archiver class doesn't wire up the zip format module on its own — you
+// have to pick a format-specific subclass (ZipArchive / TarArchive /
+// JsonArchive) so `_module` and `_format` are populated. Calling
+// `new Archiver('zip', ...)` looked right but blew up at queue-flush time
+// with "this._module.append is not a function".
+const { ZipArchive } = require('archiver');
 const unzipper = require('unzipper');
 
 const BackupLog        = require('../models/BackupLog');
@@ -87,7 +89,7 @@ const exportAll = async (req, res) => {
   res.setHeader('Content-Type', 'application/zip');
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
 
-  const archive = new Archiver('zip', { zlib: { level: 6 } });
+  const archive = new ZipArchive({ zlib: { level: 6 } });
   const counts = {};
   let totalDocs = 0;
   let fileCount = 0;
