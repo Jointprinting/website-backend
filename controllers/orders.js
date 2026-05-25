@@ -897,17 +897,34 @@ const autoLinkMockups = async (req, res) => {
     const slug   = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 
     const [projects, library] = await Promise.all([
-      Order.find({}).select('projectNumber companyName clientName companyKey mockupNumbers').lean(),
+      Order.find({}).select('projectNumber companyName clientName companyKey mockupNumbers status updatedAt').lean(),
       StudioLibraryItem.find({ store: 'mockups' }).select('name client pageState.mockupNum').lean(),
     ]);
 
+    // Active = anything still in flight; the current project for a recurring
+    // client. Closed orders shouldn't soak up new mockups.
+    const isClosed = (p) => p.status === 'delivered' || p.status === 'cancelled';
+    const isActive = (p) => !isClosed(p);
+
+    // Sort active-then-closed, then newest projectNumber first, so when
+    // multiple projects share a company we always pick the current one.
+    const rankProjects = (arr) => arr.slice().sort((a, b) => {
+      const ac = isClosed(a) ? 1 : 0, bc = isClosed(b) ? 1 : 0;
+      if (ac !== bc) return ac - bc;
+      const an = parseInt(String(a.projectNumber || '0').match(/\d+/)?.[0] || '0', 10);
+      const bn = parseInt(String(b.projectNumber || '0').match(/\d+/)?.[0] || '0', 10);
+      return bn - an;
+    });
+
     // Index projects: every mockup# already referenced, and projects by base #.
+    // We DON'T count closed projects' references — that lets a new auto-link
+    // move a stale reference from an old closed order to the new active one.
     const referencedNorms = new Set();
     const projectsByBase  = {};
     projects.forEach(p => {
       (p.mockupNumbers || []).forEach(n => {
         const nn = norm(n);
-        if (nn) referencedNorms.add(nn);
+        if (nn && isActive(p)) referencedNorms.add(nn);
         const b = baseOf(n);
         if (b) {
           if (!projectsByBase[b]) projectsByBase[b] = [];
@@ -927,19 +944,32 @@ const autoLinkMockups = async (req, res) => {
       if (referencedNorms.has(nn)) { alreadyLinked++; continue; }
 
       const base = baseOf(rawNum);
-      const baseHits = (base && projectsByBase[base]) || [];
+      const baseHits = rankProjects((base && projectsByBase[base]) || []);
       let target = null, via = null;
 
-      if (baseHits.length === 1) {
+      // Prefer the highest-ranked (active, newest) project even if multiple
+      // share the base. If the only matches are closed projects, fall back
+      // to the most recent of those — better than nothing.
+      const activeBaseHits = baseHits.filter(isActive);
+      if (activeBaseHits.length >= 1) {
+        target = activeBaseHits[0]; via = 'base';
+      } else if (baseHits.length >= 1) {
         target = baseHits[0]; via = 'base';
-      } else {
+      }
+
+      if (!target) {
         const itemSlug = slug(`${item.name || ''} ${item.client || ''}`);
         let bestKey = '';
         companyKeys.forEach(k => { if (itemSlug.includes(k) && k.length > bestKey.length) bestKey = k; });
         if (bestKey) {
-          const nameHits = projects.filter(p => p.companyKey === bestKey);
-          if (nameHits.length === 1) { target = nameHits[0]; via = 'name'; }
-          else if (nameHits.length > 1) {
+          const nameHits = rankProjects(projects.filter(p => p.companyKey === bestKey));
+          const activeNameHits = nameHits.filter(isActive);
+          if (activeNameHits.length >= 1) {
+            target = activeNameHits[0]; via = 'name';
+          } else if (nameHits.length === 1) {
+            target = nameHits[0]; via = 'name';
+          } else if (nameHits.length > 1) {
+            // Multiple closed-only matches with no active. Genuinely ambiguous.
             ambiguous.push({ itemId: item._id, itemName: item.name || '', mockupNum: rawNum,
               candidates: nameHits.map(p => ({ projectNumber: p.projectNumber, companyName: p.companyName || p.clientName || '' })) });
             continue;
@@ -947,11 +977,6 @@ const autoLinkMockups = async (req, res) => {
         }
       }
 
-      if (!target && baseHits.length > 1) {
-        ambiguous.push({ itemId: item._id, itemName: item.name || '', mockupNum: rawNum,
-          candidates: baseHits.map(p => ({ projectNumber: p.projectNumber, companyName: p.companyName || p.clientName || '' })) });
-        continue;
-      }
       if (!target) { unmatched.push({ itemId: item._id, itemName: item.name || '', mockupNum: rawNum, reason: 'no match' }); continue; }
 
       links.push({
