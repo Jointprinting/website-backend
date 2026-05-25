@@ -37,7 +37,13 @@ async function saveItem(req, res) {
     res.status(201).json(item);
   } catch (err) {
     console.error('[studioLibrary] save error:', err);
-    res.status(500).json({ message: 'Failed to save item.' });
+    // Surface the real cause so the user/operator can act on it. Most common
+    // culprits we've actually hit: Mongo "BSONObjectTooLarge" (doc > 16MB —
+    // the thumbnail blob is usually the offender) and validation errors.
+    res.status(500).json({
+      message: err.message || 'Failed to save item.',
+      code: err.code || err.name || undefined,
+    });
   }
 }
 
