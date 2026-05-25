@@ -7,6 +7,20 @@ const sendEmail = require('../utils/sendEmail');
 const DEFAULT_TTL_DAYS = 7;
 const MAX_TTL_DAYS     = 365;
 
+// Default order-tracking timeline. The client sees these (less any with
+// hidden=true) on the same approval link they used to approve. Admin can
+// rename labels, hide irrelevant steps, or add custom ones from the
+// Order Tracker. Keep the ids stable — they're how the UI knows which
+// step is which when rendering icons and the auto-tick on approval.
+const DEFAULT_TRACKING_STEPS = () => ([
+  { id: 'confirmation_approved', label: 'Confirmation approved', completedAt: null, note: '', hidden: false },
+  { id: 'order_paid',            label: 'Order paid',            completedAt: null, note: '', hidden: false },
+  { id: 'blanks_shipping',       label: 'Blanks shipping',       completedAt: null, note: '', hidden: false },
+  { id: 'blanks_at_printer',     label: 'Blanks at the printer', completedAt: null, note: '', hidden: false },
+  { id: 'on_the_way',            label: 'On the way to you',     completedAt: null, note: '', hidden: false },
+  { id: 'arrived',               label: 'Arrived',               completedAt: null, note: '', hidden: false },
+]);
+
 // Notification target. Override with APPROVAL_NOTIFY_EMAIL.
 const NOTIFY_EMAIL = process.env.APPROVAL_NOTIFY_EMAIL || process.env.EMAIL_FROM || 'nate@jointprinting.com';
 
@@ -117,6 +131,18 @@ const publicGetProject = async (req, res) => {
     const lastTerminal = [...events].reverse().find(e => e.kind === 'approved' || e.kind === 'requested_changes');
     const currentStatus = lastTerminal ? lastTerminal.kind : 'pending';
 
+    // Strip hidden steps before sending to the client — admin uses
+    // hidden=true to keep a step in their own view but suppress it from
+    // the public timeline (e.g. when blank vendor and printer are the
+    // same place, one of those two steps is hidden).
+    const trackingSteps = ((order.tracking && order.tracking.steps) || [])
+      .filter(s => !s.hidden)
+      .map(s => ({
+        id: s.id, label: s.label,
+        completedAt: s.completedAt || null,
+        note: s.note || '',
+      }));
+
     res.json({
       project: {
         projectNumber:        order.projectNumber,
@@ -136,6 +162,7 @@ const publicGetProject = async (req, res) => {
         approvalAt:           lastTerminal ? lastTerminal.at : null,
         approvalMessage:      lastTerminal ? lastTerminal.message : '',
         approvalExpiresAt:    order.approvalTokenExpiresAt,
+        tracking:             { steps: trackingSteps },
       },
       mockups,
       logo: logo ? logo.imageDataUrl : null,
@@ -165,11 +192,33 @@ const publicApprove = async (req, res) => {
     if (_alreadyDecided(order)) {
       return res.status(409).json({ message: 'This project has already been approved or sent for changes.' });
     }
+    const now = new Date();
     const update = {
-      $push: { approvalEvents: { kind: 'approved', message: '', at: new Date() } },
+      $push: { approvalEvents: { kind: 'approved', message: '', at: now } },
     };
-    // Only auto-bump status if currently quoted (don't override a manual placed/in_production)
-    if (order.status === 'quoted') update.$set = { status: 'approved' };
+    // Initialize tracking on first approval. If admin already pre-populated
+    // tracking.steps from the Order Tracker we just tick off the
+    // confirmation_approved step instead of clobbering their setup. The
+    // approval timestamp is what shows on the client timeline as "step 1
+    // complete" — that's the reassurance moment the user wanted.
+    const existingSteps = (order.tracking && order.tracking.steps) || [];
+    const set = {};
+    if (order.status === 'quoted') set.status = 'approved';
+    if (existingSteps.length === 0) {
+      const steps = DEFAULT_TRACKING_STEPS();
+      steps[0].completedAt = now;   // confirmation_approved
+      set['tracking.steps'] = steps;
+    } else {
+      // Tick the confirmation_approved step if it exists and isn't already done.
+      const updatedSteps = existingSteps.map(s => {
+        if (s.id === 'confirmation_approved' && !s.completedAt) {
+          return { ...s, completedAt: now };
+        }
+        return s;
+      });
+      set['tracking.steps'] = updatedSteps;
+    }
+    update.$set = set;
     await Order.updateOne({ _id: order._id }, update);
 
     notifyAdmin(
@@ -280,8 +329,75 @@ const sendApprovalLink = async (req, res) => {
   }
 };
 
+// PATCH /api/orders/:id/tracking — admin updates the tracking steps array
+// (rename, reorder, hide, add custom, set completedAt). Single endpoint that
+// takes the full steps array; simpler for the UI than per-step mutators and
+// the array is small.
+const updateTracking = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Project not found' });
+
+    const incoming = (req.body && req.body.steps) || [];
+    if (!Array.isArray(incoming)) {
+      return res.status(400).json({ message: 'steps must be an array' });
+    }
+
+    // Sanitize each step. Reject anything weird so a malformed UI request
+    // can't poison the doc. id is required (UI generates a stable one for
+    // custom steps), label is whatever the admin typed, completedAt is
+    // either a Date-parseable string or null.
+    const cleaned = incoming.map((s, idx) => {
+      const id = String(s.id || '').trim() || `custom_${idx}`;
+      const label = String(s.label || '').slice(0, 80);
+      let completedAt = null;
+      if (s.completedAt) {
+        const d = new Date(s.completedAt);
+        if (!isNaN(d.getTime())) completedAt = d;
+      }
+      return {
+        id,
+        label,
+        completedAt,
+        note: String(s.note || '').slice(0, 500),
+        hidden: !!s.hidden,
+      };
+    });
+
+    if (!order.tracking) order.tracking = {};
+    order.tracking.steps = cleaned;
+    await order.save();
+    res.json({ ok: true, tracking: { steps: order.tracking.steps } });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+// POST /api/orders/:id/tracking/init — pre-populate the default tracking
+// steps for projects that were approved before this feature existed. Idempotent:
+// if steps already exist it returns them unchanged so the admin can't accidentally
+// wipe a populated timeline.
+const initTracking = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Project not found' });
+    const existing = (order.tracking && order.tracking.steps) || [];
+    if (existing.length > 0) {
+      return res.json({ ok: true, tracking: { steps: existing }, initialized: false });
+    }
+    if (!order.tracking) order.tracking = {};
+    order.tracking.steps = DEFAULT_TRACKING_STEPS();
+    await order.save();
+    res.json({ ok: true, tracking: { steps: order.tracking.steps }, initialized: true });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 module.exports = {
   ensureApprovalToken,
   sendApprovalLink,
   publicGetProject, publicApprove, publicRequestChanges,
+  updateTracking, initTracking,
+  DEFAULT_TRACKING_STEPS,
 };

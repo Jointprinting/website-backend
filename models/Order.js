@@ -106,6 +106,23 @@ const OrderSchema = new mongoose.Schema({
       _id: false,
     }],
   },
+  // Client-facing order tracking timeline. Initialized the first time a
+  // client approves a confirmation; admin then ticks off subsequent steps
+  // from the Order Tracker tab and the client sees the same set of dates
+  // on the approval link they already have. Steps are editable per-project
+  // (rename, hide, add custom) since reality varies — e.g. when the blank
+  // place and the printer are the same vendor those two steps collapse.
+  tracking: {
+    steps: [{
+      id:          { type: String },              // stable key — 'confirmation_approved' etc for defaults, custom-* for added ones
+      label:       { type: String, default: '' },
+      completedAt: { type: Date,   default: null },
+      note:        { type: String, default: '' },
+      hidden:      { type: Boolean, default: false },
+      _id: false,
+    }],
+  },
+
   mockupNumbers: [{ type: String }],
   contactSubmissionId: { type: mongoose.Schema.Types.ObjectId, ref: 'ContactSubmission', default: null },
   items: [{
