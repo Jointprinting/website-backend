@@ -38,6 +38,23 @@ const pdfUpload = multer({
   },
 });
 
+// Magic-bytes check on the assembled buffer. multer's fileFilter only sees
+// the Content-Type header the browser supplied — trivially spoofable by
+// renaming `evil.exe` to `evil.pdf`. Every real PDF starts with the ASCII
+// bytes `%PDF` (0x25 0x50 0x44 0x46). Optional uploads are passed through.
+function requirePdfMagic(req, res, next) {
+  if (!req.file || !req.file.buffer) return next();
+  const buf = req.file.buffer;
+  if (buf.length < 4 ||
+      buf[0] !== 0x25 || buf[1] !== 0x50 ||
+      buf[2] !== 0x44 || buf[3] !== 0x46) {
+    return res.status(400).json({
+      message: 'That file is not a real PDF (header check failed). If it was renamed from another format, re-save it as PDF first.',
+    });
+  }
+  next();
+}
+
 // ── Public reads ─────────────────────────────────────────────────────────────
 router.get('/', listCatalogs);
 // Order matters: /all and /:id/pdf must come before /:id so Express doesn't
@@ -48,10 +65,10 @@ router.get('/:id', getCatalog);
 
 // ── Admin writes ─────────────────────────────────────────────────────────────
 router.post('/seed',       requireAdmin, seedDefaults);
-router.post('/',           requireAdmin, pdfUpload.single('pdf'), createCatalog);
+router.post('/',           requireAdmin, pdfUpload.single('pdf'), requirePdfMagic, createCatalog);
 router.put('/reorder',     requireAdmin, reorderCatalogs);
 router.put('/:id',         requireAdmin, updateCatalog);
-router.put('/:id/pdf',     requireAdmin, pdfUpload.single('pdf'), replaceCatalogPdf);
+router.put('/:id/pdf',     requireAdmin, pdfUpload.single('pdf'), requirePdfMagic, replaceCatalogPdf);
 router.delete('/:id',      requireAdmin, deleteCatalog);
 
 // Multer errors land here as plain errors; surface a clear message instead

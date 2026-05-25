@@ -688,11 +688,23 @@ async function getUsage(_req, res) {
     const schedulerRuns = await JpwSchedulerState.find({}).lean();
     const lastByJob = {};
     for (const r of schedulerRuns) lastByJob[r.job] = r;
+    // The counter rolls over at 00:00 UTC because getTodayUsage keys on
+    // `new Date().toISOString().slice(0, 10)`. Surface that as an explicit
+    // ISO timestamp so the frontend can render a "next sweep in 3h 24m"
+    // countdown without guessing the server's timezone.
+    const now = new Date();
+    const nextResetAt = new Date(Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate() + 1,
+      0, 0, 0, 0
+    ));
     res.json({
       date: today.date,
       places_calls_today:     today.places_calls,
       audits_run_today:       today.audits_run,
       daily_cap:              PLACES_DAILY_CAP,
+      next_reset_at:          nextResetAt.toISOString(),
       places_key_configured:  !!process.env.GOOGLE_PLACES_KEY,
       pagespeed_configured:   !!process.env.PAGESPEED_KEY,
       spider_configured:      isSpiderConfigured(),
