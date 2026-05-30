@@ -5,6 +5,28 @@ function deriveCompanyKey(companyName, clientName) {
   return raw.toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
+// Quote totals from the lines. Setup + shipping are per-line now — each option
+// carries its FULL setup/shipping, spread across its own quantity into the unit
+// cost (so 3 alternative options each bear the full cost, never shared). Legacy
+// order-level setup/shipping are only folded in when no line carries its own,
+// so pre-existing quotes keep their totals until they're re-saved.
+function computeQuoteTotals(lines, orderSetup, orderShip) {
+  const arr = Array.isArray(lines) ? lines : [];
+  const n = (v) => Number(v) || 0;
+  const perLineExtras = arr.reduce((s, l) => s + n(l.setupCost) + n(l.shippingCost), 0);
+  const legacy = perLineExtras === 0 ? (n(orderSetup) + n(orderShip)) : 0;
+  const totalValue = arr.reduce((s, l) => {
+    const qty = n(l.qty);
+    const setupShip = n(l.setupCost) + n(l.shippingCost);
+    const unitCogs = n(l.blankCost) + n(l.printCost) + (qty > 0 ? setupShip / qty : 0);
+    const unit = n(l.unitPrice) || unitCogs * (n(l.markup) || 1);
+    return s + qty * unit;
+  }, 0) + legacy;
+  const cogs = arr.reduce((s, l) =>
+    s + n(l.qty) * (n(l.blankCost) + n(l.printCost)) + n(l.setupCost) + n(l.shippingCost), 0) + legacy;
+  return { totalValue, cogs };
+}
+
 const OrderSchema = new mongoose.Schema({
   projectNumber: { type: String, index: true },
   orderNumber:   { type: String, index: true },
@@ -152,7 +174,9 @@ const OrderSchema = new mongoose.Schema({
     printType:    { type: String, default: '' },  // e.g. "Screen Print", "DTG", "Embroidery"
     printDetails: { type: String, default: '' },  // e.g. "1 color front + 2 color back"
     printCost:    { type: Number, default: 0 },   // per unit
-    markup:       { type: Number, default: 2 },   // multiplier; unit price = (blankCost + printCost) * markup
+    setupCost:    { type: Number, default: 0 },   // full one-time setup for THIS option; spread across this line's qty
+    shippingCost: { type: Number, default: 0 },   // full shipping for THIS option; spread across this line's qty
+    markup:       { type: Number, default: 2 },   // multiplier; unit price = (blankCost + printCost + (setup+ship)/qty) * markup
     unitPrice:    { type: Number, default: 0 },   // computed but stored so user can override
     _id: false,
   }],
@@ -176,15 +200,9 @@ OrderSchema.pre('save', function (next) {
   // every surface (card / dashboard / confirmation) agrees. Setup and
   // shipping are pass-through: they hit both the client total and COGS.
   if (Array.isArray(this.quoteLines) && this.quoteLines.length > 0) {
-    const linesTotal = this.quoteLines.reduce((s, l) => {
-      const unit = Number(l.unitPrice) || ((Number(l.blankCost) || 0) + (Number(l.printCost) || 0)) * (Number(l.markup) || 1);
-      return s + (Number(l.qty) || 0) * unit;
-    }, 0);
-    const linesCogs = this.quoteLines.reduce((s, l) =>
-      s + (Number(l.qty) || 0) * ((Number(l.blankCost) || 0) + (Number(l.printCost) || 0)), 0);
-    const extras = (Number(this.setupCost) || 0) + (Number(this.shippingCost) || 0);
-    this.totalValue = linesTotal + extras;
-    this.cogs       = linesCogs + extras;
+    const t = computeQuoteTotals(this.quoteLines, this.setupCost, this.shippingCost);
+    this.totalValue = t.totalValue;
+    this.cogs       = t.cogs;
   }
   next();
 });
@@ -196,14 +214,9 @@ OrderSchema.pre('findOneAndUpdate', function (next) {
     set.companyKey = deriveCompanyKey(set.companyName, set.clientName);
   }
   if (Array.isArray(set.quoteLines) && set.quoteLines.length > 0) {
-    const extras = (Number(set.setupCost) || 0) + (Number(set.shippingCost) || 0);
-    const linesCogs = set.quoteLines.reduce((s, l) =>
-      s + (Number(l.qty) || 0) * ((Number(l.blankCost) || 0) + (Number(l.printCost) || 0)), 0);
-    set.cogs = linesCogs + extras;
-    set.totalValue = set.quoteLines.reduce((s, l) => {
-      const unit = Number(l.unitPrice) || ((Number(l.blankCost) || 0) + (Number(l.printCost) || 0)) * (Number(l.markup) || 1);
-      return s + (Number(l.qty) || 0) * unit;
-    }, 0) + extras;
+    const t = computeQuoteTotals(set.quoteLines, set.setupCost, set.shippingCost);
+    set.cogs = t.cogs;
+    set.totalValue = t.totalValue;
   }
   if (u.$set) u.$set = set; else Object.assign(u, set);
   this.setUpdate(u);
