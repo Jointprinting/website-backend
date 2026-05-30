@@ -83,12 +83,29 @@ async function _loadProjectByToken(projectId, token) {
 // Best-effort admin notification. Logs and swallows errors so a stuck SMTP
 // can't break a client's approval click.
 async function notifyAdmin(subject, body) {
-  if (!NOTIFY_EMAIL) return;
+  if (!NOTIFY_EMAIL) return false;
   try {
     await sendEmail({ to: NOTIFY_EMAIL, subject, html: body });
+    return true;
   } catch (e) {
     console.error('[approval] notifyAdmin failed:', e.message);
+    return false;
   }
+}
+
+// Fire the admin email without blocking the client's response (a slow SMTP
+// shouldn't delay the approval click). If it fails, drop a visible activity
+// event on the order so the failure isn't silent — the admin sees it in the
+// Order Tracker even though the email never arrived.
+function notifyAdminAndLog(orderId, subject, body, failNote) {
+  notifyAdmin(subject, body).then((ok) => {
+    if (!ok) {
+      Order.updateOne(
+        { _id: orderId },
+        { $push: { activity: { kind: 'notify_failed', actor: 'system', message: failNote, at: new Date() } } },
+      ).catch(() => {});
+    }
+  });
 }
 
 // GET /api/public/projects/:id?token=... — read-only project view (mockups, items, totals)
@@ -268,11 +285,13 @@ const publicApprove = async (req, res) => {
     update.$set = set;
     await Order.updateOne({ _id: order._id }, update);
 
-    notifyAdmin(
+    notifyAdminAndLog(
+      order._id,
       `[Joint Printing] Approved — ${order.companyName || order.clientName || 'Project'} (#${order.projectNumber || ''})`,
       `<p><strong>${order.companyName || order.clientName || 'A client'}</strong> approved project #${order.projectNumber || ''}.</p>` +
       `<p>Total: $${(order.totalValue || 0).toFixed(2)}</p>` +
       `<p>Open it in the Order Tracker to keep things moving.</p>`,
+      'Client approved, but the email notification to you failed to send. Check your email (SendGrid) settings.',
     );
 
     res.json({ ok: true });
@@ -299,11 +318,13 @@ const publicRequestChanges = async (req, res) => {
       { $push: { approvalEvents: { kind: 'requested_changes', message, at: new Date() } } },
     );
 
-    notifyAdmin(
+    notifyAdminAndLog(
+      order._id,
       `[Joint Printing] Changes requested — ${order.companyName || order.clientName || 'Project'} (#${order.projectNumber || ''})`,
       `<p><strong>${order.companyName || order.clientName || 'A client'}</strong> requested changes on project #${order.projectNumber || ''}.</p>` +
       (message ? `<blockquote style="border-left:3px solid #ccc;padding-left:10px;color:#444">${message.replace(/</g,'&lt;').replace(/\n/g,'<br>')}</blockquote>` : '') +
       `<p>Open it in the Order Tracker to respond.</p>`,
+      'Client requested changes, but the email notification to you failed to send. Check your email (SendGrid) settings.',
     );
 
     res.json({ ok: true });
