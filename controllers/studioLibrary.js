@@ -6,7 +6,15 @@ async function listItems(req, res) {
     const { store } = req.params;
     if (!['blanks','logos','mockups'].includes(store))
       return res.status(400).json({ message: 'Invalid store.' });
-    const items = await StudioLibraryItem.find({ store }).sort({ savedAt: -1 }).lean();
+    // Summary mode (?summary=1) returns just what list/grid views need — the
+    // thumbnail (now an R2 URL), name, client, mockup #, and id — without the
+    // heavy pageState composites or back image. The Order Tracker uses this so
+    // the order page loads fast even with hundreds of mockups; the studio's own
+    // sync still pulls the full documents for offline editing.
+    const summary = req.query.summary === '1' || req.query.summary === 'true';
+    const q = StudioLibraryItem.find({ store }).sort({ savedAt: -1 });
+    if (summary) q.select('store name thumbnail client savedAt remoteId pageState.mockupNum');
+    const items = await q.lean();
     res.json(items);
   } catch (err) {
     console.error('[studioLibrary] list error:', err);
