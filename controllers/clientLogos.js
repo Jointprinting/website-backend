@@ -1,5 +1,6 @@
 const ClientLogo = require('../models/ClientLogo');
 const { deriveCompanyKey } = require('../models/Order');
+const r2 = require('../services/r2');
 
 // Cap stored logos at ~500 KB after base64 (roughly 375 KB raw). Logos
 // should be small; bigger uploads suggest someone dropped a full-res photo.
@@ -27,9 +28,19 @@ const upsertLogo = async (req, res) => {
     }
     const companyKey = deriveCompanyKey(companyName, clientName);
     if (!companyKey) return res.status(400).json({ message: 'companyName (or clientName) is required' });
+
+    // Offload the logo to R2 when configured; store the URL in the same field
+    // (the frontend renders it via <img src> either way). Falls back to the
+    // inline data URL if R2 isn't set up or the upload fails.
+    let imageValue = imageDataUrl;
+    if (r2.isR2Configured()) {
+      try { imageValue = await r2.uploadDataUrl(imageDataUrl, 'logos/img'); }
+      catch (e) { console.warn('[clientLogos] R2 upload failed, storing inline:', e.message); }
+    }
+
     const logo = await ClientLogo.findOneAndUpdate(
       { companyKey },
-      { $set: { companyKey, companyName, imageDataUrl, uploadedAt: new Date() } },
+      { $set: { companyKey, companyName, imageDataUrl: imageValue, uploadedAt: new Date() } },
       { upsert: true, new: true, setDefaultsOnInsert: true },
     );
     res.json({ logo });

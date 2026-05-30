@@ -3,6 +3,7 @@ const ContactSubmission = require('../models/ContactSubmission');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
 const { deriveCompanyKey } = require('../models/Order');
 const { getDefaultsFor } = require('./clients');
+const r2 = require('../services/r2');
 
 // ─── Notion seed data ─────────────────────────────────────────────────────────
 // Exported from the Notion "Orders" database (the source of truth). Project #
@@ -240,11 +241,37 @@ const getOrder = async (req, res) => {
   }
 };
 
+// Offload any base64 images embedded in a confirmation sub-document to R2,
+// replacing them with public URLs. Mutates and returns the confirmation. Safe
+// to call when R2 is off (no-op) — uploadDataUrl passes non-base64 values
+// through. This is what keeps an order with many product images well under
+// Mongo's 16MB doc limit and the client approval link fast.
+async function _offloadConfirmationImages(confirmation) {
+  if (!r2.isR2Configured() || !confirmation || !Array.isArray(confirmation.items)) return confirmation;
+  // Per-image fallback: if an R2 upload fails (transient error or a bad key),
+  // keep the original base64 so the order save never fails because of it.
+  const safe = async (v) => {
+    try { return await r2.uploadDataUrl(v, 'confirmations/img'); }
+    catch (e) { console.warn('[orders] R2 upload failed, keeping inline:', e.message); return v; }
+  };
+  for (const it of confirmation.items) {
+    if (!it) continue;
+    if (it.customMockupDataUrl) it.customMockupDataUrl = await safe(it.customMockupDataUrl);
+    if (Array.isArray(it.mockupSnapshots)) {
+      for (const snap of it.mockupSnapshots) {
+        if (snap && snap.dataUrl) snap.dataUrl = await safe(snap.dataUrl);
+      }
+    }
+  }
+  return confirmation;
+}
+
 // POST /api/orders — create a new project. If projectNumber is not supplied,
 // auto-assign the next one.
 const createOrder = async (req, res) => {
   try {
     const body = { ...req.body };
+    if (body.confirmation) await _offloadConfirmationImages(body.confirmation);
     if (!body.projectNumber) {
       const all = await Order.find({}).select('projectNumber').lean();
       const max = all.reduce((m, o) => {
@@ -277,6 +304,7 @@ const createOrder = async (req, res) => {
 const updateOrder = async (req, res) => {
   try {
     const body = { ...req.body };
+    if (body.confirmation) await _offloadConfirmationImages(body.confirmation);
     const current = await Order.findById(req.params.id).select('status paid orderNumber').lean();
     if (!current) return res.status(404).json({ message: 'Not found' });
 
@@ -1038,9 +1066,50 @@ const autoLinkMockups = async (req, res) => {
   }
 };
 
+// Compute the next consecutive mockup letter for a project, mirroring the
+// studio's client-side _nextMockupNum so numbers stay consistent: base is
+// "#" + projectNumber padded to 6 digits, then A, B, C, … (Z → AA).
+function _nextMockupLetter(projectNumber, existing) {
+  const projNumRaw = String(projectNumber || '').split('-')[0];
+  if (!projNumRaw) return '';
+  const base = `#${projNumRaw.padStart(6, '0')}`;
+  const letters = (existing || [])
+    .filter(m => m && m.startsWith(base))
+    .map(m => m.slice(base.length).toUpperCase())
+    .filter(l => /^[A-Z]$/.test(l));
+  if (letters.length === 0) return `${base}A`;
+  const maxLetter = letters.reduce((a, b) => (a > b ? a : b));
+  if (maxLetter === 'Z') return `${base}AA`;
+  return `${base}${String.fromCharCode(maxLetter.charCodeAt(0) + 1)}`;
+}
+
+// POST /api/orders/:id/mockups/assign — atomically reserve the next mockup
+// number (A, B, C…) for this project AND link it to the order in one step.
+// This is the authoritative source for the lettering. The studio previously
+// computed the letter client-side from a cached project list, which raced and
+// produced duplicate "A"s — and once one mockup existed there was no way to add
+// a second. Returns the assigned number, e.g. { mockupNum: "#000133B" }.
+const assignMockupNumber = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id).select('projectNumber mockupNumbers');
+    if (!order) return res.status(404).json({ message: 'Project not found' });
+
+    const next = _nextMockupLetter(order.projectNumber, order.mockupNumbers || []);
+    if (!next) return res.status(400).json({ message: 'Project has no number to letter against.' });
+
+    // $addToSet keeps the array free of duplicate strings even if two saves
+    // land back-to-back.
+    await Order.updateOne({ _id: order._id }, { $addToSet: { mockupNumbers: next } });
+
+    res.json({ mockupNum: next, projectId: order._id });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 module.exports = {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
   dashboard, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
-  cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups,
+  cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups, assignMockupNumber,
 };

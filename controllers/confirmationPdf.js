@@ -7,6 +7,7 @@
 // to the running subtotal in order.
 
 const PDFDocument = require('pdfkit');
+const axios = require('axios');
 const Order = require('../models/Order');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
 
@@ -19,6 +20,22 @@ function dataUrlToBuffer(dataUrl) {
   const m = dataUrl.match(/^data:image\/(png|jpe?g);base64,(.+)$/i);
   if (!m) return null;
   try { return Buffer.from(m[2], 'base64'); } catch (_) { return null; }
+}
+
+// Resolve an image value (base64 data URL OR an http(s) URL — e.g. an R2 link)
+// to a Buffer pdfkit can embed. Images moved to R2 are stored as URLs, so the
+// PDF fetches them; legacy base64 still works. Returns null on any failure so a
+// single bad image never aborts the whole PDF.
+async function resolveImageBuffer(value) {
+  if (!value || typeof value !== 'string') return null;
+  if (value.startsWith('data:')) return dataUrlToBuffer(value);
+  if (/^https?:\/\//i.test(value)) {
+    try {
+      const r = await axios.get(value, { responseType: 'arraybuffer', timeout: 15000 });
+      return Buffer.from(r.data);
+    } catch (_) { return null; }
+  }
+  return null;
 }
 
 const C = { green: '#1a3d2b', ink: '#111111', muted: '#666666', line: '#d9d9d2', band: '#f1f1ec' };
@@ -56,11 +73,17 @@ const confirmationPdf = async (req, res) => {
       s + (it.sizes || []).reduce((ss, sz) => ss + (Number(sz.qty) || 0) * (Number(sz.unitPrice) || 0), 0), 0);
     let running = itemsSubtotal;
     const customLines = (conf.customLines || []).map(l => {
-      const value = l.isPercent
-        ? running * (Number(l.amount) || 0) / 100
-        : (Number(l.amount) || 0);
+      const isPercent = !!l.isPercent;
+      const amount = Number(l.amount) || 0;
+      const value = isPercent ? running * amount / 100 : amount;
       running += value;
-      return { label: l.label || (l.isPercent ? 'Adjustment' : 'Add-on'), value };
+      const baseLabel = l.label || (isPercent ? 'Adjustment' : 'Add-on');
+      // Mirror the builder's live preview, which appends "- 5%" to percent
+      // lines so the client sees the rate, not just the resulting dollars.
+      // Previously only the computed dollar value was carried through, so the
+      // "%" the user typed never made it into the PDF.
+      const label = isPercent ? `${baseLabel} - ${amount}%` : baseLabel;
+      return { label, value };
     });
     const grandTotal = running;
 
@@ -118,7 +141,7 @@ const confirmationPdf = async (req, res) => {
     }
 
     // ── Items ───────────────────────────────────────────────────────────────
-    items.forEach((it, idx) => {
+    for (const [idx, it] of items.entries()) {
       ensure(150);
 
       // Always surface the style code alongside the product/brand label.
@@ -153,9 +176,9 @@ const confirmationPdf = async (req, res) => {
 
       // mockup thumbnails — prefer explicit attachments, fall back to the
       // library thumbnail for items that just reference a mockupNum.
-      const snaps  = (it.mockupSnapshots || []).map(s => dataUrlToBuffer(s && s.dataUrl)).filter(Boolean);
-      const legacy = dataUrlToBuffer(it.customMockupDataUrl);
-      const libThumb = it.mockupNum ? dataUrlToBuffer(thumbByNorm[norm(it.mockupNum)]) : null;
+      const snaps  = (await Promise.all((it.mockupSnapshots || []).map(s => resolveImageBuffer(s && s.dataUrl)))).filter(Boolean);
+      const legacy = await resolveImageBuffer(it.customMockupDataUrl);
+      const libThumb = it.mockupNum ? await resolveImageBuffer(thumbByNorm[norm(it.mockupNum)]) : null;
       const imgs   = snaps.length ? snaps : (legacy ? [legacy] : (libThumb ? [libThumb] : []));
       if (imgs.length) {
         ensure(110);
@@ -196,7 +219,7 @@ const confirmationPdf = async (req, res) => {
         doc.y = ry + 20;
       }
       doc.moveDown(0.9);
-    });
+    }
 
     // ── Totals ──────────────────────────────────────────────────────────────
     ensure(40 + customLines.length * 16);

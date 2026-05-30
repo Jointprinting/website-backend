@@ -1,11 +1,20 @@
 const StudioLibraryItem = require('../models/StudioLibraryItem');
+const r2 = require('../services/r2');
 
 async function listItems(req, res) {
   try {
     const { store } = req.params;
     if (!['blanks','logos','mockups'].includes(store))
       return res.status(400).json({ message: 'Invalid store.' });
-    const items = await StudioLibraryItem.find({ store }).sort({ savedAt: -1 }).lean();
+    // Summary mode (?summary=1) returns just what list/grid views need — the
+    // thumbnail (now an R2 URL), name, client, mockup #, and id — without the
+    // heavy pageState composites or back image. The Order Tracker uses this so
+    // the order page loads fast even with hundreds of mockups; the studio's own
+    // sync still pulls the full documents for offline editing.
+    const summary = req.query.summary === '1' || req.query.summary === 'true';
+    const q = StudioLibraryItem.find({ store }).sort({ savedAt: -1 });
+    if (summary) q.select('store name thumbnail client savedAt remoteId pageState.mockupNum');
+    const items = await q.lean();
     res.json(items);
   } catch (err) {
     console.error('[studioLibrary] list error:', err);
@@ -18,12 +27,31 @@ async function saveItem(req, res) {
     const { store } = req.params;
     if (!['blanks','logos','mockups'].includes(store))
       return res.status(400).json({ message: 'Invalid store.' });
-    const { name, data, thumbnail, client, pageState, savedAt, remoteId } = req.body;
+    let { name, data, thumbnail, client, pageState, savedAt, remoteId } = req.body;
+
+    // Offload base64 images to R2 (when configured) so the document stays small
+    // and well under Mongo's 16MB ceiling. uploadDataUrl returns the value
+    // unchanged if it's already a URL or not base64, so this is safe to call
+    // blindly. pageState composites are left inline for now — they're only
+    // pulled when editing a single mockup, not in lists or the client link.
+    if (r2.isR2Configured()) {
+      try {
+        [thumbnail, data] = await Promise.all([
+          r2.uploadDataUrl(thumbnail, `${store}/img`),
+          r2.uploadDataUrl(data, `${store}/img`),
+        ]);
+      } catch (e) {
+        console.warn('[studioLibrary] R2 upload failed, storing inline:', e.message);
+      }
+    }
 
     // Upsert by remoteId if provided (client re-saves same item)
     if (remoteId) {
       const existing = await StudioLibraryItem.findOne({ remoteId });
       if (existing) {
+        // Free the replaced R2 objects (best-effort) when the URL actually changed.
+        if (r2.isR2Url(existing.thumbnail) && existing.thumbnail !== thumbnail) r2.deleteByUrl(existing.thumbnail);
+        if (r2.isR2Url(existing.data) && existing.data !== data) r2.deleteByUrl(existing.data);
         Object.assign(existing, { name, data, thumbnail, client, pageState, savedAt });
         await existing.save();
         return res.json(existing);
