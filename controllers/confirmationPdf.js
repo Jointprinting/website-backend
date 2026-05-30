@@ -8,8 +8,12 @@
 
 const PDFDocument = require('pdfkit');
 const axios = require('axios');
+const path = require('path');
 const Order = require('../models/Order');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
+
+// The green "JP" logo box, embedded at the top of every confirmation PDF.
+const JP_LOGO_PATH = path.join(__dirname, '..', 'assets', 'jp-logo.png');
 
 const money = (n) =>
   '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -109,7 +113,13 @@ const confirmationPdf = async (req, res) => {
     const ensure = (need) => { if (doc.y + need > bottom) doc.addPage(); };
 
     // ── Header ──────────────────────────────────────────────────────────────
-    doc.fillColor(C.green).font('Helvetica-Bold').fontSize(22).text('JOINT PRINTING', left, left);
+    // JP logo box to the left of the wordmark (falls back to text-only if the
+    // image can't be read — never let a logo hiccup abort the PDF).
+    const logoSize = 44;
+    try { doc.image(JP_LOGO_PATH, left, left, { fit: [logoSize, logoSize] }); } catch (_) { /* logo optional */ }
+    doc.fillColor(C.green).font('Helvetica-Bold').fontSize(22)
+      .text('JOINT PRINTING', left + logoSize + 12, left + 10);
+    doc.y = Math.max(doc.y, left + logoSize);
     doc.moveDown(0.15);
     doc.fillColor(C.ink).font('Helvetica-Bold').fontSize(15)
       .text(conf.orderTitle || `${order.companyName || order.clientName || 'Project'} — Order Confirmation`);
