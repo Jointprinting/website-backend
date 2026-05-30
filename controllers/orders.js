@@ -3,6 +3,7 @@ const ContactSubmission = require('../models/ContactSubmission');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
 const { deriveCompanyKey } = require('../models/Order');
 const { getDefaultsFor } = require('./clients');
+const r2 = require('../services/r2');
 
 // ─── Notion seed data ─────────────────────────────────────────────────────────
 // Exported from the Notion "Orders" database (the source of truth). Project #
@@ -240,11 +241,33 @@ const getOrder = async (req, res) => {
   }
 };
 
+// Offload any base64 images embedded in a confirmation sub-document to R2,
+// replacing them with public URLs. Mutates and returns the confirmation. Safe
+// to call when R2 is off (no-op) — uploadDataUrl passes non-base64 values
+// through. This is what keeps an order with many product images well under
+// Mongo's 16MB doc limit and the client approval link fast.
+async function _offloadConfirmationImages(confirmation) {
+  if (!r2.isR2Configured() || !confirmation || !Array.isArray(confirmation.items)) return confirmation;
+  for (const it of confirmation.items) {
+    if (!it) continue;
+    if (it.customMockupDataUrl) {
+      it.customMockupDataUrl = await r2.uploadDataUrl(it.customMockupDataUrl, 'confirmations/img');
+    }
+    if (Array.isArray(it.mockupSnapshots)) {
+      for (const snap of it.mockupSnapshots) {
+        if (snap && snap.dataUrl) snap.dataUrl = await r2.uploadDataUrl(snap.dataUrl, 'confirmations/img');
+      }
+    }
+  }
+  return confirmation;
+}
+
 // POST /api/orders — create a new project. If projectNumber is not supplied,
 // auto-assign the next one.
 const createOrder = async (req, res) => {
   try {
     const body = { ...req.body };
+    if (body.confirmation) await _offloadConfirmationImages(body.confirmation);
     if (!body.projectNumber) {
       const all = await Order.find({}).select('projectNumber').lean();
       const max = all.reduce((m, o) => {
@@ -277,6 +300,7 @@ const createOrder = async (req, res) => {
 const updateOrder = async (req, res) => {
   try {
     const body = { ...req.body };
+    if (body.confirmation) await _offloadConfirmationImages(body.confirmation);
     const current = await Order.findById(req.params.id).select('status paid orderNumber').lean();
     if (!current) return res.status(404).json({ message: 'Not found' });
 

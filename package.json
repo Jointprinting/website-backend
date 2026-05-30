@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "set-studio-password": "node scripts/setStudioPassword.js",
+    "migrate-images-r2": "node scripts/migrateImagesToR2.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -15,6 +16,7 @@
     "node": ">=20.18.1"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.600.0",
     "@notionhq/client": "^5.22.0",
     "@sendgrid/mail": "^8.1.3",
     "archiver": "^8.0.0",
