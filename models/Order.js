@@ -176,7 +176,7 @@ const OrderSchema = new mongoose.Schema({
     printCost:    { type: Number, default: 0 },   // per unit
     setupCost:    { type: Number, default: 0 },   // full one-time setup for THIS option; spread across this line's qty
     shippingCost: { type: Number, default: 0 },   // full shipping for THIS option; spread across this line's qty
-    markup:       { type: Number, default: 2 },   // multiplier; unit price = (blankCost + printCost + (setup+ship)/qty) * markup
+    markup:       { type: Number, default: 1.4 }, // multiplier; unit price = (blankCost + printCost + (setup+ship)/qty) * markup; matches the builder default
     unitPrice:    { type: Number, default: 0 },   // computed but stored so user can override
     _id: false,
   }],
