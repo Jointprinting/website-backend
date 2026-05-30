@@ -71,6 +71,16 @@ db.once('open', () => {
   }
 
   require('./services/jpwScheduler').startJpwScheduler();
+
+  // Auto-migrate any remaining base64 images to R2 (idempotent, runs in the
+  // background) once R2 is configured — so existing orders / mockups / logos
+  // move over without a manual Shell step. Disable with R2_AUTOMIGRATE=off.
+  if (require('./services/r2').isR2Configured() && process.env.R2_AUTOMIGRATE !== 'off') {
+    setTimeout(() => {
+      require('./scripts/migrateImagesToR2').migrateAll()
+        .catch((e) => console.warn('[migrate] background run failed:', e.message));
+    }, 8000);
+  }
 });
 
 // ── Rate limiters ──

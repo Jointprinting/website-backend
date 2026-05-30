@@ -70,20 +70,28 @@ async function migrateLogos() {
   console.log(`[logos] scanned ${scanned} logos, moved ${moved} images`);
 }
 
-(async () => {
-  if (!r2.isR2Configured()) { console.error('✗ R2 not configured — set the R2_* env vars first.'); process.exit(1); }
-  if (!process.env.MONGO_URI) { console.error('✗ MONGO_URI not set.'); process.exit(1); }
-  await mongoose.connect(process.env.MONGO_URI);
-  console.log('Connected to MongoDB. Migrating images to R2…');
-  try {
-    await migrateStudio();
-    await migrateOrders();
-    await migrateLogos();
-    console.log('✓ Migration complete.');
-  } catch (e) {
-    console.error('Migration error:', e);
-    process.exitCode = 1;
-  } finally {
-    await mongoose.disconnect();
-  }
-})();
+// Run all three migrations against the already-open mongoose connection.
+// Idempotent — safe to call on every boot (skips anything already a URL).
+async function migrateAll() {
+  if (!r2.isR2Configured()) { console.warn('[migrate] R2 not configured — skipping.'); return; }
+  console.log('[migrate] Migrating any remaining base64 images to R2…');
+  await migrateStudio();
+  await migrateOrders();
+  await migrateLogos();
+  console.log('[migrate] ✓ complete.');
+}
+
+module.exports = { migrateAll, migrateStudio, migrateOrders, migrateLogos };
+
+// CLI entry: `node scripts/migrateImagesToR2.js` (or npm run migrate-images-r2).
+// Opens its own connection; the in-process auto-run reuses the server's.
+if (require.main === module) {
+  (async () => {
+    if (!r2.isR2Configured()) { console.error('✗ R2 not configured — set the R2_* env vars first.'); process.exit(1); }
+    if (!process.env.MONGO_URI) { console.error('✗ MONGO_URI not set.'); process.exit(1); }
+    await mongoose.connect(process.env.MONGO_URI);
+    try { await migrateAll(); }
+    catch (e) { console.error('Migration error:', e); process.exitCode = 1; }
+    finally { await mongoose.disconnect(); }
+  })();
+}

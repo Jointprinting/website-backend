@@ -248,14 +248,18 @@ const getOrder = async (req, res) => {
 // Mongo's 16MB doc limit and the client approval link fast.
 async function _offloadConfirmationImages(confirmation) {
   if (!r2.isR2Configured() || !confirmation || !Array.isArray(confirmation.items)) return confirmation;
+  // Per-image fallback: if an R2 upload fails (transient error or a bad key),
+  // keep the original base64 so the order save never fails because of it.
+  const safe = async (v) => {
+    try { return await r2.uploadDataUrl(v, 'confirmations/img'); }
+    catch (e) { console.warn('[orders] R2 upload failed, keeping inline:', e.message); return v; }
+  };
   for (const it of confirmation.items) {
     if (!it) continue;
-    if (it.customMockupDataUrl) {
-      it.customMockupDataUrl = await r2.uploadDataUrl(it.customMockupDataUrl, 'confirmations/img');
-    }
+    if (it.customMockupDataUrl) it.customMockupDataUrl = await safe(it.customMockupDataUrl);
     if (Array.isArray(it.mockupSnapshots)) {
       for (const snap of it.mockupSnapshots) {
-        if (snap && snap.dataUrl) snap.dataUrl = await r2.uploadDataUrl(snap.dataUrl, 'confirmations/img');
+        if (snap && snap.dataUrl) snap.dataUrl = await safe(snap.dataUrl);
       }
     }
   }
