@@ -6,7 +6,7 @@ const {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
   dashboard, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
-  cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups,
+  cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups, assignMockupNumber,
 } = require('../controllers/orders');
 const { ensureApprovalToken, sendApprovalLink, updateTracking, initTracking } = require('../controllers/approval');
 const { confirmationPdf } = require('../controllers/confirmationPdf');
@@ -42,6 +42,7 @@ router.post('/',                          createOrder);
 router.put('/:id',                        updateOrder);
 router.delete('/:id',                     deleteOrder);
 router.post('/:id/confirmation/pdf',      confirmationPdf);
+router.post('/:id/mockups/assign',        assignMockupNumber);
 router.post('/:id/files', upload.single('file'), uploadFile);
 router.get('/:id/files/:filename',        serveFile);
 router.delete('/:id/files/:filename',     deleteFile);

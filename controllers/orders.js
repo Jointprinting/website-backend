@@ -1038,9 +1038,50 @@ const autoLinkMockups = async (req, res) => {
   }
 };
 
+// Compute the next consecutive mockup letter for a project, mirroring the
+// studio's client-side _nextMockupNum so numbers stay consistent: base is
+// "#" + projectNumber padded to 6 digits, then A, B, C, … (Z → AA).
+function _nextMockupLetter(projectNumber, existing) {
+  const projNumRaw = String(projectNumber || '').split('-')[0];
+  if (!projNumRaw) return '';
+  const base = `#${projNumRaw.padStart(6, '0')}`;
+  const letters = (existing || [])
+    .filter(m => m && m.startsWith(base))
+    .map(m => m.slice(base.length).toUpperCase())
+    .filter(l => /^[A-Z]$/.test(l));
+  if (letters.length === 0) return `${base}A`;
+  const maxLetter = letters.reduce((a, b) => (a > b ? a : b));
+  if (maxLetter === 'Z') return `${base}AA`;
+  return `${base}${String.fromCharCode(maxLetter.charCodeAt(0) + 1)}`;
+}
+
+// POST /api/orders/:id/mockups/assign — atomically reserve the next mockup
+// number (A, B, C…) for this project AND link it to the order in one step.
+// This is the authoritative source for the lettering. The studio previously
+// computed the letter client-side from a cached project list, which raced and
+// produced duplicate "A"s — and once one mockup existed there was no way to add
+// a second. Returns the assigned number, e.g. { mockupNum: "#000133B" }.
+const assignMockupNumber = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id).select('projectNumber mockupNumbers');
+    if (!order) return res.status(404).json({ message: 'Project not found' });
+
+    const next = _nextMockupLetter(order.projectNumber, order.mockupNumbers || []);
+    if (!next) return res.status(400).json({ message: 'Project has no number to letter against.' });
+
+    // $addToSet keeps the array free of duplicate strings even if two saves
+    // land back-to-back.
+    await Order.updateOne({ _id: order._id }, { $addToSet: { mockupNumbers: next } });
+
+    res.json({ mockupNum: next, projectId: order._id });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 module.exports = {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
   dashboard, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
-  cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups,
+  cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups, assignMockupNumber,
 };
