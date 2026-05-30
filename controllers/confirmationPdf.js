@@ -56,11 +56,17 @@ const confirmationPdf = async (req, res) => {
       s + (it.sizes || []).reduce((ss, sz) => ss + (Number(sz.qty) || 0) * (Number(sz.unitPrice) || 0), 0), 0);
     let running = itemsSubtotal;
     const customLines = (conf.customLines || []).map(l => {
-      const value = l.isPercent
-        ? running * (Number(l.amount) || 0) / 100
-        : (Number(l.amount) || 0);
+      const isPercent = !!l.isPercent;
+      const amount = Number(l.amount) || 0;
+      const value = isPercent ? running * amount / 100 : amount;
       running += value;
-      return { label: l.label || (l.isPercent ? 'Adjustment' : 'Add-on'), value };
+      const baseLabel = l.label || (isPercent ? 'Adjustment' : 'Add-on');
+      // Mirror the builder's live preview, which appends "- 5%" to percent
+      // lines so the client sees the rate, not just the resulting dollars.
+      // Previously only the computed dollar value was carried through, so the
+      // "%" the user typed never made it into the PDF.
+      const label = isPercent ? `${baseLabel} - ${amount}%` : baseLabel;
+      return { label, value };
     });
     const grandTotal = running;
 
