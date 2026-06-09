@@ -160,10 +160,12 @@ const publicGetProject = async (req, res) => {
 
     const logo = await ClientLogo.findOne({ companyKey: order.companyKey }).select('imageDataUrl').lean();
 
-    // Log the view (best-effort, throttled — only log if last event isn't a recent view)
+    // Log the view (best-effort, throttled — only log if last event isn't a recent
+    // view). Skipped for admin "preview as client" (?preview=1) so the owner
+    // double-checking the page never shows up as a client view.
     const last = (order.approvalEvents || []).slice(-1)[0];
     const recentView = last && last.kind === 'viewed' && (Date.now() - new Date(last.at).getTime() < 5 * 60 * 1000);
-    if (!recentView) {
+    if (!recentView && !req.query.preview) {
       await Order.updateOne({ _id: order._id },
         { $push: { approvalEvents: { kind: 'viewed', at: new Date() } } });
     }
