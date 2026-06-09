@@ -73,7 +73,18 @@ const OrderSchema = new mongoose.Schema({
   approvalEvents: [{                                    // log of client interactions on the approval page
     kind:    { type: String },          // 'viewed' | 'approved' | 'requested_changes'
     message: { type: String, default: '' },
+    by:      { type: String, default: '' },   // name the client optionally gave when acting
+    email:   { type: String, default: '' },   // email the client optionally gave when acting
     at:      { type: Date, default: Date.now },
+    _id: false,
+  }],
+  // Everyone the shared approval link has been emailed to. The link itself is a
+  // single shared "hub" token — all recipients use the same URL — so this is
+  // just the guest list, surfaced back in the admin Share dialog. Deduped by
+  // email in the controller.
+  approvalRecipients: [{
+    email:  { type: String },
+    sentAt: { type: Date, default: Date.now },
     _id: false,
   }],
   // General-purpose activity log. New event kinds (status changes, paid

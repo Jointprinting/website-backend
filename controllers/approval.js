@@ -47,6 +47,8 @@ const ensureApprovalToken = async (req, res) => {
       // the re-approval. Prior approvalEvents stay in history; they're
       // just no longer treated as "the current state".
       order.approvalSupersededAt = new Date(now);
+      // Fresh cycle = fresh guest list; the old links no longer resolve.
+      if (rotate) order.approvalRecipients = [];
       await order.save();
     } else if (req.body && req.body.ttlDays) {
       // Reuse the token but bump expiry to the new TTL.
@@ -58,6 +60,8 @@ const ensureApprovalToken = async (req, res) => {
       token: order.approvalToken,
       projectId: order._id,
       expiresAt: order.approvalTokenExpiresAt,
+      recipients: order.approvalRecipients || [],
+      approvalStatus: _currentApprovalStatus(order),
     });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -203,6 +207,7 @@ const publicGetProject = async (req, res) => {
         approvalStatus:       currentStatus,
         approvalAt:           lastTerminal ? lastTerminal.at : null,
         approvalMessage:      lastTerminal ? lastTerminal.message : '',
+        approvalBy:           cur.by || '',
         approvalExpiresAt:    order.approvalTokenExpiresAt,
         tracking:             { steps: trackingSteps },
       },
@@ -213,19 +218,6 @@ const publicGetProject = async (req, res) => {
     res.status(500).json({ message: e.message });
   }
 };
-
-// Stop accepting actions once the client has either approved or requested
-// changes IN THE CURRENT CYCLE. When admin re-shares the link with new
-// confirmation content (approvalSupersededAt bumped), older approvals no
-// longer lock the page so the client can approve the new version.
-function _alreadyDecided(order) {
-  const events = order.approvalEvents || [];
-  const cutoff = order.approvalSupersededAt ? new Date(order.approvalSupersededAt).getTime() : 0;
-  return events.some(e =>
-    (e.kind === 'approved' || e.kind === 'requested_changes') &&
-    new Date(e.at).getTime() > cutoff
-  );
-}
 
 // Same cutoff applied when computing the "current status" the client sees on
 // the public page. Without this, re-opening the link after a re-share would
@@ -241,7 +233,41 @@ function _currentApprovalStatus(order) {
     status: lastTerminal ? lastTerminal.kind : 'pending',
     at:     lastTerminal ? lastTerminal.at : null,
     message: lastTerminal ? lastTerminal.message : '',
+    by:      lastTerminal ? (lastTerminal.by || '') : '',
   };
+}
+
+// Atomically record a terminal decision (approved / requested_changes) ONLY if
+// none already exists in the current cycle (anything newer than
+// approvalSupersededAt). Returns true if THIS call recorded it, false if it lost
+// the race. The condition lives in the query filter, so check + write are one
+// atomic document update — two people clicking at the same instant (one approve,
+// one request-changes) resolve to exactly one winner, never a contradictory mix.
+async function _recordDecisionIfFirst(order, token, event, set) {
+  const cutoff = order.approvalSupersededAt ? new Date(order.approvalSupersededAt) : new Date(0);
+  const filter = {
+    _id: order._id,
+    approvalToken: token,
+    approvalEvents: {
+      $not: { $elemMatch: { kind: { $in: ['approved', 'requested_changes'] }, at: { $gt: cutoff } } },
+    },
+  };
+  const update = { $push: { approvalEvents: event } };
+  if (set && Object.keys(set).length) update.$set = set;
+  const result = await Order.updateOne(filter, update);
+  return (result.matchedCount ?? result.n ?? 0) > 0;
+}
+
+// 409 helper: re-read the order and tell the client which decision already
+// stands, so the page can lock gracefully (and warmly) instead of erroring.
+async function _alreadyDecidedResponse(res, orderId) {
+  const fresh = await Order.findById(orderId).lean();
+  const cur = fresh ? _currentApprovalStatus(fresh) : { status: 'approved', by: '', at: null };
+  const who = cur.by ? ` by ${cur.by}` : '';
+  const message = cur.status === 'requested_changes'
+    ? `Someone on your team just sent this back with a few notes${who}, so we've paused approval for now. If that wasn't meant to happen, reply to our email and we'll get it sorted.`
+    : `Good news — this was just approved${who}. You're all set; nothing else to do here.`;
+  return res.status(409).json({ message, reason: 'already_decided', decision: cur.status, by: cur.by, at: cur.at });
 }
 
 // POST /api/public/projects/:id/approve?token=... — client approval action
@@ -253,13 +279,10 @@ const publicApprove = async (req, res) => {
       return res.status(404).json({ message: 'This link is invalid or no longer available.', reason: 'invalid' });
     }
     const order = lookup.order;
-    if (_alreadyDecided(order)) {
-      return res.status(409).json({ message: 'This project has already been approved or sent for changes.' });
-    }
+    const by    = String((req.body && req.body.name)  || '').trim().slice(0, 120);
+    const email = String((req.body && req.body.email) || '').trim().slice(0, 200);
     const now = new Date();
-    const update = {
-      $push: { approvalEvents: { kind: 'approved', message: '', at: now } },
-    };
+
     // Initialize tracking on first approval. If admin already pre-populated
     // tracking.steps from the Order Tracker we just tick off the
     // confirmation_approved step instead of clobbering their setup. The
@@ -274,21 +297,24 @@ const publicApprove = async (req, res) => {
       set['tracking.steps'] = steps;
     } else {
       // Tick the confirmation_approved step if it exists and isn't already done.
-      const updatedSteps = existingSteps.map(s => {
-        if (s.id === 'confirmation_approved' && !s.completedAt) {
-          return { ...s, completedAt: now };
-        }
-        return s;
-      });
-      set['tracking.steps'] = updatedSteps;
+      set['tracking.steps'] = existingSteps.map(s =>
+        (s.id === 'confirmation_approved' && !s.completedAt) ? { ...s, completedAt: now } : s);
     }
-    update.$set = set;
-    await Order.updateOne({ _id: order._id }, update);
+
+    // Atomic first-decision-wins. The filter only matches while NO approval /
+    // change-request exists in the CURRENT cycle, so when two people on the
+    // shared link race (one approves, one requests changes), exactly one write
+    // lands — the document update is atomic. No contradictory half-states.
+    const decided = await _recordDecisionIfFirst(order, req.query.token, {
+      kind: 'approved', message: '', by, email, at: now,
+    }, set);
+    if (!decided) return _alreadyDecidedResponse(res, order._id);
 
     notifyAdminAndLog(
       order._id,
       `[Joint Printing] Approved — ${order.companyName || order.clientName || 'Project'} (#${order.projectNumber || ''})`,
-      `<p><strong>${order.companyName || order.clientName || 'A client'}</strong> approved project #${order.projectNumber || ''}.</p>` +
+      `<p><strong>${by || order.companyName || order.clientName || 'A client'}</strong> approved project #${order.projectNumber || ''}.</p>` +
+      (by && order.companyName ? `<p style="color:#555">${order.companyName}</p>` : '') +
       `<p>Total: $${(order.totalValue || 0).toFixed(2)}</p>` +
       `<p>Open it in the Order Tracker to keep things moving.</p>`,
       'Client approved, but the email notification to you failed to send. Check your email (SendGrid) settings.',
@@ -309,19 +335,22 @@ const publicRequestChanges = async (req, res) => {
       return res.status(404).json({ message: 'This link is invalid or no longer available.', reason: 'invalid' });
     }
     const order = lookup.order;
-    if (_alreadyDecided(order)) {
-      return res.status(409).json({ message: 'This project has already been approved or sent for changes.' });
-    }
+    const by    = String((req.body && req.body.name)  || '').trim().slice(0, 120);
+    const email = String((req.body && req.body.email) || '').trim().slice(0, 200);
     const message = String((req.body && req.body.message) || '').slice(0, 2000);
-    await Order.updateOne(
-      { _id: order._id },
-      { $push: { approvalEvents: { kind: 'requested_changes', message, at: new Date() } } },
-    );
+
+    // Same atomic first-decision-wins guard as approve — if this loses the race
+    // to an approval that landed a moment earlier, we don't double-record.
+    const decided = await _recordDecisionIfFirst(order, req.query.token, {
+      kind: 'requested_changes', message, by, email, at: new Date(),
+    }, null);
+    if (!decided) return _alreadyDecidedResponse(res, order._id);
 
     notifyAdminAndLog(
       order._id,
       `[Joint Printing] Changes requested — ${order.companyName || order.clientName || 'Project'} (#${order.projectNumber || ''})`,
-      `<p><strong>${order.companyName || order.clientName || 'A client'}</strong> requested changes on project #${order.projectNumber || ''}.</p>` +
+      `<p><strong>${by || order.companyName || order.clientName || 'A client'}</strong> requested changes on project #${order.projectNumber || ''}.</p>` +
+      (by && order.companyName ? `<p style="color:#555">${order.companyName}</p>` : '') +
       (message ? `<blockquote style="border-left:3px solid #ccc;padding-left:10px;color:#444">${message.replace(/</g,'&lt;').replace(/\n/g,'<br>')}</blockquote>` : '') +
       `<p>Open it in the Order Tracker to respond.</p>`,
       'Client requested changes, but the email notification to you failed to send. Check your email (SendGrid) settings.',
@@ -334,22 +363,44 @@ const publicRequestChanges = async (req, res) => {
 };
 
 // POST /api/orders/:id/approval-link/send
-// Body: { email, ttlDays?, rotate?, frontendOrigin? }
-// Mints a token (rotating to expire any older link) and emails the link
-// directly to the client. The frontendOrigin is supplied by the browser
-// since the backend doesn't know the public URL it's hosted under.
+// Body: { emails?: string[], email?: string, ttlDays?, rotate?, frontendOrigin? }
+// Emails the approval link to one OR MORE people. Everyone gets the SAME link —
+// it's a single shared "hub" token — so adding a person later never breaks the
+// people already invited. We REUSE the existing token by default; we only mint a
+// fresh one (which starts a new approval cycle and clears the guest list) when
+// there's no usable token, it's expired, or the admin explicitly asks (rotate).
 const sendApprovalLink = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: 'Project not found' });
 
-    const email = String((req.body && req.body.email) || '').trim();
-    if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
-      return res.status(400).json({ message: 'A valid email address is required.' });
+    // Accept a single `email` (back-compat) and/or an `emails` array. Trim,
+    // validate, dedupe case-insensitively.
+    const raw = []
+      .concat(Array.isArray(req.body && req.body.emails) ? req.body.emails : [])
+      .concat(req.body && req.body.email ? [req.body.email] : []);
+    const seen = new Set();
+    const emails = [];
+    const invalid = [];
+    raw.forEach((e) => {
+      const addr = String(e || '').trim();
+      if (!addr) return;
+      const key = addr.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      if (/^\S+@\S+\.\S+$/.test(addr)) emails.push(addr); else invalid.push(addr);
+    });
+    if (emails.length === 0) {
+      return res.status(400).json({
+        message: invalid.length ? `Not a valid email: ${invalid.join(', ')}` : 'At least one valid email address is required.',
+      });
     }
+
     const ttlDays = Math.max(1, Math.min(MAX_TTL_DAYS,
       Math.round(Number((req.body && req.body.ttlDays) || DEFAULT_TTL_DAYS))));
-    const rotate = req.body && req.body.rotate !== false;   // default rotate=true
+    // Default REUSE (rotate=false) so the hub link is stable. Only the admin
+    // explicitly choosing "start fresh" passes rotate:true.
+    const wantsRotate = !!(req.body && req.body.rotate);
     const frontendOrigin = String((req.body && req.body.frontendOrigin) || '').replace(/\/+$/, '');
     if (!frontendOrigin || !/^https?:\/\//i.test(frontendOrigin)) {
       return res.status(400).json({ message: 'frontendOrigin is required.' });
@@ -357,45 +408,88 @@ const sendApprovalLink = async (req, res) => {
 
     const now = Date.now();
     const expired = order.approvalTokenExpiresAt && order.approvalTokenExpiresAt.getTime() < now;
-    if (rotate || expired || !order.approvalToken) {
+    const rotated = wantsRotate || expired || !order.approvalToken;
+    if (rotated) {
       order.approvalToken = crypto.randomBytes(16).toString('hex');
       // Fresh token = fresh approval cycle. Prior approved/requested_changes
-      // events are now historical, not the current state. See _alreadyDecided
-      // and _currentApprovalStatus for how this is read.
+      // events become historical (see _currentApprovalStatus), and the guest
+      // list resets since the old links no longer work.
       order.approvalSupersededAt = new Date(now);
+      order.approvalRecipients = [];
     }
     order.approvalTokenExpiresAt = new Date(now + ttlDays * 24 * 60 * 60 * 1000);
-    await order.save();
 
     const url = `${frontendOrigin}/approve/${order._id}?token=${order.approvalToken}`;
     const expiry = order.approvalTokenExpiresAt.toLocaleString();
-    const greeting = order.clientName ? `Hi ${String(order.clientName).split(/\s+/)[0]},` : 'Hi,';
     const projectLabel = order.companyName || order.clientName || `Project #${order.projectNumber || ''}`;
-    const safeLabel = String(projectLabel).replace(/</g,'&lt;');
+    const safeLabel = String(projectLabel).replace(/</g, '&lt;');
+    // Greet by first name only when there's a single, presumably-the-client
+    // recipient — otherwise a neutral, still-friendly "Hi there,".
+    const greeting = (emails.length === 1 && order.clientName)
+      ? `Hi ${String(order.clientName).split(/\s+/)[0]},`
+      : 'Hi there,';
     const html = `
-      <p>${greeting}</p>
-      <p>Your confirmation page for <strong>${safeLabel}</strong> is ready for review.</p>
-      <p><a href="${url}" style="display:inline-block;background:#1a3d2b;color:#fff;font-weight:700;padding:10px 20px;border-radius:6px;text-decoration:none">Open your confirmation page</a></p>
-      <p style="color:#666;font-size:12px">Or copy this link: <a href="${url}">${url}</a></p>
-      <p style="color:#999;font-size:11px">This link expires ${expiry}.</p>
-      <p style="color:#999;font-size:11px">— Joint Printing</p>
+      <div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#222;line-height:1.55">
+        <p>${greeting}</p>
+        <p>Thanks so much for working with us on <strong>${safeLabel}</strong> — we're genuinely excited to make this for you.</p>
+        <p>Your proof is ready to look over. Have a peek whenever you get a minute: if it all looks good you can approve it right on the page, and if anything needs a tweak just leave us a note there — no rush at all.</p>
+        <p style="margin:22px 0">
+          <a href="${url}" style="display:inline-block;background:#1a3d2b;color:#fff;font-weight:700;padding:11px 22px;border-radius:6px;text-decoration:none">Review your proof</a>
+        </p>
+        <p style="color:#666;font-size:12px">Or paste this link into your browser:<br><a href="${url}" style="color:#1a3d2b">${url}</a></p>
+        <p style="color:#999;font-size:11px">This link stays live until ${expiry}. Feel free to share it with anyone else on your side who should weigh in — it's the same page for everyone.</p>
+        <p style="color:#444;font-size:13px;margin-top:20px">Thanks again,<br>The Joint Printing team</p>
+      </div>
     `;
 
-    try {
-      await sendEmail({
-        to: email,
-        subject: `Your confirmation page for ${projectLabel} is ready for review`,
-        html,
+    // Send to each recipient. One bad address shouldn't sink the rest.
+    const sentTo = [];
+    const failed = [];
+    for (const to of emails) {
+      try {
+        await sendEmail({ to, subject: `Your proof for ${projectLabel} is ready to look over`, html });
+        sentTo.push(to);
+      } catch (e) {
+        failed.push({ email: to, error: e.message });
+      }
+    }
+
+    // Update the guest list (dedupe by email, keep the earliest sentAt).
+    const recMap = new Map((order.approvalRecipients || []).map(r => [String(r.email).toLowerCase(), r]));
+    sentTo.forEach((to) => {
+      const key = to.toLowerCase();
+      if (!recMap.has(key)) recMap.set(key, { email: to, sentAt: new Date() });
+    });
+    order.approvalRecipients = Array.from(recMap.values());
+
+    if (sentTo.length > 0) {
+      order.activity = order.activity || [];
+      order.activity.push({
+        kind: 'approval_shared', actor: 'admin',
+        message: `Shared approval link with ${sentTo.join(', ')}`,
+        meta: { recipients: sentTo, rotated },
+        at: new Date(),
       });
-    } catch (e) {
-      return res.status(500).json({ message: `Email send failed: ${e.message}` });
+    }
+    await order.save();
+
+    // Every send failed — surface it (the token/expiry changes are still saved,
+    // so a retry can reuse the same link).
+    if (sentTo.length === 0) {
+      return res.status(502).json({
+        message: `Couldn't send the email${failed.length > 1 ? 's' : ''}: ${failed.map(f => f.error).join('; ')}`,
+        failed,
+      });
     }
 
     res.json({
       ok: true,
-      sentTo: email,
       url,
       expiresAt: order.approvalTokenExpiresAt,
+      sentTo,
+      failed,
+      recipients: order.approvalRecipients,
+      rotated,
     });
   } catch (e) {
     res.status(500).json({ message: e.message });
