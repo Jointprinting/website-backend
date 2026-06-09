@@ -127,7 +127,9 @@ const confirmationPdf = async (req, res) => {
       order.projectNumber ? `Project #${order.projectNumber}` : null,
       order.orderNumber   ? `Invoice #${order.orderNumber}`   : null,
       conf.orderDate
-        ? new Date(conf.orderDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+        // orderDate is a pure calendar date stored as UTC midnight — render in
+        // UTC so it can't slip a day depending on the server's timezone.
+        ? new Date(conf.orderDate).toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' })
         : null,
     ].filter(Boolean).join('    ·    ');
     if (meta) doc.font('Helvetica').fontSize(9).fillColor(C.muted).text(meta, { paragraphGap: 2 });
