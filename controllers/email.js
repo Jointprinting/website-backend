@@ -1,34 +1,23 @@
 // controllers/email.js
-const nodemailer = require('nodemailer');
 const fs = require('fs');
 const validator = require('validator');
 const ContactSubmission = require('../models/ContactSubmission');
+const sendEmail = require('../utils/sendEmail');
 
-// SMTP transport. Auto-picks `secure` based on port:
-//   - Gmail (port 465) → secure: true
-//   - SendPulse / others (port 587 or 2525) → secure: false (uses STARTTLS)
-const SMTP_PORT = Number(process.env.SMTP_PORT) || 465;
-
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: SMTP_PORT,
-  secure: SMTP_PORT === 465,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
-
-transporter.verify((err) => {
-  if (err) console.error('❌ SMTP configuration error:', err.message);
-  else      console.log('✅ SMTP server is ready to take messages');
-});
+if (!process.env.RESEND_API_KEY) {
+  console.error('❌ RESEND_API_KEY is not set — contact-form email will fail until it is.');
+} else {
+  console.log('✅ Resend email is configured');
+}
 
 function getAttachments(req) {
+  // Resend takes the file contents inline (Buffer), not a local path, so we
+  // read each uploaded temp file into memory here. Files are capped at 25 MB
+  // each / 10 max by multer (see server.js).
   if (!req.files || !Array.isArray(req.files)) return [];
   return req.files.map((file) => ({
     filename: file.originalname,
-    path: file.path,
+    content: fs.readFileSync(file.path),
     contentType: file.mimetype,
   }));
 }
@@ -133,7 +122,6 @@ exports.sendContactEmail = async (req, res) => {
     }
 
     const toAddress  = process.env.EMAIL_TO;
-    const fromAddress = process.env.EMAIL_FROM || process.env.SMTP_USER;
     const subject = `New contact form – ${cleaned.companyName}`;
 
     const productsHtml = products.length
@@ -175,8 +163,7 @@ exports.sendContactEmail = async (req, res) => {
       `Submission ID: ${submission._id}`,
     ].join('\n');
 
-    await transporter.sendMail({
-      from: `"Joint Printing" <${fromAddress}>`,
+    await sendEmail({
       to: toAddress,
       replyTo: cleaned.email,
       subject,
@@ -186,8 +173,7 @@ exports.sendContactEmail = async (req, res) => {
     });
 
     try {
-      await transporter.sendMail({
-        from: `"Joint Printing" <${fromAddress}>`,
+      await sendEmail({
         to: cleaned.email,
         subject: `We got your request — Joint Printing`,
         text: customerAutoReplyText(cleaned, products),
