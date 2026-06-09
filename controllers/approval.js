@@ -7,6 +7,12 @@ const sendEmail = require('../utils/sendEmail');
 const DEFAULT_TTL_DAYS = 7;
 const MAX_TTL_DAYS     = 365;
 
+// Once a client approves, their link doubles as the order-tracking page, so
+// it must outlive the original share TTL. It stays usable for the whole
+// production run and only goes dead this many days after the order finishes
+// (every visible tracking step completed).
+const POST_FINISH_GRACE_DAYS = 7;
+
 // Default order-tracking timeline. The client sees these (less any with
 // hidden=true) on the same approval link they used to approve. Admin can
 // rename labels, hide irrelevant steps, or add custom ones from the
@@ -37,7 +43,10 @@ const ensureApprovalToken = async (req, res) => {
     const rotate = !!(req.body && req.body.rotate);
 
     const now = Date.now();
-    const expired = order.approvalTokenExpiresAt && order.approvalTokenExpiresAt.getTime() < now;
+    // _linkExpired (not raw TTL) so that merely opening the share dialog
+    // doesn't rotate away a link the client is still using to track an
+    // approved order.
+    const expired = _linkExpired(order);
 
     if (rotate || expired || !order.approvalToken) {
       order.approvalToken = crypto.randomBytes(16).toString('hex');
@@ -74,10 +83,28 @@ async function _loadProjectByToken(projectId, token) {
   const order = await Order.findById(projectId).lean();
   if (!order) return { ok: false, reason: 'invalid' };
   if (!order.approvalToken || order.approvalToken !== token) return { ok: false, reason: 'invalid' };
-  if (order.approvalTokenExpiresAt && order.approvalTokenExpiresAt.getTime() < Date.now()) {
+  if (_linkExpired(order)) {
     return { ok: false, reason: 'expired', expiresAt: order.approvalTokenExpiresAt };
   }
   return { ok: true, order };
+}
+
+// The share TTL only governs the pre-approval window. After the client
+// approves (in the current cycle — a re-share resets this), the link lives
+// on as their tracking page until POST_FINISH_GRACE_DAYS after the order
+// finishes. "Finished" = every non-hidden tracking step has completedAt;
+// finish time is the latest of those timestamps.
+function _linkExpired(order) {
+  const expiresAt = order.approvalTokenExpiresAt;
+  if (!expiresAt || expiresAt.getTime() >= Date.now()) return false;
+
+  if (_currentApprovalStatus(order).status !== 'approved') return true;
+
+  const steps = ((order.tracking && order.tracking.steps) || []).filter(s => !s.hidden);
+  const done = steps.filter(s => s.completedAt);
+  if (steps.length === 0 || done.length < steps.length) return false; // still in progress
+  const finishedAt = Math.max(...done.map(s => new Date(s.completedAt).getTime()));
+  return Date.now() > finishedAt + POST_FINISH_GRACE_DAYS * 24 * 60 * 60 * 1000;
 }
 
 // Best-effort admin notification. Logs and swallows errors so a stuck SMTP
@@ -356,7 +383,7 @@ const sendApprovalLink = async (req, res) => {
     }
 
     const now = Date.now();
-    const expired = order.approvalTokenExpiresAt && order.approvalTokenExpiresAt.getTime() < now;
+    const expired = _linkExpired(order);
     if (rotate || expired || !order.approvalToken) {
       order.approvalToken = crypto.randomBytes(16).toString('hex');
       // Fresh token = fresh approval cycle. Prior approved/requested_changes
@@ -377,7 +404,7 @@ const sendApprovalLink = async (req, res) => {
       <p>Your confirmation page for <strong>${safeLabel}</strong> is ready for review.</p>
       <p><a href="${url}" style="display:inline-block;background:#1a3d2b;color:#fff;font-weight:700;padding:10px 20px;border-radius:6px;text-decoration:none">Open your confirmation page</a></p>
       <p style="color:#666;font-size:12px">Or copy this link: <a href="${url}">${url}</a></p>
-      <p style="color:#999;font-size:11px">This link expires ${expiry}.</p>
+      <p style="color:#999;font-size:11px">This link expires ${expiry}. Once you approve, it stays active as your order-tracking page until a week after your order arrives.</p>
       <p style="color:#999;font-size:11px">— Joint Printing</p>
     `;
 
