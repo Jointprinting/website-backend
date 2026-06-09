@@ -270,6 +270,35 @@ async function _alreadyDecidedResponse(res, orderId) {
   return res.status(409).json({ message, reason: 'already_decided', decision: cur.status, by: cur.by, at: cur.at });
 }
 
+// Escape user-supplied text before dropping it into a notification email.
+function _esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+// Revenue + COGS the client actually approved = the confirmation page's item
+// rows (qty × unitPrice) plus custom add-on lines; COGS from each item's
+// internal unitCost. Mirrors orders.js _confirmationTotals and the frontend
+// _shared.js — the quoter total sums every alternative option and is NOT what
+// the client bought, so the approval notification must use this instead.
+function _confirmationTotals(conf) {
+  if (!conf || !Array.isArray(conf.items)) return { revenue: 0, cogs: 0 };
+  let revenue = conf.items.reduce((s, it) =>
+    s + (it.sizes || []).reduce((ss, sz) => ss + (Number(sz.qty) || 0) * (Number(sz.unitPrice) || 0), 0), 0);
+  (conf.customLines || []).forEach((l) => {
+    revenue += l.isPercent ? revenue * (Number(l.amount) || 0) / 100 : (Number(l.amount) || 0);
+  });
+  const cogs = conf.items.reduce((s, it) => {
+    const qty = (it.sizes || []).reduce((q, sz) => q + (Number(sz.qty) || 0), 0);
+    return s + qty * (Number(it.unitCost) || 0);
+  }, 0);
+  return { revenue, cogs };
+}
+
+// "Who acted" line for the admin notification: prefer the name + email the
+// client typed; fall back to the company/client on file.
+function _actorLine(by, email, order) {
+  if (by) return email ? `${by} (${email})` : by;
+  return email || order.companyName || order.clientName || 'A client';
+}
+
 // POST /api/public/projects/:id/approve?token=... — client approval action
 const publicApprove = async (req, res) => {
   try {
@@ -301,6 +330,15 @@ const publicApprove = async (req, res) => {
         (s.id === 'confirmation_approved' && !s.completedAt) ? { ...s, completedAt: now } : s);
     }
 
+    // Approval finalizes the order's money from the APPROVED confirmation. The
+    // quoter total ($4,017 in the bug report) sums every alternative option;
+    // the client only buys what's on the confirmation. Write those back so the
+    // order, dashboards, and this email all agree. Guarded so a confirmation
+    // with no priced items can't zero a real number.
+    const { revenue: confRevenue, cogs: confCogs } = _confirmationTotals(order.confirmation);
+    if (confRevenue > 0) set.totalValue = confRevenue;
+    if (confCogs > 0)    set.cogs = confCogs;
+
     // Atomic first-decision-wins. The filter only matches while NO approval /
     // change-request exists in the CURRENT cycle, so when two people on the
     // shared link race (one approves, one requests changes), exactly one write
@@ -310,14 +348,17 @@ const publicApprove = async (req, res) => {
     }, set);
     if (!decided) return _alreadyDecidedResponse(res, order._id);
 
+    const approvedTotal = confRevenue > 0 ? confRevenue : (Number(order.totalValue) || 0);
+    const recips = (order.approvalRecipients || []).map(r => r.email).filter(Boolean);
     notifyAdminAndLog(
       order._id,
       `[Joint Printing] Approved — ${order.companyName || order.clientName || 'Project'} (#${order.projectNumber || ''})`,
-      `<p><strong>${by || order.companyName || order.clientName || 'A client'}</strong> approved project #${order.projectNumber || ''}.</p>` +
-      (by && order.companyName ? `<p style="color:#555">${order.companyName}</p>` : '') +
-      `<p>Total: $${(order.totalValue || 0).toFixed(2)}</p>` +
+      `<p><strong>${_esc(_actorLine(by, email, order))}</strong> approved project #${order.projectNumber || ''}.</p>` +
+      (order.companyName ? `<p style="color:#555">${_esc(order.companyName)}</p>` : '') +
+      `<p>Total: $${approvedTotal.toFixed(2)}</p>` +
+      (recips.length ? `<p style="color:#888;font-size:12px">Approval link was shared with: ${recips.map(_esc).join(', ')}</p>` : '') +
       `<p>Open it in the Order Tracker to keep things moving.</p>`,
-      'Client approved, but the email notification to you failed to send. Check your email (SendGrid) settings.',
+      'Client approved, but the email notification to you failed to send. Check your email settings.',
     );
 
     res.json({ ok: true });
@@ -346,12 +387,14 @@ const publicRequestChanges = async (req, res) => {
     }, null);
     if (!decided) return _alreadyDecidedResponse(res, order._id);
 
+    const recips = (order.approvalRecipients || []).map(r => r.email).filter(Boolean);
     notifyAdminAndLog(
       order._id,
       `[Joint Printing] Changes requested — ${order.companyName || order.clientName || 'Project'} (#${order.projectNumber || ''})`,
-      `<p><strong>${by || order.companyName || order.clientName || 'A client'}</strong> requested changes on project #${order.projectNumber || ''}.</p>` +
-      (by && order.companyName ? `<p style="color:#555">${order.companyName}</p>` : '') +
-      (message ? `<blockquote style="border-left:3px solid #ccc;padding-left:10px;color:#444">${message.replace(/</g,'&lt;').replace(/\n/g,'<br>')}</blockquote>` : '') +
+      `<p><strong>${_esc(_actorLine(by, email, order))}</strong> requested changes on project #${order.projectNumber || ''}.</p>` +
+      (order.companyName ? `<p style="color:#555">${_esc(order.companyName)}</p>` : '') +
+      (message ? `<blockquote style="border-left:3px solid #ccc;padding-left:10px;color:#444">${_esc(message).replace(/\n/g,'<br>')}</blockquote>` : '') +
+      (recips.length ? `<p style="color:#888;font-size:12px">Approval link was shared with: ${recips.map(_esc).join(', ')}</p>` : '') +
       `<p>Open it in the Order Tracker to respond.</p>`,
       'Client requested changes, but the email notification to you failed to send. Check your email (SendGrid) settings.',
     );
