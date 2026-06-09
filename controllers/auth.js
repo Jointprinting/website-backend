@@ -50,7 +50,9 @@ exports.studioLogin = async (req, res) => {
 
     // Success — reset counters
     user.failedLoginAttempts = 0;
-    user.lockedUntil = undefined;
+    // null (not undefined) — assigning undefined to a Mongoose path doesn't
+    // reliably persist the clear.
+    user.lockedUntil = null;
     user.lastLoginAt = new Date();
     await user.save();
 

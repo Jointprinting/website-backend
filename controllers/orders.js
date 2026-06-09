@@ -3,6 +3,7 @@ const ContactSubmission = require('../models/ContactSubmission');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
 const { deriveCompanyKey } = require('../models/Order');
 const { getDefaultsFor } = require('./clients');
+const { nextNumber, bumpCounterTo } = require('../utils/sequence');
 const r2 = require('../services/r2');
 
 // ─── Notion seed data ─────────────────────────────────────────────────────────
@@ -164,7 +165,9 @@ const listOrders = async (req, res) => {
     const { search = '', status, page = 1, limit = 200 } = req.query;
     const filter = {};
     if (search.trim()) {
-      const re = new RegExp(search.trim(), 'i');
+      // Escape regex metacharacters — raw user input compiled as a pattern
+      // can throw or ReDoS (matches the escaping product.js already does).
+      const re = new RegExp(search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
       filter.$or = [
         { clientName:    re },
         { companyName:   re },
@@ -273,12 +276,9 @@ const createOrder = async (req, res) => {
     const body = { ...req.body };
     if (body.confirmation) await _offloadConfirmationImages(body.confirmation);
     if (!body.projectNumber) {
-      const all = await Order.find({}).select('projectNumber').lean();
-      const max = all.reduce((m, o) => {
-        const n = parseInt((o.projectNumber || '0').split('-')[0], 10) || 0;
-        return Math.max(m, n);
-      }, 0);
-      body.projectNumber = String(max + 1);
+      body.projectNumber = await nextNumber('project');
+    } else {
+      await bumpCounterTo('project', body.projectNumber);
     }
 
     // Prefill from the client profile if one exists for this company. Only
@@ -311,14 +311,10 @@ const updateOrder = async (req, res) => {
     // Auto-assign invoice number on first transition to approved+.
     if (body.status === 'approved' || ['placed', 'in_production', 'shipped', 'delivered'].includes(body.status)) {
       if (!current.orderNumber && !body.orderNumber) {
-        const all = await Order.find({}).select('orderNumber').lean();
-        const max = all.reduce((m, o) => {
-          const n = parseInt(o.orderNumber || '0', 10) || 0;
-          return Math.max(m, n);
-        }, 0);
-        body.orderNumber = String(max + 1);
+        body.orderNumber = await nextNumber('invoice');
       }
     }
+    if (body.orderNumber) await bumpCounterTo('invoice', body.orderNumber);
 
     // Log notable changes as activity events (status, paid).
     const newEvents = [];
@@ -377,8 +373,8 @@ const dashboard = async (req, res) => {
       { $group: {
         _id: null,
         revenueAllTime: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, '$totalValue', 0] } },
-        revenueThisYear: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'delivered'] }, { $gte: ['$orderDate', startOfYear] }] }, '$totalValue', 0] } },
-        revenueThisMonth: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'delivered'] }, { $gte: ['$orderDate', startOfMonth] }] }, '$totalValue', 0] } },
+        revenueThisYear: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'delivered'] }, { $gte: [{ $ifNull: ['$deliveredDate', '$orderDate'] }, startOfYear] }] }, '$totalValue', 0] } },
+        revenueThisMonth: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'delivered'] }, { $gte: [{ $ifNull: ['$deliveredDate', '$orderDate'] }, startOfMonth] }] }, '$totalValue', 0] } },
         openOrders: { $sum: { $cond: [{ $in: ['$status', ['approved', 'placed', 'in_production', 'shipped']] }, 1, 0] } },
         openQuotes: { $sum: { $cond: [{ $eq: ['$status', 'quoted'] }, 1, 0] } },
         unpaidTotal: { $sum: { $cond: [{ $and: [{ $eq: ['$paid', false] }, { $ne: ['$status', 'quoted'] }, { $ne: ['$status', 'cancelled'] }] }, '$totalValue', 0] } },
@@ -424,12 +420,25 @@ const uploadFile = async (req, res) => {
   }
 };
 
+// Resolve an uploaded file safely: the name must be a plain basename (no
+// path segments — Express decodes %2e%2e%2f after routing) AND belong to
+// this order's files[]. Returns the absolute path or null.
+async function _resolveOrderFile(orderId, rawName) {
+  const path = require('path');
+  const name = String(rawName || '');
+  if (!name || name !== path.basename(name)) return null;
+  const order = await Order.findById(orderId).select('files').lean();
+  const owned = order && (order.files || []).some(f => f.filename === name);
+  if (!owned) return null;
+  return path.join(__dirname, '..', 'uploads', name);
+}
+
 // DELETE /api/orders/:id/files/:filename
 const deleteFile = async (req, res) => {
   try {
     const fs = require('fs');
-    const path = require('path');
-    const filepath = path.join(__dirname, '..', 'uploads', req.params.filename);
+    const filepath = await _resolveOrderFile(req.params.id, req.params.filename);
+    if (!filepath) return res.status(404).json({ message: 'File not found on this order.' });
     if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
     await Order.findByIdAndUpdate(req.params.id, {
       $pull: { files: { filename: req.params.filename } },
@@ -443,8 +452,8 @@ const deleteFile = async (req, res) => {
 // GET /api/orders/:id/files/:filename — serve file with auth
 const serveFile = async (req, res) => {
   try {
-    const path = require('path');
-    const filepath = path.join(__dirname, '..', 'uploads', req.params.filename);
+    const filepath = await _resolveOrderFile(req.params.id, req.params.filename);
+    if (!filepath) return res.status(404).json({ message: 'File not found on this order.' });
     res.sendFile(filepath);
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -701,14 +710,8 @@ const duplicateOrder = async (req, res) => {
     const src = await Order.findById(req.params.id).lean();
     if (!src) return res.status(404).json({ message: 'Project not found' });
 
-    const all = await Order.find({}).select('projectNumber').lean();
-    const max = all.reduce((m, o) => {
-      const n = parseInt((o.projectNumber || '0').split('-')[0], 10) || 0;
-      return Math.max(m, n);
-    }, 0);
-
     const fresh = {
-      projectNumber:       String(max + 1),
+      projectNumber:       await nextNumber('project'),
       orderNumber:         '',
       clientName:          src.clientName  || '',
       companyName:         src.companyName || '',
@@ -759,12 +762,6 @@ const createFromSubmission = async (req, res) => {
       if (existing) return res.json({ order: existing, alreadyLinked: true });
     }
 
-    const all = await Order.find({}).select('projectNumber').lean();
-    const max = all.reduce((m, o) => {
-      const n = parseInt((o.projectNumber || '0').split('-')[0], 10) || 0;
-      return Math.max(m, n);
-    }, 0);
-
     const notes = [
       sub.notes && `Inquiry notes: ${sub.notes}`,
       sub.quantity && `Quantity: ${sub.quantity}`,
@@ -773,7 +770,7 @@ const createFromSubmission = async (req, res) => {
     ].filter(Boolean).join('\n');
 
     const order = await Order.create({
-      projectNumber:       String(max + 1),
+      projectNumber:       await nextNumber('project'),
       companyName:         sub.companyName || '',
       clientName:          sub.name || '',
       status:              'quoted',

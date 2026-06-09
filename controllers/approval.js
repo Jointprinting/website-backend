@@ -3,6 +3,7 @@ const Order = require('../models/Order');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
 const ClientLogo = require('../models/ClientLogo');
 const sendEmail = require('../utils/sendEmail');
+const { nextNumber } = require('../utils/sequence');
 
 const DEFAULT_TTL_DAYS = 7;
 const MAX_TTL_DAYS     = 365;
@@ -185,6 +186,25 @@ const publicGetProject = async (req, res) => {
         link: s.link || '',
       }));
 
+    // Client-safe quote lines: resolve the unit price server-side and strip
+    // every internal field. Costs, markup, and supplier must NEVER reach the
+    // public payload — anyone with the approval link can read the raw JSON.
+    const safeQuoteLines = (order.quoteLines || []).map(l => {
+      const n = (v) => Number(v) || 0;
+      const qty = n(l.qty);
+      const setupShip = n(l.setupCost) + n(l.shippingCost);
+      const unitCogs = n(l.blankCost) + n(l.printCost) + (qty > 0 ? setupShip / qty : 0);
+      return {
+        qty,
+        styleCode:    l.styleCode    || '',
+        description:  l.description  || '',
+        color:        l.color        || '',
+        printType:    l.printType    || '',
+        printDetails: l.printDetails || '',
+        unitPrice:    n(l.unitPrice) || +(unitCogs * (n(l.markup) || 1)).toFixed(2),
+      };
+    });
+
     res.json({
       project: {
         projectNumber:        order.projectNumber,
@@ -194,7 +214,7 @@ const publicGetProject = async (req, res) => {
         status:               order.status,
         totalValue:           order.totalValue,
         items:                order.items,
-        quoteLines:           order.quoteLines,
+        quoteLines:           safeQuoteLines,
         mockupNumbers:        order.mockupNumbers,
         confirmationMessage:  order.confirmationMessage,
         confirmationTerms:    order.confirmationTerms,
@@ -267,7 +287,13 @@ const publicApprove = async (req, res) => {
     // complete" — that's the reassurance moment the user wanted.
     const existingSteps = (order.tracking && order.tracking.steps) || [];
     const set = {};
-    if (order.status === 'quoted') set.status = 'approved';
+    if (order.status === 'quoted') {
+      set.status = 'approved';
+      // Invoice # is assigned at approval (the import seed notes promise
+      // this); the admin path does it in updateOrder, so client sign-off
+      // has to do it too or approved projects sit un-invoiced.
+      if (!order.orderNumber) set.orderNumber = await nextNumber('invoice');
+    }
     if (existingSteps.length === 0) {
       const steps = DEFAULT_TRACKING_STEPS();
       steps[0].completedAt = now;   // confirmation_approved

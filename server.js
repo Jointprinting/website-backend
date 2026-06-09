@@ -26,7 +26,14 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
 app.use(cors({
   origin: (origin, cb) => {
     if (!origin) return cb(null, true);
-    if (allowedOrigins.length === 0) return cb(null, true);
+    // No allowlist configured: open in dev for convenience, but fail CLOSED
+    // in production — a missing ALLOWED_ORIGINS must not open the API to
+    // every origin on the internet.
+    if (allowedOrigins.length === 0) {
+      return process.env.NODE_ENV === 'production'
+        ? cb(new Error('Not allowed by CORS (no ALLOWED_ORIGINS configured)'))
+        : cb(null, true);
+    }
     if (allowedOrigins.includes(origin)) return cb(null, true);
     return cb(new Error('Not allowed by CORS'));
   },
