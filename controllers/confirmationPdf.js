@@ -65,10 +65,10 @@ const confirmationPdf = async (req, res) => {
     const thumbByNorm = {};
     if (referenced.size > 0) {
       const libs = await StudioLibraryItem.find({ store: 'mockups' })
-        .select('thumbnail pageState.mockupNum').lean();
+        .select('thumbnail data pageState.mockupNum').lean();
       libs.forEach((m) => {
         const k = norm(m.pageState && m.pageState.mockupNum);
-        if (k && referenced.has(k) && m.thumbnail) thumbByNorm[k] = m.thumbnail;
+        if (k && referenced.has(k) && (m.thumbnail || m.data)) thumbByNorm[k] = { front: m.thumbnail, back: m.data };
       });
     }
 
@@ -188,8 +188,9 @@ const confirmationPdf = async (req, res) => {
       // library thumbnail for items that just reference a mockupNum.
       const snaps  = (await Promise.all((it.mockupSnapshots || []).map(s => resolveImageBuffer(s && s.dataUrl)))).filter(Boolean);
       const legacy = await resolveImageBuffer(it.customMockupDataUrl);
-      const libThumb = it.mockupNum ? await resolveImageBuffer(thumbByNorm[norm(it.mockupNum)]) : null;
-      const imgs   = snaps.length ? snaps : (legacy ? [legacy] : (libThumb ? [libThumb] : []));
+      const lib = it.mockupNum ? thumbByNorm[norm(it.mockupNum)] : null;
+      const libBufs = lib ? (await Promise.all([lib.front, lib.back].map(v => resolveImageBuffer(v)))).filter(Boolean) : [];
+      const imgs   = snaps.length ? snaps : (legacy ? [legacy] : libBufs);
       if (imgs.length) {
         ensure(110);
         const rowY = doc.y;
