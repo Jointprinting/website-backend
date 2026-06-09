@@ -128,6 +128,7 @@ const OrderSchema = new mongoose.Schema({
       printType:           { type: String, default: '' },
       color:               { type: String, default: '' },
       printerName:         { type: String, default: '' },    // who's actually printing this item
+      unitCost:            { type: Number, default: 0 },     // internal cost/unit carried from the quote — drives the order's COGS, never shown to the client
       sizes: [{
         label:     { type: String, default: '' },  // 'XS', 'S', ..., 'OS', or any custom
         qty:       { type: Number, default: 0 },

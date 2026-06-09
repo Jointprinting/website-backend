@@ -241,6 +241,25 @@ const getOrder = async (req, res) => {
   }
 };
 
+// Revenue + COGS implied by a confirmation (the approved doc). Revenue = each
+// item's size rows (qty × unitPrice) plus the custom add-on lines (flat or %);
+// COGS = each item's total qty × the internal unitCost carried over from the
+// quote (confirmations never show cost to the client). Mirrors the frontend
+// confRevenue/confCogs in _shared.js — keep the two in sync.
+function _confirmationTotals(conf) {
+  if (!conf || !Array.isArray(conf.items)) return { revenue: 0, cogs: 0 };
+  let revenue = conf.items.reduce((s, it) =>
+    s + (it.sizes || []).reduce((ss, sz) => ss + (Number(sz.qty) || 0) * (Number(sz.unitPrice) || 0), 0), 0);
+  (conf.customLines || []).forEach((l) => {
+    revenue += l.isPercent ? revenue * (Number(l.amount) || 0) / 100 : (Number(l.amount) || 0);
+  });
+  const cogs = conf.items.reduce((s, it) => {
+    const qty = (it.sizes || []).reduce((q, sz) => q + (Number(sz.qty) || 0), 0);
+    return s + qty * (Number(it.unitCost) || 0);
+  }, 0);
+  return { revenue, cogs };
+}
+
 // Offload any base64 images embedded in a confirmation sub-document to R2,
 // replacing them with public URLs. Mutates and returns the confirmation. Safe
 // to call when R2 is off (no-op) — uploadDataUrl passes non-base64 values
@@ -305,6 +324,16 @@ const updateOrder = async (req, res) => {
   try {
     const body = { ...req.body };
     if (body.confirmation) await _offloadConfirmationImages(body.confirmation);
+    // Order money + sale date flow FROM the confirmation (the approved doc), so
+    // the admin never hand-maintains them. Guarded so we never wipe a historical
+    // order's manual numbers when a confirmation lacks the data (e.g. older
+    // confirmations built before unitCost, or a still-empty draft).
+    if (body.confirmation) {
+      const { revenue, cogs } = _confirmationTotals(body.confirmation);
+      if (revenue > 0) body.totalValue = revenue;
+      if (cogs > 0) body.cogs = cogs;
+      if (body.confirmation.orderDate) body.orderDate = body.confirmation.orderDate;
+    }
     const current = await Order.findById(req.params.id).select('status paid orderNumber').lean();
     if (!current) return res.status(404).json({ message: 'Not found' });
 
