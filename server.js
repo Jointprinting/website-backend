@@ -79,6 +79,13 @@ db.once('open', () => {
 
   require('./services/jpwScheduler').startJpwScheduler();
 
+  // Idempotent: give legacy studio-library docs a remoteId so the studio's
+  // sync can dedupe them (empty ones re-imported as new rows on every load).
+  setTimeout(() => {
+    require('./controllers/studioLibrary').backfillRemoteIds()
+      .catch((e) => console.warn('[studioLibrary] remoteId backfill failed:', e.message));
+  }, 4_000);
+
   // Auto-migrate any remaining base64 images to R2 (idempotent, runs in the
   // background) once R2 is configured — so existing orders / mockups / logos
   // move over without a manual Shell step. Disable with R2_AUTOMIGRATE=off.
