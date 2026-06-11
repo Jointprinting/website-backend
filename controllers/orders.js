@@ -1093,21 +1093,34 @@ const autoLinkMockups = async (req, res) => {
   }
 };
 
+// Excel-style letter sequence: A…Z, AA, AB, … so the series never dead-ends.
+// (The old single-letter regex made everything after the 26th mockup collide
+// on "AA" forever — multi-letter suffixes were invisible to the max scan.)
+function _letterToNum(s) {
+  let n = 0;
+  for (const c of s) n = n * 26 + (c.charCodeAt(0) - 64);
+  return n;
+}
+function _numToLetter(n) {
+  let s = '';
+  while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); }
+  return s;
+}
+
 // Compute the next consecutive mockup letter for a project, mirroring the
 // studio's client-side _nextMockupNum so numbers stay consistent: base is
-// "#" + projectNumber padded to 6 digits, then A, B, C, … (Z → AA).
+// "#" + projectNumber padded to 6 digits, then A, B, C, … Z, AA, AB, …
 function _nextMockupLetter(projectNumber, existing) {
   const projNumRaw = String(projectNumber || '').split('-')[0];
   if (!projNumRaw) return '';
   const base = `#${projNumRaw.padStart(6, '0')}`;
-  const letters = (existing || [])
+  const nums = (existing || [])
     .filter(m => m && m.startsWith(base))
     .map(m => m.slice(base.length).toUpperCase())
-    .filter(l => /^[A-Z]$/.test(l));
-  if (letters.length === 0) return `${base}A`;
-  const maxLetter = letters.reduce((a, b) => (a > b ? a : b));
-  if (maxLetter === 'Z') return `${base}AA`;
-  return `${base}${String.fromCharCode(maxLetter.charCodeAt(0) + 1)}`;
+    .filter(l => /^[A-Z]+$/.test(l))
+    .map(_letterToNum);
+  const max = nums.length ? Math.max(...nums) : 0;
+  return `${base}${_numToLetter(max + 1)}`;
 }
 
 // POST /api/orders/:id/mockups/assign — atomically reserve the next mockup
@@ -1118,17 +1131,27 @@ function _nextMockupLetter(projectNumber, existing) {
 // a second. Returns the assigned number, e.g. { mockupNum: "#000133B" }.
 const assignMockupNumber = async (req, res) => {
   try {
-    const order = await Order.findById(req.params.id).select('projectNumber mockupNumbers');
-    if (!order) return res.status(404).json({ message: 'Project not found' });
+    // Compute-then-claim with a conditional write: the push only succeeds if
+    // nobody claimed the same letter between our read and write (the filter
+    // excludes docs already containing it). The old $addToSet version silently
+    // deduped, so two concurrent saves were BOTH told they owned the same
+    // number. On a lost race, re-read and claim the next letter instead.
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const order = await Order.findById(req.params.id).select('projectNumber mockupNumbers');
+      if (!order) return res.status(404).json({ message: 'Project not found' });
 
-    const next = _nextMockupLetter(order.projectNumber, order.mockupNumbers || []);
-    if (!next) return res.status(400).json({ message: 'Project has no number to letter against.' });
+      const next = _nextMockupLetter(order.projectNumber, order.mockupNumbers || []);
+      if (!next) return res.status(400).json({ message: 'Project has no number to letter against.' });
 
-    // $addToSet keeps the array free of duplicate strings even if two saves
-    // land back-to-back.
-    await Order.updateOne({ _id: order._id }, { $addToSet: { mockupNumbers: next } });
-
-    res.json({ mockupNum: next, projectId: order._id });
+      const r = await Order.updateOne(
+        { _id: order._id, mockupNumbers: { $ne: next } },
+        { $push: { mockupNumbers: next } },
+      );
+      if (r.modifiedCount === 1) {
+        return res.json({ mockupNum: next, projectId: order._id });
+      }
+    }
+    return res.status(409).json({ message: 'Could not reserve a mockup number — too many concurrent saves. Try again.' });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }

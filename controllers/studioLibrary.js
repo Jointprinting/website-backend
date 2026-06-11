@@ -1,5 +1,27 @@
+const mongoose = require('mongoose');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
 const r2 = require('../services/r2');
+
+// Best-effort: free the R2 objects an item owned. Only called on delete —
+// update-replacement cleanup lives in saveItem.
+function _freeR2(item) {
+  if (!item) return;
+  try {
+    if (r2.isR2Url(item.thumbnail)) r2.deleteByUrl(item.thumbnail);
+    if (r2.isR2Url(item.data)) r2.deleteByUrl(item.data);
+  } catch (_) { /* paid-storage cleanup must never fail the request */ }
+}
+
+// One-time backfill (idempotent, runs at boot from server.js): give every
+// library doc missing a remoteId one derived from its _id, so the studio's
+// sync can dedupe it instead of re-importing it as a fresh row on every load.
+async function backfillRemoteIds() {
+  const r = await StudioLibraryItem.updateMany(
+    { $or: [{ remoteId: '' }, { remoteId: null }, { remoteId: { $exists: false } }] },
+    [{ $set: { remoteId: { $concat: ['srv-', { $toString: '$_id' }] } } }],
+  );
+  if (r.modifiedCount > 0) console.log(`[studioLibrary] backfilled remoteId on ${r.modifiedCount} docs`);
+}
 
 async function listItems(req, res) {
   try {
@@ -45,22 +67,37 @@ async function saveItem(req, res) {
       }
     }
 
-    // Upsert by remoteId if provided (client re-saves same item)
+    // Upsert by remoteId if provided (client re-saves same item). One atomic
+    // findOneAndUpdate instead of find-then-create: the studio fires
+    // overlapping pushes (background sync retry + manual save), and the old
+    // check-then-act created two docs with the same remoteId when first
+    // pushes raced.
     if (remoteId) {
-      const existing = await StudioLibraryItem.findOne({ remoteId });
-      if (existing) {
+      const fields = {
+        store, name, data: data || '', thumbnail: thumbnail || '',
+        client: client || '', pageState: pageState || null,
+        savedAt: savedAt || Date.now(),
+      };
+      const prev = await StudioLibraryItem.findOneAndUpdate(
+        { remoteId },
+        { $set: fields, $setOnInsert: { remoteId } },
+        { new: false, upsert: true },
+      );
+      if (prev) {
         // Free the replaced R2 objects (best-effort) when the URL actually changed.
-        if (r2.isR2Url(existing.thumbnail) && existing.thumbnail !== thumbnail) r2.deleteByUrl(existing.thumbnail);
-        if (r2.isR2Url(existing.data) && existing.data !== data) r2.deleteByUrl(existing.data);
-        Object.assign(existing, { name, data, thumbnail, client, pageState, savedAt });
-        await existing.save();
-        return res.json(existing);
+        if (r2.isR2Url(prev.thumbnail) && prev.thumbnail !== thumbnail) r2.deleteByUrl(prev.thumbnail);
+        if (r2.isR2Url(prev.data) && prev.data !== data) r2.deleteByUrl(prev.data);
       }
+      const item = await StudioLibraryItem.findOne({ remoteId }).lean();
+      return res.status(prev ? 200 : 201).json(item);
     }
     const item = await StudioLibraryItem.create({
       store, name, data: data || '', thumbnail: thumbnail || '',
       client: client || '', pageState: pageState || null,
-      savedAt: savedAt || Date.now(), remoteId: remoteId || '',
+      savedAt: savedAt || Date.now(),
+      // Never store an empty remoteId — docs without one can't be deduped by
+      // the studio's sync and get re-imported as new local rows on every load.
+      remoteId: `srv-${new mongoose.Types.ObjectId().toString()}`,
     });
     res.status(201).json(item);
   } catch (err) {
@@ -79,6 +116,7 @@ async function deleteItem(req, res) {
   try {
     const item = await StudioLibraryItem.findByIdAndDelete(req.params.id);
     if (!item) return res.status(404).json({ message: 'Item not found.' });
+    _freeR2(item);
     res.json({ deleted: true, id: req.params.id });
   } catch (err) {
     console.error('[studioLibrary] delete error:', err);
@@ -88,11 +126,12 @@ async function deleteItem(req, res) {
 
 async function deleteByRemoteId(req, res) {
   try {
-    const result = await StudioLibraryItem.deleteOne({ remoteId: req.params.remoteId });
-    res.json({ deleted: result.deletedCount > 0 });
+    const item = await StudioLibraryItem.findOneAndDelete({ remoteId: req.params.remoteId });
+    _freeR2(item);
+    res.json({ deleted: !!item });
   } catch (err) {
     res.status(500).json({ message: 'Failed to delete item.' });
   }
 }
 
-module.exports = { listItems, saveItem, deleteItem, deleteByRemoteId };
+module.exports = { listItems, saveItem, deleteItem, deleteByRemoteId, backfillRemoteIds };
