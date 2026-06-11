@@ -1153,13 +1153,19 @@ exports.syncFromSS = async (req, res) => {
   }
 };
 
-exports.refreshAllSSProductsHandler = async (req, res) => {
-  // /products/ doesn't work for our account; nothing to refresh per-SKU.
-  // Just refresh the /styles/ caches.
+// Non-HTTP core shared by the nightly cron (services/ssAutoSync) and the
+// admin endpoint below. /products/ doesn't work for our account; nothing to
+// refresh per-SKU — just clear and re-warm the /styles/ brand caches.
+exports._refreshAllSSProducts = async () => {
   _ssCache.clear();
+  const data = await fetchAllSSBrands();
+  return { updated: data.total, total: data.total, failed: [] };
+};
+
+exports.refreshAllSSProductsHandler = async (req, res) => {
   try {
-    const data = await fetchAllSSBrands();
-    return res.status(200).json({ message: 'Catalog caches refreshed.', styleCount: data.total });
+    const r = await exports._refreshAllSSProducts();
+    return res.status(200).json({ message: 'Catalog caches refreshed.', styleCount: r.total });
   } catch (e) {
     return res.status(500).json({ message: e.message });
   }

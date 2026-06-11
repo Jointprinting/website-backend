@@ -27,6 +27,30 @@ function computeQuoteTotals(lines, orderSetup, orderShip) {
   return { totalValue, cogs };
 }
 
+// Confirmation grand total — items subtotal plus custom lines, where percent
+// lines apply to the running subtotal in order. Mirrors the builder preview,
+// the server PDF (confirmationPdf.js) and the approval page exactly.
+function computeConfirmationTotals(conf) {
+  const n = (v) => Number(v) || 0;
+  const items = (conf && Array.isArray(conf.items)) ? conf.items : [];
+  const itemsSubtotal = items.reduce((s, it) =>
+    s + ((it && it.sizes) || []).reduce((ss, sz) => ss + n(sz.qty) * n(sz.unitPrice), 0), 0);
+  let running = itemsSubtotal;
+  ((conf && conf.customLines) || []).forEach(l => {
+    running += l && l.isPercent ? running * n(l.amount) / 100 : n(l && l.amount);
+  });
+  return { itemsSubtotal, grandTotal: running };
+}
+
+// A confirmation only becomes the pricing source of truth once it has real
+// content — an empty sub-document (every order has one) must not zero totals.
+function hasConfirmationContent(conf) {
+  if (!conf) return false;
+  const items = Array.isArray(conf.items) ? conf.items : [];
+  const lines = Array.isArray(conf.customLines) ? conf.customLines : [];
+  return items.length > 0 || lines.length > 0;
+}
+
 const OrderSchema = new mongoose.Schema({
   projectNumber: { type: String, index: true },
   orderNumber:   { type: String, index: true },
@@ -206,34 +230,64 @@ const OrderSchema = new mongoose.Schema({
   }],
 }, { timestamps: true });
 
+// Totals lifecycle — one source of truth per stage:
+//   - Quote stage (no confirmation content): totalValue/cogs derive from
+//     quoteLines, so every surface (card / dashboard) agrees with the quote.
+//   - Confirmation stage: the confirmation grand total is what the client
+//     actually approves, so it becomes totalValue. cogs stays quote-derived
+//     (the confirmation carries no cost data).
+// Recomputes are gated on the fields actually changing, so unrelated saves
+// (approval-token rotation, tracking ticks) can't clobber a hand-corrected
+// total.
 OrderSchema.pre('save', function (next) {
   this.companyKey = deriveCompanyKey(this.companyName, this.clientName);
-  // If a structured quote exists, derive headline total + COGS from it so
-  // every surface (card / dashboard / confirmation) agrees. Setup and
-  // shipping are pass-through: they hit both the client total and COGS.
-  if (Array.isArray(this.quoteLines) && this.quoteLines.length > 0) {
-    const t = computeQuoteTotals(this.quoteLines, this.setupCost, this.shippingCost);
-    this.totalValue = t.totalValue;
-    this.cogs       = t.cogs;
+  const lines = Array.isArray(this.quoteLines) ? this.quoteLines : [];
+  // On brand-new docs only react to actual content — imports and manual
+  // creates carry a hand-set totalValue with no quote lines, and the old
+  // length>0 guard kept those intact.
+  const quoteTouched = this.isNew ? lines.length > 0 : this.isModified('quoteLines');
+  const confTouched  = this.isNew
+    ? hasConfirmationContent(this.confirmation)
+    : this.isModified('confirmation');
+  if (quoteTouched) {
+    const t = computeQuoteTotals(lines, this.setupCost, this.shippingCost);
+    this.cogs = t.cogs;
+    if (!hasConfirmationContent(this.confirmation)) this.totalValue = t.totalValue;
+  }
+  if ((confTouched || quoteTouched) && hasConfirmationContent(this.confirmation)) {
+    this.totalValue = computeConfirmationTotals(this.confirmation).grandTotal;
   }
   next();
 });
 
-OrderSchema.pre('findOneAndUpdate', function (next) {
+OrderSchema.pre('findOneAndUpdate', async function () {
   const u = this.getUpdate() || {};
   const set = u.$set || u;
   if (set.companyName !== undefined || set.clientName !== undefined) {
     set.companyKey = deriveCompanyKey(set.companyName, set.clientName);
   }
-  if (Array.isArray(set.quoteLines) && set.quoteLines.length > 0) {
+  if (Array.isArray(set.quoteLines)) {
     const t = computeQuoteTotals(set.quoteLines, set.setupCost, set.shippingCost);
     set.cogs = t.cogs;
-    set.totalValue = t.totalValue;
+    // The confirmation total stays authoritative if one exists — look it up
+    // when this update doesn't carry it.
+    let conf = set.confirmation;
+    if (conf === undefined) {
+      const doc = await this.model.findOne(this.getQuery()).select('confirmation').lean();
+      conf = doc && doc.confirmation;
+    }
+    set.totalValue = hasConfirmationContent(conf)
+      ? computeConfirmationTotals(conf).grandTotal
+      : t.totalValue;
+  } else if (set.confirmation !== undefined && hasConfirmationContent(set.confirmation)) {
+    set.totalValue = computeConfirmationTotals(set.confirmation).grandTotal;
   }
   if (u.$set) u.$set = set; else Object.assign(u, set);
   this.setUpdate(u);
-  next();
 });
 
 module.exports = mongoose.model('Order', OrderSchema);
 module.exports.deriveCompanyKey = deriveCompanyKey;
+module.exports.computeQuoteTotals = computeQuoteTotals;
+module.exports.computeConfirmationTotals = computeConfirmationTotals;
+module.exports.hasConfirmationContent = hasConfirmationContent;
