@@ -17,7 +17,11 @@ function computeQuoteTotals(lines, orderSetup, orderShip) {
   // tee the client picks ONE of). Standalone (ungrouped) lines are always
   // part of the order, so they count alongside the accepted picks.
   if (arr.some(l => l && l.accepted)) {
-    arr = arr.filter(l => l && (l.accepted || !l.group));
+    // Groups added AFTER the client picked have no accepted line yet — keep
+    // all their alternatives counted (pre-pick behavior) rather than silently
+    // dropping the whole group from the totals.
+    const decided = new Set(arr.filter(l => l && l.accepted).map(l => l.group));
+    arr = arr.filter(l => l && (l.accepted || !l.group || !decided.has(l.group)));
   }
   const n = (v) => Number(v) || 0;
   const perLineExtras = arr.reduce((s, l) => s + n(l.setupCost) + n(l.shippingCost), 0);
