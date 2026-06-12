@@ -2,6 +2,7 @@ const express = require('express');
 const multer  = require('multer');
 const router  = express.Router();
 const { requireAdmin } = require('../middleware/auth');
+const poCtl = require('../controllers/purchaseOrders');
 const {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
@@ -42,6 +43,15 @@ router.post('/',                          createOrder);
 router.put('/:id',                        updateOrder);
 router.delete('/:id',                     deleteOrder);
 router.post('/:id/confirmation/pdf',      confirmationPdf);
+// Purchase orders (vendor POs) — note: static 'pos'/'vendors' paths must stay
+// above the generic '/:id' matchers? They don't conflict: '/pos/:poId' and
+// '/vendors' are distinct from '/:id' subpaths used here.
+router.get('/vendors',                    poCtl.listVendors);
+router.get('/:id/pos',                    poCtl.listPos);
+router.post('/:id/pos',                   poCtl.createPo);
+router.put('/pos/:poId',                  poCtl.updatePo);
+router.delete('/pos/:poId',               poCtl.deletePo);
+router.post('/pos/:poId/pdf',             poCtl.poPdf);
 router.post('/:id/mockups/assign',        assignMockupNumber);
 router.post('/:id/files', upload.single('file'), uploadFile);
 router.get('/:id/files/:filename',        serveFile);
