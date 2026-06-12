@@ -96,6 +96,18 @@ async function _loadProjectByToken(projectId, token) {
   return { ok: true, order };
 }
 
+// Who is acting, from the personal `r` tag the share email put in their link
+// (base64url of the recipient email). Returns '' for hand-copied links or
+// garbage values — never throws, never trusts more than an email shape.
+function _recipientEmail(req) {
+  try {
+    const r = String((req.query && req.query.r) || '');
+    if (!r || r.length > 400) return '';
+    const decoded = Buffer.from(r, 'base64url').toString('utf8');
+    return /^\S+@\S+\.\S+$/.test(decoded) && decoded.length <= 254 ? decoded : '';
+  } catch (_) { return ''; }
+}
+
 // Best-effort admin notification. Logs and swallows errors so a stuck SMTP
 // can't break a client's approval click.
 async function notifyAdmin(subject, body) {
@@ -184,7 +196,7 @@ const publicGetProject = async (req, res) => {
     const recentView = last && last.kind === 'viewed' && (Date.now() - new Date(last.at).getTime() < 5 * 60 * 1000);
     if (!recentView && !req.query.preview) {
       await Order.updateOne({ _id: order._id },
-        { $push: { approvalEvents: { kind: 'viewed', at: new Date() } } });
+        { $push: { approvalEvents: { kind: 'viewed', email: _recipientEmail(req), at: new Date() } } });
     }
 
     // Reduce approvalEvents to a single "current status" the client UI uses
@@ -411,7 +423,7 @@ const publicSelectOptions = async (req, res) => {
     }
 
     const by = String((req.body && req.body.by) || '').slice(0, 120).trim();
-    const email = String((req.body && req.body.email) || '').slice(0, 254).trim();
+    const email = String((req.body && req.body.email) || '').slice(0, 254).trim() || _recipientEmail(req);
     const now = new Date();
     const pickSet = new Set(picks);
     const updatedLines = lines.map((l, i) => ({ ...l, accepted: pickSet.has(i) }));
@@ -465,7 +477,7 @@ const publicApprove = async (req, res) => {
     }
     const order = lookup.order;
     const by    = String((req.body && req.body.name)  || '').trim().slice(0, 120);
-    const email = String((req.body && req.body.email) || '').trim().slice(0, 200);
+    const email = String((req.body && req.body.email) || '').trim().slice(0, 200) || _recipientEmail(req);
     const now = new Date();
 
     // Initialize tracking on first approval. If admin already pre-populated
@@ -539,7 +551,7 @@ const publicRequestChanges = async (req, res) => {
     }
     const order = lookup.order;
     const by    = String((req.body && req.body.name)  || '').trim().slice(0, 120);
-    const email = String((req.body && req.body.email) || '').trim().slice(0, 200);
+    const email = String((req.body && req.body.email) || '').trim().slice(0, 200) || _recipientEmail(req);
     const message = String((req.body && req.body.message) || '').slice(0, 2000);
 
     // Same atomic first-decision-wins guard as approve — if this loses the race
@@ -624,7 +636,11 @@ const sendApprovalLink = async (req, res) => {
     }
     order.approvalTokenExpiresAt = new Date(now + ttlDays * 24 * 60 * 60 * 1000);
 
-    const url = `${frontendOrigin}/approve/${order._id}?token=${order.approvalToken}`;
+    // Each recipient gets the same hub token but a personal `r` tag (their
+    // email, base64url) — so views/picks/approvals attribute to the right
+    // person automatically and the page never has to ask who they are.
+    const urlFor = (to) =>
+      `${frontendOrigin}/approve/${order._id}?token=${order.approvalToken}&r=${Buffer.from(String(to)).toString('base64url')}`;
     const expiry = order.approvalTokenExpiresAt.toLocaleString();
     const projectLabel = order.companyName || order.clientName || `Project #${order.projectNumber || ''}`;
     const safeLabel = String(projectLabel).replace(/</g, '&lt;');
@@ -633,7 +649,7 @@ const sendApprovalLink = async (req, res) => {
     const greeting = (emails.length === 1 && order.clientName)
       ? `Hi ${String(order.clientName).split(/\s+/)[0]},`
       : 'Hi there,';
-    const html = `
+    const htmlFor = (url) => `
       <div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#222;line-height:1.55">
         <p>${greeting}</p>
         <p>Thanks so much for working with us on <strong>${safeLabel}</strong> — we're genuinely excited to make this for you.</p>
@@ -652,7 +668,7 @@ const sendApprovalLink = async (req, res) => {
     const failed = [];
     for (const to of emails) {
       try {
-        await sendEmail({ to, subject: `Your proof for ${projectLabel} is ready to look over`, html });
+        await sendEmail({ to, subject: `Your proof for ${projectLabel} is ready to look over`, html: htmlFor(urlFor(to)) });
         sentTo.push(to);
       } catch (e) {
         failed.push({ email: to, error: e.message });
