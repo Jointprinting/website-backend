@@ -9,15 +9,23 @@ const Counter = require('../models/Counter');
 
 const FIELD = { project: 'projectNumber', invoice: 'orderNumber' };
 
-// Numeric prefix of a stored number ("22-1" → 22, "135" → 135).
-const numOf = (v) => parseInt(String(v || '0').split('-')[0], 10) || 0;
+// Numeric prefix of a stored number ("22-1" → 22, "135" → 135, "#007" → 7).
+const numOf = (v) => parseInt(String(v || '0').replace(/^#/, '').split('-')[0], 10) || 0;
 
 async function _seedFromOrders(kind) {
   // Lazy require to avoid a circular import (Order's hooks don't need us,
   // but controllers require both).
-  const Order = require('../models/Order');
-  const all = await Order.find({}).select(FIELD[kind]).lean();
-  const max = all.reduce((m, o) => Math.max(m, numOf(o[FIELD[kind]])), 0);
+  let all, field;
+  if (kind === 'po') {
+    const PurchaseOrder = require('../models/PurchaseOrder');
+    all = await PurchaseOrder.find({}).select('poNumber').lean();
+    field = 'poNumber';
+  } else {
+    const Order = require('../models/Order');
+    field = FIELD[kind];
+    all = await Order.find({}).select(field).lean();
+  }
+  const max = all.reduce((m, o) => Math.max(m, numOf(o[field])), 0);
   await Counter.updateOne(
     { _id: kind },
     { $setOnInsert: { seq: max } },
