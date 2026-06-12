@@ -221,6 +221,12 @@ const OrderSchema = new mongoose.Schema({
     // are standalone (always included). `accepted` records the client's pick.
     group:        { type: String, default: '' },
     accepted:     { type: Boolean, default: false },
+    // The design the client signs off when picking this option: a studio
+    // mockup number, and/or an uploaded image (data URL or hosted URL) for
+    // items the vendor renders externally — glass ashtrays etc. have no
+    // mockup number.
+    mockupNum:    { type: String, default: '' },
+    image:        { type: String, default: '' },
     qty:          { type: Number, default: 0 },
     styleCode:    { type: String, default: '' },
     description:  { type: String, default: '' },
