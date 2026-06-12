@@ -65,10 +65,17 @@ const confirmationPdf = async (req, res) => {
     const thumbByNorm = {};
     if (referenced.size > 0) {
       const libs = await StudioLibraryItem.find({ store: 'mockups' })
-        .select('thumbnail data pageState.mockupNum').lean();
+        .select('name thumbnail data pageState.mockupNum').lean();
       libs.forEach((m) => {
+        const entry = (m.thumbnail || m.data) ? { front: m.thumbnail, back: m.data } : null;
+        if (!entry) return;
         const k = norm(m.pageState && m.pageState.mockupNum);
-        if (k && referenced.has(k) && (m.thumbnail || m.data)) thumbByNorm[k] = { front: m.thumbnail, back: m.data };
+        if (k && referenced.has(k)) thumbByNorm[k] = entry;
+        // Name fallback: the builder's picker stores the mockup NAME when an
+        // item has no number — match it here too or the image silently
+        // vanishes from the PDF while looking fine in the builder.
+        const nk = norm(m.name);
+        if (nk && referenced.has(nk) && !thumbByNorm[nk]) thumbByNorm[nk] = entry;
       });
     }
 
@@ -191,7 +198,11 @@ const confirmationPdf = async (req, res) => {
       const snaps  = (await Promise.all((it.mockupSnapshots || []).map(s => resolveImageBuffer(s && s.dataUrl)))).filter(Boolean);
       const legacy = await resolveImageBuffer(it.customMockupDataUrl);
       const lib = it.mockupNum ? thumbByNorm[norm(it.mockupNum)] : null;
-      const libBufs = lib ? (await Promise.all([lib.front, lib.back].map(v => resolveImageBuffer(v)))).filter(Boolean) : [];
+      // The back composite only ships when the admin opted in (showBack) —
+      // unconditionally embedding it put plain blank garment backs on client
+      // docs that the builder preview never showed.
+      const libSides = lib ? (it.showBack ? [lib.front, lib.back] : [lib.front]) : [];
+      const libBufs = (await Promise.all(libSides.map(v => resolveImageBuffer(v)))).filter(Boolean);
       const imgs   = snaps.length ? snaps : (legacy ? [legacy] : libBufs);
       if (imgs.length) {
         ensure(110);
