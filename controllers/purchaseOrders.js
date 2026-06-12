@@ -76,10 +76,15 @@ const createPo = async (req, res) => {
       vendor = await Vendor.findOne({ name: new RegExp(`^${vendorName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }).lean();
     }
 
+    // The builder sends its local calendar day (YYYY-MM-DD) — the server
+    // clock can be a day ahead of the admin's evening, and every render pins
+    // to UTC, so seeding from the server instant shows tomorrow's date.
+    const bodyDate = String((req.body && req.body.date) || '');
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(bodyDate) ? new Date(`${bodyDate}T00:00:00Z`) : new Date();
     const po = await PurchaseOrder.create({
       orderId: order._id,
       poNumber: `#${(await nextNumber('po')).padStart(3, '0')}`,
-      date: new Date(),
+      date,
       vendorName,
       contactName: vendor ? vendor.contactName : '',
       vendorAddress: vendor ? vendor.address : '',
@@ -111,7 +116,9 @@ const updatePo = async (req, res) => {
 
     if (po.vendorName) {
       await Vendor.findOneAndUpdate(
-        { name: po.vendorName },
+        // Case-insensitive, like the createPo lookup — otherwise "heritage"
+        // and "Heritage" become two contact-book entries.
+        { name: new RegExp(`^${String(po.vendorName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
         { $set: {
           name: po.vendorName,
           contactName: po.contactName || '',

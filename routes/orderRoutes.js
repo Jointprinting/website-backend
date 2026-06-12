@@ -37,16 +37,15 @@ router.get('/clients-summary',            clientsSummary);
 router.get('/mockup-health',              mockupHealth);
 router.get('/next-numbers',               nextNumbers);
 router.get('/projects',                   listProjects);
+// Must stay above GET '/:id' — a single-segment path, so '/vendors' would
+// otherwise be captured as an order id and 500 on the cast.
+router.get('/vendors',                    poCtl.listVendors);
 router.get('/',                           listOrders);
 router.get('/:id',                        getOrder);
 router.post('/',                          createOrder);
 router.put('/:id',                        updateOrder);
 router.delete('/:id',                     deleteOrder);
 router.post('/:id/confirmation/pdf',      confirmationPdf);
-// Purchase orders (vendor POs) — note: static 'pos'/'vendors' paths must stay
-// above the generic '/:id' matchers? They don't conflict: '/pos/:poId' and
-// '/vendors' are distinct from '/:id' subpaths used here.
-router.get('/vendors',                    poCtl.listVendors);
 router.get('/:id/pos',                    poCtl.listPos);
 router.post('/:id/pos',                   poCtl.createPo);
 router.put('/pos/:poId',                  poCtl.updatePo);
