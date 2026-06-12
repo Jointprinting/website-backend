@@ -80,7 +80,18 @@ async function _loadProjectByToken(projectId, token) {
   if (!order) return { ok: false, reason: 'invalid' };
   if (!order.approvalToken || order.approvalToken !== token) return { ok: false, reason: 'invalid' };
   if (order.approvalTokenExpiresAt && order.approvalTokenExpiresAt.getTime() < Date.now()) {
-    return { ok: false, reason: 'expired', expiresAt: order.approvalTokenExpiresAt };
+    // Exception: once the client has APPROVED in the current cycle, this link
+    // becomes their order-tracking page — it must stay alive until a week
+    // after the order ARRIVES (tracking 'arrived' step), not the share TTL.
+    const approved = _currentApprovalStatus(order).status === 'approved';
+    const arrived = ((order.tracking && order.tracking.steps) || [])
+      .find(st => st.id === 'arrived' && st.completedAt);
+    const graceEnd = arrived
+      ? new Date(arrived.completedAt).getTime() + 7 * 24 * 60 * 60 * 1000
+      : Infinity;   // not arrived yet — keep the tracking page alive
+    if (!(approved && Date.now() < graceEnd)) {
+      return { ok: false, reason: 'expired', expiresAt: order.approvalTokenExpiresAt };
+    }
   }
   return { ok: true, order };
 }
@@ -147,6 +158,11 @@ const publicGetProject = async (req, res) => {
     mockupItems.forEach(m => {
       const k = norm(m.pageState && m.pageState.mockupNum);
       if (k) byNorm[k] = m;
+      // Fallback key: the picker stores the mockup NAME when an item has no
+      // number — without this the builder shows an image but the client page
+      // and PDF silently drop it.
+      const nk = norm(m.name);
+      if (nk && !byNorm[nk]) byNorm[nk] = m;
     });
     // Preserve confirmation item order + dedupe (an item might be listed twice
     // in confirmation.items if the user added the same product as separate
@@ -202,6 +218,8 @@ const publicGetProject = async (req, res) => {
       const unitCogs = n(l.blankCost) + n(l.printCost) + (qty > 0 ? setupShip / qty : 0);
       return {
         qty,
+        group:        l.group        || '',
+        accepted:     !!l.accepted,
         styleCode:    l.styleCode    || '',
         description:  l.description  || '',
         color:        l.color        || '',
@@ -226,6 +244,8 @@ const publicGetProject = async (req, res) => {
         confirmationTerms:    order.confirmationTerms,
         confirmation:         order.confirmation,
         orderDate:            order.orderDate,
+        optionsPickedAt:      order.optionsPickedAt || null,
+        hasConfirmation:      _hasConfContent(order.confirmation),
         approvalStatus:       currentStatus,
         approvalAt:           lastTerminal ? lastTerminal.at : null,
         approvalMessage:      lastTerminal ? lastTerminal.message : '',
@@ -320,6 +340,120 @@ function _actorLine(by, email, order) {
   if (by) return email ? `${by} (${email})` : by;
   return email || order.companyName || order.clientName || 'A client';
 }
+
+// Local mirror of Order.hasConfirmationContent (lean docs, no model method).
+function _hasConfContent(conf) {
+  if (!conf) return false;
+  return ((conf.items || []).length > 0) || ((conf.customLines || []).length > 0);
+}
+
+const DEFAULT_SIZES = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL'];
+
+// Server-side mirror of the builder's seedItemFromQuote — the auto-drafted
+// confirmation must look exactly like one the admin seeded by hand, so the
+// builder opens it ready to finalize (sizes left at 0; Nate distributes).
+function _seedItemFromQuote(line) {
+  const n = (v) => Number(v) || 0;
+  const q = n(line.qty);
+  const setupShip = Math.max(0, n(line.setupCost)) + Math.max(0, n(line.shippingCost));
+  const unitCost = n(line.blankCost) + n(line.printCost) + (q > 0 ? setupShip / q : 0);
+  const unitPrice = n(line.unitPrice) || +(unitCost * (n(line.markup) || 1)).toFixed(2);
+  return {
+    mockupNum: '', customMockupDataUrl: '', mockupSnapshots: [], showBack: false,
+    productName: '',
+    brandName: (line.description || '').split(/\s/)[0] || '',
+    styleCode: line.styleCode || '',
+    printType: line.printType || '',
+    color:     line.color || '',
+    printerName: '',
+    unitCost:  +unitCost.toFixed(4),
+    sizes:     DEFAULT_SIZES.map(sz => ({ label: sz, qty: 0, unitPrice })),
+  };
+}
+
+// POST /api/public/projects/:id/select?token=... — the interactive quote
+// stage. Body: { picks: [lineIndex, ...], by?, email? }. The client picks ONE
+// option per product group; standalone (ungrouped) lines are always part of
+// the order. Marks the picked lines accepted, auto-drafts the confirmation
+// for the admin to finalize, and notifies them. Re-picking is allowed until
+// a confirmation exists (the admin has started finalizing at that point).
+const publicSelectOptions = async (req, res) => {
+  try {
+    const lookup = await _loadProjectByToken(req.params.id, req.query.token);
+    if (!lookup.ok) {
+      if (lookup.reason === 'expired') return res.status(410).json({ message: 'This link has expired — ask us for a new one.', reason: 'expired' });
+      return res.status(404).json({ message: 'This link is invalid or no longer available.', reason: 'invalid' });
+    }
+    const order = lookup.order;
+    if (_currentApprovalStatus(order).status !== 'pending') {
+      return _alreadyDecidedResponse(res, order._id);
+    }
+    if (_hasConfContent(order.confirmation)) {
+      return res.status(409).json({
+        message: "Your confirmation page is already being prepared from your picks — it'll be ready shortly. If you need to change something, just reply to our email.",
+        reason: 'confirmation_exists',
+      });
+    }
+
+    const lines = order.quoteLines || [];
+    const picksRaw = (req.body && req.body.picks) || [];
+    const picks = [...new Set(picksRaw.map(Number))];
+    if (!picks.every(i => Number.isInteger(i) && i >= 0 && i < lines.length && lines[i].group)) {
+      return res.status(400).json({ message: 'Invalid selection — please refresh the page and try again.' });
+    }
+    // Exactly one pick per group.
+    const groups = [...new Set(lines.map(l => l.group).filter(Boolean))];
+    for (const g of groups) {
+      const inGroup = picks.filter(i => lines[i].group === g);
+      if (inGroup.length !== 1) {
+        return res.status(400).json({ message: `Please pick exactly one option for "${g}".` });
+      }
+    }
+
+    const by = String((req.body && req.body.by) || '').slice(0, 120).trim();
+    const email = String((req.body && req.body.email) || '').slice(0, 254).trim();
+    const now = new Date();
+    const pickSet = new Set(picks);
+    const updatedLines = lines.map((l, i) => ({ ...l, accepted: pickSet.has(i) }));
+    const chosen = updatedLines.filter(l => l.accepted || !l.group);
+    const summary = chosen
+      .map(l => `${l.group ? l.group + ': ' : ''}${l.description || l.styleCode || 'item'} × ${l.qty}`)
+      .join(' · ');
+
+    // Auto-draft the confirmation from the chosen lines so the admin opens a
+    // builder that's ready to finalize, not a blank page.
+    const draft = {
+      orderTitle: `${order.companyName || order.clientName || ''} Merch`.trim(),
+      orderDate:  order.orderDate || now,
+      shipping:   { name: order.companyName || '', attention: order.clientName || '', streetAddress: '', cityStateZip: '' },
+      items:      chosen.map(_seedItemFromQuote),
+      customLines: [],
+    };
+
+    // Doc save (not updateOne) so the pre('save') hook recomputes totals from
+    // the accepted lines.
+    const doc = await Order.findById(order._id);
+    if (!doc) return res.status(404).json({ message: 'Project not found.' });
+    doc.quoteLines = updatedLines;
+    doc.optionsPickedAt = now;
+    doc.confirmation = draft;
+    doc.approvalEvents.push({ kind: 'options_picked', message: summary, by, email, at: now });
+    await doc.save();
+
+    notifyAdminAndLog(
+      order._id,
+      `[Joint Printing] Options picked — ${order.companyName || order.clientName || 'Project'} (#${order.projectNumber || ''})`,
+      `<p><strong>${_esc(by || order.companyName || order.clientName || 'Your client')}</strong> picked their options on project #${_esc(order.projectNumber || '')}.</p>` +
+      `<p>${_esc(summary)}</p>` +
+      `<p>A confirmation draft is ready — open the builder to add sizes and mockups, then share it for approval.</p>`,
+      'Client picked options, but the email notification to you failed to send. Check your email (SendGrid) settings.',
+    );
+
+    res.json({ ok: true, pickedAt: now });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
 
 // POST /api/public/projects/:id/approve?token=... — client approval action
 const publicApprove = async (req, res) => {
@@ -641,7 +775,7 @@ const initTracking = async (req, res) => {
 module.exports = {
   ensureApprovalToken,
   sendApprovalLink,
-  publicGetProject, publicApprove, publicRequestChanges,
+  publicGetProject, publicApprove, publicRequestChanges, publicSelectOptions,
   updateTracking, initTracking,
   DEFAULT_TRACKING_STEPS,
 };

@@ -35,8 +35,25 @@ async function listItems(req, res) {
     // sync still pulls the full documents for offline editing.
     const summary = req.query.summary === '1' || req.query.summary === 'true';
     const q = StudioLibraryItem.find({ store }).sort({ savedAt: -1 });
-    if (summary) q.select('store name thumbnail client savedAt remoteId pageState.mockupNum');
+    // `data` (the BACK composite, an R2 URL post-migration) rides along so
+    // the confirmation builder can offer + preview the back side; without it
+    // the "Show back" toggle could never appear.
+    if (summary) q.select('store name thumbnail data client savedAt remoteId pageState.mockupNum');
     const items = await q.lean();
+    if (summary) {
+      // Keep the summary payload light: R2-hosted backs ship as URLs, but a
+      // legacy inline-base64 back (multi-MB) is stripped down to a hasBack
+      // flag — the builder can still offer the toggle, and the PDF/approval
+      // surfaces (which fetch full docs) render the actual image.
+      items.forEach(it => {
+        if (it.data && !/^https?:\/\//i.test(it.data)) {
+          it.hasBack = true;
+          delete it.data;
+        } else if (it.data) {
+          it.hasBack = true;
+        }
+      });
+    }
     res.json(items);
   } catch (err) {
     console.error('[studioLibrary] list error:', err);

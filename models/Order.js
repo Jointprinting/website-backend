@@ -11,7 +11,14 @@ function deriveCompanyKey(companyName, clientName) {
 // order-level setup/shipping are only folded in when no line carries its own,
 // so pre-existing quotes keep their totals until they're re-saved.
 function computeQuoteTotals(lines, orderSetup, orderShip) {
-  const arr = Array.isArray(lines) ? lines : [];
+  let arr = Array.isArray(lines) ? lines : [];
+  // Once the client has picked options, only accepted lines are the real
+  // order — summing all alternatives would inflate the total (3 brands of
+  // tee the client picks ONE of). Standalone (ungrouped) lines are always
+  // part of the order, so they count alongside the accepted picks.
+  if (arr.some(l => l && l.accepted)) {
+    arr = arr.filter(l => l && (l.accepted || !l.group));
+  }
   const n = (v) => Number(v) || 0;
   const perLineExtras = arr.reduce((s, l) => s + n(l.setupCost) + n(l.shippingCost), 0);
   const legacy = perLineExtras === 0 ? (n(orderSetup) + n(orderShip)) : 0;
@@ -94,6 +101,10 @@ const OrderSchema = new mongoose.Schema({
   // history is preserved (still visible in the activity drawer), but the
   // gate logic only looks at events newer than supersededAt.
   approvalSupersededAt:   { type: Date,   default: null },
+  // When the client submitted their option picks on the approval page (the
+  // interactive quote stage). Cleared conceptually by a new approval cycle —
+  // compare against approvalSupersededAt.
+  optionsPickedAt:        { type: Date,   default: null },
   approvalEvents: [{                                    // log of client interactions on the approval page
     kind:    { type: String },          // 'viewed' | 'approved' | 'requested_changes'
     message: { type: String, default: '' },
@@ -201,6 +212,11 @@ const OrderSchema = new mongoose.Schema({
     _id: false,
   }],
   quoteLines: [{
+    // Lines sharing a `group` label ("Bucket Hats") are alternative brand
+    // options the client picks ONE of on the approval page. Ungrouped lines
+    // are standalone (always included). `accepted` records the client's pick.
+    group:        { type: String, default: '' },
+    accepted:     { type: Boolean, default: false },
     qty:          { type: Number, default: 0 },
     styleCode:    { type: String, default: '' },
     description:  { type: String, default: '' },
