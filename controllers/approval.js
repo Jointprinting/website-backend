@@ -238,6 +238,11 @@ const publicGetProject = async (req, res) => {
         printType:    l.printType    || '',
         printDetails: l.printDetails || '',
         unitPrice:    n(l.unitPrice) || +(unitCogs * (n(l.markup) || 1)).toFixed(2),
+        // Design preview for the option card: the line's uploaded image
+        // (vendor-rendered items) or its studio mockup's thumbnail.
+        image: l.image
+          || (l.mockupNum && byNorm[norm(l.mockupNum)] && byNorm[norm(l.mockupNum)].thumbnail)
+          || '',
       };
     });
 
