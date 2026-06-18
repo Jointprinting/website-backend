@@ -693,7 +693,9 @@ const sendApprovalLink = async (req, res) => {
 
     res.json({
       ok: true,
-      url,
+      // The shareable hub link (no personal r tag) — what the dialog shows for
+      // copy/preview. Per-recipient tagged links were already sent above.
+      url: `${frontendOrigin}/approve/${order._id}?token=${order.approvalToken}`,
       expiresAt: order.approvalTokenExpiresAt,
       sentTo,
       failed,
