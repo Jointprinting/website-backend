@@ -79,6 +79,13 @@ db.once('open', () => {
 
   require('./services/jpwScheduler').startJpwScheduler();
 
+  // Bootstrap printer rate cards (insert-if-missing) so the quoter's pricing
+  // lookup has data on first deploy. Never overwrites admin edits.
+  setTimeout(() => {
+    require('./services/pricing').ensureSeeded()
+      .catch((e) => console.warn('[pricing] seed failed:', e.message));
+  }, 3000);
+
   // Idempotent: give legacy studio-library docs a remoteId so the studio's
   // sync can dedupe them (empty ones re-imported as new rows on every load).
   setTimeout(() => {
@@ -134,6 +141,7 @@ const publicApprovalRoutes = require('./routes/publicApprovalRoutes');
 const backupRoutes         = require('./routes/backupRoutes');
 const jpwRoutes            = require('./routes/jpwRoutes');
 const quickbooksRoutes     = require('./routes/quickbooksRoutes');
+const rateCardRoutes       = require('./routes/rateCardRoutes');
 
 app.use('/api/products', productRoutes);
 app.use('/api/auth', authRoutes);
@@ -150,6 +158,7 @@ app.use('/api/public', express.json(), publicApprovalRoutes);
 app.use('/api/admin/backup', backupRoutes);
 app.use('/api/jpw', express.json({ limit: '20mb' }), jpwRoutes);
 app.use('/api/quickbooks', express.json(), quickbooksRoutes);
+app.use('/api/rate-cards', express.json({ limit: '4mb' }), rateCardRoutes);
 app.use('/api/email', contactLimiter, upload.array('files', 10), emailRoutes);
 
 app.use((err, _req, res, next) => {
