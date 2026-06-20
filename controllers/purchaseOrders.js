@@ -7,6 +7,7 @@
 // remembered in a small contact book so the next PO pre-fills.
 
 const path = require('path');
+const mongoose = require('mongoose');
 const PDFDocument = require('pdfkit');
 const PurchaseOrder = require('../models/PurchaseOrder');
 const Vendor = require('../models/Vendor');
@@ -14,6 +15,7 @@ const Order = require('../models/Order');
 const { nextNumber, bumpCounterTo } = require('../utils/sequence');
 
 const JP_LOGO_PATH = path.join(__dirname, '..', 'assets', 'jp-logo.png');
+const badId = (id) => !mongoose.isValidObjectId(id);   // 404 instead of a CastError 500
 const n = (v) => Number(v) || 0;
 const money = (v) => `$${n(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -54,6 +56,7 @@ function _seedFromOrder(order) {
 // GET /api/orders/:id/pos
 const listPos = async (req, res) => {
   try {
+    if (badId(req.params.id)) return res.status(404).json({ message: 'Project not found' });
     const pos = await PurchaseOrder.find({ orderId: req.params.id }).sort({ createdAt: -1 }).lean();
     res.json({ pos });
   } catch (e) {
@@ -66,6 +69,7 @@ const listPos = async (req, res) => {
 // printerName) fills contact/address/shipMethod either way.
 const createPo = async (req, res) => {
   try {
+    if (badId(req.params.id)) return res.status(404).json({ message: 'Project not found' });
     const order = await Order.findById(req.params.id).lean();
     if (!order) return res.status(404).json({ message: 'Project not found' });
 
@@ -83,7 +87,10 @@ const createPo = async (req, res) => {
     const date = /^\d{4}-\d{2}-\d{2}$/.test(bodyDate) ? new Date(`${bodyDate}T00:00:00Z`) : new Date();
     const po = await PurchaseOrder.create({
       orderId: order._id,
-      poNumber: `#${(await nextNumber('po')).padStart(3, '0')}`,
+      // Per-vendor sequence — each printer numbered independently. A brand-new
+      // printer seeds from 0 → #001; type the next number once to continue an
+      // existing printer's old (e.g. Google Docs) run and it carries forward.
+      poNumber: `#${(await nextNumber('po', vendorName)).padStart(3, '0')}`,
       date,
       vendorName,
       contactName: vendor ? vendor.contactName : '',
@@ -102,17 +109,19 @@ const createPo = async (req, res) => {
 // vendor contact book so the next PO for this vendor pre-fills.
 const updatePo = async (req, res) => {
   try {
+    if (badId(req.params.poId)) return res.status(404).json({ message: 'PO not found' });
     const body = { ...req.body };
     delete body._id; delete body.orderId; delete body.createdAt; delete body.updatedAt;
-    // A hand-edited PO number (e.g. continuing the old Google Docs sequence)
-    // bumps the counter past itself so auto-assignment never collides.
-    if (body.poNumber) await bumpCounterTo('po', body.poNumber);
     // Keep the grand total honest: recompute from charges when present.
     if (Array.isArray(body.charges)) {
       body.grandTotal = body.charges.reduce((s, c) => s + n(c && c.amount), 0);
     }
     const po = await PurchaseOrder.findByIdAndUpdate(req.params.poId, { $set: body }, { new: true, runValidators: true }).lean();
     if (!po) return res.status(404).json({ message: 'PO not found' });
+
+    // A hand-edited PO number (e.g. continuing a printer's old Google Docs run)
+    // bumps THAT vendor's sequence past itself so auto-assignment never collides.
+    if (po.poNumber) await bumpCounterTo('po', po.poNumber, po.vendorName);
 
     if (po.vendorName) {
       await Vendor.findOneAndUpdate(
@@ -138,6 +147,7 @@ const updatePo = async (req, res) => {
 // DELETE /api/orders/pos/:poId
 const deletePo = async (req, res) => {
   try {
+    if (badId(req.params.poId)) return res.status(404).json({ message: 'PO not found' });
     await PurchaseOrder.findByIdAndDelete(req.params.poId);
     res.json({ ok: true });
   } catch (e) {
@@ -158,6 +168,7 @@ const listVendors = async (_req, res) => {
 // POST /api/orders/pos/:poId/pdf — server-rendered PDF in the house format.
 const poPdf = async (req, res) => {
   try {
+    if (badId(req.params.poId)) return res.status(404).json({ message: 'PO not found' });
     const po = await PurchaseOrder.findById(req.params.poId).lean();
     if (!po) return res.status(404).json({ message: 'PO not found' });
 
