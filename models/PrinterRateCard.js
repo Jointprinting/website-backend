@@ -26,6 +26,7 @@ const FeeSchema = new mongoose.Schema({
   label:     { type: String, default: '' },
   amount:    { type: Number, default: 0 },
   estimate:  { type: Boolean, default: false },  // true = a placeholder Nate should confirm
+  waiveOverQty: { type: Number, default: 0 },    // fee is waived when quantity exceeds this (0 = never)
   _id: false,
 });
 

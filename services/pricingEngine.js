@@ -99,6 +99,7 @@ function lookupPrice(card, input) {
   let setup = 0;
   const feeLines = [];
   (group.fees || []).forEach((f) => {
+    if (f.waiveOverQty && num(input.quantity) > num(f.waiveOverQty)) return; // free at volume (e.g. screens free over 100)
     if (f.kind === 'per_unit') {
       perUnit = round2(perUnit + num(f.amount) * (group.perLocation ? locations : 1));
       return;
