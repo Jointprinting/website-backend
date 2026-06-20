@@ -203,10 +203,18 @@ const poPdf = async (req, res) => {
       doc.font('Helvetica-Bold').fontSize(12).fillColor(GREEN).text(title, left);
       doc.moveDown(0.3);
     };
+    // A, B, … Z, AA, AB … so a long PO never wraps its item letters back to 'A'.
+    const alpha = (i, baseCode) => {
+      let s = '', x = Math.max(0, i | 0);
+      do { s = String.fromCharCode(baseCode + (x % 26)) + s; x = Math.floor(x / 26) - 1; } while (x >= 0);
+      return s;
+    };
 
     doc.x = left;
     field('Purchase Order Number', po.poNumber);
     field('Date', po.date ? new Date(po.date).toLocaleDateString('en-US', { timeZone: 'UTC' }) : '');
+    field('Due Date', po.dueDate ? new Date(po.dueDate).toLocaleDateString('en-US', { timeZone: 'UTC' }) : '');
+    field('Proof', po.proofRequired ? 'Required before production run' : '');
     field('Printer Name', po.vendorName);
     field('Contact Information', po.contactName);
     field('Address', po.vendorAddress);
@@ -227,11 +235,11 @@ const poPdf = async (req, res) => {
     if ((po.items || []).length > 0) {
       section(po.blanksProvided ? 'Product/Print Info - (blanks provided)' : 'Product/Print Order Summary');
       po.items.forEach((it, i) => {
-        const letter = String.fromCharCode(65 + (i % 26));
+        const letter = alpha(i, 65);
         doc.font('Helvetica-Bold').fontSize(10.5).fillColor(INK)
           .text(`${letter})  ${it.title || ''}`, left + 8);
         (it.details || []).forEach((d, j) => {
-          const sub = String.fromCharCode(97 + (j % 26));
+          const sub = alpha(j, 97);
           doc.font('Helvetica').fontSize(10).fillColor(MUTED)
             .text(`${sub})  ${d}`, left + 30);
         });
@@ -242,10 +250,13 @@ const poPdf = async (req, res) => {
     if ((po.charges || []).length > 0) {
       section('Order Summary');
       po.charges.forEach((c) => {
+        const rowY = doc.y;
         doc.font('Helvetica').fontSize(10).fillColor(MUTED)
-          .text(`•  ${c.label || ''}`, left + 8, doc.y, { continued: false, width: pageW - 110 });
+          .text(`•  ${c.label || ''}`, left + 8, rowY, { width: pageW - 110 });
+        // Pin the amount to the label's first line so a wrapped label can't
+        // drag the figure out of vertical alignment.
         doc.font('Helvetica-Bold').fillColor(INK)
-          .text(money(c.amount), left + pageW - 90, doc.y - 12, { width: 90, align: 'right' });
+          .text(money(c.amount), left + pageW - 90, rowY, { width: 90, align: 'right' });
         doc.moveDown(0.2);
       });
     }

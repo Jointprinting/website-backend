@@ -86,10 +86,15 @@ async function _loadProjectByToken(projectId, token) {
     const approved = _currentApprovalStatus(order).status === 'approved';
     const arrived = ((order.tracking && order.tracking.steps) || [])
       .find(st => st.id === 'arrived' && st.completedAt);
+    // Cancelled projects close immediately — no reason to keep their pricing
+    // page public. Otherwise the link lives until a week after 'arrived'; if
+    // 'arrived' is never ticked, a finite backstop (180 days past the share
+    // expiry) still closes it, so a link never stays public forever.
+    const BACKSTOP_MS = 180 * 24 * 60 * 60 * 1000;
     const graceEnd = arrived
       ? new Date(arrived.completedAt).getTime() + 7 * 24 * 60 * 60 * 1000
-      : Infinity;   // not arrived yet — keep the tracking page alive
-    if (!(approved && Date.now() < graceEnd)) {
+      : order.approvalTokenExpiresAt.getTime() + BACKSTOP_MS;
+    if (order.status === 'cancelled' || !(approved && Date.now() < graceEnd)) {
       return { ok: false, reason: 'expired', expiresAt: order.approvalTokenExpiresAt };
     }
   }
