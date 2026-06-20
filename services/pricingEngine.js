@@ -85,10 +85,15 @@ function lookupPrice(card, input) {
   let perUnit = round2(num(cell) * (group.perLocation ? locations : 1));
 
   // Setup: per-screen/per-color fees scale with color count (and locations on
-  // per-location grids); flat/digitizing fees are one-time.
+  // per-location grids); flat/digitizing fees are one-time. A 'per_unit' fee is
+  // a flat per-piece surcharge (e.g. a flash charge) folded into the unit cost.
   let setup = 0;
   const feeLines = [];
   (group.fees || []).forEach((f) => {
+    if (f.kind === 'per_unit') {
+      perUnit = round2(perUnit + num(f.amount) * (group.perLocation ? locations : 1));
+      return;
+    }
     let amt = 0;
     if (f.kind === 'per_screen' || f.kind === 'per_color') {
       amt = num(f.amount) * Math.max(1, effColors) * (group.perLocation ? locations : 1);
