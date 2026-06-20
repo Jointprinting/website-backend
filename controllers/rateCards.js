@@ -4,6 +4,7 @@
 const mongoose = require('mongoose');
 const PrinterRateCard = require('../models/PrinterRateCard');
 const { lookupPrice } = require('../services/pricingEngine');
+const product = require('./product');
 
 const badId = (id) => !mongoose.isValidObjectId(id);
 const nameRegex = (name) =>
@@ -65,4 +66,15 @@ const lookup = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
-module.exports = { list, getByName, update, lookup };
+// GET /api/rate-cards/blank-price?style=SS4500&brand=Gildan — averaged S–2XL
+// non-discounted blank cost, pulled live from the official S&S API.
+const blankPrice = async (req, res) => {
+  try {
+    const r = await product.getBlankAverage(req.query.style, req.query.brand || null);
+    res.json(r);
+  } catch (e) {
+    res.status(e.status || 500).json({ message: e.message });
+  }
+};
+
+module.exports = { list, getByName, update, lookup, blankPrice };
