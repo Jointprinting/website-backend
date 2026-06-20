@@ -5,9 +5,11 @@
 // a flat +$0.30/pc (Ace's only stated dark adder — no automatic color bump).
 // 5,000+ pieces = "call" (null cells flag a manual quote).
 //
-// ⚠️ Suspected source typos, transcribed AS PRINTED — confirm against originals:
-//   • embroidery 10,000-stitch @ 7–12 doz reads $7.90 (breaks the progression)
-//   • the 4,000-stitch row dips below the 3,000-stitch row in the first columns
+// ⚠️ Source anomalies:
+//   • embroidery 10,000-st @ 7–12 doz read $7.90 (a spike above both neighbors)
+//     — CORRECTED to $7.09 (interpolated). Override if Ace confirms $7.90.
+//   • the 4,000-st row dips below the 3,000-st row in the first two columns —
+//     left AS PRINTED (ambiguous; could be real low-volume pricing).
 // ⚠️ The screen file is named "Retail" yet is the only screen grid present —
 //   confirm these are your CONTRACT rates (not retail) before trusting margins.
 
@@ -65,7 +67,7 @@ const EMB_QTY = [1, 7, 13, 25, 49, 73, 145, 289];   // dozens
 // rows = qty (dozens) breaks, columns = stitch band (transposed from source).
 const EMB_GRID = [
   [5.66, 5.18, 5.73, 6.29, 6.85, 7.40, 7.96, 8.51, 9.07, 9.62, 10.18, 10.74, 11.29, 11.85, 12.40],
-  [4.53, 3.75, 4.31, 4.86, 5.42, 5.97, 6.53, 7.90, 7.64, 8.20, 8.75, 9.31, 9.87, 10.42, 10.98],
+  [4.53, 3.75, 4.31, 4.86, 5.42, 5.97, 6.53, 7.09, 7.64, 8.20, 8.75, 9.31, 9.87, 10.42, 10.98],
   [3.27, 3.59, 3.70, 4.14, 4.70, 5.26, 5.82, 6.37, 6.93, 7.48, 8.04, 8.60, 9.15, 9.71, 10.26],
   [2.35, 2.68, 3.24, 3.79, 4.35, 4.90, 5.46, 6.02, 6.57, 7.13, 7.68, 8.24, 8.79, 9.35, 9.90],
   [2.15, 2.56, 3.12, 3.67, 4.23, 4.78, 5.34, 5.90, 6.45, 7.01, 7.56, 8.12, 8.68, 9.23, 9.79],

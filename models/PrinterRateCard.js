@@ -55,6 +55,7 @@ const GroupSchema = new mongoose.Schema({
   columns:       { type: [ColumnSchema], default: [] },
   grid:          { type: mongoose.Schema.Types.Mixed, default: [] }, // qtyBreaks × columns of Number|null (null = N/A)
   perLocation:   { type: Boolean, default: false },   // multiply unit price (and per-screen fees) by # locations
+  areaPriced:    { type: Boolean, default: false },   // grid is a $/sq-in rate; multiply by design area (DTF)
   fees:          { type: [FeeSchema], default: [] },
   rules:         { type: [String], default: [] },     // e.g. dark_underbase_add_color
   addOns:        { type: [AddOnSchema], default: [] },

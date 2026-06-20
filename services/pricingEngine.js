@@ -82,7 +82,16 @@ function lookupPrice(card, input) {
   if (cell == null) { out.flags.push('That quantity / tier isn’t on the matrix — needs a manual quote.'); return out; }
 
   const locations = Math.max(1, num(input.numLocations) || 1);
-  let perUnit = round2(num(cell) * (group.perLocation ? locations : 1));
+  // Area-priced groups (e.g. DTF, charged $/sq-in) multiply the rate by the
+  // design area; everything else uses the grid value as the per-unit price.
+  let perUnit;
+  if (group.areaPriced) {
+    const area = num(input.areaSqIn);
+    if (area <= 0) out.flags.push('Enter the design area (sq in) to price this.');
+    perUnit = round2(num(cell) * area * (group.perLocation ? locations : 1));
+  } else {
+    perUnit = round2(num(cell) * (group.perLocation ? locations : 1));
+  }
 
   // Setup: per-screen/per-color fees scale with color count (and locations on
   // per-location grids); flat/digitizing fees are one-time. A 'per_unit' fee is
@@ -135,6 +144,7 @@ function lookupPrice(card, input) {
     qtyBreak: breaks[rowIdx],
     column: (group.columns[colIdx] && (group.columns[colIdx].label || group.columns[colIdx].key)) || '',
     effectiveColors: effColors || undefined,
+    areaSqIn: group.areaPriced ? num(input.areaSqIn) : undefined,
     locations,
     unitFromGrid: num(cell),
     fees: feeLines,
