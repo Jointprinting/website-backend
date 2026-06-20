@@ -8,6 +8,7 @@ router.use(requireAdmin);
 
 // Literal paths first so they aren't shadowed by '/by-name/:printerName'.
 router.get('/', ctl.list);
+router.get('/blank-price', ctl.blankPrice);
 router.post('/lookup', ctl.lookup);
 router.get('/by-name/:printerName', ctl.getByName);
 router.put('/:id', ctl.update);
