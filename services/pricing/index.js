@@ -15,6 +15,7 @@ const SEEDS = [
   require('./seeds/blueFrog'),
   require('./seeds/coleApparel'),
   require('./seeds/eastEndInk'),
+  require('./seeds/arcadia'),
 ];
 
 // Insert-if-missing: bootstraps each printer's rate card on first boot WITHOUT
