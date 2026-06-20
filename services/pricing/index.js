@@ -6,6 +6,8 @@ const { lookupPrice } = require('../pricingEngine');
 
 const SEEDS = [
   require('./seeds/heritage'),
+  require('./seeds/designerTs'),
+  require('./seeds/ace'),
 ];
 
 // Insert-if-missing: bootstraps each printer's rate card on first boot WITHOUT
