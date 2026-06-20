@@ -25,6 +25,11 @@ const PurchaseOrderSchema = new mongoose.Schema({
   },
   shipMethod: { type: String, default: '' },          // "UPS Acct # JR2257"
 
+  // Hard / in-hands due date the printer must hit (most POs carry one).
+  dueDate:       { type: Date,    default: null },
+  // Prints a "proof required before production run" line when true.
+  proofRequired: { type: Boolean, default: false },
+
   // True for apparel jobs where JP supplies the garments — flips the section
   // header to "Product/Print Info - (blanks provided)".
   blanksProvided: { type: Boolean, default: false },
