@@ -25,6 +25,7 @@ const TransactionSchema = new mongoose.Schema({
   description: { type: String, default: '' },
   amount:      { type: Number, required: true },             // always positive
   qbSynced:    { type: Boolean, default: false },
+  receiptUrl:  { type: String, default: '' },                // stored invoice/receipt file (R2)
   year:        { type: Number, index: true },                // denormalized for fast filtering
   source:      { type: String, default: 'manual' },          // 'import' | 'order:auto' | 'manual'
 }, { timestamps: true });

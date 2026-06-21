@@ -42,6 +42,7 @@ function _getClient() {
 const EXT_BY_MIME = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg',
   'image/webp': 'webp', 'image/gif': 'gif', 'image/svg+xml': 'svg',
+  'image/heic': 'heic', 'application/pdf': 'pdf',
 };
 
 function _publicUrl(key) {
