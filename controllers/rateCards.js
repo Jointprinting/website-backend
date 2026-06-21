@@ -3,6 +3,7 @@
 
 const mongoose = require('mongoose');
 const PrinterRateCard = require('../models/PrinterRateCard');
+const Order = require('../models/Order');
 const { lookupPrice } = require('../services/pricingEngine');
 const product = require('./product');
 
@@ -14,6 +15,13 @@ const nameRegex = (name) =>
 const list = async (_req, res) => {
   try {
     const cards = await PrinterRateCard.find({}).sort({ printerName: 1 }).lean();
+    // Live order-volume per printer — a proven shop reads differently from a new one.
+    const counts = await Order.aggregate([
+      { $match: { printerName: { $nin: ['', null] } } },
+      { $group: { _id: '$printerName', count: { $sum: 1 } } },
+    ]);
+    const byName = {};
+    counts.forEach((c) => { byName[String(c._id).trim().toLowerCase()] = c.count; });
     const rateCards = cards.map((c) => ({
       _id: c._id,
       printerName: c.printerName,
@@ -21,6 +29,9 @@ const list = async (_req, res) => {
       state: c.state,
       methods: [...new Set((c.groups || []).map((g) => g.method))],
       groupCount: (c.groups || []).length,
+      orderCount: byName[String(c.printerName).trim().toLowerCase()] || 0,
+      rating: c.rating || 0,
+      reliabilityNotes: c.reliabilityNotes || '',
       updatedAt: c.updatedAt,
     }));
     res.json({ rateCards });

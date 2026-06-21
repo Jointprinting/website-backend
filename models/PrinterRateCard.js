@@ -73,6 +73,11 @@ const PrinterRateCardSchema = new mongoose.Schema({
   effectiveDate: { type: String, default: '' },
   groups:        { type: [GroupSchema], default: [] },
   notes:         { type: String, default: '' },
+  // Reliability/track-record: a manual 0-5 quality rating + notes, shown next to
+  // the printer in the quoter so a proven shop reads differently from an
+  // untested new one (order volume is rolled up live from Orders).
+  rating:           { type: Number, default: 0 },
+  reliabilityNotes: { type: String, default: '' },
 }, { timestamps: true });
 
 module.exports = mongoose.model('PrinterRateCard', PrinterRateCardSchema);
