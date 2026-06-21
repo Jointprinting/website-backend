@@ -5,6 +5,7 @@
 // and per-client margin. Admin-only.
 
 const Transaction = require('../models/Transaction');
+const r2 = require('../services/r2');
 
 const num = (v) => Number(v) || 0;
 const round2 = (v) => Math.round((num(v) + Number.EPSILON) * 100) / 100;
@@ -83,9 +84,21 @@ const list = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
+// Accepts an optional `receiptDataUrl` (image or PDF) — stored to R2 and linked
+// so the invoice/receipt lives with the transaction (replacing the manual
+// "download → personal Drive" step). The actual amount entered is the source of
+// truth for COGS.
 const create = async (req, res) => {
-  try { res.json({ transaction: await Transaction.create(req.body) }); }
-  catch (e) { res.status(400).json({ message: e.message }); }
+  try {
+    const body = { ...req.body };
+    const dataUrl = body.receiptDataUrl; delete body.receiptDataUrl;
+    if (dataUrl && r2.isR2Configured()) {
+      const m = String(dataUrl).match(/^data:([a-z0-9.+/-]+);base64,(.+)$/i);
+      if (m) body.receiptUrl = await r2.uploadBuffer(Buffer.from(m[2], 'base64'), m[1].toLowerCase(), 'receipts');
+    }
+    if (body.amount != null) body.amount = Math.abs(num(body.amount));
+    res.json({ transaction: await Transaction.create(body) });
+  } catch (e) { res.status(400).json({ message: e.message }); }
 };
 const update = async (req, res) => {
   try {
