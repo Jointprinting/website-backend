@@ -93,6 +93,14 @@ db.once('open', () => {
       .catch((e) => console.warn('[studioLibrary] remoteId backfill failed:', e.message));
   }, 4_000);
 
+  // Re-pick-up any receipts left mid-read (pending/processing) so a restart or a
+  // cleared rate-limit window resumes scanning without losing anything. No-op
+  // when ANTHROPIC_API_KEY isn't set (receipts just wait for manual entry).
+  setTimeout(() => {
+    require('./services/receiptScanner').resumeOnBoot()
+      .catch((e) => console.warn('[receipts] resumeOnBoot failed:', e.message));
+  }, 6_000);
+
   // Auto-migrate any remaining base64 images to R2 (idempotent, runs in the
   // background) once R2 is configured — so existing orders / mockups / logos
   // move over without a manual Shell step. Disable with R2_AUTOMIGRATE=off.
@@ -143,6 +151,7 @@ const jpwRoutes            = require('./routes/jpwRoutes');
 const quickbooksRoutes     = require('./routes/quickbooksRoutes');
 const rateCardRoutes       = require('./routes/rateCardRoutes');
 const financeRoutes        = require('./routes/financeRoutes');
+const receiptRoutes        = require('./routes/receiptRoutes');
 
 app.use('/api/products', productRoutes);
 app.use('/api/auth', authRoutes);
@@ -161,6 +170,9 @@ app.use('/api/jpw', express.json({ limit: '20mb' }), jpwRoutes);
 app.use('/api/quickbooks', express.json(), quickbooksRoutes);
 app.use('/api/rate-cards', express.json({ limit: '4mb' }), rateCardRoutes);
 app.use('/api/finances', express.json({ limit: '8mb' }), financeRoutes);
+// 40mb: a single receipt can be a ~25 MB file, which is ~34 MB as base64 JSON.
+// (The /batch zip route uses multipart via multer, so this limit doesn't gate it.)
+app.use('/api/receipts', express.json({ limit: '40mb' }), receiptRoutes);
 app.use('/api/email', contactLimiter, upload.array('files', 10), emailRoutes);
 
 app.use((err, _req, res, next) => {
