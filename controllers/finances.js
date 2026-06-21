@@ -1,8 +1,8 @@
 // Finance tracker — the clean ledger + analytics that replace the manual
 // spreadsheet and the QuickBooks re-keying. Source of truth is the DB; the
-// owner keeps an owned copy via CSV export (and the app emails it on a
-// schedule). Income vs expense is explicit; COGS links to orders for per-order
-// and per-client margin. Admin-only.
+// owner keeps an owned copy via CSV export (downloaded on demand at tax time —
+// not auto-emailed). Income vs expense is explicit; COGS links to orders for
+// per-order and per-client margin. Admin-only.
 
 const Transaction = require('../models/Transaction');
 const r2 = require('../services/r2');
