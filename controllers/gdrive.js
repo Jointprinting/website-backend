@@ -123,8 +123,7 @@ async function pushBackupToDrive(reason) {
   const auth = await GoogleDriveAuth.findOne();
   if (!auth || !auth.refreshToken) throw new Error('Google Drive is not connected.');
 
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const fileName = `joint-printing-backup-${stamp}.zip`;
+  const fileName = backup.backupFileName();
   const tmpPath  = path.join(os.tmpdir(), fileName);
 
   try {
