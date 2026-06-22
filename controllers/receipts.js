@@ -250,4 +250,42 @@ const reconcile = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
-module.exports = { upload, batch, list, getOne, reprocess, update, confirm, remove, reconcile };
+// POST /api/receipts/bulk-reconcile — for the historical back-catalog: link each
+// already-read receipt to the matching expense that's ALREADY in the ledger
+// (attach the file, mark the receipt done) WITHOUT creating a new transaction —
+// so receipts you already booked from your spreadsheet are never double-counted.
+// Only links on a confident match (exact amount + same order # or same vendor
+// near the date); anything unsure is left in 'review'. This is what saves
+// clicking through a 196-receipt back-catalog by hand.
+const bulkReconcile = async (req, res) => {
+  try {
+    const receipts = await Receipt.find({ status: 'review' }).lean();
+    const txns = await Transaction.find({ type: 'expense' }).lean();
+    const within = (a, b, days) => a && b && Math.abs(new Date(a) - new Date(b)) <= days * 86400000;
+    const usedTxn = new Set();
+    let linked = 0; let unmatched = 0;
+    for (const rc of receipts) {
+      const e = rc.extracted || {};
+      const amt = round2(num(e.amount));
+      const ord = digits(e.orderNumber);
+      const vend = ((e.vendor || '').toLowerCase().match(/[a-z&]+/) || [''])[0];
+      const cand = txns.find((t) => {
+        if (usedTxn.has(String(t._id))) return false;
+        if (!amt || Math.abs(round2(t.amount) - amt) > 0.02) return false;          // amounts must agree
+        if (ord && digits(t.orderNumber) === ord) return true;                       // same order #, or…
+        if (vend && vend.length > 2 && (t.party || '').toLowerCase().includes(vend)  // same vendor near the date
+            && (!e.date || within(t.date, e.date, 30))) return true;
+        return false;
+      });
+      if (cand) {
+        usedTxn.add(String(cand._id));
+        if (!cand.receiptUrl) await Transaction.findByIdAndUpdate(cand._id, { receiptUrl: rc.fileUrl });
+        await Receipt.findByIdAndUpdate(rc._id, { status: 'booked', transactionId: cand._id, reviewedAt: new Date() });
+        linked++;
+      } else { unmatched++; }
+    }
+    res.json({ linked, unmatched });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+module.exports = { upload, batch, list, getOne, reprocess, update, confirm, remove, reconcile, bulkReconcile };
