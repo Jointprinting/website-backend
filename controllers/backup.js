@@ -63,7 +63,15 @@ const COLLECTIONS = [
 ];
 
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
-const BACKUP_DUE_DAYS = 7;
+// Manual hard-drive backups only need to be monthly now that Google Drive
+// auto-pushes a full copy every week — this is just the third, offline safety net.
+const BACKUP_DUE_DAYS = 30;
+
+// Friendly, sortable archive name, e.g. "Joint Printing Backup 2026-06-22 1734.zip".
+function backupFileName() {
+  const iso = new Date().toISOString();
+  return `Joint Printing Backup ${iso.slice(0, 10)} ${iso.slice(11, 13)}${iso.slice(14, 16)}.zip`;
+}
 
 // Reverse of r2's EXT_BY_MIME, for restoring receipt files with a sensible
 // Content-Type so the browser renders them inline instead of downloading.
@@ -178,8 +186,7 @@ const status = async (req, res) => {
 // GET /api/admin/backup/export — streams a ZIP archive
 const exportAll = async (req, res) => {
   const startedAt = Date.now();
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const filename = `joint-printing-backup-${stamp}.zip`;
+  const filename = backupFileName();
 
   res.setHeader('Content-Type', 'application/zip');
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
@@ -324,4 +331,4 @@ const restoreAll = async (req, res) => {
   }
 };
 
-module.exports = { status, exportAll, restoreAll, writeBackupToFile };
+module.exports = { status, exportAll, restoreAll, writeBackupToFile, backupFileName };
