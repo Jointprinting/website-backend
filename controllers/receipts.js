@@ -261,42 +261,61 @@ const reconcile = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
-// POST /api/receipts/bulk-reconcile — for the historical back-catalog: link each
-// already-read receipt to the matching expense that's ALREADY in the ledger
-// (attach the file, mark the receipt done) WITHOUT creating a new transaction —
-// so receipts you already booked from your spreadsheet are never double-counted.
-// Only links on a confident match (exact amount + same order # or same vendor
-// near the date); anything unsure is left in 'review'. This is what saves
-// clicking through a 196-receipt back-catalog by hand.
+// POST /api/receipts/bulk-reconcile — one-click "sort these out" for the review
+// pile: (1) link each receipt to the matching ledger expense (attach file, no
+// new charge), matching on order # / the read vendor / OR the folder name so a
+// "Contract-DTG" folder links even when the invoice is branded "First Amendment
+// Tees"; (2) book obvious new OVERHEAD (software/fees/travel — no order # needed)
+// that isn't in the ledger; (3) leave job costs and anything flagged/odd
+// (refunds, no-amount, ambiguous) for manual review. Never double-counts: only
+// matches ledger rows that don't already carry a receipt.
 const bulkReconcile = async (req, res) => {
   try {
+    const OVERHEAD = new Set(['Software', 'Sales Tax', 'Other']);
+    const ODD = /refund|credit|not a (charge|receipt|supplier|business|vendor|invoice|merch)|personal|estimate|\bquote\b/i;
     const receipts = await Receipt.find({ status: 'review' }).lean();
-    const txns = await Transaction.find({ type: 'expense' }).lean();
+    const txns = await Transaction.find({
+      type: 'expense', $or: [{ receiptUrl: '' }, { receiptUrl: { $exists: false } }],
+    }).lean();
     const within = (a, b, days) => a && b && Math.abs(new Date(a) - new Date(b)) <= days * 86400000;
     const usedTxn = new Set();
-    let linked = 0; let unmatched = 0;
+    let linked = 0; let booked = 0; let unmatched = 0;
     for (const rc of receipts) {
       const e = rc.extracted || {};
       const amt = round2(num(e.amount));
       const ord = digits(e.orderNumber);
-      const vend = (((e.vendor || rc.folderHint || '').toLowerCase().match(/[a-z&]+/)) || [''])[0];
+      const tokens = [e.vendor, rc.folderHint]
+        .map((s) => (((s || '').toLowerCase().match(/[a-z&]+/)) || [''])[0])
+        .filter((t) => t && t.length > 2);
       const cand = txns.find((t) => {
         if (usedTxn.has(String(t._id))) return false;
-        if (!amt || Math.abs(round2(t.amount) - amt) > 0.02) return false;          // amounts must agree
-        if (ord && digits(t.orderNumber) === ord) return true;                       // same order #, or…
-        if (vend && vend.length > 2                                                  // same vendor near the date
-            && ((t.party || '').toLowerCase().includes(vend) || (t.description || '').toLowerCase().includes(vend))
-            && (!e.date || within(t.date, e.date, 45))) return true;
+        if (!amt || Math.abs(round2(t.amount) - amt) > 0.02) return false;
+        if (ord && digits(t.orderNumber) === ord) return true;
+        const party = (t.party || '').toLowerCase(); const desc = (t.description || '').toLowerCase();
+        if (tokens.some((tok) => party.includes(tok) || desc.includes(tok)) && (!e.date || within(t.date, e.date, 45))) return true;
         return false;
       });
       if (cand) {
         usedTxn.add(String(cand._id));
-        if (!cand.receiptUrl) await Transaction.findByIdAndUpdate(cand._id, { receiptUrl: rc.fileUrl });
+        await Transaction.findByIdAndUpdate(cand._id, { receiptUrl: rc.fileUrl });
         await Receipt.findByIdAndUpdate(rc._id, { status: 'booked', transactionId: cand._id, reviewedAt: new Date() });
         linked++;
-      } else { unmatched++; }
+        continue;
+      }
+      const odd = (rc.flags || []).some((f) => ODD.test(f));
+      if (amt > 0 && rc.confidence === 'high' && OVERHEAD.has(e.category) && !odd) {
+        const txn = await Transaction.create({
+          date: e.date || new Date(), type: 'expense', category: e.category || 'Other',
+          orderNumber: ord, party: e.vendor || rc.folderHint || '', description: e.summary || '',
+          amount: amt, receiptUrl: rc.fileUrl, source: 'receipt',
+        });
+        await Receipt.findByIdAndUpdate(rc._id, { status: 'booked', transactionId: txn._id, reviewedAt: new Date() });
+        booked++;
+        continue;
+      }
+      unmatched++;
     }
-    res.json({ linked, unmatched });
+    res.json({ linked, booked, unmatched });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
