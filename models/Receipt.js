@@ -26,6 +26,7 @@ const LineItemSchema = new mongoose.Schema({
 const ExtractedSchema = new mongoose.Schema({
   vendor:      { type: String, default: '' },   // who he paid (a supplier)
   date:        { type: Date,   default: null }, // receipt date (timeline)
+  kind:        { type: String, default: 'charge' }, // 'charge' (money out) | 'refund' (a credit back to you)
   amount:      { type: Number, default: null }, // the total he was charged
   currency:    { type: String, default: 'USD' },
   orderNumber: { type: String, default: '' },   // links to the customer order, if printed
