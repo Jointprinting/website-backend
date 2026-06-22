@@ -202,6 +202,69 @@ async function _download(url) {
   return Buffer.from(res.data);
 }
 
+// Decide what happens to a freshly-read receipt instead of dumping everything
+// into "needs review". The goal: you only touch the genuine edge cases.
+//   • If it matches an expense already in the ledger → LINK to it (attach the
+//     file, no new charge). Handles the historical back-catalog safely.
+//   • Else, for a going-forward single upload that read cleanly → BOOK it as a
+//     new expense (no order # required — software/gas/travel are just general).
+//   • Else (low confidence, no amount, flagged, or a zip whose item isn't in the
+//     ledger) → leave it in review.
+// Runs sequentially (queue concurrency is 1), so linked ledger rows are excluded
+// from the next receipt's search and two receipts can't grab the same entry.
+async function _autoResolve(r) {
+  const Transaction = require('../models/Transaction');
+  const round2 = (v) => Math.round((Number(v) + Number.EPSILON) * 100) / 100;
+  const digits = (v) => String(v == null ? '' : v).replace(/[^0-9]/g, '');
+  const within = (a, b, d) => a && b && Math.abs(new Date(a) - new Date(b)) <= d * 86400000;
+  const e = r.extracted || {};
+  const amt = round2(e.amount);
+  const ord = digits(e.orderNumber);
+  const vend = (((e.vendor || r.folderHint || '').toLowerCase().match(/[a-z&]+/)) || [''])[0];
+
+  if (amt > 0) {
+    // Only consider ledger expenses that don't already have a receipt attached.
+    const expenses = await Transaction.find({
+      type: 'expense', $or: [{ receiptUrl: '' }, { receiptUrl: { $exists: false } }],
+    }).select('amount party description orderNumber date').lean();
+    const cands = expenses.filter((t) => {
+      if (Math.abs(round2(t.amount) - amt) > 0.02) return false;
+      if (ord && digits(t.orderNumber) === ord) return true;
+      if (vend.length > 2
+        && ((t.party || '').toLowerCase().includes(vend) || (t.description || '').toLowerCase().includes(vend))
+        && (!e.date || within(t.date, e.date, 45))) return true;
+      return false;
+    });
+    if (cands.length) {
+      // Prefer the closest date when several rows share the amount (e.g. monthly SaaS).
+      const ref = e.date ? new Date(e.date) : null;
+      if (ref) cands.sort((a, b) => Math.abs(new Date(a.date) - ref) - Math.abs(new Date(b.date) - ref));
+      const cand = cands[0];
+      await Transaction.findByIdAndUpdate(cand._id, { receiptUrl: r.fileUrl });
+      r.transactionId = cand._id; r.status = 'booked'; r.reviewedAt = new Date();
+      return;
+    }
+
+    // No match in the ledger. Auto-book a clean single upload (going forward),
+    // but only general overhead that doesn't need an order # (software, travel,
+    // gas, fees). Job costs (blanks, printer, art, freight) pause for review so
+    // the owner can tag the order. Never auto-book the historical zip (a missed
+    // match would double-count — let the owner eyeball those).
+    const OVERHEAD = new Set(['Software', 'Sales Tax', 'Other']);
+    const flaggedNonReceipt = (r.flags || []).some((f) => /not a (supplier|business|vendor|merch)|personal|train ticket/i.test(f));
+    if (r.source !== 'batch' && r.confidence === 'high' && !flaggedNonReceipt && OVERHEAD.has(e.category)) {
+      const txn = await Transaction.create({
+        date: e.date || new Date(), type: 'expense', category: e.category || 'Other',
+        orderNumber: ord, party: e.vendor || r.folderHint || '', description: e.summary || '',
+        amount: amt, receiptUrl: r.fileUrl, source: 'receipt',
+      });
+      r.transactionId = txn._id; r.status = 'booked'; r.reviewedAt = new Date();
+      return;
+    }
+  }
+  r.status = 'review';
+}
+
 async function _processOne(id) {
   const r = await Receipt.findById(id);
   if (!r || r.status === 'booked' || r.status === 'ignored') return;
@@ -234,7 +297,7 @@ async function _processOne(id) {
     r.model = MODEL;
     r.rawResponse = { data, usage };
     r.extractionError = '';
-    r.status = 'review';
+    await _autoResolve(r);   // link/book the obvious ones; only edge cases hit review
     await r.save();
   } catch (e) {
     if (isRateLimit(e) || isOverloaded(e)) throw e;  // queue pauses + requeues
