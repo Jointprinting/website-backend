@@ -11,6 +11,7 @@ router.use(requireAdmin);
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024, files: 50 } });
 
 // Reports / batch first (literal paths before :id).
+router.post('/scan', ctl.scan);               // AI-read a receipt → suggested fields (no save)
 router.get('/reconcile', ctl.reconcile);
 router.post('/bulk-reconcile', ctl.bulkReconcile);
 router.post('/reset', ctl.resetReceipts);     // wipe receipt-booked txns + receipts; restore the ledger

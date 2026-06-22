@@ -83,6 +83,14 @@ db.once('open', () => {
   // No-op until the admin connects Drive — safe to start unconditionally.
   require('./services/gdriveBackup').startGoogleDriveBackup();
 
+  // Repair any transaction whose denormalized `year` drifted from its `date`
+  // (the cause of a phantom month appearing in the wrong year's trend).
+  setTimeout(() => {
+    require('./controllers/finances').resyncYears()
+      .then((n) => { if (n) console.log(`[finances] re-synced year on ${n} transaction(s).`); })
+      .catch((e) => console.warn('[finances] year resync failed:', e.message));
+  }, 3_000);
+
   // Idempotent: give legacy studio-library docs a remoteId so the studio's
   // sync can dedupe them (empty ones re-imported as new rows on every load).
   setTimeout(() => {

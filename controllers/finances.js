@@ -282,4 +282,19 @@ const exportCsv = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
-module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv };
+// One-time repair: re-derive `year` from `date` for any row where they drifted
+// (e.g. a date edited via findByIdAndUpdate before the update-hook existed).
+// Safe + idempotent — only corrects the denormalized filter field, never touches
+// amounts, dates, or categories. Run on boot; after the first pass it's a no-op.
+const resyncYears = async () => {
+  const rows = await Transaction.find({}, 'date year').lean();
+  let fixed = 0;
+  for (const r of rows) {
+    if (!r.date) continue;
+    const y = new Date(r.date).getUTCFullYear();
+    if (r.year !== y) { await Transaction.updateOne({ _id: r._id }, { $set: { year: y } }); fixed++; }
+  }
+  return fixed;
+};
+
+module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, resyncYears };

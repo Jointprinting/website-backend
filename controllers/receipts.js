@@ -60,6 +60,38 @@ const upload = async (req, res) => {
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
+// POST /api/receipts/scan — read a receipt with the AI and return SUGGESTED
+// transaction fields without saving anything. Powers "attach a receipt while
+// adding a finance entry → auto-fill what it can, you review + edit". Purely a
+// convenience read: it never creates a Receipt or a Transaction. Returns
+// { configured:false } (not an error) when no API key is set, so the caller can
+// just fall back to manual entry.
+const scan = async (req, res) => {
+  try {
+    if (!scanner.isConfigured()) return res.json({ configured: false });
+    const dataUrl = (req.body && req.body.dataUrl) || '';
+    const m = String(dataUrl).match(/^data:([a-z0-9.+/-]+);base64,(.+)$/i);
+    if (!m) return res.status(400).json({ message: 'Provide a receipt file (dataUrl).' });
+    const { data } = await scanner.extract(Buffer.from(m[2], 'base64'), m[1].toLowerCase());
+    const ex = scanner.mapExtracted(data);
+    const isRefund = ex.kind === 'refund';
+    res.json({
+      configured: true,
+      fields: {
+        type:        isRefund ? 'income' : 'expense',
+        category:    isRefund ? 'Refund' : (ex.category || 'Other'),
+        party:       ex.vendor || '',
+        amount:      ex.amount != null ? ex.amount : '',
+        date:        ex.date ? new Date(ex.date).toISOString().slice(0, 10) : '',
+        orderNumber: digits(ex.orderNumber),
+        description: ex.summary || '',
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 // POST /api/receipts/batch — multipart: a single .zip of receipts (or several
 // loose files). Each receipt-like entry is stored + queued. For the historical
 // back-catalog upload.
@@ -344,4 +376,4 @@ const archiveRest = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
-module.exports = { upload, batch, list, getOne, reprocess, update, confirm, remove, reconcile, bulkReconcile, clearAll, resetReceipts, archiveRest };
+module.exports = { upload, scan, batch, list, getOne, reprocess, update, confirm, remove, reconcile, bulkReconcile, clearAll, resetReceipts, archiveRest };

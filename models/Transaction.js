@@ -36,6 +36,21 @@ TransactionSchema.pre('save', function syncYear(next) {
   next();
 });
 
+// Same invariant for update paths — findByIdAndUpdate / findOneAndUpdate do NOT
+// fire the 'save' hook, so without this an edit that moves a transaction's date
+// would leave `year` stale (the row then shows up under the wrong year in the
+// P&L and as a phantom month in the trend chart).
+TransactionSchema.pre('findOneAndUpdate', function syncYearOnUpdate(next) {
+  const u = this.getUpdate() || {};
+  const date = u.date != null ? u.date : (u.$set && u.$set.date);
+  if (date != null) {
+    const y = new Date(date).getUTCFullYear();
+    if (u.$set) u.$set.year = y; else u.year = y;
+    this.setUpdate(u);
+  }
+  next();
+});
+
 TransactionSchema.statics.CATEGORIES = CATEGORIES;
 TransactionSchema.statics.COGS_CATEGORIES = COGS_CATEGORIES;
 
