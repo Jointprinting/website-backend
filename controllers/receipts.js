@@ -59,7 +59,15 @@ const batch = async (req, res) => {
     if (!files.length) return res.status(400).json({ message: 'No files uploaded.' });
     const created = [];
     const skipped = [];
+    const failed = [];
     const unzipper = require('unzipper');
+
+    // One file's failure (corrupt PDF, transient R2 hiccup) must not abort the
+    // whole batch — keep going and report what failed.
+    const ingestSafe = async (buf, mime, name) => {
+      try { const rec = await _ingest(buf, mime, name, 'batch'); created.push(rec._id); }
+      catch (e) { failed.push(`${name}: ${e.message}`); }
+    };
 
     for (const f of files) {
       const isZip = /\.zip$/i.test(f.originalname) || f.mimetype === 'application/zip';
@@ -67,20 +75,19 @@ const batch = async (req, res) => {
         const dir = await unzipper.Open.buffer(f.buffer);
         for (const entry of dir.files) {
           if (entry.type !== 'File' || !isReceiptFile(entry.path)) { if (entry.type === 'File') skipped.push(entry.path); continue; }
-          const buf = await entry.buffer();
+          let buf;
+          try { buf = await entry.buffer(); } catch (e) { failed.push(`${entry.path}: ${e.message}`); continue; }
           const ext = entry.path.split('.').pop().toLowerCase();
-          const rec = await _ingest(buf, EXT_MIME[ext], entry.path.split('/').pop(), 'batch');
-          created.push(rec._id);
+          await ingestSafe(buf, EXT_MIME[ext], entry.path.split('/').pop());
         }
       } else if (isReceiptFile(f.originalname)) {
         const ext = f.originalname.split('.').pop().toLowerCase();
-        const rec = await _ingest(f.buffer, EXT_MIME[ext] || f.mimetype, f.originalname, 'batch');
-        created.push(rec._id);
+        await ingestSafe(f.buffer, EXT_MIME[ext] || f.mimetype, f.originalname);
       } else {
         skipped.push(f.originalname);
       }
     }
-    res.json({ created: created.length, skipped, queue: scanner.queueStatus() });
+    res.json({ created: created.length, skipped, failed, queue: scanner.queueStatus() });
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
