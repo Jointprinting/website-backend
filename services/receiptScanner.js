@@ -90,7 +90,8 @@ const RECORD_TOOL = {
     properties: {
       vendor:      { type: 'string', description: 'The business that was paid (the supplier/printer/shipper).' },
       date:        { type: 'string', description: 'Receipt/invoice date as YYYY-MM-DD. Empty string if none is printed.' },
-      amount:      { type: 'number', description: 'The TOTAL amount charged (grand total incl. tax & shipping).' },
+      amount:      { type: 'number', description: 'The TOTAL on the document as a POSITIVE number (incl. tax & shipping).' },
+      kind:        { type: 'string', enum: ['charge', 'refund'], description: 'Money OUT or money BACK? "charge" = an invoice/receipt you paid. "refund" = a refund, credit memo, return, "amount refunded", or a negative/credit total coming back to you.' },
       currency:    { type: 'string', description: 'ISO currency code, default USD.' },
       orderNumber: { type: 'string', description: 'Any PO / order / job number printed on it (digits only ok). Empty if none.' },
       category:    { type: 'string', enum: EXPENSE_CATEGORIES, description: 'Best-fit expense category.' },
@@ -127,6 +128,7 @@ const SYSTEM = [
   '- NEVER refuse, and do not judge whether a purchase looks "business" or "personal" — always extract the data. The owner decides how to categorize it.',
   '- Category guidance: blank garments (S&S, SanMar, Alphabroder) → "Blank COGS"; contract printing/embroidery/decorating/patches → "Printer COGS"; parcel/freight shipping (UPS, USPS, FedEx, ArcBest) → "Shipping"; digitizing/vectoring/art fees → "Art"; sales commissions → "Commission"; software/SaaS (Render, Google, Notion, Anthropic, OpenAI, Cloudflare, Adobe) → "Software"; sales tax / state revenue → "Sales Tax"; travel/tolls/misc (Amtrak, NJ Transit, ParkMobile) and anything else → "Other".',
   '- Only the vendor may be inferred from the folder; if another field is not present, leave it empty/null and add a flag rather than guessing.',
+  '- CHARGE vs REFUND: set "kind" to "refund" when the document is money coming BACK to you — a refund, credit memo, return, or a negative/credit total — otherwise "charge". The amount stays the positive number shown.',
   '- Always call the record_receipt tool exactly once.',
 ].join('\n');
 
@@ -163,6 +165,7 @@ function mapExtracted(d) {
   return {
     vendor: (d.vendor || '').trim(),
     date,
+    kind: /refund|credit|return/i.test(d.kind || '') ? 'refund' : 'charge',
     amount: n(d.amount),
     currency: (d.currency || 'USD').toUpperCase(),
     orderNumber: String(d.orderNumber || '').trim(),
@@ -212,6 +215,12 @@ async function _download(url) {
 //     ledger) → leave it in review.
 // Runs sequentially (queue concurrency is 1), so linked ledger rows are excluded
 // from the next receipt's search and two receipts can't grab the same entry.
+// Receipts are a BACKUP / evidence layer — they NEVER create ledger entries on
+// their own (the ledger, from the spreadsheet, is the source of truth and it
+// reconciles to the bank). The only automatic action is attaching a receipt's
+// file to the matching expense ALREADY in the ledger. A credit/refund never
+// matches an expense. Everything else waits in review, where you confirm it —
+// which is how a brand-new cost (or one with no receipt) actually gets entered.
 async function _autoResolve(r) {
   const Transaction = require('../models/Transaction');
   const round2 = (v) => Math.round((Number(v) + Number.EPSILON) * 100) / 100;
@@ -224,8 +233,8 @@ async function _autoResolve(r) {
     .map((s) => (((s || '').toLowerCase().match(/[a-z&]+/)) || [''])[0])
     .filter((t) => t && t.length > 2);
 
-  if (amt > 0) {
-    // Only consider ledger expenses that don't already have a receipt attached.
+  if (amt > 0 && e.kind !== 'refund') {
+    // Attach to a matching ledger expense that doesn't already carry a receipt.
     const expenses = await Transaction.find({
       type: 'expense', $or: [{ receiptUrl: '' }, { receiptUrl: { $exists: false } }],
     }).select('amount party description orderNumber date').lean();
@@ -241,26 +250,8 @@ async function _autoResolve(r) {
       // Prefer the closest date when several rows share the amount (e.g. monthly SaaS).
       const ref = e.date ? new Date(e.date) : null;
       if (ref) cands.sort((a, b) => Math.abs(new Date(a.date) - ref) - Math.abs(new Date(b.date) - ref));
-      const cand = cands[0];
-      await Transaction.findByIdAndUpdate(cand._id, { receiptUrl: r.fileUrl });
-      r.transactionId = cand._id; r.status = 'booked'; r.reviewedAt = new Date();
-      return;
-    }
-
-    // No match in the ledger. Auto-book a clean single upload (going forward),
-    // but only general overhead that doesn't need an order # (software, travel,
-    // gas, fees). Job costs (blanks, printer, art, freight) pause for review so
-    // the owner can tag the order. Never auto-book the historical zip (a missed
-    // match would double-count — let the owner eyeball those).
-    const OVERHEAD = new Set(['Software', 'Sales Tax', 'Other']);
-    const flaggedNonReceipt = (r.flags || []).some((f) => /refund|credit|not a (charge|receipt|supplier|business|vendor|invoice|merch)|personal|estimate|\bquote\b/i.test(f));
-    if (r.source !== 'batch' && r.confidence === 'high' && !flaggedNonReceipt && OVERHEAD.has(e.category)) {
-      const txn = await Transaction.create({
-        date: e.date || new Date(), type: 'expense', category: e.category || 'Other',
-        orderNumber: ord, party: e.vendor || r.folderHint || '', description: e.summary || '',
-        amount: amt, receiptUrl: r.fileUrl, source: 'receipt',
-      });
-      r.transactionId = txn._id; r.status = 'booked'; r.reviewedAt = new Date();
+      await Transaction.findByIdAndUpdate(cands[0]._id, { receiptUrl: r.fileUrl });
+      r.transactionId = cands[0]._id; r.status = 'booked'; r.reviewedAt = new Date();
       return;
     }
   }

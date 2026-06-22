@@ -13,6 +13,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100
 // Reports / batch first (literal paths before :id).
 router.get('/reconcile', ctl.reconcile);
 router.post('/bulk-reconcile', ctl.bulkReconcile);
+router.post('/reset', ctl.resetReceipts);     // wipe receipt-booked txns + receipts; restore the ledger
 router.post('/batch', upload.array('files', 50), ctl.batch);
 
 router.get('/', ctl.list);

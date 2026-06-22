@@ -167,24 +167,27 @@ const confirm = async (req, res) => {
     if (!amount) return res.status(400).json({ message: 'An amount is required to book this receipt.' });
     const date = e.date ? new Date(e.date) : new Date();
     const orderNumber = digits(e.orderNumber);
-    const category = e.category || 'Other';
+    // A credit/refund books as income (Refund), not an expense.
+    const refund = e.kind === 'refund';
+    const type = refund ? 'income' : 'expense';
+    const category = refund ? 'Refund' : (e.category || 'Other');
 
-    // Duplicate guard: a booked/imported expense with the same order # and the
-    // same amount is very likely the same cost already in the ledger.
+    // Duplicate guard: a same-type, same-amount entry with the same order #
+    // (or vendor) is very likely already in the ledger.
     if (!req.body.force) {
-      const dupQ = { type: 'expense', amount, _id: { $exists: true } };
+      const dupQ = { type, amount, _id: { $exists: true } };
       if (orderNumber) dupQ.orderNumber = orderNumber; else dupQ.party = e.vendor || '';
       const dup = await Transaction.findOne(dupQ).lean();
       if (dup && String(dup._id) !== String(rec.transactionId || '')) {
         return res.status(409).json({
-          message: 'A matching expense is already in the ledger.',
+          message: `A matching ${type} is already in the ledger.`,
           duplicate: { id: dup._id, date: dup.date, party: dup.party, amount: dup.amount, category: dup.category, orderNumber: dup.orderNumber },
         });
       }
     }
 
     const fields = {
-      date, type: 'expense', category, orderNumber,
+      date, type, category, orderNumber,
       party: e.vendor || '', description: e.summary || '', amount,
       receiptUrl: rec.fileUrl, source: 'receipt',
     };
@@ -271,15 +274,13 @@ const reconcile = async (req, res) => {
 // matches ledger rows that don't already carry a receipt.
 const bulkReconcile = async (req, res) => {
   try {
-    const OVERHEAD = new Set(['Software', 'Sales Tax', 'Other']);
-    const ODD = /refund|credit|not a (charge|receipt|supplier|business|vendor|invoice|merch)|personal|estimate|\bquote\b/i;
     const receipts = await Receipt.find({ status: 'review' }).lean();
     const txns = await Transaction.find({
       type: 'expense', $or: [{ receiptUrl: '' }, { receiptUrl: { $exists: false } }],
     }).lean();
     const within = (a, b, days) => a && b && Math.abs(new Date(a) - new Date(b)) <= days * 86400000;
     const usedTxn = new Set();
-    let linked = 0; let booked = 0; let unmatched = 0;
+    let linked = 0; let unmatched = 0;
     for (const rc of receipts) {
       const e = rc.extracted || {};
       const amt = round2(num(e.amount));
@@ -300,22 +301,24 @@ const bulkReconcile = async (req, res) => {
         await Transaction.findByIdAndUpdate(cand._id, { receiptUrl: rc.fileUrl });
         await Receipt.findByIdAndUpdate(rc._id, { status: 'booked', transactionId: cand._id, reviewedAt: new Date() });
         linked++;
-        continue;
-      }
-      const odd = (rc.flags || []).some((f) => ODD.test(f));
-      if (amt > 0 && rc.confidence === 'high' && OVERHEAD.has(e.category) && !odd) {
-        const txn = await Transaction.create({
-          date: e.date || new Date(), type: 'expense', category: e.category || 'Other',
-          orderNumber: ord, party: e.vendor || rc.folderHint || '', description: e.summary || '',
-          amount: amt, receiptUrl: rc.fileUrl, source: 'receipt',
-        });
-        await Receipt.findByIdAndUpdate(rc._id, { status: 'booked', transactionId: txn._id, reviewedAt: new Date() });
-        booked++;
-        continue;
-      }
-      unmatched++;
+      } else { unmatched++; }
     }
-    res.json({ linked, booked, unmatched });
+    res.json({ linked, unmatched });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+// POST /api/receipts/reset — undo the receipt booking entirely: delete every
+// ledger entry that came FROM a receipt (source:'receipt'), detach receipt files
+// from the imported ledger rows, and clear all receipts. Restores the validated
+// spreadsheet ledger exactly (source:'import'/'manual'/'order:auto' untouched).
+const resetReceipts = async (req, res) => {
+  try {
+    const delTxn = await Transaction.deleteMany({ source: 'receipt' });
+    await Transaction.updateMany({ receiptUrl: { $nin: ['', null] } }, { $set: { receiptUrl: '' } });
+    const recs = await Receipt.find({}).select('fileUrl').lean();
+    await Promise.all(recs.map((r) => r2.deleteByUrl(r.fileUrl).catch(() => {})));
+    const delRec = await Receipt.deleteMany({});
+    res.json({ deletedTransactions: delTxn.deletedCount || 0, deletedReceipts: delRec.deletedCount || 0 });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
@@ -331,4 +334,4 @@ const clearAll = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
-module.exports = { upload, batch, list, getOne, reprocess, update, confirm, remove, reconcile, bulkReconcile, clearAll };
+module.exports = { upload, batch, list, getOne, reprocess, update, confirm, remove, reconcile, bulkReconcile, clearAll, resetReceipts };
