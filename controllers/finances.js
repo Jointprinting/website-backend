@@ -102,7 +102,15 @@ const create = async (req, res) => {
 };
 const update = async (req, res) => {
   try {
-    const t = await Transaction.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
+    const body = { ...req.body };
+    // Allow attaching (or replacing) a receipt on an existing entry later.
+    const dataUrl = body.receiptDataUrl; delete body.receiptDataUrl;
+    if (dataUrl && r2.isR2Configured()) {
+      const m = String(dataUrl).match(/^data:([a-z0-9.+/-]+);base64,(.+)$/i);
+      if (m) body.receiptUrl = await r2.uploadBuffer(Buffer.from(m[2], 'base64'), m[1].toLowerCase(), 'receipts');
+    }
+    if (body.amount != null) body.amount = Math.abs(num(body.amount));
+    const t = await Transaction.findByIdAndUpdate(req.params.id, body, { new: true, runValidators: true });
     if (!t) return res.status(404).json({ message: 'Not found' });
     res.json({ transaction: t });
   } catch (e) { res.status(400).json({ message: e.message }); }
@@ -197,6 +205,65 @@ const byOrder = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
+// GET /api/finances/by-month?year=  — monthly income / expense / net, for the
+// trend chart. Owner equity moves excluded (same as the P&L).
+const byMonth = async (req, res) => {
+  try {
+    const match = req.query.year ? { year: Number(req.query.year) } : {};
+    const rows = await Transaction.aggregate([
+      { $match: match },
+      { $group: { _id: { y: { $year: '$date' }, m: { $month: '$date' }, type: '$type', category: '$category' }, total: { $sum: '$amount' } } },
+    ]);
+    const map = {};
+    rows.forEach((r) => {
+      const key = `${r._id.y}-${String(r._id.m).padStart(2, '0')}`;
+      const o = (map[key] ||= { month: key, income: 0, expense: 0 });
+      const amt = round2(r.total);
+      if (r._id.type === 'income') { if (r._id.category !== 'Owner Contribution') o.income += amt; }
+      else if (r._id.category !== 'Owner Draw') o.expense += amt;
+    });
+    const months = Object.values(map)
+      .map((o) => ({ month: o.month, income: round2(o.income), expense: round2(o.expense), net: round2(o.income - o.expense) }))
+      .sort((a, b) => a.month.localeCompare(b.month));
+    res.json({ months });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+// GET /api/finances/by-client?year=  — profit rolled up per client across all
+// their orders (anchored to the sale year, like by-order). The "who's actually
+// worth the most to me" view.
+const byClient = async (req, res) => {
+  try {
+    const year = req.query.year ? Number(req.query.year) : null;
+    const rows = await Transaction.find({ orderNumber: { $ne: '' } }).lean();
+    const cogs = new Set(Transaction.COGS_CATEGORIES);
+    const orders = {};
+    rows.forEach((t) => {
+      const o = (orders[t.orderNumber] ||= { client: '', revenue: 0, cost: 0, saleDate: null, firstDate: null });
+      const d = t.date ? new Date(t.date) : null;
+      if (d && (!o.firstDate || d < o.firstDate)) o.firstDate = d;
+      if (t.type === 'income' && t.category === 'Customer Sales') {
+        o.revenue += t.amount; if (!o.client) o.client = t.party;
+        if (d && (!o.saleDate || d < o.saleDate)) o.saleDate = d;
+      } else if (t.type === 'expense' && cogs.has(t.category)) o.cost += t.amount;
+    });
+    const byC = {};
+    Object.values(orders).forEach((o) => {
+      const anchor = o.saleDate || o.firstDate;
+      const oy = anchor ? new Date(anchor).getUTCFullYear() : null;
+      if (year && oy !== year) return;
+      const name = ((o.client || '').trim()) || '—';
+      const c = (byC[name] ||= { client: name, revenue: 0, cost: 0, orders: 0 });
+      c.revenue += o.revenue; c.cost += o.cost; c.orders += 1;
+    });
+    const clients = Object.values(byC).map((c) => {
+      const profit = round2(c.revenue - c.cost);
+      return { client: c.client, orders: c.orders, revenue: round2(c.revenue), cost: round2(c.cost), profit, margin: c.revenue ? round2((profit / c.revenue) * 100) : 0 };
+    }).sort((a, b) => b.profit - a.profit);
+    res.json({ clients });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
 // GET /api/finances/export?year=  — CSV download of the ledger.
 const exportCsv = async (req, res) => {
   try {
@@ -215,4 +282,4 @@ const exportCsv = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
-module.exports = { importCsv, list, create, update, remove, summary, byOrder, exportCsv };
+module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv };
