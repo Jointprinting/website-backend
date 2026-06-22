@@ -79,13 +79,6 @@ db.once('open', () => {
 
   require('./services/jpwScheduler').startJpwScheduler();
 
-  // Bootstrap printer rate cards (insert-if-missing) so the quoter's pricing
-  // lookup has data on first deploy. Never overwrites admin edits.
-  setTimeout(() => {
-    require('./services/pricing').ensureSeeded()
-      .catch((e) => console.warn('[pricing] seed failed:', e.message));
-  }, 3000);
-
   // Idempotent: give legacy studio-library docs a remoteId so the studio's
   // sync can dedupe them (empty ones re-imported as new rows on every load).
   setTimeout(() => {
@@ -149,7 +142,6 @@ const publicApprovalRoutes = require('./routes/publicApprovalRoutes');
 const backupRoutes         = require('./routes/backupRoutes');
 const jpwRoutes            = require('./routes/jpwRoutes');
 const quickbooksRoutes     = require('./routes/quickbooksRoutes');
-const rateCardRoutes       = require('./routes/rateCardRoutes');
 const financeRoutes        = require('./routes/financeRoutes');
 const receiptRoutes        = require('./routes/receiptRoutes');
 
@@ -168,7 +160,6 @@ app.use('/api/public', express.json(), publicApprovalRoutes);
 app.use('/api/admin/backup', backupRoutes);
 app.use('/api/jpw', express.json({ limit: '20mb' }), jpwRoutes);
 app.use('/api/quickbooks', express.json(), quickbooksRoutes);
-app.use('/api/rate-cards', express.json({ limit: '4mb' }), rateCardRoutes);
 app.use('/api/finances', express.json({ limit: '8mb' }), financeRoutes);
 // 40mb: a single receipt can be a ~25 MB file, which is ~34 MB as base64 JSON.
 // (The /batch zip route uses multipart via multer, so this limit doesn't gate it.)
