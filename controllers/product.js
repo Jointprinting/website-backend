@@ -1110,67 +1110,6 @@ function summarizeSsStyle(skus) {
   };
 }
 
-// ── Blank-cost lookup for the quoter ────────────────────────────────────────
-// Average the NON-discounted (piecePrice) blank cost across S–2XL for a style.
-// Pure helper so every edge case (missing sizes, youth/one-size styles, empty)
-// is unit-testable without a live S&S call.
-const BLANK_SIZES = ['S', 'M', 'L', 'XL', '2XL'];
-
-function averageBlankFromSkus(skus) {
-  const readPrice = (s) => {
-    for (const f of ['piecePrice', 'pieceprice', 'price']) {
-      const v = parseFloat(s && s[f]);
-      if (Number.isFinite(v) && v > 0) return v;
-    }
-    return null;
-  };
-  // Lowest piece price per size across colors — premium colors can carry an
-  // upcharge; the base rate is the standard non-discounted blank cost.
-  const perSize = new Map();
-  for (const sku of skus || []) {
-    const size = String(sku.sizeName || sku.sizeCode || '').trim().toUpperCase();
-    const price = readPrice(sku);
-    if (!size || price == null) continue;
-    perSize.set(size, perSize.has(size) ? Math.min(perSize.get(size), price) : price);
-  }
-  if (perSize.size === 0) { const e = new Error('No priced sizes returned for this style.'); e.status = 404; throw e; }
-
-  const found = BLANK_SIZES.filter((s) => perSize.has(s));
-  const missing = BLANK_SIZES.filter((s) => !perSize.has(s));
-  const prices = {};
-  BLANK_SIZES.forEach((s) => { prices[s] = perSize.has(s) ? perSize.get(s) : null; });
-
-  // Prefer S–2XL; if a style carries none of them (youth / one-size), average
-  // whatever sizes it does have so the user still gets a starting number.
-  const basis = found.length ? found.map((s) => perSize.get(s)) : [...perSize.values()];
-  const average = Math.round((basis.reduce((a, b) => a + b, 0) / basis.length) * 100) / 100;
-  return {
-    average, found, missing, prices,
-    note: found.length ? '' : 'No S–2XL sizes on this style; averaged all available sizes.',
-  };
-}
-
-// Live lookup: resolve the style on S&S, fetch its SKUs, average S–2XL.
-exports.getBlankAverage = async (styleName, brandHint = null) => {
-  const style = String(styleName || '').trim();
-  if (!style) { const e = new Error('A style code is required.'); e.status = 400; throw e; }
-  if (!SS_ACCOUNT || !SS_API_KEY) { const e = new Error('S&S API is not configured on the server.'); e.status = 503; throw e; }
-
-  const match = await findStyleByName(style, brandHint);
-  if (!match || !match.styleID) { const e = new Error(`Style "${style}" wasn't found on S&S.`); e.status = 404; throw e; }
-
-  const skus = await fetchSSProducts(null, match.styleID);
-  const avg = averageBlankFromSkus(skus);
-  return {
-    style: match.style || match.styleName || style,
-    styleID: match.styleID,
-    brandName: match.vendor || match.brandName || '',
-    ...avg,
-  };
-};
-
-exports._averageBlankFromSkus = averageBlankFromSkus;
-
 exports.syncFromSS = async (req, res) => {
   try {
     ensureSsCredentials();
