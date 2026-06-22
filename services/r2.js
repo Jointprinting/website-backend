@@ -90,6 +90,45 @@ async function uploadDataUrl(maybeDataUrl, keyPrefix = 'misc') {
   return uploadBuffer(parsed.buffer, parsed.contentType, keyPrefix);
 }
 
+// The object key for one of our public URLs (the part after the base), or null
+// if the string isn't one of our R2 URLs. Keys are stable, so re-uploading to
+// the same key reproduces the same public URL — which is what lets a backup
+// capture the bytes and a restore put them back without rewriting references.
+function keyFromUrl(url) {
+  if (!isR2Url(url)) return null;
+  return url.slice((_base() + '/').length);
+}
+
+// Fetch the raw bytes of an object addressed by its public URL. Returns a
+// Buffer, or null if R2 isn't configured / the URL isn't ours / the object is
+// gone. Used by the backup export to pull receipt images out of R2 and into the
+// archive so a Cloudflare/R2 outage doesn't take the only copy with it.
+async function getBufferByUrl(url) {
+  const key = keyFromUrl(url);
+  if (!key) return null;
+  try {
+    const { GetObjectCommand } = require('@aws-sdk/client-s3');
+    const out = await _getClient().send(new GetObjectCommand({ Bucket: R2_BUCKET, Key: key }));
+    const bytes = await out.Body.transformToByteArray();
+    return Buffer.from(bytes);
+  } catch (_) { return null; }
+}
+
+// Upload a buffer to an EXACT key (not a generated one). Used by restore to put
+// archived receipt files back where their stored URLs already point.
+async function uploadToKey(key, buffer, contentType) {
+  if (!isR2Configured()) throw new Error('R2 not configured');
+  const { PutObjectCommand } = require('@aws-sdk/client-s3');
+  await _getClient().send(new PutObjectCommand({
+    Bucket: R2_BUCKET,
+    Key: key,
+    Body: buffer,
+    ContentType: contentType || 'application/octet-stream',
+    CacheControl: 'public, max-age=31536000, immutable',
+  }));
+  return _publicUrl(key);
+}
+
 // Best-effort delete of a previously-uploaded object, addressed by its public
 // URL. No-ops for anything that isn't one of our R2 URLs.
 async function deleteByUrl(url) {
@@ -103,4 +142,5 @@ async function deleteByUrl(url) {
 
 module.exports = {
   isR2Configured, isR2Url, uploadBuffer, uploadDataUrl, deleteByUrl, parseDataUrl,
+  keyFromUrl, getBufferByUrl, uploadToKey,
 };
