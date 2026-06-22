@@ -29,6 +29,8 @@ const ScriptVersion    = require('../models/ScriptVersion');
 const DispensaryDenylist = require('../models/DispensaryDenylist');
 const JpwLead          = require('../models/JpwLead');
 const ColdCallState    = require('../models/ColdCallState');
+const Transaction      = require('../models/Transaction');
+const Receipt          = require('../models/Receipt');
 
 // Collections included in a backup. Order matters on restore — anything
 // referenced by another collection should come first, but since we're not
@@ -55,6 +57,8 @@ const COLLECTIONS = [
   { name: 'DispensaryDenylist',Model: DispensaryDenylist },
   { name: 'JpwLead',           Model: JpwLead           },
   { name: 'ColdCallState',     Model: ColdCallState     },
+  { name: 'Transaction',       Model: Transaction       },  // the finance ledger
+  { name: 'Receipt',           Model: Receipt           },  // receipt records (file URLs)
 ];
 
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
