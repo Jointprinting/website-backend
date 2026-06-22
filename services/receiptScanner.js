@@ -220,7 +220,9 @@ async function _autoResolve(r) {
   const e = r.extracted || {};
   const amt = round2(e.amount);
   const ord = digits(e.orderNumber);
-  const vend = (((e.vendor || r.folderHint || '').toLowerCase().match(/[a-z&]+/)) || [''])[0];
+  const tokens = [e.vendor, r.folderHint]
+    .map((s) => (((s || '').toLowerCase().match(/[a-z&]+/)) || [''])[0])
+    .filter((t) => t && t.length > 2);
 
   if (amt > 0) {
     // Only consider ledger expenses that don't already have a receipt attached.
@@ -230,8 +232,8 @@ async function _autoResolve(r) {
     const cands = expenses.filter((t) => {
       if (Math.abs(round2(t.amount) - amt) > 0.02) return false;
       if (ord && digits(t.orderNumber) === ord) return true;
-      if (vend.length > 2
-        && ((t.party || '').toLowerCase().includes(vend) || (t.description || '').toLowerCase().includes(vend))
+      const party = (t.party || '').toLowerCase(); const desc = (t.description || '').toLowerCase();
+      if (tokens.some((tok) => party.includes(tok) || desc.includes(tok))
         && (!e.date || within(t.date, e.date, 45))) return true;
       return false;
     });
@@ -251,7 +253,7 @@ async function _autoResolve(r) {
     // the owner can tag the order. Never auto-book the historical zip (a missed
     // match would double-count — let the owner eyeball those).
     const OVERHEAD = new Set(['Software', 'Sales Tax', 'Other']);
-    const flaggedNonReceipt = (r.flags || []).some((f) => /not a (supplier|business|vendor|merch)|personal|train ticket/i.test(f));
+    const flaggedNonReceipt = (r.flags || []).some((f) => /refund|credit|not a (charge|receipt|supplier|business|vendor|invoice|merch)|personal|estimate|\bquote\b/i.test(f));
     if (r.source !== 'batch' && r.confidence === 'high' && !flaggedNonReceipt && OVERHEAD.has(e.category)) {
       const txn = await Transaction.create({
         date: e.date || new Date(), type: 'expense', category: e.category || 'Other',
