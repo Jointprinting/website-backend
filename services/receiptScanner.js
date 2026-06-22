@@ -123,15 +123,20 @@ const SYSTEM = [
   'Rules:',
   '- The TOTAL is the grand total actually charged (after tax and shipping). Do not return a subtotal as the amount.',
   '- Dates are timeline info — capture the receipt/invoice date exactly as printed (convert to YYYY-MM-DD).',
-  '- Category guidance: blank garments (S&S, SanMar, Alphabroder, Sanmar, AlphaBroder) → "Blank COGS"; contract printing/embroidery/decorating invoices → "Printer COGS"; UPS/USPS/FedEx/freight → "Shipping"; digitizing/vectoring/art fees → "Art"; sales commissions → "Commission"; Adobe/Canva/SaaS → "Software"; sales tax paid → "Sales Tax"; anything else → "Other".',
-  '- If a field is not present, leave it empty/null rather than guessing. Lower your confidence and add a flag when unsure.',
+  '- VENDOR: a folder name is often supplied with the receipt — it is almost always the vendor/supplier. Use it as the vendor whenever the receipt itself does not clearly name the merchant (card, bank, and Zelle payment confirmations usually do not). Never return "Unknown"/"N/A" when a folder name was given.',
+  '- NEVER refuse, and do not judge whether a purchase looks "business" or "personal" — always extract the data. The owner decides how to categorize it.',
+  '- Category guidance: blank garments (S&S, SanMar, Alphabroder) → "Blank COGS"; contract printing/embroidery/decorating/patches → "Printer COGS"; parcel/freight shipping (UPS, USPS, FedEx, ArcBest) → "Shipping"; digitizing/vectoring/art fees → "Art"; sales commissions → "Commission"; software/SaaS (Render, Google, Notion, Anthropic, OpenAI, Cloudflare, Adobe) → "Software"; sales tax / state revenue → "Sales Tax"; travel/tolls/misc (Amtrak, NJ Transit, ParkMobile) and anything else → "Other".',
+  '- Only the vendor may be inferred from the folder; if another field is not present, leave it empty/null and add a flag rather than guessing.',
   '- Always call the record_receipt tool exactly once.',
 ].join('\n');
 
 // Read one receipt → structured data. Throws RateLimitError (status 429) up to
 // the caller so the queue can pause; the SDK already retried transient cases.
-async function extract(buffer, mime) {
+async function extract(buffer, mime, folderHint = '') {
   const block = await toContentBlock(buffer, mime);
+  const folderLine = folderHint
+    ? `This receipt was filed in a folder named "${folderHint}", which is almost always the vendor — use it as the vendor unless the receipt itself clearly names a different company. `
+    : '';
   const msg = await _getClient().messages.create({
     model: MODEL,
     max_tokens: 1024,
@@ -140,7 +145,7 @@ async function extract(buffer, mime) {
     tool_choice: { type: 'tool', name: 'record_receipt' },
     messages: [{
       role: 'user',
-      content: [block, { type: 'text', text: 'Read this receipt and record its data with record_receipt.' }],
+      content: [block, { type: 'text', text: `${folderLine}Read this receipt and record its data with record_receipt.` }],
     }],
   });
   const tool = (msg.content || []).find((b) => b.type === 'tool_use');
@@ -216,8 +221,14 @@ async function _processOne(id) {
   }
 
   try {
-    const { data, usage } = await extract(buffer, r.fileMime);
+    const { data, usage } = await extract(buffer, r.fileMime, r.folderHint);
     r.extracted = mapExtracted(data);
+    // The folder is the most reliable vendor signal — fall back to it (and
+    // override a refused/unknown read) so a receipt from the "UPS" folder isn't
+    // left as "Unknown Vendor".
+    if (r.folderHint && (!r.extracted.vendor || /unknown|not\s*identified|n\/?a/i.test(r.extracted.vendor))) {
+      r.extracted.vendor = r.folderHint;
+    }
     r.confidence = data.confidence || 'medium';
     r.flags = Array.isArray(data.flags) ? data.flags : [];
     r.model = MODEL;

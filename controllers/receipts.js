@@ -25,14 +25,25 @@ const isReceiptFile = (name) => {
 };
 
 // Store one receipt file → create a pending Receipt → enqueue it for reading.
-async function _ingest(buffer, mime, fileName, source) {
+async function _ingest(buffer, mime, fileName, source, folderHint = '') {
   const fileUrl = await r2.uploadBuffer(buffer, mime, 'receipts');
   const rec = await Receipt.create({
     fileUrl, fileName: fileName || '', fileMime: mime, fileSize: buffer.length,
+    folderHint: folderHint || '',
     status: 'pending', source: source || 'upload',
   });
   scanner.enqueue(rec._id);
   return rec;
+}
+
+// The folder a zipped receipt sat in is almost always the vendor. Take the
+// deepest real directory (so Alibaba/<actual supplier> keeps the supplier),
+// skipping the generic top-level "Receipts for Purchases" wrapper and macOS junk.
+function _folderHint(path) {
+  const segs = String(path).split('/');
+  segs.pop(); // drop the filename
+  const dirs = segs.filter((d) => d && d !== '__MACOSX' && !/^receipts?\s+for\s+purchases?$/i.test(d));
+  return dirs.length ? dirs[dirs.length - 1] : '';
 }
 
 // POST /api/receipts — body { fileDataUrl, fileName }. Single receipt (image or
@@ -64,8 +75,8 @@ const batch = async (req, res) => {
 
     // One file's failure (corrupt PDF, transient R2 hiccup) must not abort the
     // whole batch — keep going and report what failed.
-    const ingestSafe = async (buf, mime, name) => {
-      try { const rec = await _ingest(buf, mime, name, 'batch'); created.push(rec._id); }
+    const ingestSafe = async (buf, mime, name, folderHint) => {
+      try { const rec = await _ingest(buf, mime, name, 'batch', folderHint); created.push(rec._id); }
       catch (e) { failed.push(`${name}: ${e.message}`); }
     };
 
@@ -78,11 +89,11 @@ const batch = async (req, res) => {
           let buf;
           try { buf = await entry.buffer(); } catch (e) { failed.push(`${entry.path}: ${e.message}`); continue; }
           const ext = entry.path.split('.').pop().toLowerCase();
-          await ingestSafe(buf, EXT_MIME[ext], entry.path.split('/').pop());
+          await ingestSafe(buf, EXT_MIME[ext], entry.path.split('/').pop(), _folderHint(entry.path));
         }
       } else if (isReceiptFile(f.originalname)) {
         const ext = f.originalname.split('.').pop().toLowerCase();
-        await ingestSafe(f.buffer, EXT_MIME[ext] || f.mimetype, f.originalname);
+        await ingestSafe(f.buffer, EXT_MIME[ext] || f.mimetype, f.originalname, '');
       } else {
         skipped.push(f.originalname);
       }
@@ -268,13 +279,14 @@ const bulkReconcile = async (req, res) => {
       const e = rc.extracted || {};
       const amt = round2(num(e.amount));
       const ord = digits(e.orderNumber);
-      const vend = ((e.vendor || '').toLowerCase().match(/[a-z&]+/) || [''])[0];
+      const vend = (((e.vendor || rc.folderHint || '').toLowerCase().match(/[a-z&]+/)) || [''])[0];
       const cand = txns.find((t) => {
         if (usedTxn.has(String(t._id))) return false;
         if (!amt || Math.abs(round2(t.amount) - amt) > 0.02) return false;          // amounts must agree
         if (ord && digits(t.orderNumber) === ord) return true;                       // same order #, or…
-        if (vend && vend.length > 2 && (t.party || '').toLowerCase().includes(vend)  // same vendor near the date
-            && (!e.date || within(t.date, e.date, 30))) return true;
+        if (vend && vend.length > 2                                                  // same vendor near the date
+            && ((t.party || '').toLowerCase().includes(vend) || (t.description || '').toLowerCase().includes(vend))
+            && (!e.date || within(t.date, e.date, 45))) return true;
         return false;
       });
       if (cand) {
@@ -288,4 +300,16 @@ const bulkReconcile = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
-module.exports = { upload, batch, list, getOne, reprocess, update, confirm, remove, reconcile, bulkReconcile };
+// DELETE /api/receipts — wipe every receipt that hasn't been booked, so a batch
+// read with bad data can be cleared and re-uploaded cleanly. Best-effort deletes
+// the stored files. Booked receipts (already linked to the ledger) are kept.
+const clearAll = async (req, res) => {
+  try {
+    const recs = await Receipt.find({ status: { $ne: 'booked' } }).select('fileUrl').lean();
+    await Promise.all(recs.map((r) => r2.deleteByUrl(r.fileUrl).catch(() => {})));
+    const result = await Receipt.deleteMany({ status: { $ne: 'booked' } });
+    res.json({ deleted: result.deletedCount || 0 });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+module.exports = { upload, batch, list, getOne, reprocess, update, confirm, remove, reconcile, bulkReconcile, clearAll };
