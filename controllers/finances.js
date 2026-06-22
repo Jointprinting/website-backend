@@ -18,6 +18,16 @@ const round2 = (v) => Math.round((num(v) + Number.EPSILON) * 100) / 100;
 const NON_MERCH_RE = /vt3d/i;
 const isNonMerch = (party) => NON_MERCH_RE.test(String(party || ''));
 
+// A transaction belongs to the year of its DATE. We filter on the date itself,
+// not the denormalized `year` field, which can drift when a date is edited (a
+// Dec-2025 row left tagged 2026 was surfacing as a phantom "Dec" bar in the 2026
+// trend and padding the 2026 totals). UTC bounds to match $year/$month grouping.
+function yearDateMatch(y) {
+  if (!y) return {};
+  const year = Number(y);
+  return { date: { $gte: new Date(Date.UTC(year, 0, 1)), $lt: new Date(Date.UTC(year + 1, 0, 1)) } };
+}
+
 // ── tiny CSV helpers (handle quoted fields with commas) ─────────────────────
 function parseCsvLine(line) {
   const out = []; let cur = ''; let q = false;
@@ -82,8 +92,7 @@ const importCsv = async (req, res) => {
 // GET /api/finances/transactions?year=&type=&category=&orderNumber=
 const list = async (req, res) => {
   try {
-    const q = {};
-    if (req.query.year) q.year = Number(req.query.year);
+    const q = yearDateMatch(req.query.year);
     if (req.query.type) q.type = req.query.type;
     if (req.query.category) q.category = req.query.category;
     if (req.query.orderNumber) q.orderNumber = String(req.query.orderNumber).replace(/[^0-9]/g, '');
@@ -135,7 +144,7 @@ const remove = async (req, res) => {
 // in net.
 const summary = async (req, res) => {
   try {
-    const yearMatch = req.query.year ? { year: Number(req.query.year) } : {};
+    const yearMatch = yearDateMatch(req.query.year);
     // Merch P&L excludes non-merch parties (VT3D); they're reported on the side.
     const rows = await Transaction.aggregate([
       { $match: { ...yearMatch, party: { $not: NON_MERCH_RE } } },
@@ -227,7 +236,7 @@ const byOrder = async (req, res) => {
 // trend chart. Owner equity moves excluded (same as the P&L).
 const byMonth = async (req, res) => {
   try {
-    const yearMatch = req.query.year ? { year: Number(req.query.year) } : {};
+    const yearMatch = yearDateMatch(req.query.year);
     const rows = await Transaction.aggregate([
       { $match: { ...yearMatch, party: { $not: NON_MERCH_RE } } },   // merch trend only
       { $group: { _id: { y: { $year: '$date' }, m: { $month: '$date' }, type: '$type', category: '$category' }, total: { $sum: '$amount' } } },
@@ -286,7 +295,7 @@ const byClient = async (req, res) => {
 // GET /api/finances/export?year=  — CSV download of the ledger.
 const exportCsv = async (req, res) => {
   try {
-    const q = req.query.year ? { year: Number(req.query.year) } : {};
+    const q = yearDateMatch(req.query.year);
     const txns = await Transaction.find(q).sort({ date: 1 }).lean();
     const header = ['Date', 'Type', 'Category', 'Order #', 'Customer/Vendor', 'Description', 'Amount', 'QB Synced'];
     const lines = [header.join(',')];
