@@ -17,6 +17,7 @@ router.post('/batch', upload.array('files', 50), ctl.batch);
 
 router.get('/', ctl.list);
 router.post('/', ctl.upload);                 // single receipt (JSON dataURL)
+router.delete('/', ctl.clearAll);             // wipe all non-booked receipts
 router.get('/:id', ctl.getOne);
 router.put('/:id', ctl.update);
 router.delete('/:id', ctl.remove);

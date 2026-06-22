@@ -44,6 +44,10 @@ const ReceiptSchema = new mongoose.Schema({
   fileName:  { type: String, default: '' },
   fileMime:  { type: String, default: '' },   // application/pdf | image/jpeg | ...
   fileSize:  { type: Number, default: 0 },
+  // When uploaded inside a zip, the folder a receipt sat in is almost always the
+  // vendor (e.g. "UPS", "Heritage Screen Printing") — a far more reliable signal
+  // than reading a payment-confirmation that doesn't name the merchant.
+  folderHint: { type: String, default: '' },
 
   // ── lifecycle ──
   // pending    : uploaded, waiting for the reader (or for the API key)
