@@ -14,6 +14,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100
 router.get('/reconcile', ctl.reconcile);
 router.post('/bulk-reconcile', ctl.bulkReconcile);
 router.post('/reset', ctl.resetReceipts);     // wipe receipt-booked txns + receipts; restore the ledger
+router.post('/archive-rest', ctl.archiveRest); // mark all review receipts as kept-as-backup (clears the nag)
 router.post('/batch', upload.array('files', 50), ctl.batch);
 
 router.get('/', ctl.list);

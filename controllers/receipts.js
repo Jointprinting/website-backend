@@ -334,4 +334,14 @@ const clearAll = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
-module.exports = { upload, batch, list, getOne, reprocess, update, confirm, remove, reconcile, bulkReconcile, clearAll, resetReceipts };
+// POST /api/receipts/archive-rest — everything in review is already SAVED (file
+// + data); this just clears the nag by marking the unlinked ones as kept-as-
+// backup, so the review count goes to zero. They stay fully searchable.
+const archiveRest = async (req, res) => {
+  try {
+    const r = await Receipt.updateMany({ status: 'review' }, { $set: { status: 'ignored' } });
+    res.json({ archived: r.modifiedCount || 0 });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+module.exports = { upload, batch, list, getOne, reprocess, update, confirm, remove, reconcile, bulkReconcile, clearAll, resetReceipts, archiveRest };
