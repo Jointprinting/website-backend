@@ -113,8 +113,10 @@ const remove = async (req, res) => {
 };
 
 // GET /api/finances/summary?year=  — the P&L: income, expense-by-category, net,
-// %-of-spend per category. Owner Contribution is income but excluded from profit
-// (it's equity in, not earnings).
+// %-of-spend per category. Owner equity moves are excluded from profit: Owner
+// Contribution (cash the owner puts IN) isn't earnings, and Owner Draw (cash the
+// owner takes OUT) isn't a business expense — both are reported on the side, not
+// in net.
 const summary = async (req, res) => {
   try {
     const match = req.query.year ? { year: Number(req.query.year) } : {};
@@ -122,14 +124,19 @@ const summary = async (req, res) => {
       { $match: match },
       { $group: { _id: { type: '$type', category: '$category' }, total: { $sum: '$amount' }, count: { $sum: 1 } } },
     ]);
-    let income = 0, expense = 0, ownerContribution = 0;
+    let income = 0, expense = 0, ownerContribution = 0, ownerDraw = 0;
     const expenseByCategory = {}, incomeByCategory = {};
     rows.forEach((r) => {
       const amt = round2(r.total);
       if (r._id.type === 'income') {
         incomeByCategory[r._id.category] = amt;
+        // Owner Contribution is equity IN — not earnings.
         if (r._id.category === 'Owner Contribution') ownerContribution += amt;
         else income += amt;
+      } else if (r._id.category === 'Owner Draw') {
+        // Owner Draw is equity OUT (the owner paying themselves) — NOT a cost of
+        // doing business. Must not count against profit or show up as "spend".
+        ownerDraw += amt;
       } else {
         expenseByCategory[r._id.category] = amt;
         expense += amt;
@@ -143,29 +150,49 @@ const summary = async (req, res) => {
       income: round2(income), expense: round2(expense), net,
       margin: income ? round2((net / income) * 100) : 0,
       ownerContribution: round2(ownerContribution),
+      ownerDraw: round2(ownerDraw),
       incomeByCategory, expenseByCategory, pctOfSpend,
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
 // GET /api/finances/by-order?year=  — per-order P&L: revenue, cost, profit,
-// margin %. Cost = COGS-category expenses sharing the order #.
+// margin %. An order's economics span time — the sale lands one day, the blanks
+// and the printer invoice another, a reprint or trailing freight weeks later,
+// sometimes across a year boundary. So we group an order across ALL its dates,
+// net full revenue vs. full cost, and anchor it to the year it was SOLD (its
+// first Customer Sales date). That stops a late-December order whose costs hit
+// in January from showing up as a phantom loss in the new year.
 const byOrder = async (req, res) => {
   try {
-    const match = { orderNumber: { $ne: '' } };
-    if (req.query.year) match.year = Number(req.query.year);
-    const rows = await Transaction.find(match).lean();
+    const year = req.query.year ? Number(req.query.year) : null;
+    const rows = await Transaction.find({ orderNumber: { $ne: '' } }).lean();
     const cogs = new Set(Transaction.COGS_CATEGORIES);
     const map = {};
     rows.forEach((t) => {
-      const o = (map[t.orderNumber] ||= { orderNumber: t.orderNumber, client: '', revenue: 0, cost: 0 });
-      if (t.type === 'income' && t.category === 'Customer Sales') { o.revenue += t.amount; if (!o.client) o.client = t.party; }
-      else if (t.type === 'expense' && cogs.has(t.category)) o.cost += t.amount;
+      const o = (map[t.orderNumber] ||= { orderNumber: t.orderNumber, client: '', revenue: 0, cost: 0, saleDate: null, firstDate: null });
+      const d = t.date ? new Date(t.date) : null;
+      if (d && (!o.firstDate || d < o.firstDate)) o.firstDate = d;
+      if (t.type === 'income' && t.category === 'Customer Sales') {
+        o.revenue += t.amount;
+        if (!o.client) o.client = t.party;
+        if (d && (!o.saleDate || d < o.saleDate)) o.saleDate = d;        // anchor = when it sold
+      } else if (t.type === 'expense' && cogs.has(t.category)) {
+        o.cost += t.amount;
+      }
     });
-    const orders = Object.values(map).map((o) => {
+    let orders = Object.values(map).map((o) => {
+      const anchor = o.saleDate || o.firstDate;
       const profit = round2(o.revenue - o.cost);
-      return { ...o, revenue: round2(o.revenue), cost: round2(o.cost), profit, margin: o.revenue ? round2((profit / o.revenue) * 100) : 0 };
-    }).sort((a, b) => Number(b.orderNumber) - Number(a.orderNumber));
+      return {
+        orderNumber: o.orderNumber, client: o.client,
+        year: anchor ? new Date(anchor).getUTCFullYear() : null,
+        revenue: round2(o.revenue), cost: round2(o.cost), profit,
+        margin: o.revenue ? round2((profit / o.revenue) * 100) : 0,
+      };
+    });
+    if (year) orders = orders.filter((o) => o.year === year);  // by the year it SOLD, not by cost dates
+    orders.sort((a, b) => Number(b.orderNumber) - Number(a.orderNumber));
     res.json({ orders });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
