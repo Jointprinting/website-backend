@@ -79,6 +79,10 @@ db.once('open', () => {
 
   require('./services/jpwScheduler').startJpwScheduler();
 
+  // Weekly push of the full backup (incl. R2 receipt images) to Google Drive.
+  // No-op until the admin connects Drive — safe to start unconditionally.
+  require('./services/gdriveBackup').startGoogleDriveBackup();
+
   // Idempotent: give legacy studio-library docs a remoteId so the studio's
   // sync can dedupe them (empty ones re-imported as new rows on every load).
   setTimeout(() => {
@@ -141,7 +145,7 @@ const clientRoutes         = require('./routes/clientRoutes');
 const publicApprovalRoutes = require('./routes/publicApprovalRoutes');
 const backupRoutes         = require('./routes/backupRoutes');
 const jpwRoutes            = require('./routes/jpwRoutes');
-const quickbooksRoutes     = require('./routes/quickbooksRoutes');
+const gdriveRoutes         = require('./routes/gdriveRoutes');
 const financeRoutes        = require('./routes/financeRoutes');
 const receiptRoutes        = require('./routes/receiptRoutes');
 
@@ -159,7 +163,7 @@ app.use('/api/clients', express.json(), clientRoutes);
 app.use('/api/public', express.json(), publicApprovalRoutes);
 app.use('/api/admin/backup', backupRoutes);
 app.use('/api/jpw', express.json({ limit: '20mb' }), jpwRoutes);
-app.use('/api/quickbooks', express.json(), quickbooksRoutes);
+app.use('/api/gdrive', express.json(), gdriveRoutes);
 app.use('/api/finances', express.json({ limit: '8mb' }), financeRoutes);
 // 40mb: a single receipt can be a ~25 MB file, which is ~34 MB as base64 JSON.
 // (The /batch zip route uses multipart via multer, so this limit doesn't gate it.)

@@ -14,6 +14,7 @@ const path     = require('path');
 const { ZipArchive } = require('archiver');
 const unzipper = require('unzipper');
 
+const r2 = require('../services/r2');
 const BackupLog        = require('../models/BackupLog');
 const Order            = require('../models/Order');
 const ContactSubmission = require('../models/ContactSubmission');
@@ -38,7 +39,7 @@ const Receipt          = require('../models/Receipt');
 // about restore-step reporting clarity.
 //
 // SKIPPED (intentionally): JpwApiUsage, JpwSchedulerState,
-// JpwSweepPairHistory, DispensaryDensityCache, QuickBooksAuth, BackupLog.
+// JpwSweepPairHistory, DispensaryDensityCache, GoogleDriveAuth, BackupLog.
 // These are either transient rate-limit data, ephemeral scheduler state,
 // short-lived caches, or OAuth tokens that shouldn't move between
 // environments and can be re-obtained by reconnecting the integration.
@@ -63,6 +64,96 @@ const COLLECTIONS = [
 
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
 const BACKUP_DUE_DAYS = 7;
+
+// Reverse of r2's EXT_BY_MIME, for restoring receipt files with a sensible
+// Content-Type so the browser renders them inline instead of downloading.
+const MIME_BY_EXT = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp',
+  gif: 'image/gif', svg: 'image/svg+xml', heic: 'image/heic', pdf: 'application/pdf',
+};
+
+// Every R2 URL referenced by the finance ledger or a receipt record. These are
+// the receipt/invoice images — they live in Cloudflare R2, not in MongoDB, so
+// the JSON dumps alone would leave them out of the backup. We pull the actual
+// bytes into the archive so a Cloudflare/R2 outage can't take the only copy.
+async function collectReceiptUrls() {
+  const urls = new Set();
+  const txns = await Transaction.find({ receiptUrl: { $ne: '' } }, 'receiptUrl').lean();
+  for (const t of txns) if (r2.isR2Url(t.receiptUrl)) urls.add(t.receiptUrl);
+  const recs = await Receipt.find({ fileUrl: { $ne: '' } }, 'fileUrl').lean();
+  for (const r of recs) if (r2.isR2Url(r.fileUrl)) urls.add(r.fileUrl);
+  return [...urls];
+}
+
+// Append the full backup payload (manifest + per-collection JSON + uploaded
+// files + R2 receipt images) to an already-piped archive. Shared by the HTTP
+// download (exportAll) and the Google Drive push (writeBackupToFile) so both
+// produce an identical, complete archive. Returns counts for the BackupLog.
+async function appendBackupContents(archive) {
+  const counts = {};
+  let totalDocs = 0, fileCount = 0, r2Count = 0, r2Missing = 0;
+
+  // Manifest first
+  archive.append(JSON.stringify({
+    schemaVersion: 2,
+    createdAt: new Date().toISOString(),
+    collections: COLLECTIONS.map(c => c.name),
+  }, null, 2), { name: 'manifest.json' });
+
+  // Per-collection JSON dumps
+  for (const { name, Model } of COLLECTIONS) {
+    const docs = await Model.find({}).lean();
+    counts[name] = docs.length;
+    totalDocs += docs.length;
+    archive.append(JSON.stringify(docs, null, 2), { name: `data/${name}.json` });
+  }
+
+  // Uploaded files (project attachments stored on local disk)
+  if (fs.existsSync(UPLOADS_DIR)) {
+    for (const entry of fs.readdirSync(UPLOADS_DIR)) {
+      const p = path.join(UPLOADS_DIR, entry);
+      try {
+        if (fs.statSync(p).isFile()) { archive.file(p, { name: `files/${entry}` }); fileCount++; }
+      } catch (_) { /* skip */ }
+    }
+  }
+
+  // Receipt/invoice images out of R2, keyed by their object key so a restore
+  // can re-upload to the exact same key (preserving every stored URL).
+  if (r2.isR2Configured()) {
+    const urls = await collectReceiptUrls();
+    for (const url of urls) {
+      const key = r2.keyFromUrl(url);
+      if (!key) continue;
+      const buf = await r2.getBufferByUrl(url);
+      if (!buf) { r2Missing++; continue; }       // object missing/unreadable — skip, don't abort
+      archive.append(buf, { name: `r2/${key}` });
+      r2Count++;
+    }
+  }
+
+  return { counts, totalDocs, fileCount, r2Count, r2Missing };
+}
+
+// Build a complete backup ZIP to a file on disk and resolve with its stats.
+// Used by the Google Drive auto-push, which needs the finished bytes to upload
+// (unlike the HTTP export, which streams straight to the response).
+function writeBackupToFile(filePath) {
+  return new Promise((resolve, reject) => {
+    const out = fs.createWriteStream(filePath);
+    const archive = new ZipArchive({ zlib: { level: 6 } });
+    let bytes = 0, stats = null;
+    archive.on('data', (c) => { bytes += c.length; });
+    archive.on('warning', (e) => console.warn('archive warning:', e));
+    archive.on('error', reject);
+    out.on('error', reject);
+    out.on('close', () => resolve({ ...(stats || {}), sizeBytes: bytes }));
+    archive.pipe(out);
+    appendBackupContents(archive)
+      .then((s) => { stats = s; return archive.finalize(); })
+      .catch(reject);
+  });
+}
 
 // GET /api/admin/backup/status
 const status = async (req, res) => {
@@ -94,9 +185,6 @@ const exportAll = async (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
 
   const archive = new ZipArchive({ zlib: { level: 6 } });
-  const counts = {};
-  let totalDocs = 0;
-  let fileCount = 0;
   let bytes = 0;
 
   archive.on('data', (chunk) => { bytes += chunk.length; });
@@ -109,36 +197,7 @@ const exportAll = async (req, res) => {
   archive.pipe(res);
 
   try {
-    // Manifest first
-    archive.append(JSON.stringify({
-      schemaVersion: 1,
-      createdAt: new Date().toISOString(),
-      collections: COLLECTIONS.map(c => c.name),
-    }, null, 2), { name: 'manifest.json' });
-
-    // Per-collection JSON dumps
-    for (const { name, Model } of COLLECTIONS) {
-      const docs = await Model.find({}).lean();
-      counts[name] = docs.length;
-      totalDocs += docs.length;
-      archive.append(JSON.stringify(docs, null, 2), { name: `data/${name}.json` });
-    }
-
-    // Uploaded files (project attachments)
-    if (fs.existsSync(UPLOADS_DIR)) {
-      const entries = fs.readdirSync(UPLOADS_DIR);
-      for (const entry of entries) {
-        const p = path.join(UPLOADS_DIR, entry);
-        try {
-          const stat = fs.statSync(p);
-          if (stat.isFile()) {
-            archive.file(p, { name: `files/${entry}` });
-            fileCount++;
-          }
-        } catch (_) { /* skip */ }
-      }
-    }
-
+    const { counts, totalDocs, fileCount, r2Count, r2Missing } = await appendBackupContents(archive);
     await archive.finalize();
 
     // Log success after the stream is fully sent
@@ -146,8 +205,10 @@ const exportAll = async (req, res) => {
       try {
         await BackupLog.create({
           kind: 'export', status: 'ok',
-          collections: counts, totalDocs, fileCount, sizeBytes: bytes,
-          note: `Took ${Math.round((Date.now() - startedAt) / 1000)}s`,
+          collections: counts, totalDocs, fileCount: fileCount + r2Count, sizeBytes: bytes,
+          note: `Took ${Math.round((Date.now() - startedAt) / 1000)}s` +
+            (r2Count ? `; ${r2Count} receipt files` : '') +
+            (r2Missing ? `; ${r2Missing} R2 files missing` : ''),
         });
       } catch (e) { console.warn('BackupLog write failed', e.message); }
     });
@@ -226,6 +287,24 @@ const restoreAll = async (req, res) => {
       fileCount++;
     }
 
+    // Restore R2 receipt images by re-uploading each to its ORIGINAL key, so
+    // every receiptUrl/fileUrl already in the restored documents keeps working.
+    // Skipped silently if R2 isn't configured on this environment.
+    let r2Count = 0;
+    if (r2.isR2Configured()) {
+      for (const file of directory.files) {
+        if (!file.path.startsWith('r2/') || file.type !== 'File') continue;
+        const key = file.path.replace(/^r2\//, '');
+        if (!key || key.includes('..')) continue;
+        const ext = key.split('.').pop().toLowerCase();
+        try {
+          await r2.uploadToKey(key, await file.buffer(), MIME_BY_EXT[ext] || 'application/octet-stream');
+          r2Count++;
+        } catch (e) { console.warn('R2 restore failed for', key, e.message); }
+      }
+    }
+    fileCount += r2Count;
+
     // Cleanup uploaded zip
     try { fs.unlinkSync(req.file.path); } catch (_) {}
 
@@ -245,4 +324,4 @@ const restoreAll = async (req, res) => {
   }
 };
 
-module.exports = { status, exportAll, restoreAll };
+module.exports = { status, exportAll, restoreAll, writeBackupToFile };
