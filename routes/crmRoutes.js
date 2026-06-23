@@ -14,6 +14,7 @@ const {
   getToday,
   getCalendar,
   getPipeline,
+  getDashboard,
   getOne,
   patchOne,
   importRows,
@@ -25,6 +26,7 @@ router.get('/',          listCrm);
 router.get('/today',     getToday);
 router.get('/calendar',  getCalendar);
 router.get('/pipeline',  getPipeline);
+router.get('/dashboard', getDashboard);
 router.post('/import',   importRows);
 
 router.get('/:companyKey',   getOne);

@@ -8,6 +8,9 @@
 //   GET  /                       list (?stage=&area=&q=)
 //   GET  /today                  the "who do I call today" engine
 //   GET  /calendar?from=&to=     follow-ups in a date window (month grid)
+//   GET  /pipeline               Kanban feed: per-stage groups + forecast
+//   GET  /dashboard              one-shot aggregate: pipeline + follow-ups +
+//                                activity + breakdowns + a prioritized heads-up feed
 //   GET  /:companyKey            one record + its Orders
 //   PATCH /:companyKey           upsert/update; supports log-touch & reschedule
 //   POST /import                 bulk upsert from field-tracker rows / CSV
@@ -86,6 +89,145 @@ function lastLogEntry(log) {
     if (!best || new Date(e.at || 0) >= new Date(best.at || 0)) best = e;
   }
   return best || null;
+}
+
+// ── Heads-up engine ────────────────────────────────────────────────────────────
+// The "keep me on track" intelligence behind the dashboard. Pure (no DB) so it's
+// unit-testable on synthetic Clients. classifyHeadsUp inspects ONE record and
+// returns 0..n attention items; buildHeadsUp runs the whole set, sorts by
+// priority, caps the surfaced list, and tallies per-type counts.
+//
+// An item: { type, companyKey, name, phone, message, severity, value, date }.
+//   severity ∈ 'high' | 'med' | 'low'   value = dealValue (for sorting/labeling)
+//
+// Thresholds (tuned for a small shop's book of business; one place to adjust):
+const HEADS_UP = {
+  STALE_DAYS:     21,   // no log + no stage change in this many days = stale
+  QUIET_DAYS:     14,   // a hot deal we haven't touched in this many days = hot_quiet
+  HOT_VALUE:      2000, // dealValue at/above this is "hot" (top tier)
+  HIGH_VALUE:     2000, // an overdue follow-up on a deal this big escalates to 'high'
+  MAX_ITEMS:      25,   // cap on the surfaced feed (counts still reflect the full set)
+};
+// Rank severities high → low for sorting.
+const SEVERITY_RANK = { high: 0, med: 1, low: 2 };
+
+// Days between two epoch-ms instants (b - a), floored. Negative if b precedes a.
+function daysBetween(aMs, bMs) {
+  return Math.floor((bMs - aMs) / 86400000);
+}
+
+// Inspect one client (a lean POJO with the CRM fields) against `now`/`startToday`
+// and return any heads-up items it earns. `now` and `startToday` are epoch ms so
+// the function is deterministic and timezone-free in tests.
+function classifyHeadsUp(c, nowMs, startTodayMs) {
+  if (!c) return [];
+  const stage = c.stage;
+  const closed = CLOSED_STAGES.includes(stage); // won/lost/dormant — out of the funnel
+  const items = [];
+
+  const name  = c.companyName || c.clientName || c.companyKey;
+  const phone = c.phone || ((c.contacts || []).find((x) => x && x.phone) || {}).phone || '';
+  const value = Number(c.dealValue) || 0;
+  const base  = { companyKey: c.companyKey, name, phone, value };
+
+  const nf = c.nextFollowUp ? new Date(c.nextFollowUp).getTime() : null;
+  const lc = c.lastContact ? new Date(c.lastContact).getTime() : null;
+  const last = lastLogEntry(c.log);
+  const lastLogMs = last && last.at ? new Date(last.at).getTime() : null;
+  const updatedMs = c.updatedAt ? new Date(c.updatedAt).getTime() : null;
+
+  // overdue_followup — active deal whose follow-up date is before today.
+  if (!closed && nf != null && nf < startTodayMs) {
+    const overdueDays = daysBetween(nf, startTodayMs);
+    items.push({
+      ...base,
+      type: 'overdue_followup',
+      severity: value >= HEADS_UP.HIGH_VALUE ? 'high' : 'med',
+      message: `Follow-up ${overdueDays === 1 ? '1 day' : `${overdueDays} days`} overdue`,
+      date: c.nextFollowUp,
+    });
+  }
+
+  // no_next_step — active deal with nothing scheduled (fall-through risk). Don't
+  // double-flag an overdue one (that already demands action).
+  if (!closed && nf == null) {
+    items.push({
+      ...base,
+      type: 'no_next_step',
+      severity: value >= HEADS_UP.HOT_VALUE ? 'med' : 'low',
+      message: 'No next step scheduled',
+      date: null,
+    });
+  }
+
+  // stale — active deal with no recent activity: latest of (last log / updatedAt)
+  // is older than STALE_DAYS. updatedAt covers stage changes & field edits.
+  if (!closed) {
+    const lastTouchMs = Math.max(lastLogMs || 0, updatedMs || 0) || null;
+    if (lastTouchMs != null) {
+      const idleDays = daysBetween(lastTouchMs, nowMs);
+      if (idleDays > HEADS_UP.STALE_DAYS) {
+        items.push({
+          ...base,
+          type: 'stale',
+          severity: value >= HEADS_UP.HOT_VALUE ? 'med' : 'low',
+          message: `No activity in ${idleDays} days`,
+          date: new Date(lastTouchMs).toISOString(),
+        });
+      }
+    }
+  }
+
+  // hot_quiet — a top-tier deal we've gone quiet on: dealValue ≥ HOT_VALUE AND
+  // lastContact older than QUIET_DAYS (or never). High-value + neglected = the
+  // owner's biggest blind spot, so this rides high.
+  if (!closed && value >= HEADS_UP.HOT_VALUE) {
+    const quietDays = lc != null ? daysBetween(lc, nowMs) : null;
+    if (lc == null || quietDays > HEADS_UP.QUIET_DAYS) {
+      items.push({
+        ...base,
+        type: 'hot_quiet',
+        severity: 'high',
+        message: lc == null
+          ? `Hot deal (${fmtUsd(value)}) — never contacted`
+          : `Hot deal (${fmtUsd(value)}) quiet for ${quietDays} days`,
+        date: c.lastContact || null,
+      });
+    }
+  }
+
+  return items;
+}
+
+// Whole-dollar USD for heads-up copy (no cents). Small + local so the engine has
+// no UI deps.
+function fmtUsd(n) {
+  return `$${Math.round(Number(n) || 0).toLocaleString('en-US')}`;
+}
+
+// Run classifyHeadsUp over a list of clients, sort the flattened items by
+// severity (high→low) then value (desc) then soonest date, cap to MAX_ITEMS, and
+// tally counts per type across the FULL (uncapped) set. Returns:
+//   { items, counts: { <type>: n, ... }, total }
+function buildHeadsUp(clients, nowMs, startTodayMs) {
+  const all = [];
+  for (const c of clients || []) {
+    for (const it of classifyHeadsUp(c, nowMs, startTodayMs)) all.push(it);
+  }
+
+  const counts = {};
+  for (const it of all) counts[it.type] = (counts[it.type] || 0) + 1;
+
+  all.sort((a, b) => {
+    const s = SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity];
+    if (s !== 0) return s;
+    if (b.value !== a.value) return b.value - a.value;      // bigger deal first
+    const ad = a.date ? new Date(a.date).getTime() : Infinity;
+    const bd = b.date ? new Date(b.date).getTime() : Infinity;
+    return ad - bd;                                          // then soonest/oldest date
+  });
+
+  return { items: all.slice(0, HEADS_UP.MAX_ITEMS), counts, total: all.length };
 }
 
 // GET /api/crm — list with optional filters, sorted by name. Lean.
@@ -244,6 +386,124 @@ async function getPipeline(req, res) {
       groups,
       summary: summarizePipeline(docs),
       probability: STAGE_PROBABILITY,
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+// GET /api/crm/dashboard — the one-shot aggregate behind the Dashboard view.
+// Computes EVERYTHING the dashboard needs in a single pass over Clients (honors
+// an optional ?area= scope). Sections:
+//   • pipeline   — per-stage { count, value } + totalOpenValue + weightedValue
+//                  (same math as /pipeline, reusing summarizePipeline + the map).
+//   • followUps  — { overdue, dueToday, dueThisWeek } counts over active deals.
+//   • activity   — touches logged in the last 7 / 30 days (counts log[] by `at`).
+//   • breakdowns — counts + open value grouped by area and by interestType.
+//   • headsUp    — prioritized attention feed (see buildHeadsUp) + per-type counts.
+async function getDashboard(req, res) {
+  try {
+    const { area } = req.query;
+    const filter = {};
+    if (area) filter.area = area;
+
+    // One read; we only need the CRM fields (+ timestamps for staleness).
+    const docs = await Client.find(filter)
+      .select('companyKey companyName clientName phone contacts dealValue stage area interestType nextFollowUp lastContact log updatedAt')
+      .lean();
+
+    const now        = new Date();
+    const nowMs      = now.getTime();
+    const startToday = startOfTodayLocal();
+    const startTodayMs = startToday.getTime();
+    const endToday   = endOfTodayLocal();
+    // End of "this week" = 7 days out from the start of today (rolling window).
+    const endOfWeek  = new Date(startTodayMs + 7 * 86400000);
+    const ms7  = nowMs - 7  * 86400000;
+    const ms30 = nowMs - 30 * 86400000;
+
+    // Per-stage buckets, seeded in canonical order so empty stages still render.
+    const stageMap = {};
+    for (const s of STAGES) stageMap[s] = { stage: s, count: 0, value: 0 };
+
+    // Breakdown accumulators (keyed by the raw value; '' bucket = unset).
+    const areaMap     = new Map();   // area  → { area, count, openValue }
+    const interestMap = new Map();   // type  → { interestType, count, openValue }
+
+    let overdue = 0, dueToday = 0, dueThisWeek = 0;
+    let touches7 = 0, touches30 = 0;
+
+    for (const c of docs) {
+      const stage = stageMap[c.stage] ? c.stage : 'lead';
+      const val   = Number(c.dealValue) || 0;
+      const isOpen = OPEN_STAGES.includes(c.stage);
+
+      stageMap[stage].count += 1;
+      stageMap[stage].value += val;
+
+      // Follow-up buckets — active (non-closed) deals only, matching /today.
+      if (!CLOSED_STAGES.includes(c.stage) && c.nextFollowUp) {
+        const nf = new Date(c.nextFollowUp);
+        if (nf < startToday) overdue += 1;
+        else if (nf <= endToday) dueToday += 1;
+        else if (nf <= endOfWeek) dueThisWeek += 1;
+      }
+
+      // Activity — count individual touches by their timestamp.
+      for (const e of (c.log || [])) {
+        const t = e && e.at ? new Date(e.at).getTime() : NaN;
+        if (!Number.isNaN(t)) {
+          if (t >= ms7)  touches7  += 1;
+          if (t >= ms30) touches30 += 1;
+        }
+      }
+
+      // Breakdown by area (open value = only in-flight stages count toward $).
+      const aKey = c.area || '';
+      const a = areaMap.get(aKey) || { area: aKey, count: 0, openValue: 0 };
+      a.count += 1;
+      if (isOpen) a.openValue += val;
+      areaMap.set(aKey, a);
+
+      // Breakdown by interestType.
+      const iKey = c.interestType || '';
+      const i = interestMap.get(iKey) || { interestType: iKey, count: 0, openValue: 0 };
+      i.count += 1;
+      if (isOpen) i.openValue += val;
+      interestMap.set(iKey, i);
+    }
+
+    const round2 = (n) => Math.round(n * 100) / 100;
+    const stages = STAGES.map((s) => ({ ...stageMap[s], value: round2(stageMap[s].value) }));
+    const summary = summarizePipeline(docs);
+
+    const byArea = Array.from(areaMap.values())
+      .map((x) => ({ ...x, openValue: round2(x.openValue) }))
+      .sort((a, b) => b.openValue - a.openValue || b.count - a.count);
+    const byInterest = Array.from(interestMap.values())
+      .map((x) => ({ ...x, openValue: round2(x.openValue) }))
+      .sort((a, b) => b.openValue - a.openValue || b.count - a.count);
+
+    const heads = buildHeadsUp(docs, nowMs, startTodayMs);
+
+    res.json({
+      generatedAt: now.toISOString(),
+      area: area || null,
+      totalCompanies: docs.length,
+      pipeline: {
+        stages,
+        totalOpenValue: summary.totalOpenValue,
+        weightedValue:  summary.weightedValue,
+        probability:    STAGE_PROBABILITY,
+      },
+      followUps: { overdue, dueToday, dueThisWeek },
+      activity:  { touches7, touches30 },
+      breakdowns: { byArea, byInterest },
+      headsUp: {
+        items:  heads.items,
+        counts: heads.counts,
+        total:  heads.total,
+      },
     });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -544,6 +804,7 @@ module.exports = {
   getToday,
   getCalendar,
   getPipeline,
+  getDashboard,
   getOne,
   patchOne,
   importRows,
@@ -553,4 +814,7 @@ module.exports = {
   summarizePipeline,
   stageProbability,
   STAGE_PROBABILITY,
+  classifyHeadsUp,
+  buildHeadsUp,
+  HEADS_UP,
 };
