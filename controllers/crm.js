@@ -18,6 +18,12 @@
 const Client = require('../models/Client');
 const Order  = require('../models/Order');
 const { deriveCompanyKey } = require('../models/Order'); // REUSE canonical key normalization
+const PurchaseOrder = require('../models/PurchaseOrder');
+const Transaction   = require('../models/Transaction');
+// REUSE the finance definitions verbatim — the company money summary must match
+// /api/finances exactly (same revenue/COGS/profit/margin math, same order-number
+// normalization). Never re-derive finance numbers here.
+const { summarizeCompanyFinance, normalizeOrderNumber } = require('./finances');
 const { parseCsv, rowsToObjects, mapTrackerRow } = require('../utils/fieldTrackerImport');
 
 const STAGES = Client.CRM_STAGES;
@@ -537,7 +543,41 @@ async function getOne(req, res) {
       .select('projectNumber orderNumber status paid totalValue cogs orderDate createdAt')
       .lean();
 
-    res.json({ client, orders });
+    // ── Linked POs ──────────────────────────────────────────────────────────────
+    // POs hang off Orders (PurchaseOrder.orderId). Gather this company's order ids
+    // → their POs, newest-first, as lean cards.
+    const orderIds = orders.map((o) => o._id);
+    const poDocs = orderIds.length
+      ? await PurchaseOrder.find({ orderId: { $in: orderIds } })
+          .sort({ date: -1, createdAt: -1 })
+          .select('poNumber vendorName grandTotal orderId date')
+          .lean()
+      : [];
+    const pos = poDocs.map((p) => ({
+      _id:        p._id,
+      poNumber:   p.poNumber || '',
+      vendorName: p.vendorName || '',
+      grandTotal: Number(p.grandTotal) || 0,
+      orderId:    p.orderId,
+      date:       p.date || null,
+    }));
+
+    // ── Finance summary ─────────────────────────────────────────────────────────
+    // The company's whole money story, computed by REUSING the finance math
+    // (summarizeCompanyFinance — same revenue/COGS/profit/margin definitions as
+    // /api/finances). The ledger keys by digits-only order number, so we bridge by
+    // normalizing this company's Order numbers and pulling exactly those Tx rows.
+    const orderNums = [...new Set(
+      orders.map((o) => normalizeOrderNumber(o.orderNumber)).filter(Boolean),
+    )];
+    const txns = orderNums.length
+      ? await Transaction.find({ orderNumber: { $in: orderNums } })
+          .select('type category amount isCredit orderNumber')
+          .lean()
+      : [];
+    const finance = summarizeCompanyFinance(orders, txns);
+
+    res.json({ client, orders, pos, finance });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
