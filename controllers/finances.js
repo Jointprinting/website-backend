@@ -185,6 +185,58 @@ const summary = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
+// Order numbers are stored on Transactions as digits-only (the importer strips
+// non-digits). Order.orderNumber is free-form ("0000021", "#21"), so to line a
+// company's Orders up with their ledger rows we normalize the same way. Exported
+// so the CRM (which bridges Orders → Transactions by order number) keys exactly
+// like the ledger does.
+const normalizeOrderNumber = (v) => String(v == null ? '' : v).replace(/[^0-9]/g, '');
+
+// Pure per-company finance rollup — the SAME revenue/COGS/profit/margin
+// definitions byOrder/byClient use, reusable from outside the finance routes
+// (the CRM company page). No DB: callers pass the already-fetched POJOs.
+//   • orders       — this company's Orders (need orderNumber, totalValue, paid)
+//   • transactions — ledger rows to consider (the company's, by order number)
+// Revenue = signed sum of income/'Customer Sales'; COGS = signed sum of
+// expense rows in COGS_CATEGORIES; profit = revenue − COGS; margin = profit /
+// revenue %. `signed` lets credits/returns net down, identical to the ledger.
+//
+// `outstanding` is the one figure the ledger has no notion of — it's
+// invoiced-but-unpaid, which lives on the Order (paid flag + totalValue), not in
+// the cash-basis Transaction stream. So it's summed from Orders: totalValue of
+// every Order with paid !== true. orderCount/paidCount are plain Order tallies.
+// Returns { revenue, cogs, profit, margin, outstanding, orderCount, paidCount }.
+function summarizeCompanyFinance(orders, transactions) {
+  const cogsCats = new Set(Transaction.COGS_CATEGORIES);
+  let revenue = 0;
+  let cogs = 0;
+  for (const t of (transactions || [])) {
+    if (t && t.type === 'income' && t.category === 'Customer Sales') revenue += signed(t);
+    else if (t && t.type === 'expense' && cogsCats.has(t.category)) cogs += signed(t);
+  }
+  const profit = round2(revenue - cogs);
+
+  let outstanding = 0;
+  let orderCount = 0;
+  let paidCount = 0;
+  for (const o of (orders || [])) {
+    if (!o) continue;
+    orderCount += 1;
+    if (o.paid) paidCount += 1;
+    else outstanding += num(o.totalValue);   // invoiced (has a total) but not yet paid
+  }
+
+  return {
+    revenue: round2(revenue),
+    cogs: round2(cogs),
+    profit,
+    margin: revenue ? round2((profit / revenue) * 100) : 0,
+    outstanding: round2(outstanding),
+    orderCount,
+    paidCount,
+  };
+}
+
 // GET /api/finances/by-order?year=  — per-order P&L: revenue, cost, profit,
 // margin %. An order's economics span time — the sale lands one day, the blanks
 // and the printer invoice another, a reprint or trailing freight weeks later,
@@ -323,3 +375,6 @@ const resyncYears = async () => {
 };
 
 module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, resyncYears };
+// Reusable, DB-free finance math for other surfaces (CRM company page) + tests.
+module.exports.summarizeCompanyFinance = summarizeCompanyFinance;
+module.exports.normalizeOrderNumber = normalizeOrderNumber;
