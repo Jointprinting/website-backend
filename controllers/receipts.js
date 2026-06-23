@@ -78,8 +78,14 @@ const scan = async (req, res) => {
     res.json({
       configured: true,
       fields: {
-        type:        isRefund ? 'income' : 'expense',
-        category:    isRefund ? 'Refund' : (ex.category || 'Other'),
+        // A supplier credit memo / return reads as a CREDIT against cost (money
+        // coming back from a vendor): an expense with isCredit set, kept in the
+        // read category so it nets down that order's COGS. The owner flips it to
+        // Income if it's actually a customer refund. A normal receipt is a plain
+        // expense.
+        type:        'expense',
+        category:    ex.category || 'Other',
+        isCredit:    isRefund,
         party:       ex.vendor || '',
         amount:      ex.amount != null ? ex.amount : '',
         date:        ex.date ? new Date(ex.date).toISOString().slice(0, 10) : '',
@@ -199,10 +205,12 @@ const confirm = async (req, res) => {
     if (!amount) return res.status(400).json({ message: 'An amount is required to book this receipt.' });
     const date = e.date ? new Date(e.date) : new Date();
     const orderNumber = digits(e.orderNumber);
-    // A credit/refund books as income (Refund), not an expense.
-    const refund = e.kind === 'refund';
-    const type = refund ? 'income' : 'expense';
-    const category = refund ? 'Refund' : (e.category || 'Other');
+    // A supplier credit memo / return books as an EXPENSE credit (isCredit) in
+    // its read category — so it nets DOWN that cost/COGS instead of looking like
+    // a charge. (Flip to an income credit by hand if it's a customer refund.)
+    const isCredit = e.kind === 'refund';
+    const type = 'expense';
+    const category = e.category || 'Other';
 
     // Duplicate guard: a same-type, same-amount entry with the same order #
     // (or vendor) is very likely already in the ledger.
@@ -219,7 +227,7 @@ const confirm = async (req, res) => {
     }
 
     const fields = {
-      date, type, category, orderNumber,
+      date, type, category, orderNumber, isCredit,
       party: e.vendor || '', description: e.summary || '', amount,
       receiptUrl: rec.fileUrl, source: 'receipt',
     };

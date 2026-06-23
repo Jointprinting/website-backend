@@ -23,7 +23,14 @@ const TransactionSchema = new mongoose.Schema({
   orderNumber: { type: String, default: '', index: true },  // normalized digits, '' if none
   party:       { type: String, default: '' },               // customer (income) or vendor (expense)
   description: { type: String, default: '' },
-  amount:      { type: Number, required: true },             // always positive
+  amount:      { type: Number, required: true },             // always positive — magnitude only
+  // A credit/return reverses the normal direction of its `type`, without going
+  // negative in the DB: an EXPENSE credit is a supplier credit/refund coming
+  // BACK to us (nets DOWN that cost/COGS); an INCOME credit is a customer refund
+  // going back OUT (nets DOWN revenue). Aggregations apply `amount * (isCredit
+  // ? -1 : 1)` within the row's type bucket. Default false → legacy rows behave
+  // exactly as before.
+  isCredit:    { type: Boolean, default: false },
   qbSynced:    { type: Boolean, default: false },
   receiptUrl:  { type: String, default: '' },                // stored invoice/receipt file (R2)
   year:        { type: Number, index: true },                // denormalized for fast filtering
