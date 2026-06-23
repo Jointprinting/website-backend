@@ -15,7 +15,26 @@ const {
   summarizePipeline,
   stageProbability,
   STAGE_PROBABILITY,
+  classifyHeadsUp,
+  buildHeadsUp,
+  HEADS_UP,
 } = require('../crm');
+
+// ── Heads-up test scaffolding ────────────────────────────────────────────────
+// Fixed clock so day-math is deterministic. NOW = 2026-06-23T18:00Z; START =
+// 2026-06-23T00:00Z. Helpers build epoch-ms offsets in days from those anchors.
+const NOW_MS   = new Date('2026-06-23T18:00:00Z').getTime();
+const START_MS = new Date('2026-06-23T00:00:00Z').getTime();
+const daysAgo  = (n) => new Date(NOW_MS - n * 86400000).toISOString();
+const daysAhead = (n) => new Date(START_MS + n * 86400000).toISOString();
+// A minimal client POJO with sane defaults; override per case.
+const mkClient = (over = {}) => ({
+  companyKey: 'acme', companyName: 'Acme', phone: '555', dealValue: 0,
+  stage: 'quoting', nextFollowUp: null, lastContact: daysAgo(1),
+  log: [{ at: daysAgo(1), text: 'touch', kind: 'call' }],
+  updatedAt: daysAgo(1), area: '', interestType: '', contacts: [], ...over,
+});
+const typesFor = (c) => classifyHeadsUp(c, NOW_MS, START_MS).map((i) => i.type).sort();
 
 // ── Probability map ──────────────────────────────────────────────────────────
 test('STAGE_PROBABILITY uses the agreed close-rates', () => {
@@ -82,4 +101,115 @@ test('fractional weighting rounds to cents (no float drift)', () => {
   const out = summarizePipeline([{ stage: 'quoting', dealValue: 333.33 }]);
   assert.equal(out.totalOpenValue, 333.33);
   assert.equal(out.weightedValue,  166.67);
+});
+
+// ── classifyHeadsUp ──────────────────────────────────────────────────────────
+test('overdue_followup fires on an active deal past its follow-up date', () => {
+  // Fresh activity so it ONLY earns the overdue flag (no stale/quiet noise).
+  const c = mkClient({ nextFollowUp: daysAhead(-3), dealValue: 500 });
+  const items = classifyHeadsUp(c, NOW_MS, START_MS);
+  const overdue = items.find((i) => i.type === 'overdue_followup');
+  assert.ok(overdue, 'expected an overdue_followup item');
+  assert.equal(overdue.severity, 'med');          // below HIGH_VALUE
+  assert.match(overdue.message, /3 days overdue/);
+});
+
+test('overdue_followup escalates to high severity on a big deal', () => {
+  const c = mkClient({ nextFollowUp: daysAhead(-1), dealValue: HEADS_UP.HIGH_VALUE });
+  const overdue = classifyHeadsUp(c, NOW_MS, START_MS).find((i) => i.type === 'overdue_followup');
+  assert.equal(overdue.severity, 'high');
+  assert.match(overdue.message, /1 day overdue/);  // singular day
+});
+
+test('overdue_followup does NOT fire for a closed stage', () => {
+  const c = mkClient({ stage: 'won', nextFollowUp: daysAhead(-5), dealValue: 9000 });
+  assert.ok(!typesFor(c).includes('overdue_followup'));
+});
+
+test('no_next_step fires when an active deal has no nextFollowUp', () => {
+  const c = mkClient({ nextFollowUp: null, dealValue: 100 });
+  const item = classifyHeadsUp(c, NOW_MS, START_MS).find((i) => i.type === 'no_next_step');
+  assert.ok(item);
+  assert.equal(item.severity, 'low');             // small deal → low
+  // A future follow-up suppresses it.
+  const scheduled = mkClient({ nextFollowUp: daysAhead(2) });
+  assert.ok(!typesFor(scheduled).includes('no_next_step'));
+});
+
+test('stale fires when last activity exceeds STALE_DAYS', () => {
+  const old = daysAgo(HEADS_UP.STALE_DAYS + 5);
+  const c = mkClient({ nextFollowUp: daysAhead(3), lastContact: old, updatedAt: old, log: [{ at: old, text: 'old', kind: 'note' }] });
+  const item = classifyHeadsUp(c, NOW_MS, START_MS).find((i) => i.type === 'stale');
+  assert.ok(item, 'expected stale');
+  assert.match(item.message, new RegExp(`No activity in ${HEADS_UP.STALE_DAYS + 5} days`));
+  // Recent updatedAt (e.g. a stage change today) clears staleness even if logs are old.
+  const touched = mkClient({ nextFollowUp: daysAhead(3), lastContact: old, updatedAt: daysAgo(1), log: [{ at: old, text: 'old', kind: 'note' }] });
+  assert.ok(!typesFor(touched).includes('stale'));
+});
+
+test('hot_quiet fires on a top-tier deal gone quiet (and is high severity)', () => {
+  const c = mkClient({ dealValue: HEADS_UP.HOT_VALUE, lastContact: daysAgo(HEADS_UP.QUIET_DAYS + 1), nextFollowUp: daysAhead(2), updatedAt: daysAgo(1) });
+  const item = classifyHeadsUp(c, NOW_MS, START_MS).find((i) => i.type === 'hot_quiet');
+  assert.ok(item, 'expected hot_quiet');
+  assert.equal(item.severity, 'high');
+  // Recently-contacted hot deal does NOT fire.
+  const fresh = mkClient({ dealValue: HEADS_UP.HOT_VALUE, lastContact: daysAgo(2), nextFollowUp: daysAhead(2) });
+  assert.ok(!typesFor(fresh).includes('hot_quiet'));
+});
+
+test('hot_quiet fires when a hot deal was never contacted', () => {
+  const c = mkClient({ dealValue: HEADS_UP.HOT_VALUE + 1000, lastContact: null, nextFollowUp: daysAhead(2), updatedAt: daysAgo(1), log: [{ at: daysAgo(1), text: 'x', kind: 'note' }] });
+  const item = classifyHeadsUp(c, NOW_MS, START_MS).find((i) => i.type === 'hot_quiet');
+  assert.ok(item);
+  assert.match(item.message, /never contacted/);
+});
+
+test('a healthy active deal earns no heads-up items', () => {
+  const c = mkClient({ dealValue: 500, nextFollowUp: daysAhead(2), lastContact: daysAgo(1), updatedAt: daysAgo(1) });
+  assert.deepEqual(typesFor(c), []);
+});
+
+test('classifyHeadsUp tolerates null / empty input', () => {
+  assert.deepEqual(classifyHeadsUp(null, NOW_MS, START_MS), []);
+  assert.deepEqual(classifyHeadsUp(undefined, NOW_MS, START_MS), []);
+});
+
+// ── buildHeadsUp (sort + cap + counts) ───────────────────────────────────────
+test('buildHeadsUp sorts high severity first, then by deal value', () => {
+  const clients = [
+    mkClient({ companyKey: 'small-overdue', dealValue: 100,  nextFollowUp: daysAhead(-2) }),        // med
+    mkClient({ companyKey: 'hot',           dealValue: 5000, lastContact: daysAgo(40), nextFollowUp: daysAhead(2), updatedAt: daysAgo(1) }), // high
+    mkClient({ companyKey: 'big-overdue',   dealValue: 8000, nextFollowUp: daysAhead(-1) }),        // high (big overdue)
+  ];
+  const { items } = buildHeadsUp(clients, NOW_MS, START_MS);
+  // Both 'high' items lead; within high, the $8000 sorts above the $5000.
+  assert.equal(items[0].severity, 'high');
+  assert.equal(items[0].value, 8000);
+  assert.equal(items[1].severity, 'high');
+  assert.equal(items[1].value, 5000);
+  // The med item lands last.
+  assert.equal(items[items.length - 1].severity, 'med');
+});
+
+test('buildHeadsUp caps surfaced items but counts the full set', () => {
+  // Make many more no_next_step items than the cap.
+  const n = HEADS_UP.MAX_ITEMS + 10;
+  const clients = Array.from({ length: n }, (_, k) =>
+    mkClient({ companyKey: `c${k}`, nextFollowUp: null, dealValue: 100 }));
+  const { items, counts, total } = buildHeadsUp(clients, NOW_MS, START_MS);
+  assert.equal(items.length, HEADS_UP.MAX_ITEMS);   // surfaced list is capped
+  assert.equal(counts.no_next_step, n);             // counts reflect everything
+  assert.equal(total, n);
+});
+
+test('buildHeadsUp tallies a mix of types', () => {
+  const clients = [
+    mkClient({ companyKey: 'a', nextFollowUp: daysAhead(-2), dealValue: 300 }),                 // overdue
+    mkClient({ companyKey: 'b', nextFollowUp: null, dealValue: 300 }),                          // no_next_step
+    mkClient({ companyKey: 'c', dealValue: 5000, lastContact: daysAgo(30), nextFollowUp: daysAhead(2), updatedAt: daysAgo(1) }), // hot_quiet
+  ];
+  const { counts } = buildHeadsUp(clients, NOW_MS, START_MS);
+  assert.equal(counts.overdue_followup, 1);
+  assert.equal(counts.no_next_step, 1);
+  assert.equal(counts.hot_quiet, 1);
 });
