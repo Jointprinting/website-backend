@@ -56,6 +56,8 @@ const ClientSchema = new mongoose.Schema({
   contacts:     { type: [ContactSchema], default: [] },     // people at the company
   log:          { type: [LogEntrySchema], default: [] },    // timestamped touch history
   source:       { type: String, default: '' },              // where the record came from ("field-tracker", "order", "manual", ...)
+  tags:         { type: [String], default: [], index: true }, // freeform labels for grouping/filtering ("vip", "promos-only", "wholesale", ...)
+  lostReason:   { type: String, default: '' },              // why a deal was marked lost (captured when stage → 'lost')
 }, { timestamps: true });
 
 ClientSchema.statics.CRM_STAGES     = CRM_STAGES;
