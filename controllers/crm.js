@@ -21,6 +21,50 @@ const STAGES = Client.CRM_STAGES;
 // Stages we never surface in the call engine — the deal is closed or parked.
 const CLOSED_STAGES = ['won', 'lost', 'dormant'];
 
+// Probability of closing per stage — drives the weighted pipeline forecast on
+// /pipeline. won/customer are realized (1); lost/dormant carry no forecast (0).
+// Exposed on the /pipeline payload so the board can label it consistently.
+const STAGE_PROBABILITY = {
+  lead:      0.1,
+  contacted: 0.25,
+  quoting:   0.5,
+  sampling:  0.7,
+  won:       1,
+  customer:  1,
+  lost:      0,
+  dormant:   0,
+};
+const stageProbability = (stage) => (
+  Object.prototype.hasOwnProperty.call(STAGE_PROBABILITY, stage) ? STAGE_PROBABILITY[stage] : 0
+);
+
+// Stages whose deals are still IN FLIGHT — money in play but not yet realized.
+// These are the only stages that count toward "open pipeline" value. won &
+// customer are closed-won (revenue realized, not open); lost & dormant are dead.
+// (Distinct from the call-engine's CLOSED_STAGES, which keeps `customer` callable
+// for retention — that's about who to call, not open deal value.)
+const OPEN_STAGES = ['lead', 'contacted', 'quoting', 'sampling'];
+
+// Compute the board summary from a flat list of { stage, dealValue } records.
+// Pure (no DB) so it's unit-testable. Returns:
+//   { totalOpenValue, weightedValue }
+// - totalOpenValue: sum of dealValue across OPEN stages only.
+// - weightedValue:  sum of dealValue × stageProbability across ALL stages.
+function summarizePipeline(records) {
+  let totalOpenValue = 0;
+  let weightedValue = 0;
+  for (const r of records || []) {
+    const val = Number(r && r.dealValue) || 0;
+    const stage = r && r.stage;
+    if (OPEN_STAGES.includes(stage)) totalOpenValue += val;
+    weightedValue += val * stageProbability(stage);
+  }
+  return {
+    totalOpenValue: Math.round(totalOpenValue * 100) / 100,
+    weightedValue:  Math.round(weightedValue * 100) / 100,
+  };
+}
+
 // End of *today* in server-local time, as a Date (used by /today).
 function endOfTodayLocal() {
   const d = new Date();
@@ -47,10 +91,11 @@ function lastLogEntry(log) {
 // GET /api/crm — list with optional filters, sorted by name. Lean.
 async function listCrm(req, res) {
   try {
-    const { stage, area, q } = req.query;
+    const { stage, area, q, tag } = req.query;
     const filter = {};
     if (stage && STAGES.includes(stage)) filter.stage = stage;
     if (area) filter.area = area;
+    if (tag && String(tag).trim()) filter.tags = String(tag).trim(); // match docs whose tags[] contains this tag
     if (q && String(q).trim()) {
       const rx = new RegExp(String(q).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
       filter.$or = [{ companyName: rx }, { clientName: rx }, { companyKey: rx }];
@@ -146,6 +191,65 @@ async function getCalendar(req, res) {
   }
 }
 
+// GET /api/crm/pipeline — the Kanban board feed.
+// Groups every company by stage and returns, per stage, a lean set of cards plus
+// a count and summed dealValue, in canonical stage order. Also returns the
+// overall { totalOpenValue, weightedValue } forecast and the probability map the
+// weighting uses (so the UI can label it without hardcoding the numbers).
+// Optional filters mirror the list endpoint (?area=&q=&tag=) so the board can be
+// narrowed the same way Companies is.
+async function getPipeline(req, res) {
+  try {
+    const { area, q, tag } = req.query;
+    const filter = {};
+    if (area) filter.area = area;
+    if (tag && String(tag).trim()) filter.tags = String(tag).trim();
+    if (q && String(q).trim()) {
+      const rx = new RegExp(String(q).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      filter.$or = [{ companyName: rx }, { clientName: rx }, { companyKey: rx }];
+    }
+
+    const docs = await Client.find(filter)
+      .select('companyKey companyName clientName dealValue nextFollowUp stage area interestType tags')
+      .sort({ dealValue: -1, companyName: 1 })   // biggest deals first within each column
+      .lean();
+
+    // Seed every stage so empty columns still render in canonical order.
+    const byStage = {};
+    for (const s of STAGES) byStage[s] = { stage: s, count: 0, totalValue: 0, clients: [] };
+
+    for (const c of docs) {
+      const s = byStage[c.stage] ? c.stage : 'lead'; // defensive: bucket unknowns at the top
+      const g = byStage[s];
+      g.count += 1;
+      g.totalValue += Number(c.dealValue) || 0;
+      g.clients.push({
+        companyKey:   c.companyKey,
+        name:         c.companyName || c.clientName || c.companyKey,
+        dealValue:    Number(c.dealValue) || 0,
+        nextFollowUp: c.nextFollowUp || null,
+        stage:        c.stage,
+        area:         c.area || '',
+        interestType: c.interestType || '',
+        tags:         c.tags || [],
+      });
+    }
+
+    const groups = STAGES.map((s) => {
+      const g = byStage[s];
+      return { ...g, totalValue: Math.round(g.totalValue * 100) / 100 };
+    });
+
+    res.json({
+      groups,
+      summary: summarizePipeline(docs),
+      probability: STAGE_PROBABILITY,
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
 // GET /api/crm/:companyKey — one record (get-or-create stub) + its Orders.
 async function getOne(req, res) {
   try {
@@ -184,7 +288,7 @@ const PATCHABLE = [
   'companyName', 'clientName', 'email', 'phone', 'paymentTerms',
   'defaultPrinter', 'defaultSupplier', 'defaultMarkup', 'notes',
   'stage', 'nextFollowUp', 'lastContact', 'area', 'interestType',
-  'dealValue', 'contacts', 'source',
+  'dealValue', 'contacts', 'source', 'tags', 'lostReason',
 ];
 
 // PATCH /api/crm/:companyKey — upsert/update CRM fields.
@@ -213,6 +317,36 @@ async function patchOne(req, res) {
           return res.status(400).json({ message: `invalid stage "${body.stage}"` });
         }
         set[f] = body[f];
+      }
+    }
+
+    // Tags: normalize to a clean string[] — trimmed, non-empty, de-duped
+    // (case-insensitively, keeping first spelling) — so the field stays tidy
+    // regardless of what the client sends.
+    if ('tags' in body) {
+      const seen = new Set();
+      const clean = [];
+      for (const t of (Array.isArray(body.tags) ? body.tags : [])) {
+        const s = String(t == null ? '' : t).trim();
+        if (!s) continue;
+        const lc = s.toLowerCase();
+        if (seen.has(lc)) continue;
+        seen.add(lc);
+        clean.push(s);
+      }
+      set.tags = clean;
+    }
+
+    // lostReason couples to the stage:
+    //   • moving INTO 'lost' → keep the provided reason (or '' if none).
+    //   • moving to any OTHER stage → clear a stale reason unless the caller is
+    //     explicitly setting one in the same request.
+    // A bare lostReason edit (no stage change) just passes through via PATCHABLE.
+    if ('stage' in body) {
+      if (body.stage === 'lost') {
+        if (!('lostReason' in body)) set.lostReason = set.lostReason || '';
+      } else if (!('lostReason' in body)) {
+        set.lostReason = '';
       }
     }
 
@@ -409,10 +543,14 @@ module.exports = {
   listCrm,
   getToday,
   getCalendar,
+  getPipeline,
   getOne,
   patchOne,
   importRows,
-  // exported for tests
+  // exported for tests / reuse
   applyMappedRow,
   normalizeRowKeys,
+  summarizePipeline,
+  stageProbability,
+  STAGE_PROBABILITY,
 };
