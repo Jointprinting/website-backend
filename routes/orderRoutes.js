@@ -48,6 +48,7 @@ router.delete('/:id',                     deleteOrder);
 router.post('/:id/confirmation/pdf',      confirmationPdf);
 router.get('/:id/pos',                    poCtl.listPos);
 router.post('/:id/pos',                   poCtl.createPo);
+router.post('/:id/pos/from-confirmation',  poCtl.createPosFromConfirmation);
 router.put('/pos/:poId',                  poCtl.updatePo);
 router.delete('/pos/:poId',               poCtl.deletePo);
 router.post('/pos/:poId/pdf',             poCtl.poPdf);
