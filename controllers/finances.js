@@ -10,14 +10,6 @@ const r2 = require('../services/r2');
 const num = (v) => Number(v) || 0;
 const round2 = (v) => Math.round((num(v) + Number.EPSILON) * 100) / 100;
 
-// Parties whose income isn't merch (e.g. VT3D — a service gig with no COGS).
-// It stays in the raw ledger AND the tax CSV (the accountant counts it as
-// income), but is pulled OUT of every internal view so the P&L, margins, and
-// client ranking reflect the REAL merch business. One regex for now; promote to
-// a setting/UI when there's a second one.
-const NON_MERCH_RE = /vt3d/i;
-const isNonMerch = (party) => NON_MERCH_RE.test(String(party || ''));
-
 // A transaction belongs to the year of its DATE. We filter on the date itself,
 // not the denormalized `year` field, which can drift when a date is edited (a
 // Dec-2025 row left tagged 2026 was surfacing as a phantom "Dec" bar in the 2026
@@ -145,18 +137,10 @@ const remove = async (req, res) => {
 const summary = async (req, res) => {
   try {
     const yearMatch = yearDateMatch(req.query.year);
-    // Merch P&L excludes non-merch parties (VT3D); they're reported on the side.
     const rows = await Transaction.aggregate([
-      { $match: { ...yearMatch, party: { $not: NON_MERCH_RE } } },
+      { $match: yearMatch },
       { $group: { _id: { type: '$type', category: '$category' }, total: { $sum: '$amount' }, count: { $sum: 1 } } },
     ]);
-    // Non-merch income/expense — out of the P&L above, kept in the tax export.
-    const nmRows = await Transaction.aggregate([
-      { $match: { ...yearMatch, party: NON_MERCH_RE } },
-      { $group: { _id: '$type', total: { $sum: '$amount' } } },
-    ]);
-    let nonMerchIncome = 0, nonMerchExpense = 0;
-    nmRows.forEach((r) => { if (r._id === 'income') nonMerchIncome = round2(r.total); else nonMerchExpense = round2(r.total); });
     let income = 0, expense = 0, ownerContribution = 0, ownerDraw = 0;
     const expenseByCategory = {}, incomeByCategory = {};
     rows.forEach((r) => {
@@ -184,7 +168,6 @@ const summary = async (req, res) => {
       margin: income ? round2((net / income) * 100) : 0,
       ownerContribution: round2(ownerContribution),
       ownerDraw: round2(ownerDraw),
-      nonMerch: { income: nonMerchIncome, expense: nonMerchExpense, net: round2(nonMerchIncome - nonMerchExpense), label: 'VT3D' },
       incomeByCategory, expenseByCategory, pctOfSpend,
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
@@ -225,7 +208,7 @@ const byOrder = async (req, res) => {
         margin: o.revenue ? round2((profit / o.revenue) * 100) : 0,
       };
     });
-    orders = orders.filter((o) => !isNonMerch(o.client) && (o.revenue !== 0 || o.cost !== 0));  // merch orders with real activity (drop $0/$0 ghosts — an order# stuck on a software/overhead line)
+    orders = orders.filter((o) => o.revenue !== 0 || o.cost !== 0);  // real orders only (drop $0/$0 ghosts — an order# stuck on a software/overhead line)
     if (year) orders = orders.filter((o) => o.year === year);  // by the year it SOLD, not by cost dates
     orders.sort((a, b) => Number(b.orderNumber) - Number(a.orderNumber));
     res.json({ orders });
@@ -238,7 +221,7 @@ const byMonth = async (req, res) => {
   try {
     const yearMatch = yearDateMatch(req.query.year);
     const rows = await Transaction.aggregate([
-      { $match: { ...yearMatch, party: { $not: NON_MERCH_RE } } },   // merch trend only
+      { $match: yearMatch },
       { $group: { _id: { y: { $year: '$date' }, m: { $month: '$date' }, type: '$type', category: '$category' }, total: { $sum: '$amount' } } },
     ]);
     const map = {};
@@ -279,7 +262,6 @@ const byClient = async (req, res) => {
       const anchor = o.saleDate || o.firstDate;
       const oy = anchor ? new Date(anchor).getUTCFullYear() : null;
       if (year && oy !== year) return;
-      if (isNonMerch(o.client)) return;                        // merch clients only (VT3D excluded internally)
       if (o.revenue === 0 && o.cost === 0) return;             // skip $0/$0 ghosts (order# on a non-COGS line)
       const name = ((o.client || '').trim()) || '—';
       const c = (byC[name] ||= { client: name, revenue: 0, cost: 0, orders: 0 });
