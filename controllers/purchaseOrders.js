@@ -180,7 +180,7 @@ const createPosFromConfirmation = async (req, res) => {
         contactName: vendor ? vendor.contactName : '',
         vendorAddress: vendor ? vendor.address : '',
         shipMethod: vendor ? vendor.shipMethod : '',
-        blanksProvided: vendor ? !!vendor.blanksProvided : false,
+        blanksProvided: true,   // JP supplies the blanks ~99% of the time — default yes; toggle off for the rare vendor-supplied job
         ...seeded,
       });
       created.push(po);
@@ -244,7 +244,7 @@ const createPo = async (req, res) => {
       contactName: vendor ? vendor.contactName : '',
       vendorAddress: vendor ? vendor.address : '',
       shipMethod: vendor ? vendor.shipMethod : '',
-      blanksProvided: vendor ? !!vendor.blanksProvided : false,
+      blanksProvided: true,   // JP supplies the blanks ~99% of the time — default yes; toggle off for the rare vendor-supplied job
       ...seeded,
     });
     res.status(201).json(po);
