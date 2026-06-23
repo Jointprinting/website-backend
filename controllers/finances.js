@@ -10,6 +10,15 @@ const r2 = require('../services/r2');
 const num = (v) => Number(v) || 0;
 const round2 = (v) => Math.round((num(v) + Number.EPSILON) * 100) / 100;
 
+// A credit/return reverses the direction of its `type` while staying positive in
+// the DB: an EXPENSE credit (supplier credit) nets DOWN cost; an INCOME credit
+// (customer refund) nets DOWN revenue. Every total is computed on this signed
+// amount so credits subtract instead of adding. Legacy rows (no isCredit) sign
+// to +amount, so nothing about historical numbers changes.
+const signed = (t) => (t && t.isCredit ? -num(t.amount) : num(t.amount));
+// The same rule as a Mongo aggregation expression on the current document.
+const SIGNED_AMOUNT = { $cond: [{ $eq: ['$isCredit', true] }, { $multiply: ['$amount', -1] }, '$amount'] };
+
 // A transaction belongs to the year of its DATE. We filter on the date itself,
 // not the denormalized `year` field, which can drift when a date is edited (a
 // Dec-2025 row left tagged 2026 was surfacing as a phantom "Dec" bar in the 2026
@@ -60,7 +69,8 @@ const importCsv = async (req, res) => {
     for (let i = 1; i < lines.length; i++) {
       const c = parseCsvLine(lines[i]);
       const date = new Date(c[ix.date]);
-      const amount = Math.abs(num(c[ix.amount]));
+      const rawAmount = num(c[ix.amount]);
+      const amount = Math.abs(rawAmount);
       if (isNaN(date.getTime()) || !amount) continue;
       docs.push({
         date,
@@ -70,6 +80,8 @@ const importCsv = async (req, res) => {
         party: (c[ix.party] || '').trim(),
         description: (c[ix.desc] || '').trim(),
         amount,
+        isCredit: rawAmount < 0,   // a negative ledger amount = a credit / return
+
         qbSynced: /yes/i.test(c[ix.qb] || ''),
         year: date.getUTCFullYear(),
         source: 'import',
@@ -139,7 +151,7 @@ const summary = async (req, res) => {
     const yearMatch = yearDateMatch(req.query.year);
     const rows = await Transaction.aggregate([
       { $match: yearMatch },
-      { $group: { _id: { type: '$type', category: '$category' }, total: { $sum: '$amount' }, count: { $sum: 1 } } },
+      { $group: { _id: { type: '$type', category: '$category' }, total: { $sum: SIGNED_AMOUNT }, count: { $sum: 1 } } },
     ]);
     let income = 0, expense = 0, ownerContribution = 0, ownerDraw = 0;
     const expenseByCategory = {}, incomeByCategory = {};
@@ -191,11 +203,11 @@ const byOrder = async (req, res) => {
       const d = t.date ? new Date(t.date) : null;
       if (d && (!o.firstDate || d < o.firstDate)) o.firstDate = d;
       if (t.type === 'income' && t.category === 'Customer Sales') {
-        o.revenue += t.amount;
+        o.revenue += signed(t);   // a Customer-Sales credit = customer refund → nets revenue down
         if (!o.client) o.client = t.party;
         if (d && (!o.saleDate || d < o.saleDate)) o.saleDate = d;        // anchor = when it sold
       } else if (t.type === 'expense' && cogs.has(t.category)) {
-        o.cost += t.amount;
+        o.cost += signed(t);      // a COGS credit = supplier credit → nets cost down
       }
     });
     let orders = Object.values(map).map((o) => {
@@ -222,7 +234,7 @@ const byMonth = async (req, res) => {
     const yearMatch = yearDateMatch(req.query.year);
     const rows = await Transaction.aggregate([
       { $match: yearMatch },
-      { $group: { _id: { y: { $year: '$date' }, m: { $month: '$date' }, type: '$type', category: '$category' }, total: { $sum: '$amount' } } },
+      { $group: { _id: { y: { $year: '$date' }, m: { $month: '$date' }, type: '$type', category: '$category' }, total: { $sum: SIGNED_AMOUNT } } },
     ]);
     const map = {};
     rows.forEach((r) => {
@@ -253,9 +265,9 @@ const byClient = async (req, res) => {
       const d = t.date ? new Date(t.date) : null;
       if (d && (!o.firstDate || d < o.firstDate)) o.firstDate = d;
       if (t.type === 'income' && t.category === 'Customer Sales') {
-        o.revenue += t.amount; if (!o.client) o.client = t.party;
+        o.revenue += signed(t); if (!o.client) o.client = t.party;
         if (d && (!o.saleDate || d < o.saleDate)) o.saleDate = d;
-      } else if (t.type === 'expense' && cogs.has(t.category)) o.cost += t.amount;
+      } else if (t.type === 'expense' && cogs.has(t.category)) o.cost += signed(t);
     });
     const byC = {};
     Object.values(orders).forEach((o) => {
@@ -285,7 +297,9 @@ const exportCsv = async (req, res) => {
     txns.forEach((t) => lines.push([
       new Date(t.date).toISOString().slice(0, 10),
       t.type === 'income' ? 'Income' : 'Expense',
-      t.category, t.orderNumber, t.party, t.description, round2(t.amount), t.qbSynced ? 'Yes' : 'No',
+      t.category, t.orderNumber, t.party, t.description,
+      // Credits export as a negative amount so a re-import re-flags them.
+      round2(signed(t)), t.qbSynced ? 'Yes' : 'No',
     ].map(csvCell).join(',')));
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="JP-Ledger-${req.query.year || 'all'}.csv"`);
