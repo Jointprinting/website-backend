@@ -166,6 +166,7 @@ const jpwRoutes            = require('./routes/jpwRoutes');
 const gdriveRoutes         = require('./routes/gdriveRoutes');
 const financeRoutes        = require('./routes/financeRoutes');
 const receiptRoutes        = require('./routes/receiptRoutes');
+const crmRoutes            = require('./routes/crmRoutes');
 
 app.use('/api/products', productRoutes);
 app.use('/api/auth', authRoutes);
@@ -178,6 +179,9 @@ app.use('/api/studio', studioRoutes);
 app.use('/api/orders', express.json({ limit: '100mb' }), orderRoutes);
 app.use('/api/client-logos', express.json({ limit: '2mb' }), clientLogoRoutes);
 app.use('/api/clients', express.json(), clientRoutes);
+// CRM import can carry the whole field tracker as JSON rows or raw CSV text, so
+// allow a larger body than the global 1mb default.
+app.use('/api/crm', express.json({ limit: '8mb' }), crmRoutes);
 app.use('/api/public', express.json(), publicApprovalRoutes);
 app.use('/api/admin/backup', backupRoutes);
 app.use('/api/jpw', express.json({ limit: '20mb' }), jpwRoutes);
