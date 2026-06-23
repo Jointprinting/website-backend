@@ -23,9 +23,19 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
   .map((s) => s.trim())
   .filter(Boolean);
 
+// Vercel gives every preview deployment a fresh hostname per branch/commit, so
+// they can't be enumerated in ALLOWED_ORIGINS ahead of time. Accept any preview
+// for this project: the hostname always carries our Vercel team slug
+// ("joint-printing-front-end"), which is globally unique to us and can't be
+// registered by anyone else — so a look-alike origin can't slip through.
+// e.g. https://jointprinting-frontend-git-<branch>-joint-printing-front-end.vercel.app
+const VERCEL_PREVIEW_ORIGIN =
+  /^https:\/\/jointprinting-frontend-[a-z0-9-]+-joint-printing-front-end\.vercel\.app$/;
+
 app.use(cors({
   origin: (origin, cb) => {
     if (!origin) return cb(null, true);
+    if (VERCEL_PREVIEW_ORIGIN.test(origin)) return cb(null, true);
     // No allowlist configured: open in dev for convenience, but fail CLOSED
     // in production — a missing ALLOWED_ORIGINS must not open the API to
     // every origin on the internet.
