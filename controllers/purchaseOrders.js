@@ -53,6 +53,154 @@ function _seedFromOrder(order) {
   };
 }
 
+// ── Build POs from the APPROVED confirmation, split by supplier ───────────────
+// The confirmation is what the client actually signed off, so it — not the
+// pre-approval quote — is the right source for the real vendor POs. Each
+// confirmation item carries its own `printerName` (who's actually making it),
+// so an order spanning multiple suppliers (screen-printed tees + promo
+// lighters) yields ONE PO per supplier, automatically. Costs use the item's
+// internal `unitCost × total qty` (what JP pays the vendor), never client
+// pricing — same cost basis as _seedFromOrder.
+
+// Display name for a confirmation item: product override, else brand + style.
+function _confItemName(it) {
+  const label = String(it.productName || '').trim()
+    || [it.brandName, it.styleCode].map(s => String(s || '').trim()).filter(Boolean).join(' ');
+  return label || 'Item';
+}
+
+// Which supplier a confirmation item belongs to. Per-item printer wins; fall
+// back to the order's printer/supplier; clearly bucket the rest as Unassigned.
+const UNASSIGNED = 'Unassigned';
+function _confItemSupplier(it, order) {
+  return String(it && it.printerName || '').trim()
+    || String(order.printerName || order.supplier || '').trim()
+    || UNASSIGNED;
+}
+
+// Build one PO draft (existing PO shape) for a single supplier's items.
+function _seedPoForGroup(order, vendorName, groupItems) {
+  const conf = order.confirmation || {};
+  const items = [];
+  const charges = [];
+  groupItems.forEach((it) => {
+    const sizes = Array.isArray(it.sizes) ? it.sizes : [];
+    const qty = sizes.reduce((s, sz) => s + n(sz.qty), 0);
+    const unitCost = n(it.unitCost);
+    const name = _confItemName(it);
+    const colorTitle = it.color ? `${name}, ${it.color}` : name;
+    const title = `${colorTitle}${qty ? `, ${qty} units` : ''}`;
+
+    const details = [];
+    if (it.printType) details.push([it.printType, it.color].filter(Boolean).join(' · '));
+    // Size run, e.g. "S: 10 · M: 25 · L: 15" — what the vendor actually makes.
+    const run = sizes.filter(sz => n(sz.qty) > 0).map(sz => `${sz.label || '—'}: ${n(sz.qty)}`).join(' · ');
+    if (run) details.push(run);
+    if (unitCost && qty) details.push(`${money(unitCost)}/unit * ${qty} units = ${money(unitCost * qty)}`);
+    items.push({ title, details });
+
+    if (unitCost && qty) {
+      charges.push({ label: `${colorTitle}: ${money(unitCost)}/unit * ${qty} units`, amount: unitCost * qty });
+    }
+  });
+  return {
+    vendorName,
+    shipping: {
+      name:          (conf.shipping && conf.shipping.name) || order.companyName || '',
+      attention:     (conf.shipping && conf.shipping.attention) || order.clientName || '',
+      streetAddress: (conf.shipping && conf.shipping.streetAddress) || '',
+      cityStateZip:  (conf.shipping && conf.shipping.cityStateZip) || '',
+    },
+    items,
+    charges,
+    grandTotal: charges.reduce((s, c) => s + n(c.amount), 0),
+  };
+}
+
+// Group confirmation items by supplier, preserving first-seen order so the
+// generated POs come out in a stable, sensible sequence.
+function _groupConfBySupplier(order) {
+  const confItems = (order.confirmation && Array.isArray(order.confirmation.items)) ? order.confirmation.items : [];
+  const groups = new Map();   // displayName -> { vendorName, items: [] }
+  confItems.forEach((it) => {
+    const vendorName = _confItemSupplier(it, order);
+    const key = vendorName.toLowerCase();
+    if (!groups.has(key)) groups.set(key, { vendorName, items: [] });
+    groups.get(key).items.push(it);
+  });
+  return [...groups.values()];
+}
+
+// POST /api/orders/:id/pos/from-confirmation — one PO per supplier from the
+// approved confirmation. Skips suppliers that ALREADY have a PO on this order
+// (matched case-insensitively by vendor name), so re-running is safe and never
+// silently duplicates; the response says exactly what was created vs skipped.
+const createPosFromConfirmation = async (req, res) => {
+  try {
+    if (badId(req.params.id)) return res.status(404).json({ message: 'Project not found' });
+    const order = await Order.findById(req.params.id).lean();
+    if (!order) return res.status(404).json({ message: 'Project not found' });
+
+    const groups = _groupConfBySupplier(order);
+    if (groups.length === 0) {
+      return res.status(400).json({
+        message: 'This project has no approved confirmation items to build POs from. Finalize the confirmation first.',
+      });
+    }
+
+    // Local calendar day from the builder, same handling as createPo.
+    const bodyDate = String((req.body && req.body.date) || '');
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(bodyDate) ? new Date(`${bodyDate}T00:00:00Z`) : new Date();
+
+    // Vendors that already have a PO on this order — skip them so a re-run
+    // doesn't duplicate. (Unassigned never auto-skips on a blank name.)
+    const existing = await PurchaseOrder.find({ orderId: order._id }).select('vendorName').lean();
+    const existingNames = new Set(existing.map(p => String(p.vendorName || '').trim().toLowerCase()).filter(Boolean));
+
+    const created = [];
+    const skipped = [];
+    for (const g of groups) {
+      const key = g.vendorName.trim().toLowerCase();
+      if (key && existingNames.has(key)) { skipped.push(g.vendorName); continue; }
+
+      const seeded = _seedPoForGroup(order, g.vendorName, g.items);
+      // Pre-fill vendor contact card exactly like createPo (case-insensitive
+      // exact-name match). Unassigned/blank → no match, blank card.
+      let vendor = null;
+      if (g.vendorName && g.vendorName !== UNASSIGNED) {
+        vendor = await Vendor.findOne({
+          name: new RegExp(`^${g.vendorName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+        }).lean();
+      }
+      const po = await PurchaseOrder.create({
+        orderId: order._id,
+        poNumber: `#${(await nextNumber('po', g.vendorName)).padStart(3, '0')}`,
+        date,
+        vendorName: g.vendorName,
+        contactName: vendor ? vendor.contactName : '',
+        vendorAddress: vendor ? vendor.address : '',
+        shipMethod: vendor ? vendor.shipMethod : '',
+        blanksProvided: vendor ? !!vendor.blanksProvided : false,
+        ...seeded,
+      });
+      created.push(po);
+      if (key) existingNames.add(key);   // guard against a duplicate supplier name within one run
+    }
+
+    res.status(201).json({
+      pos: created,
+      summary: {
+        created: created.length,
+        vendors: created.map(p => p.vendorName),
+        skipped,                                   // suppliers that already had a PO on this order
+        suppliers: groups.length,                  // distinct suppliers found in the confirmation
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 // GET /api/orders/:id/pos
 const listPos = async (req, res) => {
   try {
@@ -278,4 +426,4 @@ const poPdf = async (req, res) => {
   }
 };
 
-module.exports = { listPos, createPo, updatePo, deletePo, listVendors, poPdf };
+module.exports = { listPos, createPo, createPosFromConfirmation, updatePo, deletePo, listVendors, poPdf };
