@@ -225,7 +225,7 @@ const byOrder = async (req, res) => {
         margin: o.revenue ? round2((profit / o.revenue) * 100) : 0,
       };
     });
-    orders = orders.filter((o) => !isNonMerch(o.client));      // merch orders only (VT3D lives in the tax export)
+    orders = orders.filter((o) => !isNonMerch(o.client) && (o.revenue !== 0 || o.cost !== 0));  // merch orders with real activity (drop $0/$0 ghosts — an order# stuck on a software/overhead line)
     if (year) orders = orders.filter((o) => o.year === year);  // by the year it SOLD, not by cost dates
     orders.sort((a, b) => Number(b.orderNumber) - Number(a.orderNumber));
     res.json({ orders });
@@ -280,6 +280,7 @@ const byClient = async (req, res) => {
       const oy = anchor ? new Date(anchor).getUTCFullYear() : null;
       if (year && oy !== year) return;
       if (isNonMerch(o.client)) return;                        // merch clients only (VT3D excluded internally)
+      if (o.revenue === 0 && o.cost === 0) return;             // skip $0/$0 ghosts (order# on a non-COGS line)
       const name = ((o.client || '').trim()) || '—';
       const c = (byC[name] ||= { client: name, revenue: 0, cost: 0, orders: 0 });
       c.revenue += o.revenue; c.cost += o.cost; c.orders += 1;
