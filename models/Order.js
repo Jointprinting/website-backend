@@ -74,10 +74,6 @@ const OrderSchema = new mongoose.Schema({
     default: 'quoted',
   },
   paid:          { type: Boolean, default: false },
-  // Set by the QB sync when an invoice exists with a remaining balance —
-  // signals "payment initiated / pending" without overloading the binary
-  // paid flag. Cleared automatically once Balance == 0.
-  paymentInProgress: { type: Boolean, default: false },
   totalValue:    { type: Number, default: 0 },
   cogs:          { type: Number, default: 0 },
   printerName:   { type: String, default: '' },
@@ -88,7 +84,6 @@ const OrderSchema = new mongoose.Schema({
   notes:         { type: String, default: '' },
   confirmationMessage: { type: String, default: '' },  // personal note on the client-facing confirmation
   confirmationTerms:   { type: String, default: '' },  // payment / turnaround terms
-  quickbooksInvoiceUrl: { type: String, default: '' }, // link to the QB invoice for this project
   tasks: [{                                            // per-project checklist
     text:        { type: String, default: '' },
     done:        { type: Boolean, default: false },
