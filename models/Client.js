@@ -32,10 +32,18 @@ const LogEntrySchema = new mongoose.Schema({
   at:   { type: Date, default: Date.now },
   text: { type: String, default: '' },
   kind: { type: String, default: '' },
+  // Stable identity for an auto-generated entry (e.g. the import line), so a
+  // re-import can recognize "I already wrote this" and skip it instead of piling
+  // up near-duplicate rows. Empty for normal human-logged touches.
+  dedupKey: { type: String, default: '' },
 }, { _id: false });
 
 const ClientSchema = new mongoose.Schema({
   companyKey:      { type: String, required: true, unique: true, index: true },
+  // Fuzzy grouping key (corp-suffix/apostrophe/punct stripped) used ONLY by the
+  // duplicate-finder/merge tooling — NOT identity. companyKey stays the identity
+  // that lines up with Orders. Indexed so /duplicates can group by it cheaply.
+  matchKey:        { type: String, default: '', index: true },
   companyName:     { type: String, default: '' },
   clientName:      { type: String, default: '' },
   email:           { type: String, default: '' },
@@ -58,6 +66,17 @@ const ClientSchema = new mongoose.Schema({
   source:       { type: String, default: '' },              // where the record came from ("field-tracker", "order", "manual", ...)
   tags:         { type: [String], default: [], index: true }, // freeform labels for grouping/filtering ("vip", "promos-only", "wholesale", ...)
   lostReason:   { type: String, default: '' },              // why a deal was marked lost (captured when stage → 'lost')
+
+  // Soft-delete. NOTHING in the CRM is ever hard-deleted — archive a record and
+  // it drops out of every working surface (today/dashboard/pipeline/calendar/
+  // the default Companies list) while all of its data (orders link by
+  // companyKey, log, contacts) is fully preserved and restorable. Set by the
+  // archive endpoint, the merge endpoint (on the merged-away record), and the
+  // import 'replace' mode (on stale pure-import records).
+  archived:     { type: Boolean, default: false, index: true },
+  archivedAt:   { type: Date, default: null },
+  archivedReason: { type: String, default: '' },            // 'merged', 'replaced', 'dead-cleanup', 'manual'
+  mergedInto:   { type: String, default: '' },              // survivor companyKey when archivedReason === 'merged'
 }, { timestamps: true });
 
 ClientSchema.statics.CRM_STAGES     = CRM_STAGES;

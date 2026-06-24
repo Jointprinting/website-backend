@@ -24,7 +24,10 @@ const Transaction   = require('../models/Transaction');
 // /api/finances exactly (same revenue/COGS/profit/margin math, same order-number
 // normalization). Never re-derive finance numbers here.
 const { summarizeCompanyFinance, normalizeOrderNumber } = require('./finances');
-const { parseCsv, rowsToObjects, mapTrackerRow } = require('../utils/fieldTrackerImport');
+const {
+  parseCsv, rowsToObjects, mapTrackerRow,
+  matchKey: deriveMatchKey, normPhone, normEmail,
+} = require('../utils/fieldTrackerImport');
 // Business-timezone day boundaries. The server runs in UTC (ahead of the owner's
 // US-Eastern clock), so every "today / overdue / due-today" decision reasons in
 // America/New_York via these helpers — never the raw server clock. (Real audit
@@ -35,6 +38,14 @@ const { etToday, etStartOfToday, dayDiffFromToday } = require('../utils/time');
 const STAGES = Client.CRM_STAGES;
 // Stages we never surface in the call engine — the deal is closed or parked.
 const CLOSED_STAGES = ['won', 'lost', 'dormant'];
+
+// Archived (soft-deleted) records are excluded from every WORKING surface —
+// /today, /dashboard, /pipeline, /calendar, and the default /list. They still
+// exist (and their Orders still link by companyKey); they just drop out of the
+// day-to-day. Spread this into a find() filter. `{ archived: { $ne: true } }`
+// (not `archived: false`) so pre-existing docs with no archived field still
+// match.
+const NOT_ARCHIVED = { archived: { $ne: true } };
 
 // Probability of closing per stage — drives the weighted pipeline forecast on
 // /pipeline. won/customer are realized (1); lost/dormant carry no forecast (0).
@@ -251,8 +262,13 @@ function buildHeadsUp(clients, nowMs, todayMs) {
 // GET /api/crm — list with optional filters, sorted by name. Lean.
 async function listCrm(req, res) {
   try {
-    const { stage, area, q, tag } = req.query;
+    const { stage, area, q, tag, archived } = req.query;
+    // Default list EXCLUDES archived; ?archived=1 shows only archived, =all shows
+    // everything (for an "Archived" tab / restore surface).
     const filter = {};
+    if (archived === '1' || archived === 'true') filter.archived = true;
+    else if (archived === 'all') { /* no archived constraint */ }
+    else Object.assign(filter, NOT_ARCHIVED);
     if (stage && STAGES.includes(stage)) filter.stage = stage;
     if (area) filter.area = area;
     if (tag && String(tag).trim()) filter.tags = String(tag).trim(); // match docs whose tags[] contains this tag
@@ -282,6 +298,7 @@ async function getToday(req, res) {
     const cutoff = new Date(Date.parse(`${etToday()}T00:00:00Z`) + 86400000);
 
     const docs = await Client.find({
+      ...NOT_ARCHIVED,
       nextFollowUp: { $ne: null, $lt: cutoff },
       stage: { $nin: CLOSED_STAGES },
     })
@@ -339,6 +356,7 @@ async function getCalendar(req, res) {
       return res.status(400).json({ message: 'from/to must be valid YYYY-MM-DD dates' });
     }
     const docs = await Client.find({
+      ...NOT_ARCHIVED,
       nextFollowUp: { $ne: null, $gte: start, $lte: end },
     })
       .sort({ nextFollowUp: 1 })
@@ -371,7 +389,7 @@ async function getCalendar(req, res) {
 async function getPipeline(req, res) {
   try {
     const { area, q, tag } = req.query;
-    const filter = {};
+    const filter = { ...NOT_ARCHIVED };
     if (area) filter.area = area;
     if (tag && String(tag).trim()) filter.tags = String(tag).trim();
     if (q && String(q).trim()) {
@@ -432,7 +450,7 @@ async function getPipeline(req, res) {
 async function getDashboard(req, res) {
   try {
     const { area } = req.query;
-    const filter = {};
+    const filter = { ...NOT_ARCHIVED };
     if (area) filter.area = area;
 
     // One read; we only need the CRM fields (+ timestamps for staleness).
@@ -544,6 +562,107 @@ async function getDashboard(req, res) {
   }
 }
 
+// Loose normalization of a company display name for cross-referencing a
+// Transaction's free-text `party` against a company. Lowercase + alnum-only, so
+// "Acme, Inc." and "acme inc" collapse together. '' for nothing.
+function looseName(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+// Pure transaction-scoping (the LEAK FIX core): keep a Tx if its order number is
+// uniquely ours (not in sharedNums), else require its party to match one of our
+// names. No DB — unit-testable. `ownNames`/`sharedNums` are Sets of normalized
+// names / normalized numbers. `nameKey` is the name-normalizer used to build
+// ownNames (defaults to looseName); companyFinance passes deriveMatchKey so
+// "Acme" matches "Acme LLC" and a company's own row isn't dropped over a suffix.
+function scopeCompanyTransactions(rows, { ownNames, sharedNums, nameKey = looseName }) {
+  return (rows || []).filter((t) => {
+    const num = normalizeOrderNumber(t.orderNumber);
+    if (!sharedNums.has(num)) return true;               // uniquely ours -> count
+    const party = nameKey(t.party);                       // collided -> party must match
+    return party && ownNames.has(party);
+  });
+}
+
+// Company finance rollup — the LEAK FIX (MONEY).
+//
+// The bug: Transactions key only by a digits-only order number. Two different
+// companies can reuse the same order number (e.g. both have an "#21"). The old
+// code pulled every Transaction whose number was in THIS company's set and
+// summed them all — so company A's page folded in company B's "#21" money.
+//
+// The fix scopes a Transaction to this company two ways, BOTH required to count:
+//   1) its normalized order number is one of THIS company's Orders' numbers, AND
+//   2) its `party` matches a name this company is known by — derived from the
+//      Orders themselves (companyName/clientName). When a number is owned by
+//      EXACTLY ONE company in the system, the party gate is a no-op (the row is
+//      unambiguously ours); the gate only bites when a number collides across
+//      companies, dropping the other company's rows. A Tx with a blank party
+//      that shares a collided number can't be attributed, so it's left out
+//      (better to under- than over-count someone else's revenue).
+async function companyFinance(orders) {
+  const orderNums = [...new Set(
+    (orders || []).map((o) => normalizeOrderNumber(o.orderNumber)).filter(Boolean),
+  )];
+  if (!orderNums.length) return summarizeCompanyFinance(orders || [], []);
+
+  // The names this company answers to (for the party gate). We normalize with
+  // the SAME corporate-suffix-stripping key the dedup uses (deriveMatchKey), so
+  // "Acme" (on the Order) and "Acme LLC" (on a Transaction's party) match - this
+  // company's own row is never dropped just because the party spelling carries a
+  // suffix. (looseName alone would treat "acme" != "acmellc".)
+  const nameKey = (s) => deriveMatchKey(s, '');
+  const ownNames = new Set();
+  for (const o of orders || []) {
+    const cn = nameKey(o.companyName); if (cn) ownNames.add(cn);
+    const ln = nameKey(o.clientName);  if (ln) ownNames.add(ln);
+  }
+
+  const rows = await Transaction.find({ orderNumber: { $in: orderNums } })
+    .select('type category amount isCredit orderNumber party')
+    .lean();
+
+  // Which of our order numbers are shared with at least one OTHER company? Only
+  // those need the party gate; uniquely-ours numbers always count (so we never
+  // drop a legitimate row just because its party text differs slightly). We
+  // detect collisions from BOTH sources that can carry a number:
+  //   • Order docs   (another company has an Order with the same number), and
+  //   • the Transactions themselves (another company's ledger row reused the
+  //     number even with no Order) - this closes the gap where a Tx-only
+  //     collision would otherwise leak in.
+  const ownersByNum = new Map();
+  const addOwner = (num, name) => {
+    if (!num || !orderNums.includes(num)) return;
+    const key = nameKey(name);
+    if (!key) return;
+    const set = ownersByNum.get(num) || new Set();
+    set.add(key);
+    ownersByNum.set(num, set);
+  };
+  const colliding = await Order.find({ orderNumber: { $ne: '' } })
+    .select('orderNumber companyName clientName').lean();
+  for (const o of colliding) {
+    const num = normalizeOrderNumber(o.orderNumber);
+    addOwner(num, o.companyName);
+    addOwner(num, o.clientName);
+  }
+  // Transaction-level owners (party text) for the same numbers we pulled.
+  for (const t of rows) addOwner(normalizeOrderNumber(t.orderNumber), t.party);
+
+  const sharedNums = new Set();
+  for (const [num, owners] of ownersByNum) {
+    for (const owner of owners) {
+      if (!ownNames.has(owner)) { sharedNums.add(num); break; } // a non-us owner -> collided
+    }
+  }
+
+  // Scope with the matchKey-based name normalization so the party gate uses the
+  // same notion of "our name" we built ownNames with.
+  const scoped = scopeCompanyTransactions(rows, { ownNames, sharedNums, nameKey });
+
+  return summarizeCompanyFinance(orders || [], scoped);
+}
+
 // GET /api/crm/:companyKey — one record (get-or-create stub) + its Orders.
 async function getOne(req, res) {
   try {
@@ -552,18 +671,36 @@ async function getOne(req, res) {
 
     let client = await Client.findOne({ companyKey: key }).lean();
     if (!client) {
-      // Bootstrap an empty stub from any existing order so the record exists
-      // and lines up with order history — mirrors controllers/clients.js.
+      // Only AUTO-CREATE a record when there's a real Order with this key to
+      // bootstrap from (so the CRM record lines up with order history — mirrors
+      // controllers/clients.js). A bare GET of an unknown key must NOT mint a
+      // ghost company (the old behavior littered the CRM with empty records every
+      // time the UI probed a key). No order → 404; the caller treats it as
+      // "doesn't exist yet".
       const sample = await Order.findOne({ companyKey: key })
         .sort({ updatedAt: -1 })
         .select('companyName clientName')
         .lean();
-      const created = await Client.create({
-        companyKey:  key,
-        companyName: (sample && sample.companyName) || '',
-        clientName:  (sample && sample.clientName)  || '',
-      });
-      client = created.toObject();
+      if (!sample) {
+        return res.status(404).json({ message: 'No CRM record for that key yet.' });
+      }
+      // Race-safe get-or-create: upsert on the unique companyKey so two
+      // concurrent loads can't both insert (the old create() threw E11000 on the
+      // loser). $setOnInsert only writes on a genuine insert, so an existing doc
+      // is returned untouched.
+      client = await Client.findOneAndUpdate(
+        { companyKey: key },
+        {
+          $setOnInsert: {
+            companyKey:  key,
+            companyName: sample.companyName || '',
+            clientName:  sample.clientName  || '',
+            matchKey:    deriveMatchKey(sample.companyName, sample.clientName),
+            source:      'order',
+          },
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      ).lean();
     }
 
     const orders = await Order.find({ companyKey: key })
@@ -595,15 +732,7 @@ async function getOne(req, res) {
     // (summarizeCompanyFinance — same revenue/COGS/profit/margin definitions as
     // /api/finances). The ledger keys by digits-only order number, so we bridge by
     // normalizing this company's Order numbers and pulling exactly those Tx rows.
-    const orderNums = [...new Set(
-      orders.map((o) => normalizeOrderNumber(o.orderNumber)).filter(Boolean),
-    )];
-    const txns = orderNums.length
-      ? await Transaction.find({ orderNumber: { $in: orderNums } })
-          .select('type category amount isCredit orderNumber')
-          .lean()
-      : [];
-    const finance = summarizeCompanyFinance(orders, txns);
+    const finance = await companyFinance(orders);
 
     res.json({ client, orders, pos, finance });
   } catch (e) {
@@ -724,18 +853,24 @@ async function patchOne(req, res) {
 //   • stage: only upgrade a default/empty stage — don't downgrade a record the
 //     owner already advanced.
 // Returns 'created' | 'updated' | 'skipped'.
-async function applyMappedRow(mapped) {
-  if (mapped._skip || !mapped.companyKey) return 'skipped';
-  const key = mapped.companyKey;
+// Pure import-merge policy: mutate `doc` (a plain object OR a mongoose doc) in
+// place according to THE CONTRACT, given the mapped row and whether the doc is
+// brand-new. No DB here, so the safety rules are unit-testable directly:
+//   - fill-blanks-only for scalars
+//   - stage only upgrades from default/empty (never downgrades owner work)
+//   - lastContact = newer-of (monotonic)
+//   - nextFollowUp SEEDED ON CREATE ONLY (never moved on update -> owner
+//     reschedules survive; a cleared follow-up is never resurrected)
+//   - contacts matched by normalized phone OR email, then blank-filled; new
+//     people appended (no duplicate spawning)
+//   - log de-duped by (kind + dedupKey) so re-import never piles up rows
+function applyImportToDoc(doc, mapped, isNew) {
+  if (!Array.isArray(doc.contacts)) doc.contacts = doc.contacts || [];
+  if (!Array.isArray(doc.log)) doc.log = doc.log || [];
 
-  let doc = await Client.findOne({ companyKey: key });
-  const isNew = !doc;
-  if (!doc) {
-    doc = new Client({ companyKey: key, source: 'field-tracker' });
-  }
-
-  // Names / scalar text — fill blanks only.
+  // Names / scalar text - fill blanks only.
   if (mapped.companyName && !doc.companyName) doc.companyName = mapped.companyName;
+  if (!doc.matchKey && mapped.matchKey) doc.matchKey = mapped.matchKey;
   if (mapped.area && !doc.area) doc.area = mapped.area;
   if (mapped.phone && !doc.phone) doc.phone = mapped.phone;
   if (mapped.email && !doc.email) doc.email = mapped.email;
@@ -743,44 +878,77 @@ async function applyMappedRow(mapped) {
   if (!doc.source) doc.source = 'field-tracker';
 
   // Stage: only set when the import has a stage AND the doc is still at the
-  // default 'lead' (or empty) — never override an owner-advanced stage.
-  if (mapped.stage && (!doc.stage || doc.stage === 'lead')) {
-    doc.stage = mapped.stage;
-  }
+  // default 'lead' (or empty) - never override an owner-advanced stage.
+  if (mapped.stage && (!doc.stage || doc.stage === 'lead')) doc.stage = mapped.stage;
 
-  // Dates. lastContact: take the newer of existing/import. nextFollowUp: fill
-  // if empty, otherwise keep the EARLIER upcoming date (don't push a call later).
+  // lastContact: monotonic high-water mark - take the NEWER of existing/import.
   if (mapped.lastContact) {
     if (!doc.lastContact || mapped.lastContact > doc.lastContact) doc.lastContact = mapped.lastContact;
   }
-  if (mapped.nextFollowUp) {
-    if (!doc.nextFollowUp || mapped.nextFollowUp < doc.nextFollowUp) doc.nextFollowUp = mapped.nextFollowUp;
-  }
+  // nextFollowUp: SEED ON CREATE ONLY (core idempotency fix).
+  if (isNew && mapped.nextFollowUp) doc.nextFollowUp = mapped.nextFollowUp;
 
-  // Primary contact — add if a matching one (by name+email, case-insensitive)
-  // isn't already on the record.
-  if (mapped.contact) {
-    const c = mapped.contact;
-    const exists = (doc.contacts || []).some((ec) =>
-      (ec.name || '').toLowerCase() === (c.name || '').toLowerCase() &&
-      (ec.email || '').toLowerCase() === (c.email || '').toLowerCase());
-    if (!exists && (c.name || c.email || c.phone)) doc.contacts.push(c);
-  }
-
-  // Log notes — always append (history is additive). De-dupe identical
-  // (kind+text) lines that are already present so re-importing the same file
-  // doesn't pile up duplicates.
-  const existingLogKeys = new Set((doc.log || []).map((l) => `${l.kind} ${l.text}`));
-  for (const ln of (mapped.logs || [])) {
-    const k = `${ln.kind} ${ln.text}`;
-    if (!existingLogKeys.has(k)) {
-      doc.log.push({ at: new Date(), text: ln.text, kind: ln.kind });
-      existingLogKeys.add(k);
+  // Contacts - match by normalized PHONE or EMAIL, then merge blanks; else append.
+  for (const c of (mapped.contacts || [])) {
+    if (!c || (!c.name && !c.phone && !c.email)) continue;
+    const cp = normPhone(c.phone);
+    const ce = normEmail(c.email);
+    let match = null;
+    if (cp || ce) {
+      match = doc.contacts.find((ec) =>
+        (cp && normPhone(ec.phone) === cp) || (ce && normEmail(ec.email) === ce));
+    }
+    if (match) {
+      if (c.name && !match.name) match.name = c.name;
+      if (c.role && !match.role) match.role = c.role;
+      if (c.phone && !match.phone) match.phone = c.phone;
+      if (c.email && !match.email) match.email = c.email;
+    } else {
+      doc.contacts.push({ name: c.name || '', role: c.role || '', phone: c.phone || '', email: c.email || '' });
     }
   }
 
-  await doc.save();
-  return isNew ? 'created' : 'updated';
+  // Log - single structured import line, de-duped by (kind + dedupKey).
+  const existingLogKeys = new Set(doc.log.map((l) => `${l.kind} ${l.dedupKey || l.text}`));
+  for (const ln of (mapped.logs || [])) {
+    const k = `${ln.kind} ${ln.dedupKey || ln.text}`;
+    if (!existingLogKeys.has(k)) {
+      doc.log.push({ at: new Date(), text: ln.text, kind: ln.kind, dedupKey: ln.dedupKey || '' });
+      existingLogKeys.add(k);
+    }
+  }
+  return doc;
+}
+
+// THE CONTRACT (re-import must be SAFE - never destroy owner work). Delegates the
+// field policy to the pure applyImportToDoc; here we only do the DB fetch/save.
+// Pass { dryRun:true } to compute the outcome WITHOUT writing (powers preview).
+// Returns { outcome: 'created'|'updated'|'skipped', reason }.
+async function applyMappedRow(mapped, opts = {}) {
+  const dryRun = !!opts.dryRun;
+  if (mapped._skip || !mapped.companyKey) {
+    return { outcome: 'skipped', reason: mapped._skipReason || 'no-company' };
+  }
+  const key = mapped.companyKey;
+
+  let doc = await Client.findOne({ companyKey: key });
+  const isNew = !doc;
+  if (!doc) doc = new Client({ companyKey: key, matchKey: mapped.matchKey || '', source: 'field-tracker' });
+
+  applyImportToDoc(doc, mapped, isNew);
+
+  // If this company was archived by a prior REPLACE pull and now appears again in
+  // the CSV, the owner is explicitly re-importing it — bring it back into the
+  // working set. We only auto-unarchive 'replaced' records (never a deliberate
+  // 'merged' / manual archive, which stay archived unless restored on purpose).
+  if (!isNew && doc.archived && doc.archivedReason === 'replaced') {
+    doc.archived = false;
+    doc.archivedAt = null;
+    doc.archivedReason = '';
+  }
+
+  if (!dryRun) await doc.save();
+  return { outcome: isNew ? 'created' : 'updated', reason: null };
 }
 
 // POST /api/crm/import — accepts EITHER:
@@ -792,46 +960,125 @@ async function applyMappedRow(mapped) {
 // Returns { created, updated, skipped, total }.
 async function importRows(req, res) {
   try {
-    const body = req.body;
-    const year = Number(body && body.year) || 2026;
+    const body = req.body || {};
+    const dryRun = body.dryRun === true || body.dryRun === 'true';
+    const mode = body.mode === 'replace' ? 'replace' : 'merge';
 
-    let mappedRows = [];
+    const mappedRows = buildMappedRows(body);
+    if (mappedRows == null) {
+      return res.status(400).json({ message: 'Provide { rows: [...] } or { csv: "..." }' });
+    }
 
-    if (body && typeof body.csv === 'string' && body.csv.trim()) {
-      const objs = rowsToObjects(parseCsv(body.csv));
-      mappedRows = objs.map((o) => mapTrackerRow(o, { year }));
-    } else {
-      let rows = [];
-      if (Array.isArray(body)) rows = body;
-      else if (body && Array.isArray(body.rows)) rows = body.rows;
-      else return res.status(400).json({ message: 'Provide { rows: [...] } or { csv: "..." }' });
+    // Skip breakdown (computed identically for dry-run and live so preview == reality).
+    const skip = { dead: 0, noCompany: 0 };
+    for (const m of mappedRows) {
+      if (m._skip) { if (m._skipReason === 'dead') skip.dead += 1; else skip.noCompany += 1; }
+    }
 
-      mappedRows = rows.map((r) => {
-        // Accept either header-keyed objects ("Company Name") or canonical keys
-        // ("companyName"). Normalize header-keyed → canonical via a tiny shim.
-        const canon = normalizeRowKeys(r);
-        return mapTrackerRow(canon, { year });
+    // Existing records sharing an incoming matchKey -> merge proposals.
+    const matchKeys = [...new Set(mappedRows.filter((m) => !m._skip && m.matchKey).map((m) => m.matchKey))];
+    const existingByMatch = new Map();
+    if (matchKeys.length) {
+      const ex = await Client.find({ matchKey: { $in: matchKeys }, ...NOT_ARCHIVED })
+        .select('companyKey companyName matchKey').lean();
+      for (const e of ex) {
+        const arr = existingByMatch.get(e.matchKey) || [];
+        arr.push(e); existingByMatch.set(e.matchKey, arr);
+      }
+    }
+    const proposedMerges = proposeImportMerges(mappedRows, existingByMatch);
+
+    // Ambiguous/unparseable dates surfaced (never silently nulled).
+    const ambiguousDates = [];
+    for (const m of mappedRows) {
+      for (const a of (m.ambiguousDates || [])) ambiguousDates.push({ company: m.companyName || m.companyKey, note: a });
+    }
+
+    if (dryRun) {
+      const keepers = mappedRows.filter((m) => !m._skip && m.companyKey);
+      const incomingKeys = [...new Set(keepers.map((m) => m.companyKey))];
+      const existing = incomingKeys.length
+        ? new Set((await Client.find({ companyKey: { $in: incomingKeys } }).select('companyKey').lean()).map((d) => d.companyKey))
+        : new Set();
+      let willCreate = 0, willUpdate = 0;
+      const seen = new Set();
+      for (const m of keepers) {
+        if (existing.has(m.companyKey) || seen.has(m.companyKey)) willUpdate += 1; else willCreate += 1;
+        seen.add(m.companyKey);
+      }
+      const willReplaceArchive = mode === 'replace' ? await countReplaceable() : 0;
+      return res.json({
+        dryRun: true, mode, total: mappedRows.length,
+        willCreate, willUpdate, willSkip: skip, willReplaceArchive,
+        proposedMerges, ambiguousDates,
       });
     }
 
-    let created = 0, updated = 0, skipped = 0;
+    // -- Live import --
+    const replacedArchived = mode === 'replace' ? await archiveReplaceable() : 0;
+
+    let created = 0, updated = 0;
     for (const mapped of mappedRows) {
-      let outcome;
+      if (mapped._skip) continue; // already tallied in `skip`
       try {
-        outcome = await applyMappedRow(mapped);
+        const { outcome } = await applyMappedRow(mapped);
+        if (outcome === 'created') created++;
+        else if (outcome === 'updated') updated++;
       } catch (rowErr) {
-        // Don't let one bad row abort the whole import.
-        outcome = 'skipped';
+        skip.noCompany += 1; // count a failed row as a skip rather than aborting the run
       }
-      if (outcome === 'created') created++;
-      else if (outcome === 'updated') updated++;
-      else skipped++;
     }
 
-    res.json({ created, updated, skipped, total: mappedRows.length });
+    res.json({
+      created, updated,
+      skipped: skip, skippedTotal: skip.dead + skip.noCompany,
+      replacedArchived, proposedMerges, ambiguousDates,
+      total: mappedRows.length,
+    });
   } catch (e) {
     res.status(400).json({ message: e.message });
   }
+}
+
+// A "replaceable" record (mode:'replace') is a PURE prior import: from the field
+// tracker, with NO Orders and no sign of owner editing. We soft-archive these
+// before a fresh pull so re-import gives a clean slate without losing anything
+// that has real activity. NOTHING is hard-deleted.
+function ownerTouched(doc) {
+  if (doc.stage && !['lead', 'contacted'].includes(doc.stage)) return true; // advanced past import defaults
+  if (Number(doc.dealValue) > 0) return true;
+  if ((doc.tags || []).length) return true;
+  if ((doc.notes || '').trim()) return true;
+  for (const l of (doc.log || [])) {
+    if (['call', 'text', 'email', 'visit'].includes(l.kind)) return true;   // a real human touch
+  }
+  return false;
+}
+
+async function keysWithOrders(keys) {
+  if (!keys.length) return new Set();
+  const rows = await Order.find({ companyKey: { $in: keys } }).select('companyKey').lean();
+  return new Set(rows.map((r) => r.companyKey));
+}
+
+async function findReplaceable() {
+  const candidates = await Client.find({ source: 'field-tracker', ...NOT_ARCHIVED })
+    .select('companyKey stage dealValue tags notes log source').lean();
+  const withOrders = await keysWithOrders(candidates.map((c) => c.companyKey));
+  return candidates.filter((c) => !withOrders.has(c.companyKey) && !ownerTouched(c));
+}
+
+async function countReplaceable() { return (await findReplaceable()).length; }
+
+async function archiveReplaceable() {
+  const repl = await findReplaceable();
+  if (!repl.length) return 0;
+  const keys = repl.map((c) => c.companyKey);
+  await Client.updateMany(
+    { companyKey: { $in: keys } },
+    { $set: { archived: true, archivedAt: new Date(), archivedReason: 'replaced' } },
+  );
+  return keys.length;
 }
 
 // Accept rows keyed by the owner's headers OR by canonical names; produce a
@@ -867,6 +1114,323 @@ function normalizeRowKeys(row) {
   return out;
 }
 
+// Parse the import request body into an array of mapped rows. Returns null for a
+// bad body shape (handled by the caller). Default year = current (UTC) year so
+// bare M/D dates land in the right year, aligned with how /today compares them.
+function buildMappedRows(body) {
+  const year = Number(body && body.year) || new Date().getUTCFullYear();
+  if (body && typeof body.csv === 'string' && body.csv.trim()) {
+    return rowsToObjects(parseCsv(body.csv)).map((o) => mapTrackerRow(o, { year }));
+  }
+  let rows = [];
+  if (Array.isArray(body)) rows = body;
+  else if (body && Array.isArray(body.rows)) rows = body.rows;
+  else return null;
+  return rows.map((r) => mapTrackerRow(normalizeRowKeys(r), { year }));
+}
+
+// Propose merges from an import batch: rows whose fuzzy matchKey collides but
+// whose identity (companyKey) differs, folded together with any existing DB
+// records sharing that matchKey, so the owner sees "these look like the same
+// company" BEFORE committing. Suggestions only.
+function proposeImportMerges(mappedRows, existingByMatch) {
+  const byMatch = new Map();
+  for (const m of mappedRows) {
+    if (m._skip || !m.matchKey) continue;
+    const g = byMatch.get(m.matchKey) || new Map();
+    g.set(m.companyKey, m.companyName || m.companyKey);
+    byMatch.set(m.matchKey, g);
+  }
+  const proposed = [];
+  for (const [mk, names] of byMatch) {
+    for (const ex of (existingByMatch.get(mk) || [])) names.set(ex.companyKey, ex.companyName || ex.companyKey);
+    if (names.size > 1) {
+      proposed.push({ matchKey: mk, members: [...names].map(([companyKey, name]) => ({ companyKey, name })) });
+    }
+  }
+  return proposed;
+}
+
+// ── Cleanup tooling ────────────────────────────────────────────────────────────
+// The owner-facing fix for the EXISTING mess (no hand-deleting). Three surfaces:
+//   GET  /duplicates           → groups of likely-duplicate Clients
+//   POST /merge                → fold one record into another (re-points orders)
+//   POST /archive              → soft-delete (incl. a dead/no-follow-up sweep)
+
+// Pick the best "survivor" from a duplicate group: prefer the one with the most
+// signal — has orders > furthest stage > most log entries > most contacts >
+// oldest (createdAt). Returns the survivor's companyKey.
+function pickSurvivor(group, keysWithOrdersSet) {
+  const stageRank = (s) => Math.max(0, STAGES.indexOf(s));
+  const score = (c) => [
+    keysWithOrdersSet.has(c.companyKey) ? 1 : 0,
+    stageRank(c.stage),
+    (c.log || []).length,
+    (c.contacts || []).length,
+    Number(c.dealValue) || 0,
+    -new Date(c.createdAt || 0).getTime() / 1e13, // older wins as a tiebreak
+  ];
+  let best = group[0];
+  let bestScore = score(best);
+  for (const c of group.slice(1)) {
+    const sc = score(c);
+    for (let i = 0; i < sc.length; i++) {
+      if (sc[i] > bestScore[i]) { best = c; bestScore = sc; break; }
+      if (sc[i] < bestScore[i]) break;
+    }
+  }
+  return best.companyKey;
+}
+
+// GET /api/crm/duplicates — groups of likely-duplicate Clients.
+// Groups NON-archived records by their fuzzy matchKey (corp-suffix/punct/
+// apostrophe stripped). A group of 2+ distinct companyKeys is a candidate. Each
+// group carries a suggested survivor (pickSurvivor) so the UI can pre-select.
+// Also folds in import-vs-existing-order-stub pairs: those naturally share a
+// matchKey once both exist, so the single matchKey grouping covers it.
+async function getDuplicates(req, res) {
+  try {
+    const docs = await Client.find(NOT_ARCHIVED)
+      .select('companyKey companyName clientName matchKey stage dealValue contacts log createdAt nextFollowUp lastContact source')
+      .lean();
+
+    // Backfill a matchKey on the fly for any legacy doc that never got one, so
+    // pre-existing records (created before this field) still group.
+    const groups = new Map();
+    for (const d of docs) {
+      const mk = d.matchKey || deriveMatchKey(d.companyName, d.clientName);
+      if (!mk) continue;
+      const arr = groups.get(mk) || [];
+      arr.push(d);
+      groups.set(mk, arr);
+    }
+
+    const dupGroups = [];
+    const allKeys = [];
+    for (const arr of groups.values()) {
+      const distinct = [...new Map(arr.map((d) => [d.companyKey, d])).values()];
+      if (distinct.length > 1) { dupGroups.push(distinct); distinct.forEach((d) => allKeys.push(d.companyKey)); }
+    }
+    const withOrders = await keysWithOrders(allKeys);
+
+    const out = dupGroups.map((arr) => ({
+      matchKey: arr[0].matchKey || deriveMatchKey(arr[0].companyName, arr[0].clientName),
+      suggestedSurvivor: pickSurvivor(arr, withOrders),
+      members: arr.map((d) => ({
+        companyKey:   d.companyKey,
+        name:         d.companyName || d.clientName || d.companyKey,
+        stage:        d.stage,
+        dealValue:    Number(d.dealValue) || 0,
+        contacts:     (d.contacts || []).length,
+        logEntries:   (d.log || []).length,
+        hasOrders:    withOrders.has(d.companyKey),
+        nextFollowUp: d.nextFollowUp || null,
+        lastContact:  d.lastContact || null,
+        source:       d.source || '',
+      })),
+    }));
+    // Most-actionable first: groups with an order-bearing member, then by size.
+    out.sort((a, b) => (b.members.some((m) => m.hasOrders) ? 1 : 0) - (a.members.some((m) => m.hasOrders) ? 1 : 0)
+      || b.members.length - a.members.length);
+
+    res.json({ groups: out, total: out.length });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+// Merge a duplicate-array of contacts, deduping by normalized phone/email.
+function mergeContacts(into, extra) {
+  const out = [...(into || [])];
+  for (const c of (extra || [])) {
+    if (!c || (!c.name && !c.phone && !c.email)) continue;
+    const cp = normPhone(c.phone);
+    const ce = normEmail(c.email);
+    let match = null;
+    if (cp || ce) match = out.find((ec) => (cp && normPhone(ec.phone) === cp) || (ce && normEmail(ec.email) === ce));
+    if (match) {
+      if (c.name && !match.name) match.name = c.name;
+      if (c.role && !match.role) match.role = c.role;
+      if (c.phone && !match.phone) match.phone = c.phone;
+      if (c.email && !match.email) match.email = c.email;
+    } else {
+      out.push({ name: c.name || '', role: c.role || '', phone: c.phone || '', email: c.email || '' });
+    }
+  }
+  return out;
+}
+
+// Pure survivor-folding policy for a merge: mutate `survivor` in place, pulling
+// everything worth keeping out of `merged` WITHOUT losing data. No DB here so
+// the fold rules are unit-testable. Order re-pointing + soft-delete stay in the
+// async handler.
+function foldMergeFields(survivor, merged, mergedKey) {
+  if (!Array.isArray(survivor.tags)) survivor.tags = survivor.tags || [];
+  if (!Array.isArray(survivor.log)) survivor.log = survivor.log || [];
+  // Scalars: fill the survivor's blanks from the merged record (never clobber).
+  for (const f of ['companyName', 'clientName', 'email', 'phone', 'paymentTerms',
+    'defaultPrinter', 'defaultSupplier', 'area', 'interestType', 'lostReason']) {
+    if (!survivor[f] && merged[f]) survivor[f] = merged[f];
+  }
+  if (!survivor.matchKey) survivor.matchKey = merged.matchKey || deriveMatchKey(survivor.companyName, survivor.clientName);
+  if (!(Number(survivor.defaultMarkup) > 0) && Number(merged.defaultMarkup) > 0) survivor.defaultMarkup = merged.defaultMarkup;
+
+  // Money: keep the LARGER open deal value (don't sum - avoids double-count).
+  survivor.dealValue = Math.max(Number(survivor.dealValue) || 0, Number(merged.dealValue) || 0);
+  // Stage: keep whichever is further along the funnel (don't regress).
+  if (STAGES.indexOf(merged.stage) > STAGES.indexOf(survivor.stage)) survivor.stage = merged.stage;
+  // Dates: lastContact = newer; nextFollowUp = keep survivor's, else inherit.
+  if (merged.lastContact && (!survivor.lastContact || merged.lastContact > survivor.lastContact)) survivor.lastContact = merged.lastContact;
+  if (!survivor.nextFollowUp && merged.nextFollowUp) survivor.nextFollowUp = merged.nextFollowUp;
+  // Notes: concatenate (keep both).
+  if ((merged.notes || '').trim()) {
+    survivor.notes = [survivor.notes, merged.notes].filter((x) => (x || '').trim()).join('\n---\n');
+  }
+  // Tags: union (case-insensitive).
+  const tagSeen = new Set(survivor.tags.map((t) => t.toLowerCase()));
+  for (const t of (merged.tags || [])) { if (t && !tagSeen.has(t.toLowerCase())) { survivor.tags.push(t); tagSeen.add(t.toLowerCase()); } }
+  // Contacts: merge with phone/email dedup.
+  survivor.contacts = mergeContacts(survivor.contacts, merged.contacts);
+  // Log: concat both, sort by time, then add a merge breadcrumb.
+  survivor.log = [...(survivor.log || []), ...(merged.log || [])]
+    .sort((a, b) => new Date(a.at || 0) - new Date(b.at || 0));
+  survivor.log.push({ at: new Date(), kind: 'note', text: `Merged in "${merged.companyName || mergedKey}" (${mergedKey})`, dedupKey: `merge:${mergedKey}` });
+  return survivor;
+}
+
+// POST /api/crm/merge { survivorKey, mergedKey }
+// Fold the merged record's contacts/log/dealValue/notes/tags into the survivor,
+// RE-POINT the merged company's Orders (by companyKey) to the survivor, then
+// soft-delete (archive) the merged record. Preserves ALL data — never loses an
+// order or a history line; the merged record is recoverable.
+async function mergeCompanies(req, res) {
+  try {
+    const survivorKey = String((req.body && req.body.survivorKey) || '').trim();
+    const mergedKey   = String((req.body && req.body.mergedKey) || '').trim();
+    if (!survivorKey || !mergedKey) return res.status(400).json({ message: 'survivorKey and mergedKey are required' });
+    if (survivorKey === mergedKey)   return res.status(400).json({ message: 'survivorKey and mergedKey must differ' });
+
+    const survivor = await Client.findOne({ companyKey: survivorKey });
+    const merged   = await Client.findOne({ companyKey: mergedKey });
+    if (!survivor) return res.status(404).json({ message: `survivor "${survivorKey}" not found` });
+    if (!merged)   return res.status(404).json({ message: `merged "${mergedKey}" not found` });
+
+    foldMergeFields(survivor, merged, mergedKey);
+
+    await survivor.save();
+
+    // RE-POINT the merged company's Orders to the survivor. Update both the key
+    // and the display names so future deriveCompanyKey saves stay consistent.
+    const orderUpdate = await Order.updateMany(
+      { companyKey: mergedKey },
+      { $set: { companyKey: survivorKey, companyName: survivor.companyName || '', clientName: survivor.clientName || '' } },
+    );
+
+    // Soft-delete the merged record (recoverable; nothing hard-deleted).
+    merged.archived = true;
+    merged.archivedAt = new Date();
+    merged.archivedReason = 'merged';
+    merged.mergedInto = survivorKey;
+    await merged.save();
+
+    const survivorLean = survivor.toObject();
+    res.json({
+      ok: true,
+      survivor: survivorLean,
+      ordersRepointed: orderUpdate.modifiedCount != null ? orderUpdate.modifiedCount : (orderUpdate.nModified || 0),
+      mergedKey,
+    });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
+// POST /api/crm/archive
+//   { keys: ["k1","k2"] }   → archive exactly these records, OR
+//   { deadNoFollowUp: true } → convenience sweep: archive every NON-archived
+//                              record that is dead/closed (lost/dormant) OR has
+//                              no next follow-up AND no orders AND no owner edits.
+// Soft-delete only — fully recoverable. Returns the count archived.
+async function archiveCompanies(req, res) {
+  try {
+    const body = req.body || {};
+    const force = body.force === true || body.force === 'true';
+    let keys = [];
+    let reason = body.reason || 'manual';
+
+    if (Array.isArray(body.keys) && body.keys.length) {
+      const requested = body.keys.map((k) => String(k || '').trim()).filter(Boolean);
+      // SAFETY: by default never archive an order-bearing company out of the
+      // working set, even if the UI surfaced it (e.g. a 'won' customer with no
+      // next follow-up). Orders mean real history worth keeping visible. The
+      // owner can override with { force: true } for a deliberate archive.
+      if (force) {
+        keys = requested;
+      } else {
+        const withOrders = await keysWithOrders(requested);
+        keys = requested.filter((k) => !withOrders.has(k));
+        if (keys.length < requested.length) {
+          const skippedWithOrders = requested.filter((k) => withOrders.has(k));
+          if (!keys.length) {
+            return res.json({ ok: true, archived: 0, keys: [], skippedWithOrders });
+          }
+          // fall through; report the skipped ones alongside the archived count
+          res.locals = res.locals || {};
+          res.locals.skippedWithOrders = skippedWithOrders;
+        }
+      }
+    } else if (body.deadNoFollowUp === true || body.deadNoFollowUp === 'true') {
+      reason = 'dead-cleanup';
+      // Sweep candidates: non-archived, no future follow-up OR a closed stage.
+      const candidates = await Client.find({
+        ...NOT_ARCHIVED,
+        $or: [{ nextFollowUp: null }, { stage: { $in: CLOSED_STAGES } }],
+      }).select('companyKey stage dealValue tags notes log nextFollowUp').lean();
+      const keyList = candidates.map((c) => c.companyKey);
+      const withOrders = await keysWithOrders(keyList);
+      // Never sweep a record with orders or clear owner activity (safety).
+      keys = candidates
+        .filter((c) => !withOrders.has(c.companyKey) && !ownerTouched(c))
+        .map((c) => c.companyKey);
+    } else {
+      return res.status(400).json({ message: 'Provide { keys: [...] } or { deadNoFollowUp: true }' });
+    }
+
+    if (!keys.length) return res.json({ ok: true, archived: 0, keys: [] });
+    const result = await Client.updateMany(
+      { companyKey: { $in: keys }, ...NOT_ARCHIVED },
+      { $set: { archived: true, archivedAt: new Date(), archivedReason: reason } },
+    );
+    res.json({
+      ok: true,
+      archived: result.modifiedCount != null ? result.modifiedCount : (result.nModified || 0),
+      keys,
+      skippedWithOrders: (res.locals && res.locals.skippedWithOrders) || [],
+    });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
+// POST /api/crm/unarchive { keys: [...] } — restore soft-deleted records (the
+// undo for archive/merge). For merged records, the orders stay on the survivor
+// (re-pointing is a separate, deliberate act) — this just brings the record back
+// into the working set.
+async function unarchiveCompanies(req, res) {
+  try {
+    const keys = (Array.isArray(req.body && req.body.keys) ? req.body.keys : [])
+      .map((k) => String(k || '').trim()).filter(Boolean);
+    if (!keys.length) return res.status(400).json({ message: 'Provide { keys: [...] }' });
+    const result = await Client.updateMany(
+      { companyKey: { $in: keys } },
+      { $set: { archived: false, archivedAt: null, archivedReason: '', mergedInto: '' } },
+    );
+    res.json({ ok: true, restored: result.modifiedCount != null ? result.modifiedCount : (result.nModified || 0), keys });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
 module.exports = {
   listCrm,
   getToday,
@@ -876,9 +1440,22 @@ module.exports = {
   getOne,
   patchOne,
   importRows,
+  getDuplicates,
+  mergeCompanies,
+  archiveCompanies,
+  unarchiveCompanies,
   // exported for tests / reuse
   applyMappedRow,
+  applyImportToDoc,
   normalizeRowKeys,
+  buildMappedRows,
+  proposeImportMerges,
+  companyFinance,
+  scopeCompanyTransactions,
+  foldMergeFields,
+  pickSurvivor,
+  mergeContacts,
+  ownerTouched,
   summarizePipeline,
   stageProbability,
   STAGE_PROBABILITY,
