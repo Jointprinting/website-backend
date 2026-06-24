@@ -48,6 +48,13 @@ const ensureApprovalToken = async (req, res) => {
       // the re-approval. Prior approvalEvents stay in history; they're
       // just no longer treated as "the current state".
       order.approvalSupersededAt = new Date(now);
+      // C1: clear the prior cycle's "options picked" gate too. Without this a
+      // returning client whose last cycle reached the "building your
+      // confirmation" interstitial is stranded there forever — optionsPickedAt
+      // (and the accepted-line flags) from the old cycle keep the page in the
+      // post-pick "building" state even though this is a brand-new share. Reset
+      // it so a fresh link always lands on the current confirmation / picker.
+      order.optionsPickedAt = null;
       // Fresh cycle = fresh guest list; the old links no longer resolve.
       if (rotate) order.approvalRecipients = [];
       await order.save();
@@ -212,6 +219,14 @@ const publicGetProject = async (req, res) => {
     const currentStatus = cur.status;
     const lastTerminal = cur.status === 'pending' ? null : { at: cur.at, message: cur.message };
 
+    // C1: gate the "options picked" timestamp by the supersede cutoff exactly
+    // like the terminal status above. The rotate/re-share paths now clear
+    // optionsPickedAt, but an order superseded by some other path (or saved
+    // before that fix shipped) could still carry a stale pickedAt — which would
+    // strand a returning client on the "building your confirmation"
+    // interstitial. Only report a pick that happened in the CURRENT cycle.
+    const pickedAtCurrent = _pickedAtForCycle(order);
+
     // Strip hidden steps before sending to the client — admin uses
     // hidden=true to keep a step in their own view but suppress it from
     // the public timeline (e.g. when blank vendor and printer are the
@@ -266,7 +281,7 @@ const publicGetProject = async (req, res) => {
         confirmationTerms:    order.confirmationTerms,
         confirmation:         _safeConfirmation(order.confirmation),
         orderDate:            order.orderDate,
-        optionsPickedAt:      order.optionsPickedAt || null,
+        optionsPickedAt:      pickedAtCurrent,
         hasConfirmation:      _hasConfContent(order.confirmation),
         approvalStatus:       currentStatus,
         approvalAt:           lastTerminal ? lastTerminal.at : null,
@@ -282,6 +297,18 @@ const publicGetProject = async (req, res) => {
     res.status(500).json({ message: e.message });
   }
 };
+
+// C1 strand-gate (pure, testable): the client's "options picked" timestamp,
+// but ONLY if it falls in the current approval cycle (newer than
+// approvalSupersededAt). A pick from a superseded cycle returns null so a
+// re-shared link never strands a returning client on the post-pick "building
+// your confirmation" interstitial — they see the current confirmation/picker.
+// Same supersede cutoff as _currentApprovalStatus, so the two never disagree.
+function _pickedAtForCycle(order) {
+  if (!order || !order.optionsPickedAt) return null;
+  const cutoff = order.approvalSupersededAt ? new Date(order.approvalSupersededAt).getTime() : 0;
+  return new Date(order.optionsPickedAt).getTime() > cutoff ? order.optionsPickedAt : null;
+}
 
 // Same cutoff applied when computing the "current status" the client sees on
 // the public page. Without this, re-opening the link after a re-share would
@@ -608,6 +635,17 @@ const sendApprovalLink = async (req, res) => {
       });
     }
 
+    // Share guard (H3 + C2): once a confirmation has been built, never let a
+    // broken one reach the client — a $0 / no-priced-items confirmation, or one
+    // with an over-allocated item. (A pre-confirmation share — the bare quote
+    // picker — has no confirmation content and is unaffected.) The builder UI
+    // mirrors this so the owner sees it before clicking; the server is the
+    // backstop in case a stale tab or direct call slips past.
+    const shareIssues = Order.confirmationShareIssues(order.confirmation);
+    if (shareIssues.length > 0) {
+      return res.status(422).json({ message: shareIssues[0], reason: 'unshareable', issues: shareIssues });
+    }
+
     const ttlDays = Math.max(1, Math.min(MAX_TTL_DAYS,
       Math.round(Number((req.body && req.body.ttlDays) || DEFAULT_TTL_DAYS))));
     // Default REUSE (rotate=false) so the hub link is stable. Only the admin
@@ -627,6 +665,11 @@ const sendApprovalLink = async (req, res) => {
       // events become historical (see _currentApprovalStatus), and the guest
       // list resets since the old links no longer work.
       order.approvalSupersededAt = new Date(now);
+      // C1: clear the previous cycle's pick gate so a returning client isn't
+      // stranded on the old "building your confirmation" interstitial. The new
+      // cycle starts at the current confirmation (or a fresh picker), not a
+      // stale post-pick state.
+      order.optionsPickedAt = null;
       order.approvalRecipients = [];
     }
     order.approvalTokenExpiresAt = new Date(now + ttlDays * 24 * 60 * 60 * 1000);
@@ -791,4 +834,6 @@ module.exports = {
   publicGetProject, publicApprove, publicRequestChanges, publicSelectOptions,
   updateTracking, initTracking,
   DEFAULT_TRACKING_STEPS,
+  // Exported for unit tests (pure helpers).
+  _pickedAtForCycle, _currentApprovalStatus,
 };

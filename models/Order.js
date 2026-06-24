@@ -107,7 +107,10 @@ function computeLocationTax(conf) {
     // value summed into the grand total must be a real cent amount.
     const value = roundCents(subtotal * rate / 100);
     const label = `${st.label || st.name || 'Location'} tax - ${rate}%`;
-    return { label, subtotal, rate, value };
+    // Carry the shipTo key so consumers (the PDF) can match a location to its tax
+    // line by key rather than by a fragile label prefix (which fails for a blank
+    // label and collides on shared prefixes). The client web doc keys by st.key too.
+    return { key: st.key, label, subtotal, rate, value };
   });
   // Sum the already-rounded line values (so total == Σ of the lines the client
   // sees), then re-round defensively.
@@ -152,6 +155,61 @@ function hasConfirmationContent(conf) {
   const items = Array.isArray(conf.items) ? conf.items : [];
   const lines = Array.isArray(conf.customLines) ? conf.customLines : [];
   return items.length > 0 || lines.length > 0;
+}
+
+// Total units of one confirmation item across its sizes.
+function itemTotalQty(it) {
+  return ((it && it.sizes) || []).reduce((s, sz) => s + (Number(sz.qty) || 0), 0);
+}
+// Units of one item assigned to destinations that STILL EXIST. We filter by the
+// current shipTo keys (not every allocation blindly) so a stale allocation
+// referencing a deleted location doesn't inflate the assigned count — this keeps
+// the server's over-allocation check byte-identical to the builder
+// (_shared allocatedQty) and the client-page "Unassigned" display, so the
+// owner's WYSIWYG share-guard and the server backstop never disagree.
+function itemAllocatedQty(it, shipTos) {
+  const keys = new Set(((shipTos && Array.isArray(shipTos)) ? shipTos : []).map(s => s && s.key));
+  return ((it && it.allocations) || [])
+    .filter(a => a && keys.has(a.key))
+    .reduce((s, a) => s + (Number(a.qty) || 0), 0);
+}
+
+// Pre-share gate: reasons a confirmation must NOT be sent to a client.
+// Returns an array of human-readable issue strings (empty = OK to share). Used
+// by the owner-side Share action AND mirrored in the builder UI. Two blocks:
+//   1. NO PRICED LINE ITEMS / $0 TOTAL (H3) — a confirmation that grand-totals to
+//      $0 (no priced sizes) is not a real order. Guarded on "no priced items /
+//      empty", never on "merely small", so a legitimately deep-discounted total
+//      with real priced items still passes.
+//   2. OVER-ALLOCATED ITEM (C2) — once the order is split across shipTos, an item
+//      whose per-location allocations EXCEED its own quantity is a broken split
+//      and must never reach the client. (Under-allocation is allowed: the unsent
+//      remainder shows as an explicit "Unassigned" row on the client page.)
+// Only enforced when the confirmation actually has content — an empty
+// confirmation isn't shareable for unrelated reasons and shouldn't surface a
+// confusing "$0" message here.
+function confirmationShareIssues(conf) {
+  const issues = [];
+  if (!hasConfirmationContent(conf)) return issues;
+  const items = (conf && Array.isArray(conf.items)) ? conf.items : [];
+  const pricedItems = items.filter(it => itemTotalQty(it) > 0 &&
+    ((it.sizes || []).some(sz => (Number(sz.qty) || 0) > 0 && (Number(sz.unitPrice) || 0) > 0)));
+  const grandTotal = computeConfirmationTotals(conf).grandTotal;
+  if (pricedItems.length === 0 || grandTotal <= 0) {
+    issues.push('This confirmation has no priced line items (the total is $0). Add quantities and unit prices before sharing.');
+  }
+  const shipTos = (conf && Array.isArray(conf.shipTos)) ? conf.shipTos : [];
+  if (shipTos.length > 0) {
+    items.forEach((it, i) => {
+      const total = itemTotalQty(it);
+      const allocated = itemAllocatedQty(it, shipTos);
+      if (total > 0 && allocated > total) {
+        const name = (it.productName || it.brandName || it.styleCode || `Item ${i + 1}`);
+        issues.push(`"${name}" is over-allocated across locations (${allocated} of ${total} units assigned). Fix the per-location split before sharing.`);
+      }
+    });
+  }
+  return issues;
 }
 
 const OrderSchema = new mongoose.Schema({
@@ -440,5 +498,6 @@ module.exports.computeConfirmationTotals = computeConfirmationTotals;
 module.exports.computeLocationTax = computeLocationTax;
 module.exports.STATE_TAX_RATES = STATE_TAX_RATES;
 module.exports.hasConfirmationContent = hasConfirmationContent;
+module.exports.confirmationShareIssues = confirmationShareIssues;
 module.exports.isTaxCustomLine = isTaxCustomLine;
 module.exports.roundCents = roundCents;

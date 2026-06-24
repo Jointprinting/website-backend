@@ -259,6 +259,52 @@ const confirmationPdf = async (req, res) => {
       doc.moveDown(0.9);
     }
 
+    // ── Ship to multiple locations ───────────────────────────────────────────
+    // Mirrors the client approval page / builder preview: when the order is
+    // split across destinations, list each location with its allocated units and
+    // any units not yet assigned ("Unassigned") so the PDF tells the same story.
+    // No-op for a single-location order.
+    const shipTos = Array.isArray(conf.shipTos) ? conf.shipTos : [];
+    if (shipTos.length > 0) {
+      ensure(40);
+      const shortName = (it, i) => it.productName || it.brandName || it.styleCode || `Item ${i + 1}`;
+      const allocFor = (it, key) => ((it.allocations || []).find(a => a && a.key === key) || {}).qty || 0;
+      doc.font('Helvetica-Bold').fontSize(9).fillColor(C.ink)
+        .text(`Shipping to ${shipTos.length} locations`);
+      doc.moveDown(0.3);
+      shipTos.forEach((st, si) => {
+        ensure(40);
+        doc.font('Helvetica-Bold').fontSize(9).fillColor(C.ink)
+          .text(st.label || st.name || `Location ${si + 1}`);
+        const addr = [st.name && st.label ? st.name : null, st.street, st.cityStateZip].filter(Boolean).join(', ');
+        if (addr) doc.font('Helvetica').fontSize(8).fillColor(C.muted).text(addr);
+        doc.font('Helvetica').fontSize(8).fillColor(C.ink);
+        items.forEach((it, ii) => {
+          const q = Number(allocFor(it, st.key)) || 0;
+          if (q > 0) doc.text(`${shortName(it, ii)}: ${q}`, { indent: 10 });
+        });
+        const tax = (locationTax.lines || []).find(l => l && st && l.key === st.key);
+        if (tax && tax.value > 0) {
+          doc.font('Helvetica').fontSize(8).fillColor(C.muted).text(`${tax.label}: ${money(tax.value)}`, { indent: 10 });
+        }
+        doc.moveDown(0.3);
+      });
+      // Units not assigned to any location, per item (never silently dropped).
+      const keys = new Set(shipTos.map(s => s.key));
+      const unassigned = items.map((it, ii) => {
+        const total = (it.sizes || []).reduce((s, sz) => s + (Number(sz.qty) || 0), 0);
+        const assigned = (it.allocations || []).filter(a => a && keys.has(a.key)).reduce((s, a) => s + (Number(a.qty) || 0), 0);
+        return { name: shortName(it, ii), n: total - assigned };
+      }).filter(r => r.n > 0);
+      if (unassigned.length > 0) {
+        ensure(30);
+        doc.font('Helvetica-Bold').fontSize(8).fillColor(C.muted).text('Not yet assigned to a location');
+        doc.font('Helvetica').fontSize(8).fillColor(C.ink);
+        unassigned.forEach(r => doc.text(`${r.name}: ${r.n}`, { indent: 10 }));
+      }
+      doc.moveDown(0.6);
+    }
+
     // ── Totals ──────────────────────────────────────────────────────────────
     ensure(40 + customLines.length * 16);
     hr(doc.y);
