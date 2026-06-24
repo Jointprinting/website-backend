@@ -22,6 +22,9 @@ const {
   mergeCompanies,
   archiveCompanies,
   unarchiveCompanies,
+  deleteLogEntry,
+  archiveOne,
+  unarchiveOne,
 } = require('../controllers/crm');
 
 router.use(requireAdmin);
@@ -39,5 +42,11 @@ router.post('/unarchive', unarchiveCompanies);
 
 router.get('/:companyKey',   getOne);
 router.patch('/:companyKey', patchOne);
+// Single-card actions the detail page calls directly (all soft / reversible):
+//   • archive / unarchive THIS one company (owner: "fine removing their card")
+//   • delete ONE log entry from the card (owner: "i cant delete notes")
+router.post('/:companyKey/archive',   archiveOne);
+router.post('/:companyKey/unarchive', unarchiveOne);
+router.delete('/:companyKey/log/:entryId', deleteLogEntry);
 
 module.exports = router;
