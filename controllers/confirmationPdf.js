@@ -96,6 +96,15 @@ const confirmationPdf = async (req, res) => {
       const label = isPercent ? `${baseLabel} - ${amount}%` : baseLabel;
       return { label, value };
     });
+    // Per-location sales tax (multi-ship-to). No-op unless a shipTo carries a
+    // taxRate > 0; otherwise the PDF is byte-identical. Rendered as its own
+    // total rows after the add-on lines, mirroring the grand total in
+    // models/Order.js and the client approval page.
+    const locationTax = Order.computeLocationTax(conf);
+    locationTax.lines.forEach(l => {
+      running += l.value;
+      customLines.push({ label: l.label, value: l.value });
+    });
     const grandTotal = running;
 
     const doc = new PDFDocument({ size: 'LETTER', margin: 48 });
