@@ -38,9 +38,57 @@ function computeQuoteTotals(lines, orderSetup, orderShip) {
   return { totalValue, cogs };
 }
 
+// Default sales-tax rates (percent) for the owner's territory. Choosing a
+// state in the confirmation's per-location shipTos PRE-FILLS that location's
+// taxRate; the owner can always override per location. Keyed by USPS code.
+const STATE_TAX_RATES = { NJ: 6.625, NY: 8, CT: 6.35, MA: 6.25, VT: 6, PA: 6 };
+
+// Per-location sales tax for a confirmation that ships to multiple destinations
+// with their own tax rates. ACTIVE only when at least one shipTo carries a
+// taxRate > 0 — otherwise this is a no-op and the grand total is byte-identical
+// to a confirmation with no shipTos at all.
+//
+// Each item's merchandise revenue (Σ qty×unitPrice over its sizes) is allocated
+// to a location PROPORTIONALLY by that location's share of the item's units:
+//   locationItemRevenue = itemRevenue × (allocation.qty / itemTotalQty)
+// This assumes the price mix is uniform across an item's units (the unit price
+// is per size, not per destination), so revenue follows quantity. The sum over
+// items is a location's taxable merchandise subtotal; × its taxRate% is that
+// location's tax. Tax is on MERCHANDISE only (item revenue) — it does not stack
+// on top of add-on customLines (CC fees, discounts), which is the correct sales
+// tax base and avoids taxing a credit-card fee. The single "NJ tax" customLine
+// preset is suppressed by the builder whenever this is active, so a job is
+// never taxed twice. Mirrors the frontend _shared.js confLocationTax exactly.
+function computeLocationTax(conf) {
+  const n = (v) => Number(v) || 0;
+  const shipTos = (conf && Array.isArray(conf.shipTos)) ? conf.shipTos : [];
+  const taxed = shipTos.filter(st => st && n(st.taxRate) > 0);
+  if (taxed.length === 0) return { active: false, total: 0, lines: [] };
+  const items = (conf && Array.isArray(conf.items)) ? conf.items : [];
+  const lines = taxed.map(st => {
+    const subtotal = items.reduce((sum, it) => {
+      const itemRevenue = ((it && it.sizes) || []).reduce((ss, sz) => ss + n(sz.qty) * n(sz.unitPrice), 0);
+      const itemQty = ((it && it.sizes) || []).reduce((q, sz) => q + n(sz.qty), 0);
+      if (itemQty <= 0) return sum;
+      const allocQty = ((it && it.allocations) || []).reduce((q, a) => q + (a && a.key === st.key ? n(a.qty) : 0), 0);
+      return sum + itemRevenue * (allocQty / itemQty);
+    }, 0);
+    const rate = n(st.taxRate);
+    const value = subtotal * rate / 100;
+    const label = `${st.label || st.name || 'Location'} tax - ${rate}%`;
+    return { label, subtotal, rate, value };
+  });
+  const total = lines.reduce((s, l) => s + l.value, 0);
+  return { active: true, total, lines };
+}
+
 // Confirmation grand total — items subtotal plus custom lines, where percent
-// lines apply to the running subtotal in order. Mirrors the builder preview,
-// the server PDF (confirmationPdf.js) and the approval page exactly.
+// lines apply to the running subtotal in order. When the confirmation ships to
+// multiple locations with their own tax rates, per-location tax is added LAST
+// (the same place the single "NJ tax" customLine would land), so totalValue /
+// finance pick it up identically. With no taxed shipTos this is byte-identical
+// to before. Mirrors the builder preview, the server PDF (confirmationPdf.js)
+// and the approval page exactly.
 function computeConfirmationTotals(conf) {
   const n = (v) => Number(v) || 0;
   const items = (conf && Array.isArray(conf.items)) ? conf.items : [];
@@ -50,6 +98,7 @@ function computeConfirmationTotals(conf) {
   ((conf && conf.customLines) || []).forEach(l => {
     running += l && l.isPercent ? running * n(l.amount) / 100 : n(l && l.amount);
   });
+  running += computeLocationTax(conf).total;
   return { itemsSubtotal, grandTotal: running };
 }
 
@@ -152,15 +201,17 @@ const OrderSchema = new mongoose.Schema({
     // doc, totals, PDF, or client page changes. When the client wants one
     // order split across several of their own locations, each destination is
     // captured here and items carry per-location `allocations` (below). Purely
-    // additive — `state` is captured now for a future per-state tax pass but is
-    // unused in this one (no money/tax math touches this field yet).
+    // additive — when empty, totals/PDF/finance are unchanged. When a location
+    // sets a taxRate > 0, its allocated merchandise is taxed at that rate and
+    // the sum is added to the grand total (see computeLocationTax).
     shipTos: [{
       key:          { type: String, default: '' },  // stable id linking allocations to this location
       label:        { type: String, default: '' },  // friendly name, e.g. "Brooklyn HQ"
       name:         { type: String, default: '' },  // ship-to company/recipient
       street:       { type: String, default: '' },
       cityStateZip: { type: String, default: '' },
-      state:        { type: String, default: '' },  // reserved for the future tax pass — unused here
+      state:        { type: String, default: '' },  // USPS code; pre-fills taxRate from STATE_TAX_RATES
+      taxRate:      { type: Number, default: 0 },    // sales-tax percent for this location (0 = untaxed)
       _id: false,
     }],
     items: [{
@@ -338,4 +389,6 @@ module.exports = mongoose.model('Order', OrderSchema);
 module.exports.deriveCompanyKey = deriveCompanyKey;
 module.exports.computeQuoteTotals = computeQuoteTotals;
 module.exports.computeConfirmationTotals = computeConfirmationTotals;
+module.exports.computeLocationTax = computeLocationTax;
+module.exports.STATE_TAX_RATES = STATE_TAX_RATES;
 module.exports.hasConfirmationContent = hasConfirmationContent;

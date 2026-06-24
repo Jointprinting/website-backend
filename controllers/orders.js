@@ -256,6 +256,10 @@ function _confirmationTotals(conf) {
   (conf.customLines || []).forEach((l) => {
     revenue += l.isPercent ? revenue * (Number(l.amount) || 0) / 100 : (Number(l.amount) || 0);
   });
+  // Per-location sales tax (multi-ship-to). No-op unless a shipTo carries a
+  // taxRate > 0, so single-location revenue is unchanged. Added LAST, exactly
+  // like the grand total in models/Order.js, so totalValue and this stay equal.
+  revenue += Order.computeLocationTax(conf).total;
   const cogs = conf.items.reduce((s, it) => {
     const qty = (it.sizes || []).reduce((q, sz) => q + (Number(sz.qty) || 0), 0);
     return s + qty * (Number(it.unitCost) || 0);
