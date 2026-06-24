@@ -12,7 +12,9 @@ const PDFDocument = require('pdfkit');
 const PurchaseOrder = require('../models/PurchaseOrder');
 const Vendor = require('../models/Vendor');
 const Order = require('../models/Order');
-const { nextNumber, bumpCounterTo } = require('../utils/sequence');
+const Transaction = require('../models/Transaction');
+const { nextNumber, bumpCounterTo, peekNumber } = require('../utils/sequence');
+const { normalizeOrderNumber } = require('./finances');
 const {
   vendorKey, lineKey, chosenQuoteLines, costLineFromQuoteLine, costLineFromConfItem, buildPoLines,
 } = require('../utils/poCost');
@@ -23,6 +25,7 @@ const isUnassignedVendor = (name) => !vendorKey(name) || vendorKey(name) === ven
 const JP_LOGO_PATH = path.join(__dirname, '..', 'assets', 'jp-logo.png');
 const badId = (id) => !mongoose.isValidObjectId(id);   // 404 instead of a CastError 500
 const n = (v) => Number(v) || 0;
+const round2 = (v) => Math.round((n(v) + Number.EPSILON) * 100) / 100;
 const money = (v) => `$${n(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 // Pull the per-unit dollar figure out of a charge label so the cost-history
@@ -292,13 +295,19 @@ const createPosFromConfirmation = async (req, res) => {
         warnings.push(`${g.vendorName}: ${seeded.allocMismatchCount} item(s) have a per-location split that doesn't add up to the item quantity — check the ship-to amounts.`);
       }
       const { zeroCostCount, allocMismatchCount, ...seedFields } = seeded;
+      const vendorAddress = vendor ? vendor.address : '';
       const po = await PurchaseOrder.create({
         orderId: order._id,
-        poNumber: `#${(await nextNumber('po', g.vendorName)).padStart(3, '0')}`,
+        // Per-vendor number, floored by the owner-set start (vendor.nextPoStart)
+        // so Heritage continues from his real Google-Docs run, not the app's #004.
+        poNumber: `#${(await nextNumber('po', g.vendorName, vendor && vendor.nextPoStart)).padStart(3, '0')}`,
         date,
         vendorName: g.vendorName,
         contactName: vendor ? vendor.contactName : '',
-        vendorAddress: vendor ? vendor.address : '',
+        vendorAddress,
+        // Default the printer receiving block to the vendor's own address (where
+        // JP ships the blanks), editable per PO; finished goods stay in `shipping`.
+        shipToPrinter: { name: g.vendorName, attention: vendor ? vendor.contactName : '', streetAddress: vendorAddress, cityStateZip: '' },
         shipMethod: vendor ? vendor.shipMethod : '',
         blanksProvided,
         ...seedFields,
@@ -361,16 +370,21 @@ const createPo = async (req, res) => {
     // to UTC, so seeding from the server instant shows tomorrow's date.
     const bodyDate = String((req.body && req.body.date) || '');
     const date = /^\d{4}-\d{2}-\d{2}$/.test(bodyDate) ? new Date(`${bodyDate}T00:00:00Z`) : new Date();
+    const vendorAddress = vendor ? vendor.address : '';
     const po = await PurchaseOrder.create({
       orderId: order._id,
       // Per-vendor sequence — each printer numbered independently. A brand-new
-      // printer seeds from 0 → #001; type the next number once to continue an
-      // existing printer's old (e.g. Google Docs) run and it carries forward.
-      poNumber: `#${(await nextNumber('po', vendorName)).padStart(3, '0')}`,
+      // printer seeds from 0 → #001; the owner-set start (vendor.nextPoStart)
+      // floors it so an existing printer's old (e.g. Google Docs) run carries
+      // forward without colliding. Typing a higher # by hand still bumps too.
+      poNumber: `#${(await nextNumber('po', vendorName, vendor && vendor.nextPoStart)).padStart(3, '0')}`,
       date,
       vendorName,
       contactName: vendor ? vendor.contactName : '',
-      vendorAddress: vendor ? vendor.address : '',
+      vendorAddress,
+      // Printer receiving block defaults to the vendor address (where the blanks
+      // ship); the finished-goods destination stays in `shipping` (seeded above).
+      shipToPrinter: { name: vendorName, attention: vendor ? vendor.contactName : '', streetAddress: vendorAddress, cityStateZip: '' },
       shipMethod: vendor ? vendor.shipMethod : '',
       blanksProvided,
       ...seedFields,
@@ -535,12 +549,14 @@ const poPdf = async (req, res) => {
     doc.moveDown(1);
 
     const field = (label, value) => {
-      if (!value) return;
-      doc.font('Helvetica-Bold').fontSize(10).fillColor(INK).text(`${label}: `, { continued: true });
+      if (value == null || value === '') return;
+      doc.x = left;
+      doc.font('Helvetica-Bold').fontSize(10).fillColor(INK).text(`${label}: `, left, doc.y, { width: (pageW - 24) / 2, continued: true });
       doc.font('Helvetica').fillColor(MUTED).text(String(value));
       doc.moveDown(0.15);
     };
     const section = (title) => {
+      doc.x = left;
       doc.moveDown(0.7);
       doc.font('Helvetica-Bold').fontSize(12).fillColor(GREEN).text(title, left);
       doc.moveDown(0.3);
@@ -552,27 +568,71 @@ const poPdf = async (req, res) => {
       return s;
     };
 
-    doc.x = left;
-    field('Purchase Order Number', po.poNumber);
-    field('Date', po.date ? new Date(po.date).toLocaleDateString('en-US', { timeZone: 'UTC' }) : '');
-    field('Due Date', po.dueDate ? new Date(po.dueDate).toLocaleDateString('en-US', { timeZone: 'UTC' }) : '');
-    field('Proof', po.proofRequired ? 'Required before production run' : '');
-    field('Printer Name', po.vendorName);
-    field('Contact Information', po.contactName);
-    field('Address', po.vendorAddress);
+    // Render a labeled address block (one column). Lays each non-empty line under
+    // a small green sub-heading; renders "—" only-if every line is empty so the
+    // PO still reads when a block is unfilled (never crashes on missing data).
+    const ld = (d) => (d ? new Date(d).toLocaleDateString('en-US', { timeZone: 'UTC' }) : '');
+    const addrBlock = (x, w, heading, a, sub) => {
+      const obj = a || {};
+      doc.font('Helvetica-Bold').fontSize(9).fillColor(GREEN)
+        .text(String(heading).toUpperCase(), x, doc.y, { width: w, characterSpacing: 0.5 });
+      if (sub) doc.font('Helvetica-Oblique').fontSize(8).fillColor(MUTED).text(sub, x, doc.y, { width: w });
+      doc.moveDown(0.15);
+      const lines = [obj.name, obj.attention && `Attn: ${obj.attention}`, obj.streetAddress, obj.cityStateZip]
+        .map((s) => String(s || '').trim()).filter(Boolean);
+      doc.font('Helvetica').fontSize(9.5).fillColor(INK);
+      if (lines.length) lines.forEach((ln) => doc.text(ln, x, doc.y, { width: w }));
+      else doc.fillColor(MUTED).text('—', x, doc.y, { width: w });
+    };
 
-    const sh = po.shipping || {};
-    if (sh.name || sh.attention || sh.streetAddress || sh.cityStateZip) {
-      section('Shipping Info');
-      field('Shipping Name', sh.name);
-      field('Attention Name', sh.attention);
-      field('Street Address', sh.streetAddress);
-      field('City, State, Zip', sh.cityStateZip);
-    }
+    // ── Top block: PO meta (left) + vendor/printer (right) ──────────────────────
+    doc.x = left;
+    const metaTop = doc.y;
+    const colW = (pageW - 24) / 2;
+    field('Purchase Order Number', po.poNumber);
+    field('Date', ld(po.date));
+    field('Due / In-hands Date', ld(po.dueDate));
+    field('Proof', po.proofRequired ? 'Required before production run' : 'Not required');
+    field('Blanks', po.blanksProvided ? 'Provided by Joint Printing' : 'Supplied by printer');
+
+    // Vendor / printer block on the right, vertically aligned with the meta block.
+    const rightX = left + colW + 24;
+    const afterMeta = doc.y;
+    doc.y = metaTop;
+    doc.font('Helvetica-Bold').fontSize(9).fillColor(GREEN)
+      .text('PRINTER / VENDOR', rightX, doc.y, { width: colW, characterSpacing: 0.5 });
+    doc.moveDown(0.15);
+    const vLines = [po.vendorName, po.contactName && `Attn: ${po.contactName}`, po.vendorAddress]
+      .map((s) => String(s || '').trim()).filter(Boolean);
+    doc.font('Helvetica').fontSize(9.5).fillColor(INK);
+    if (vLines.length) vLines.forEach((ln) => doc.text(ln, rightX, doc.y, { width: colW }));
+    else doc.fillColor(MUTED).text('—', rightX, doc.y, { width: colW });
     if (po.shipMethod) {
-      doc.moveDown(0.4);
-      field('Ship Method', po.shipMethod);
+      doc.moveDown(0.15);
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor(MUTED).text('Ship method: ', rightX, doc.y, { width: colW, continued: true });
+      doc.font('Helvetica').fillColor(INK).text(String(po.shipMethod));
     }
+    // Continue below whichever column ran longer.
+    doc.y = Math.max(afterMeta, doc.y);
+
+    // ── Two ship-to blocks: blanks → printer (the missing field) + finished goods
+    // → client. JP supplies blanks ~99% of the time, so a PO genuinely has both. We
+    // ALWAYS show the printer receiving block (falling back to the vendor address)
+    // so the "where do the blanks go" address can never be missing again.
+    const sp = po.shipToPrinter || {};
+    const hasPrinterShip = sp.name || sp.attention || sp.streetAddress || sp.cityStateZip;
+    const printerShip = hasPrinterShip ? sp
+      : { name: po.vendorName, attention: po.contactName, streetAddress: po.vendorAddress, cityStateZip: '' };
+    const sh = po.shipping || {};
+    const hasFinalShip = sh.name || sh.attention || sh.streetAddress || sh.cityStateZip;
+
+    section('Shipping');
+    const shipTop = doc.y;
+    addrBlock(left, colW, 'Ship blanks to (printer)', printerShip, 'Where JP sends the blanks');
+    const leftEnd = doc.y;
+    doc.y = shipTop;
+    addrBlock(rightX, colW, 'Finished goods ship to', hasFinalShip ? sh : null, 'Where the finished order delivers');
+    doc.y = Math.max(leftEnd, doc.y);
 
     if ((po.items || []).length > 0) {
       section(po.blanksProvided ? 'Product/Print Info - (blanks provided)' : 'Product/Print Order Summary');
@@ -620,7 +680,259 @@ const poPdf = async (req, res) => {
   }
 };
 
-module.exports = { listPos, createPo, createPosFromConfirmation, updatePo, deletePo, listVendors, poCostHistory, poPdf, parseUnitCost };
+// ── Per-vendor numbering control ──────────────────────────────────────────────
+
+// Case-insensitive exact-name vendor lookup — the SAME match the PO seeders use,
+// so "heritage" and "Heritage" resolve to one record. Returns the POJO or null.
+async function _findVendorByName(name) {
+  const v = String(name || '').trim();
+  if (!v) return null;
+  return Vendor.findOne({ name: new RegExp(`^${v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }).lean();
+}
+
+// GET /api/orders/po-next-number?vendor=<name> — the number that WOULD be assigned
+// to this vendor's next PO (max of the atomic counter and the owner-set start),
+// WITHOUT consuming it. Lets the builder + the vendor card show "next PO #009" and
+// the owner adjust it. Read-only; an empty/blank vendor returns the shared default.
+const nextPoNumber = async (req, res) => {
+  try {
+    const vendor = String((req.query && req.query.vendor) || '').trim();
+    if (!vendor || isUnassignedVendor(vendor)) return res.json({ vendor, next: null, nextPoStart: 0 });
+    const v = await _findVendorByName(vendor);
+    const seq = await peekNumber('po', vendor, v && v.nextPoStart);
+    res.json({
+      vendor,
+      next: `#${String(seq).padStart(3, '0')}`,
+      nextNumeric: seq,
+      nextPoStart: (v && v.nextPoStart) || 0,
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+// ── Vendor / printer card (the connected supplier database) ───────────────────
+
+// Build the vendor↔order link set from BOTH the POs issued to a vendor and the
+// receipt/expense ledger paid to them, keyed by canonical (leading-zero-safe)
+// order number. `vendor` is the Vendor doc (its remembered vendorOrders) merged
+// with what the POs/transactions actually show, so the card stays correct even if
+// the learned hints lag. Returns a de-duped, recency-sorted list of { orderNumber }.
+function _vendorOrderKeys(vendor, posByOrderNum, txns) {
+  const keys = new Set();
+  (vendor && Array.isArray(vendor.vendorOrders) ? vendor.vendorOrders : [])
+    .forEach((l) => { const k = normalizeOrderNumber(l && l.orderNumber); if (k) keys.add(k); });
+  Object.keys(posByOrderNum || {}).forEach((k) => { if (k) keys.add(k); });
+  (txns || []).forEach((t) => { const k = normalizeOrderNumber(t && t.orderNumber); if (k) keys.add(k); });
+  return [...keys];
+}
+
+// GET /api/orders/vendors/:id — the full vendor/printer detail card. Aggregates,
+// for one supplier, every connected record so clicking a printer shows everything
+// about them (the "full database" the owner asked for):
+//   • the vendor profile (contact/address/ship method/account #/blanksProvided +
+//     the editable next-PO # / owner-set start);
+//   • every PO issued to them (newest first, with order link + grand total);
+//   • every order/project they printed (matched by the vendor on the PO, by the
+//     order# on a receipt paid to them, and by the remembered vendor↔order hints);
+//   • every receipt/expense Transaction whose `party` is this vendor (the actual
+//     money paid to them), leading-zero-safe on order numbers;
+//   • lifetime totals (PO count + value, actual spend, orders, last used).
+// Admin-only (the whole router is requireAdmin) — cost detail never leaks client-side.
+const getVendor = async (req, res) => {
+  try {
+    if (badId(req.params.id)) return res.status(404).json({ message: 'Vendor not found' });
+    const vendor = await Vendor.findById(req.params.id).lean();
+    if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
+
+    // POs issued to this vendor (by the SAME normalized vendorKey used everywhere),
+    // so a stray-whitespace/case variant on a PO still rolls into this vendor.
+    const wantKey = vendorKey(vendor.name);
+    const allPos = await PurchaseOrder.find({})
+      .select('poNumber vendorName grandTotal orderId date createdAt')
+      .sort({ date: -1, createdAt: -1 })
+      .lean();
+    const vendorPos = allPos.filter((p) => vendorKey(p.vendorName) === wantKey);
+
+    // The transactions whose counter-party is this vendor (expense money paid to
+    // them). Party is free-text, so match the SAME case-insensitive exact name;
+    // these are the real dollars spent with the printer.
+    const txns = await Transaction.find({
+      type: 'expense',
+      party: new RegExp(`^${String(vendor.name || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+    }).select('date amount isCredit category orderNumber description receiptUrl party').lean();
+
+    // Map order ids on POs → their order numbers, so a PO contributes its order to
+    // this vendor's "orders they printed". One query for all the linked orders.
+    const orderIds = [...new Set(vendorPos.map((p) => String(p.orderId)).filter(Boolean))];
+    const ordersById = orderIds.length
+      ? await Order.find({ _id: { $in: orderIds } })
+          .select('orderNumber projectNumber companyName clientName totalValue paid orderDate status')
+          .lean()
+      : [];
+    const orderById = new Map(ordersById.map((o) => [String(o._id), o]));
+
+    // Canonical-order-number union: every order this vendor touched (via a PO,
+    // a receipt paid to them, or a remembered hint). Pull every matching Order
+    // (the receipt/hint side can reference an order with no PO yet), over-matching
+    // leading-zero variants then filtering canonically — the SAME bridge the
+    // finance/CRM code uses. Then hand the POJOs to the pure aggregator.
+    const posByOrderNum = {};
+    vendorPos.forEach((p) => {
+      const o = orderById.get(String(p.orderId));
+      const k = o ? normalizeOrderNumber(o.orderNumber) : '';
+      if (k) (posByOrderNum[k] ||= []).push(p);
+    });
+    const orderKeys = _vendorOrderKeys(vendor, posByOrderNum, txns);
+    const connectedOrders = orderKeys.length
+      ? await Order.find({ orderNumber: { $in: orderKeys.map((k) => new RegExp(`^0*${k}$`)) } })
+          .select('orderNumber projectNumber companyName clientName totalValue paid orderDate status')
+          .lean()
+      : [];
+
+    // The next number this vendor's PO would take (floored by the owner-set start).
+    const nextSeq = await peekNumber('po', vendor.name, vendor.nextPoStart);
+    const card = aggregateVendorCard({ vendor, vendorPos, txns, connectedOrders, orderById });
+    res.json({
+      ...card,
+      nextPo: { next: `#${String(nextSeq).padStart(3, '0')}`, nextNumeric: nextSeq, nextPoStart: vendor.nextPoStart || 0 },
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+// PURE vendor-card aggregation (no DB) — exported + unit-tested. Given a vendor's
+// already-fetched POJOs (its POs, the expense Transactions paid to it, the Orders
+// connected by any path, and a map of orderId→Order for the PO side), produce the
+// card payload: per-order rollup (with the printer's spend on each, leading-zero-
+// safe), the PO list, the transaction list, and lifetime totals. Mirrors the
+// finance signing rule (an expense credit nets spend DOWN) so the vendor's
+// lifetime spend reconciles with the ledger. `orderById` is keyed by String(_id).
+function aggregateVendorCard({ vendor, vendorPos, txns, connectedOrders, orderById }) {
+  const byId = orderById instanceof Map ? orderById : new Map(Object.entries(orderById || {}));
+  const pos = Array.isArray(vendorPos) ? vendorPos : [];
+  const rows = Array.isArray(txns) ? txns : [];
+
+  // canonical order# → the PO(s) on it.
+  const posByOrderNum = {};
+  pos.forEach((p) => {
+    const o = byId.get(String(p.orderId));
+    const k = o ? normalizeOrderNumber(o.orderNumber) : '';
+    if (k) (posByOrderNum[k] ||= []).push(p);
+  });
+  const orderKeys = _vendorOrderKeys(vendor, posByOrderNum, rows);
+
+  // De-dupe connected orders by canonical number; prefer a named one on collision.
+  const ordersByKey = new Map();
+  (Array.isArray(connectedOrders) ? connectedOrders : []).forEach((o) => {
+    const k = normalizeOrderNumber(o && o.orderNumber);
+    if (!k) return;
+    const cur = ordersByKey.get(k);
+    if (!cur || ((o.companyName || o.clientName) && !(cur.companyName || cur.clientName))) ordersByKey.set(k, o);
+  });
+
+  // Per-order + lifetime spend — signed so a supplier credit nets down (ledger rule).
+  const spendByOrder = {};
+  let lifetimeSpend = 0;
+  rows.forEach((t) => {
+    const amt = (t && t.isCredit ? -1 : 1) * (Number(t && t.amount) || 0);
+    lifetimeSpend += amt;
+    const k = normalizeOrderNumber(t && t.orderNumber);
+    if (k) spendByOrder[k] = (spendByOrder[k] || 0) + amt;
+  });
+
+  const orders = orderKeys.map((k) => {
+    const o = ordersByKey.get(k) || null;
+    const linkedPos = (posByOrderNum[k] || []).map((p) => ({ _id: p._id, poNumber: p.poNumber || '', grandTotal: Number(p.grandTotal) || 0 }));
+    return {
+      orderNumber: k,
+      orderId: o ? o._id : null,
+      projectNumber: o ? (o.projectNumber || '') : '',
+      company: o ? ((o.companyName || o.clientName || '').trim()) : '',
+      totalValue: o ? (Number(o.totalValue) || 0) : 0,
+      paid: o ? !!o.paid : false,
+      status: o ? (o.status || '') : '',
+      orderDate: o ? (o.orderDate || null) : null,
+      spend: round2(spendByOrder[k] || 0),
+      pos: linkedPos,
+    };
+  }).sort((a, b) => Number(b.orderNumber) - Number(a.orderNumber));
+
+  const poTotal = pos.reduce((s, p) => s + (Number(p.grandTotal) || 0), 0);
+  const lastUsed = pos.length
+    ? (pos[0].date || pos[0].createdAt)
+    : (rows.length ? rows.map((t) => t.date).filter(Boolean).sort((a, b) => new Date(b) - new Date(a))[0] : null);
+
+  return {
+    vendor,
+    pos: pos.map((p) => {
+      const o = byId.get(String(p.orderId));
+      return {
+        _id: p._id, poNumber: p.poNumber || '', grandTotal: Number(p.grandTotal) || 0,
+        orderId: p.orderId || null,
+        orderNumber: o ? normalizeOrderNumber(o.orderNumber) : '',
+        projectNumber: o ? (o.projectNumber || '') : '',
+        date: p.date || null,
+      };
+    }),
+    orders,
+    transactions: rows
+      .map((t) => ({
+        _id: t._id, date: t.date || null, amount: Number(t.amount) || 0, isCredit: !!t.isCredit,
+        category: t.category || '', orderNumber: normalizeOrderNumber(t.orderNumber),
+        description: t.description || '', hasReceipt: !!t.receiptUrl,
+      }))
+      .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0)),
+    totals: {
+      poCount: pos.length,
+      poTotal: round2(poTotal),
+      lifetimeSpend: round2(lifetimeSpend),
+      orderCount: orders.length,
+      lastUsed: lastUsed || null,
+    },
+  };
+}
+
+// PATCH /api/orders/vendors/:id — owner edits to a vendor's card: contact/address/
+// ship method/account #/blanksProvided default, and the per-vendor NEXT-PO START
+// (#1). Setting a higher start floors future auto-numbering AND immediately bumps
+// the atomic counter up to it, so the next PO can't collide with the owner's real
+// run. Never lowers an already-issued sequence below what's been used.
+const VENDOR_PATCHABLE = ['name', 'contactName', 'email', 'phone', 'address', 'shipMethod', 'accountNumber', 'notes', 'blanksProvided'];
+const updateVendor = async (req, res) => {
+  try {
+    if (badId(req.params.id)) return res.status(404).json({ message: 'Vendor not found' });
+    const body = req.body || {};
+    const set = {};
+    for (const f of VENDOR_PATCHABLE) {
+      if (f in body) set[f] = f === 'blanksProvided' ? !!body[f] : body[f];
+    }
+    // The owner-set next-PO start. Clamp to a non-negative integer; 0 clears it.
+    let bumpStart = null;
+    if ('nextPoStart' in body) {
+      const s = Math.max(0, parseInt(body.nextPoStart, 10) || 0);
+      set.nextPoStart = s;
+      bumpStart = s;
+    }
+    const vendor = await Vendor.findByIdAndUpdate(req.params.id, { $set: set }, { new: true, runValidators: true }).lean();
+    if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
+
+    // Raise the atomic per-vendor counter to floor-1 so the very next auto number
+    // is exactly the owner-set start (kept collision-safe; never moves it back).
+    if (bumpStart && bumpStart > 0) await bumpCounterTo('po', bumpStart - 1, vendor.name);
+
+    const nextSeq = await peekNumber('po', vendor.name, vendor.nextPoStart);
+    res.json({ vendor, nextPo: { next: `#${String(nextSeq).padStart(3, '0')}`, nextNumeric: nextSeq, nextPoStart: vendor.nextPoStart || 0 } });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+};
+
+module.exports = {
+  listPos, createPo, createPosFromConfirmation, updatePo, deletePo, listVendors,
+  poCostHistory, poPdf, parseUnitCost, nextPoNumber, getVendor, updateVendor,
+};
 // Exported for unit tests — pure helpers for the multi-location ship-split PO output.
 module.exports._itemShipSplit = _itemShipSplit;
 module.exports._shipNotes = _shipNotes;
@@ -628,3 +940,6 @@ module.exports._seedPoForGroup = _seedPoForGroup;
 module.exports._seedFromOrder = _seedFromOrder;
 module.exports._groupConfBySupplier = _groupConfBySupplier;
 module.exports._quoteLineIndex = _quoteLineIndex;
+// Pure vendor-card aggregation (no DB) — exported for unit tests.
+module.exports.aggregateVendorCard = aggregateVendorCard;
+module.exports._vendorOrderKeys = _vendorOrderKeys;

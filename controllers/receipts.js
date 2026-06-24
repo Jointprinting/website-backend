@@ -9,6 +9,7 @@
 const Receipt = require('../models/Receipt');
 const Transaction = require('../models/Transaction');
 const Order = require('../models/Order');
+const Vendor = require('../models/Vendor');
 const r2 = require('../services/r2');
 const scanner = require('../services/receiptScanner');
 const { normalizeOrderNumber } = require('./finances');
@@ -40,6 +41,54 @@ async function _findLinkedOrder(rawOrderNumber) {
   if (!exact.length) return null;
   // On the rare order-number collision, pick deterministically: prefer a named one.
   return exact.find((o) => (o.companyName || o.clientName)) || exact[0];
+}
+
+// Receipt→vendor LEARNING (conservative). When an expense receipt is booked with
+// a real vendor (party) AND an order #, remember "this printer did this order" on
+// the Vendor record. This is the link that lets the system pre-fill the right
+// printer on a future PO/receipt for that order and surface it on the vendor card.
+// It's a remembered HINT only — never an irreversible auto-action:
+//   • only a NAMED expense party that isn't us (the self-seller) is learned;
+//   • a vendor row is upserted by the SAME case-insensitive exact-name match the
+//     PO contact book uses, so it doesn't fork an existing printer;
+//   • we keep ONE entry per canonical order number (refreshing its timestamp), so
+//     re-confirming the same receipt never piles up duplicate links;
+//   • blanksProvided is only $setOnInsert (a new vendor defaults true) so learning
+//     never overwrites a printer's owner-set mode.
+// PURE decision (no DB) — exported + tested. Returns { name, key } to learn, or
+// null to skip. We only learn from a NAMED expense party that isn't us, with a
+// real (canonical) order #. Anything else (income, blank/self party, no order #)
+// is deliberately NOT remembered — keeps the hint conservative and never wrong.
+function vendorOrderLearnPlan(party, type, rawOrderNumber) {
+  const name = String(party || '').trim();
+  if (type !== 'expense' || !name || isSelf(name)) return null;
+  const key = normalizeOrderNumber(rawOrderNumber);
+  if (!key) return null;
+  return { name, key };
+}
+
+// Best-effort: a failure here must never block booking the ledger entry.
+async function _learnVendorOrder(party, type, rawOrderNumber) {
+  try {
+    const plan = vendorOrderLearnPlan(party, type, rawOrderNumber);
+    if (!plan) return;
+    const { name, key } = plan;
+    const re = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+    // Drop any stale entry for this order, then push a fresh one — keeps exactly
+    // one link per order with an up-to-date `at`, and creates the vendor if new.
+    await Vendor.findOneAndUpdate(
+      { name: re },
+      {
+        $setOnInsert: { name, blanksProvided: true },
+        $pull: { vendorOrders: { orderNumber: key } },
+      },
+      { upsert: true },
+    );
+    await Vendor.findOneAndUpdate(
+      { name: re },
+      { $push: { vendorOrders: { orderNumber: key, at: new Date() } } },
+    );
+  } catch (_e) { /* learning is best-effort; never blocks the booking */ }
 }
 
 const EXT_MIME = {
@@ -313,6 +362,11 @@ const confirm = async (req, res) => {
     rec.transactionId = txn._id;
     rec.reviewedAt = new Date();
     await rec.save();
+
+    // Remember which printer did this order (conservative hint) so a future PO/
+    // receipt for it can pre-fill the vendor, and the vendor card shows the link.
+    await _learnVendorOrder(party, type, orderNumber);
+
     res.json({ receipt: rec, transaction: txn });
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
@@ -456,3 +510,5 @@ const archiveRest = async (req, res) => {
 };
 
 module.exports = { upload, scan, batch, list, getOne, reprocess, update, confirm, remove, reconcile, bulkReconcile, clearAll, resetReceipts, archiveRest };
+// Pure receipt→vendor learning decision (no DB) — exported for unit tests.
+module.exports.vendorOrderLearnPlan = vendorOrderLearnPlan;
