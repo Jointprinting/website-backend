@@ -8,7 +8,11 @@ const VendorSchema = new mongoose.Schema({
   email:       { type: String, default: '' },
   address:     { type: String, default: '' },
   shipMethod:  { type: String, default: '' },   // default "UPS Acct # ..." note
-  blanksProvided: { type: Boolean, default: false }, // typical mode for this vendor
+  // Typical mode for this vendor. Defaults TRUE because Joint Printing supplies
+  // the blanks ~99% of the time — so an unset/new vendor seeds POs with blanks
+  // provided (blank cost excluded from the supplier PO). The PO seeders read this
+  // (createPo / createPosFromConfirmation) and the builder writes it back per PO.
+  blanksProvided: { type: Boolean, default: true },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Vendor', VendorSchema);
