@@ -43,6 +43,28 @@ function computeQuoteTotals(lines, orderSetup, orderShip) {
 // taxRate; the owner can always override per location. Keyed by USPS code.
 const STATE_TAX_RATES = { NJ: 6.625, NY: 8, CT: 6.35, MA: 6.25, VT: 6, PA: 6 };
 
+// Round-half-up to cents. Confirmation grand totals and tax lines are summed in
+// floating point and MUST be snapped to cents at their final points, or they
+// drift by fractions of a cent (a $2,203.3000000001 grand total). Number.EPSILON
+// nudges values that are mathematically *.xx5 but land just under in binary
+// (e.g. 1.005) up to the correct cent. Mirrored in every frontend copy.
+const roundCents = (v) => Math.round(((Number(v) || 0) + Number.EPSILON) * 100) / 100;
+
+// Is this add-on customLine a SALES-TAX line? A confirmation can carry a legacy
+// flat/percent "NJ tax" customLine (the builder's one-tap preset) AND, on the
+// newer multi-ship-to path, per-location taxRates. Applying both double-taxes the
+// job. We detect a tax line by an explicit `isTax` flag (honored if present) or,
+// for back-comp with already-saved confirmations that predate the flag, a label
+// that mentions "tax". Kept deliberately broad on the label so a saved
+// "NJ sales tax" / "Sales Tax" / "NY tax" line is all caught. Mirrored on the
+// frontend so the builder preview, PDF, approval page and the order's stored
+// total all agree.
+function isTaxCustomLine(line) {
+  if (!line) return false;
+  if (line.isTax === true) return true;
+  return /tax/i.test(String(line.label || ''));
+}
+
 // Per-location sales tax for a confirmation that ships to multiple destinations
 // with their own tax rates. ACTIVE only when at least one shipTo carries a
 // taxRate > 0 — otherwise this is a no-op and the grand total is byte-identical
@@ -56,9 +78,10 @@ const STATE_TAX_RATES = { NJ: 6.625, NY: 8, CT: 6.35, MA: 6.25, VT: 6, PA: 6 };
 // items is a location's taxable merchandise subtotal; × its taxRate% is that
 // location's tax. Tax is on MERCHANDISE only (item revenue) — it does not stack
 // on top of add-on customLines (CC fees, discounts), which is the correct sales
-// tax base and avoids taxing a credit-card fee. The single "NJ tax" customLine
-// preset is suppressed by the builder whenever this is active, so a job is
-// never taxed twice. Mirrors the frontend _shared.js confLocationTax exactly.
+// tax base and avoids taxing a credit-card fee. When this is active, any legacy
+// tax customLine is dropped by computeConfirmationTotals (see isTaxCustomLine),
+// so a job is never taxed twice even on a saved confirmation that carries both.
+// Mirrors the frontend _shared.js confLocationTax exactly.
 function computeLocationTax(conf) {
   const n = (v) => Number(v) || 0;
   const shipTos = (conf && Array.isArray(conf.shipTos)) ? conf.shipTos : [];
@@ -71,14 +94,24 @@ function computeLocationTax(conf) {
       const itemQty = ((it && it.sizes) || []).reduce((q, sz) => q + n(sz.qty), 0);
       if (itemQty <= 0) return sum;
       const allocQty = ((it && it.allocations) || []).reduce((q, a) => q + (a && a.key === st.key ? n(a.qty) : 0), 0);
-      return sum + itemRevenue * (allocQty / itemQty);
+      // Guard a bad allocation: a location's share of an item can't be negative
+      // nor exceed the item's full quantity. Without this, an over-allocation
+      // (allocations summing past itemQty) would tax MORE than the item's actual
+      // revenue, and across locations the taxed base could exceed 100% of the
+      // merchandise. Clamp so the taxed base stays within real item revenue.
+      const share = allocQty <= 0 ? 0 : (allocQty >= itemQty ? 1 : allocQty / itemQty);
+      return sum + itemRevenue * share;
     }, 0);
     const rate = n(st.taxRate);
-    const value = subtotal * rate / 100;
+    // Round each location's tax to cents — the line shown to the client and the
+    // value summed into the grand total must be a real cent amount.
+    const value = roundCents(subtotal * rate / 100);
     const label = `${st.label || st.name || 'Location'} tax - ${rate}%`;
     return { label, subtotal, rate, value };
   });
-  const total = lines.reduce((s, l) => s + l.value, 0);
+  // Sum the already-rounded line values (so total == Σ of the lines the client
+  // sees), then re-round defensively.
+  const total = roundCents(lines.reduce((s, l) => s + l.value, 0));
   return { active: true, total, lines };
 }
 
@@ -94,12 +127,22 @@ function computeConfirmationTotals(conf) {
   const items = (conf && Array.isArray(conf.items)) ? conf.items : [];
   const itemsSubtotal = items.reduce((s, it) =>
     s + ((it && it.sizes) || []).reduce((ss, sz) => ss + n(sz.qty) * n(sz.unitPrice), 0), 0);
+  const locationTax = computeLocationTax(conf);
   let running = itemsSubtotal;
   ((conf && conf.customLines) || []).forEach(l => {
+    // DOUBLE-TAX GUARD: when per-location tax is active, a legacy tax customLine
+    // (the "NJ tax" preset) must NOT also apply — per-location tax wins, so the
+    // job is taxed exactly once. With no per-location tax a legacy tax line still
+    // applies (back-comp). The builder also suppresses the conflict going forward;
+    // this keeps already-saved confirmations that carry both from double-taxing.
+    if (locationTax.active && isTaxCustomLine(l)) return;
     running += l && l.isPercent ? running * n(l.amount) / 100 : n(l && l.amount);
   });
-  running += computeLocationTax(conf).total;
-  return { itemsSubtotal, grandTotal: running };
+  running += locationTax.total;
+  // Snap the grand total to cents (the order's stored totalValue, the client's
+  // headline total, and the finance number all read this) so it can't drift by a
+  // fraction of a cent off the summed lines.
+  return { itemsSubtotal, grandTotal: roundCents(running) };
 }
 
 // A confirmation only becomes the pricing source of truth once it has real
@@ -256,6 +299,10 @@ const OrderSchema = new mongoose.Schema({
       label:     { type: String, default: '' },
       amount:    { type: Number, default: 0 },
       isPercent: { type: Boolean, default: false },
+      // Marks a line as sales tax so the double-tax guard can drop it when
+      // per-location tax is active (see isTaxCustomLine). Legacy/unflagged tax
+      // lines are still caught by the /tax/i label fallback.
+      isTax:     { type: Boolean, default: false },
       _id: false,
     }],
   },
@@ -392,3 +439,5 @@ module.exports.computeConfirmationTotals = computeConfirmationTotals;
 module.exports.computeLocationTax = computeLocationTax;
 module.exports.STATE_TAX_RATES = STATE_TAX_RATES;
 module.exports.hasConfirmationContent = hasConfirmationContent;
+module.exports.isTaxCustomLine = isTaxCustomLine;
+module.exports.roundCents = roundCents;

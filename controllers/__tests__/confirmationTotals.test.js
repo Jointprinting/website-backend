@@ -19,6 +19,8 @@ const {
   computeConfirmationTotals,
   computeLocationTax,
   STATE_TAX_RATES,
+  isTaxCustomLine,
+  roundCents,
 } = require('../../models/Order');
 
 // ── Factories ────────────────────────────────────────────────────────────────
@@ -90,7 +92,7 @@ test('single taxed location: tax = allocated merchandise × rate', () => {
 
 test('proportional allocation: item revenue splits by qty share per location', () => {
   // 100 units @ $10 = $1000. 70 to NJ (6.625%), 30 to NY (8%).
-  // NJ subtotal = 1000 × 70/100 = 700  -> tax 46.375
+  // NJ subtotal = 1000 × 70/100 = 700  -> tax 46.375 -> rounded to cents = 46.38
   // NY subtotal = 1000 × 30/100 = 300  -> tax 24.00
   const conf = {
     items: [item(100, 10, [{ key: 'nj', qty: 70 }, { key: 'ny', qty: 30 }])],
@@ -103,11 +105,13 @@ test('proportional allocation: item revenue splits by qty share per location', (
   const byKey = Object.fromEntries(tax.lines.map(l => [l.label.split(' ')[0], l]));
   assert.equal(round(byKey.NJ.subtotal), 700);
   assert.equal(round(byKey.NY.subtotal), 300);
-  // 6.625% of 700 is 46.375 exactly (a sub-cent value); assert it precisely.
-  assert.equal(byKey.NJ.value, 46.375);
+  // Each tax line is a REAL cent amount (H4): 46.375 rounds half-up to 46.38.
+  assert.equal(byKey.NJ.value, 46.38);
   assert.equal(byKey.NY.value, 24);
-  assert.equal(byKey.NJ.value + byKey.NY.value, 70.375);
-  assert.equal(tax.total, 70.375);
+  // Total is the sum of the cent-rounded lines, so it reconciles to the lines
+  // the client actually sees: 46.38 + 24 = 70.38.
+  assert.equal(byKey.NJ.value + byKey.NY.value, 70.38);
+  assert.equal(tax.total, 70.38);
 });
 
 test('proportional allocation across mixed sizes and multiple items', () => {
@@ -174,6 +178,127 @@ test('unallocated units contribute no tax (only allocated revenue is taxed)', ()
   const tax = computeLocationTax(conf);
   assert.equal(round(tax.lines[0].subtotal), 400);
   assert.equal(round(tax.total), 26.5);              // 400 × 6.625%
+});
+
+// ── C3: double-tax guard (per-location tax XOR legacy tax customLine) ─────────
+test('isTaxCustomLine: flag wins, else label /tax/i', () => {
+  assert.equal(isTaxCustomLine({ label: 'NJ sales tax', amount: 6.625, isPercent: true }), true);
+  assert.equal(isTaxCustomLine({ label: 'Sales Tax', amount: 50 }), true);
+  assert.equal(isTaxCustomLine({ label: 'NY Tax - 8%', amount: 8, isPercent: true }), true);
+  assert.equal(isTaxCustomLine({ label: 'Shipping reserve', amount: 25 }), false);
+  assert.equal(isTaxCustomLine({ label: 'Credit card fee', amount: 2.99, isPercent: true }), false);
+  // Explicit flag honored even when the label says nothing.
+  assert.equal(isTaxCustomLine({ label: 'State', amount: 6, isPercent: true, isTax: true }), true);
+  assert.equal(isTaxCustomLine(null), false);
+});
+
+test('SINGLE-LOCATION, NO shipTo tax: byte-identical totals (no regression)', () => {
+  // The mandatory regression pin: a plain single-location confirmation with a
+  // legacy "NJ tax" customLine and NO taxed shipTos must produce EXACTLY the
+  // pre-change totals — the double-tax guard and cent-rounding are inert here.
+  const conf = {
+    items: [item(100, 10), item(50, 20)],            // 2000
+    customLines: [{ label: 'NJ sales tax', amount: 6.625, isPercent: true }],
+  };
+  const { itemsSubtotal, grandTotal } = computeConfirmationTotals(conf);
+  assert.equal(itemsSubtotal, 2000);
+  assert.equal(grandTotal, 2132.5);                  // 2000 × 1.06625 — unchanged
+});
+
+test('per-location tax ACTIVE: a legacy tax customLine is dropped (taxed once)', () => {
+  // Both a legacy "NJ sales tax" customLine AND a taxed shipTo are present (the
+  // exact conflict the audit found). Per-location tax wins; the customLine must
+  // NOT also apply. Items 1000, all to NJ @ 6.625% -> tax 66.25 -> grand 1066.25.
+  // If the legacy 6.625% line ALSO applied, the total would balloon to ~1132.50.
+  const conf = {
+    items: [item(100, 10, [{ key: 'nj', qty: 100 }])],
+    customLines: [{ label: 'NJ sales tax', amount: 6.625, isPercent: true }],
+    shipTos: [{ key: 'nj', label: 'Newark', state: 'NJ', taxRate: 6.625 }],
+  };
+  const { grandTotal } = computeConfirmationTotals(conf);
+  assert.equal(grandTotal, 1066.25);                 // taxed exactly once
+});
+
+test('per-location tax ACTIVE: NON-tax customLines still apply', () => {
+  // A CC fee is not a tax line — per-location tax must not suppress it.
+  // Items 1000; CC fee 2.99% on 1000 = 29.90 (running 1029.90); NJ tax on
+  // MERCHANDISE 1000 @ 6.625% = 66.25. Grand = 1029.90 + 66.25 = 1096.15.
+  const conf = {
+    items: [item(100, 10, [{ key: 'nj', qty: 100 }])],
+    customLines: [{ label: 'Credit card fee', amount: 2.99, isPercent: true }],
+    shipTos: [{ key: 'nj', label: 'NJ', taxRate: 6.625 }],
+  };
+  const { grandTotal } = computeConfirmationTotals(conf);
+  assert.equal(grandTotal, 1096.15);
+});
+
+test('no per-location tax: a legacy tax customLine STILL applies (back-comp)', () => {
+  // With zero-rate shipTos (inactive per-location tax), the legacy line is the
+  // only tax and must apply, exactly as before.
+  const conf = {
+    items: [item(100, 10, [{ key: 'a', qty: 100 }])],
+    customLines: [{ label: 'NJ sales tax', amount: 6.625, isPercent: true }],
+    shipTos: [{ key: 'a', label: 'HQ', state: 'NJ', taxRate: 0 }],
+  };
+  const { grandTotal } = computeConfirmationTotals(conf);
+  assert.equal(grandTotal, 1066.25);                 // 1000 × 1.06625
+});
+
+// ── H5: over/under-allocation can't tax beyond the item's real revenue ───────
+test('over-allocation is clamped: taxed base never exceeds item revenue', () => {
+  // 100 units @ $10 = 1000, but 140 units "allocated" to NJ (bad data). The
+  // taxable base must clamp to the item's full revenue (1000), not 1400.
+  const conf = {
+    items: [item(100, 10, [{ key: 'nj', qty: 140 }])],
+    shipTos: [{ key: 'nj', label: 'NJ', taxRate: 6.625 }],
+  };
+  const tax = computeLocationTax(conf);
+  assert.equal(round(tax.lines[0].subtotal), 1000);  // clamped to real revenue
+  assert.equal(tax.total, 66.25);                     // 1000 × 6.625%, not 1400's
+});
+
+test('over-allocation across locations cannot tax more than 100% of merchandise', () => {
+  // 100 @ $10 = 1000. Allocations sum to 150 (60 NJ + 90 NY) — over-allocated.
+  // Each location's share clamps to ≤ its own ratio of itemQty; with 60/100 and
+  // 90/100 -> NJ taxes 600, NY taxes 900 -> combined taxed base 1500 would be >
+  // merchandise. The per-location clamp keeps EACH within [0,1] of the item; this
+  // test pins that neither line exceeds the item revenue.
+  const conf = {
+    items: [item(100, 10, [{ key: 'nj', qty: 60 }, { key: 'ny', qty: 90 }])],
+    shipTos: [
+      { key: 'nj', label: 'NJ', taxRate: 10 },
+      { key: 'ny', label: 'NY', taxRate: 10 },
+    ],
+  };
+  const tax = computeLocationTax(conf);
+  const byKey = Object.fromEntries(tax.lines.map(l => [l.label.split(' ')[0], l]));
+  assert.ok(byKey.NJ.subtotal <= 1000, 'NJ taxed base within item revenue');
+  assert.ok(byKey.NY.subtotal <= 1000, 'NY taxed base within item revenue');
+});
+
+test('negative allocation contributes no tax (clamped to 0)', () => {
+  const conf = {
+    items: [item(100, 10, [{ key: 'nj', qty: -50 }])],
+    shipTos: [{ key: 'nj', label: 'NJ', taxRate: 6.625 }],
+  };
+  const tax = computeLocationTax(conf);
+  assert.equal(round(tax.lines[0].subtotal), 0);
+  assert.equal(tax.total, 0);
+});
+
+// ── H4: grand total snaps to cents ───────────────────────────────────────────
+test('roundCents snaps half-up to two decimals', () => {
+  assert.equal(roundCents(2132.5000000001), 2132.5);
+  assert.equal(roundCents(46.375), 46.38);
+  assert.equal(roundCents(1.005), 1.01);
+  assert.equal(roundCents(0), 0);
+});
+
+test('grand total has no sub-cent drift', () => {
+  // A unitPrice that produces a binary-imperfect subtotal: 3 @ 0.1 = 0.30000…04.
+  const conf = { items: [item(3, 0.1)], customLines: [] };
+  const { grandTotal } = computeConfirmationTotals(conf);
+  assert.equal(grandTotal, 0.3);                      // snapped, not 0.30000000000000004
 });
 
 // ── STATE_TAX_RATES map ──────────────────────────────────────────────────────

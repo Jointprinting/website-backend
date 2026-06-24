@@ -251,15 +251,11 @@ const getOrder = async (req, res) => {
 // confRevenue/confCogs in _shared.js — keep the two in sync.
 function _confirmationTotals(conf) {
   if (!conf || !Array.isArray(conf.items)) return { revenue: 0, cogs: 0 };
-  let revenue = conf.items.reduce((s, it) =>
-    s + (it.sizes || []).reduce((ss, sz) => ss + (Number(sz.qty) || 0) * (Number(sz.unitPrice) || 0), 0), 0);
-  (conf.customLines || []).forEach((l) => {
-    revenue += l.isPercent ? revenue * (Number(l.amount) || 0) / 100 : (Number(l.amount) || 0);
-  });
-  // Per-location sales tax (multi-ship-to). No-op unless a shipTo carries a
-  // taxRate > 0, so single-location revenue is unchanged. Added LAST, exactly
-  // like the grand total in models/Order.js, so totalValue and this stay equal.
-  revenue += Order.computeLocationTax(conf).total;
+  // Revenue = the order's grand total from the ONE canonical function (the
+  // double-tax guard C3 and cent-rounding H4 live there), so body.totalValue set
+  // here always agrees with the model's own computeConfirmationTotals. COGS stays
+  // unitCost-based (the confirmation carries no client-facing cost).
+  const revenue = Order.computeConfirmationTotals(conf).grandTotal;
   const cogs = conf.items.reduce((s, it) => {
     const qty = (it.sizes || []).reduce((q, sz) => q + (Number(sz.qty) || 0), 0);
     return s + qty * (Number(it.unitCost) || 0);
