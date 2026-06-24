@@ -25,6 +25,12 @@ const Transaction   = require('../models/Transaction');
 // normalization). Never re-derive finance numbers here.
 const { summarizeCompanyFinance, normalizeOrderNumber } = require('./finances');
 const { parseCsv, rowsToObjects, mapTrackerRow } = require('../utils/fieldTrackerImport');
+// Business-timezone day boundaries. The server runs in UTC (ahead of the owner's
+// US-Eastern clock), so every "today / overdue / due-today" decision reasons in
+// America/New_York via these helpers — never the raw server clock. (Real audit
+// instants like log `at` / lastContact stay untouched; only day-boundary
+// comparisons route through here.) See utils/time.js.
+const { etToday, etStartOfToday, dayDiffFromToday } = require('../utils/time');
 
 const STAGES = Client.CRM_STAGES;
 // Stages we never surface in the call engine — the deal is closed or parked.
@@ -74,17 +80,11 @@ function summarizePipeline(records) {
   };
 }
 
-// End of *today* in server-local time, as a Date (used by /today).
-function endOfTodayLocal() {
-  const d = new Date();
-  d.setHours(23, 59, 59, 999);
-  return d;
-}
-function startOfTodayLocal() {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
+// Day boundaries are computed in the BUSINESS timezone (America/New_York) — see
+// the time-helper import above. etToday() gives the owner's calendar day and
+// dayDiffFromToday() compares a stored whole-day field to it by calendar day, so
+// "today / overdue / due-today" track the New-Jersey owner's clock even late in
+// the evening when the UTC server has already rolled to tomorrow.
 
 // Most-recent log entry (the log is appended chronologically; we don't assume
 // it's sorted, so pick the max `at`).
@@ -122,10 +122,17 @@ function daysBetween(aMs, bMs) {
   return Math.floor((bMs - aMs) / 86400000);
 }
 
-// Inspect one client (a lean POJO with the CRM fields) against `now`/`startToday`
-// and return any heads-up items it earns. `now` and `startToday` are epoch ms so
-// the function is deterministic and timezone-free in tests.
-function classifyHeadsUp(c, nowMs, startTodayMs) {
+// Inspect one client (a lean POJO with the CRM fields) and return any heads-up
+// items it earns.
+//   nowMs    — current instant (epoch ms): drives elapsed-time signals (stale /
+//              hot-quiet), which are genuinely "how long since" measures.
+//   todayMs  — start-of-today in the BUSINESS timezone (epoch ms): the day
+//              boundary the whole-day nextFollowUp is judged "overdue" against,
+//              comparing ET calendar day to the follow-up's (UTC) calendar day so
+//              a 6/24 follow-up isn't "overdue" until it's actually 6/24 in ET.
+// Both are passed in (not read from the clock) so the function stays deterministic
+// and unit-testable.
+function classifyHeadsUp(c, nowMs, todayMs) {
   if (!c) return [];
   const stage = c.stage;
   const closed = CLOSED_STAGES.includes(stage); // won/lost/dormant — out of the funnel
@@ -136,15 +143,19 @@ function classifyHeadsUp(c, nowMs, startTodayMs) {
   const value = Number(c.dealValue) || 0;
   const base  = { companyKey: c.companyKey, name, phone, value };
 
-  const nf = c.nextFollowUp ? new Date(c.nextFollowUp).getTime() : null;
   const lc = c.lastContact ? new Date(c.lastContact).getTime() : null;
   const last = lastLogEntry(c.log);
   const lastLogMs = last && last.at ? new Date(last.at).getTime() : null;
   const updatedMs = c.updatedAt ? new Date(c.updatedAt).getTime() : null;
 
-  // overdue_followup — active deal whose follow-up date is before today.
-  if (!closed && nf != null && nf < startTodayMs) {
-    const overdueDays = daysBetween(nf, startTodayMs);
+  // Whole-day follow-up vs the owner's today, compared by CALENDAR DAY (see
+  // dayDiffFromToday): <0 overdue, 0 due today, >0 upcoming. null = none set.
+  const nowDate = new Date(nowMs);
+  const followDayDiff = c.nextFollowUp != null ? dayDiffFromToday(c.nextFollowUp, nowDate) : null;
+
+  // overdue_followup — active deal whose follow-up day is before today's ET day.
+  if (!closed && followDayDiff != null && followDayDiff < 0) {
+    const overdueDays = -followDayDiff;
     items.push({
       ...base,
       type: 'overdue_followup',
@@ -156,7 +167,7 @@ function classifyHeadsUp(c, nowMs, startTodayMs) {
 
   // no_next_step — active deal with nothing scheduled (fall-through risk). Don't
   // double-flag an overdue one (that already demands action).
-  if (!closed && nf == null) {
+  if (!closed && c.nextFollowUp == null) {
     items.push({
       ...base,
       type: 'no_next_step',
@@ -213,12 +224,13 @@ function fmtUsd(n) {
 
 // Run classifyHeadsUp over a list of clients, sort the flattened items by
 // severity (high→low) then value (desc) then soonest date, cap to MAX_ITEMS, and
-// tally counts per type across the FULL (uncapped) set. Returns:
-//   { items, counts: { <type>: n, ... }, total }
-function buildHeadsUp(clients, nowMs, startTodayMs) {
+// tally counts per type across the FULL (uncapped) set. `nowMs` is the current
+// instant; `todayMs` is start-of-today in the business timezone (see
+// classifyHeadsUp). Returns: { items, counts: { <type>: n, ... }, total }
+function buildHeadsUp(clients, nowMs, todayMs) {
   const all = [];
   for (const c of clients || []) {
-    for (const it of classifyHeadsUp(c, nowMs, startTodayMs)) all.push(it);
+    for (const it of classifyHeadsUp(c, nowMs, todayMs)) all.push(it);
   }
 
   const counts = {};
@@ -261,11 +273,16 @@ async function listCrm(req, res) {
 // count summary { overdue, dueToday }.
 async function getToday(req, res) {
   try {
-    const endToday   = endOfTodayLocal();
-    const startToday = startOfTodayLocal();
+    // "Due by end of the owner's today" = whole-day follow-up whose calendar day
+    // is ≤ today's ET day. Whole-day fields sit at UTC midnight, so the cutoff is
+    // the UTC midnight of the day AFTER today's ET day; anything strictly before
+    // it has a UTC calendar day of today-or-earlier. (Using the ET day — not the
+    // server's UTC day — is the fix: late-evening in NJ the server is already
+    // "tomorrow".)
+    const cutoff = new Date(Date.parse(`${etToday()}T00:00:00Z`) + 86400000);
 
     const docs = await Client.find({
-      nextFollowUp: { $ne: null, $lte: endToday },
+      nextFollowUp: { $ne: null, $lt: cutoff },
       stage: { $nin: CLOSED_STAGES },
     })
       .sort({ nextFollowUp: 1 })   // soonest/most-overdue first (oldest date first)
@@ -274,8 +291,9 @@ async function getToday(req, res) {
     let overdue = 0;
     let dueToday = 0;
     const rows = docs.map((c) => {
-      const nf = c.nextFollowUp ? new Date(c.nextFollowUp) : null;
-      const isOverdue = nf && nf < startToday;
+      // Compare by ET calendar day (see dayDiffFromToday): < 0 = overdue, 0 = due today.
+      const diff = dayDiffFromToday(c.nextFollowUp);
+      const isOverdue = diff != null && diff < 0;
       if (isOverdue) overdue++; else dueToday++;
       const last = lastLogEntry(c.log);
       return {
@@ -311,8 +329,12 @@ async function getCalendar(req, res) {
   try {
     const { from, to } = req.query;
     if (!from || !to) return res.status(400).json({ message: 'from and to (YYYY-MM-DD) are required' });
-    const start = new Date(`${from}T00:00:00`);
-    const end   = new Date(`${to}T23:59:59.999`);
+    // Parse the day window explicitly in UTC: whole-day follow-ups are stored at
+    // UTC midnight (their calendar day == their UTC day), and the frontend builds
+    // the month grid in UTC, so a UTC window selects exactly the days requested
+    // regardless of the server's own timezone. (No "today" is derived here.)
+    const start = new Date(`${from}T00:00:00.000Z`);
+    const end   = new Date(`${to}T23:59:59.999Z`);
     if (isNaN(start.getTime()) || isNaN(end.getTime())) {
       return res.status(400).json({ message: 'from/to must be valid YYYY-MM-DD dates' });
     }
@@ -420,11 +442,12 @@ async function getDashboard(req, res) {
 
     const now        = new Date();
     const nowMs      = now.getTime();
-    const startToday = startOfTodayLocal();
-    const startTodayMs = startToday.getTime();
-    const endToday   = endOfTodayLocal();
-    // End of "this week" = 7 days out from the start of today (rolling window).
-    const endOfWeek  = new Date(startTodayMs + 7 * 86400000);
+    // Day boundaries in the business timezone (see utils/time.js). startTodayMs
+    // is passed to the heads-up engine; the follow-up buckets below classify by
+    // ET calendar day directly via dayDiffFromToday.
+    const startTodayMs = etStartOfToday(now).getTime();
+    // Activity windows are genuine elapsed-time (touches in the last 7/30 days by
+    // their real timestamp), so they stay instant-based — not day boundaries.
     const ms7  = nowMs - 7  * 86400000;
     const ms30 = nowMs - 30 * 86400000;
 
@@ -448,11 +471,16 @@ async function getDashboard(req, res) {
       stageMap[stage].value += val;
 
       // Follow-up buckets — active (non-closed) deals only, matching /today.
+      // Classified by ET calendar day (dayDiffFromToday): <0 overdue, 0 due
+      // today, 1..7 within the rolling week — so the split agrees with the
+      // owner's clock, not the server's UTC day.
       if (!CLOSED_STAGES.includes(c.stage) && c.nextFollowUp) {
-        const nf = new Date(c.nextFollowUp);
-        if (nf < startToday) overdue += 1;
-        else if (nf <= endToday) dueToday += 1;
-        else if (nf <= endOfWeek) dueThisWeek += 1;
+        const diff = dayDiffFromToday(c.nextFollowUp, now);
+        if (diff != null) {
+          if (diff < 0) overdue += 1;
+          else if (diff === 0) dueToday += 1;
+          else if (diff <= 7) dueThisWeek += 1;
+        }
       }
 
       // Activity — count individual touches by their timestamp.

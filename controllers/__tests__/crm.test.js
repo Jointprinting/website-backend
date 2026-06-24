@@ -213,3 +213,47 @@ test('buildHeadsUp tallies a mix of types', () => {
   assert.equal(counts.no_next_step, 1);
   assert.equal(counts.hot_quiet, 1);
 });
+
+// ── Eastern day boundary — the timezone fix ──────────────────────────────────
+// classifyHeadsUp judges the WHOLE-DAY nextFollowUp "overdue" by ET calendar day,
+// not the UTC server clock. Pin the evening case: it's 2026-06-24 in UTC but still
+// 2026-06-23 in Eastern, so the owner's "today" is the 23rd.
+const ET_EVENING_NOW = new Date('2026-06-24T01:00:00Z').getTime(); // 6/23 21:00 EDT
+// A whole-day follow-up is stored at UTC midnight (its day == its UTC day).
+const followUpDay = (ymd) => new Date(`${ymd}T00:00:00Z`).toISOString();
+// startToday arg is unused for the day comparison now, but pass a sane ET value.
+const ET_START = new Date('2026-06-23T04:00:00Z').getTime();
+const overdueTypes = (c) => classifyHeadsUp(c, ET_EVENING_NOW, ET_START)
+  .map((i) => i.type);
+
+test('a 6/24 follow-up is NOT overdue on the evening of 6/23 ET (was 6/24 UTC)', () => {
+  // Fresh activity so only the follow-up timing could flag it.
+  const c = mkClient({
+    nextFollowUp: followUpDay('2026-06-24'), dealValue: 500,
+    lastContact: followUpDay('2026-06-23'), updatedAt: followUpDay('2026-06-23'),
+    log: [{ at: followUpDay('2026-06-23'), text: 'touch', kind: 'call' }],
+  });
+  assert.ok(!overdueTypes(c).includes('overdue_followup'),
+    'a tomorrow (ET) follow-up must not be overdue, even though it is < server UTC midnight');
+});
+
+test('a 6/23 follow-up is due today (not overdue) on the evening of 6/23 ET', () => {
+  const c = mkClient({
+    nextFollowUp: followUpDay('2026-06-23'), dealValue: 500,
+    lastContact: followUpDay('2026-06-22'), updatedAt: followUpDay('2026-06-22'),
+    log: [{ at: followUpDay('2026-06-22'), text: 'touch', kind: 'call' }],
+  });
+  assert.ok(!overdueTypes(c).includes('overdue_followup'), 'today is not overdue');
+});
+
+test('a 6/22 follow-up IS overdue on the evening of 6/23 ET', () => {
+  const c = mkClient({
+    nextFollowUp: followUpDay('2026-06-22'), dealValue: 500,
+    lastContact: followUpDay('2026-06-22'), updatedAt: followUpDay('2026-06-22'),
+    log: [{ at: followUpDay('2026-06-22'), text: 'touch', kind: 'call' }],
+  });
+  const overdue = classifyHeadsUp(c, ET_EVENING_NOW, ET_START)
+    .find((i) => i.type === 'overdue_followup');
+  assert.ok(overdue, 'a past ET day must be overdue');
+  assert.match(overdue.message, /1 day overdue/);
+});
