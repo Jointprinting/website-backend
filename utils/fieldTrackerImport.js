@@ -86,50 +86,149 @@ function parseCsv(text) {
   return rows;
 }
 
-// The owner's exact headers (row 2 of the tracker). Used to align columns even
-// if order shifts. Matching is case-insensitive and whitespace-insensitive.
+// Header → canonical-column aliases. ONE table now serves EVERY supported CSV
+// layout (the owner's field-visit tracker, a Notion CRM export, and the loose
+// Google "CRM" sheet). Matching is case/space/punctuation-insensitive (see
+// normHeader), so "Next Follow-up", "next followup", and "Next Contact" all land
+// on the same canonical `nextContact`. Adding a new source = adding its header
+// spellings here; no parser branching per format.
+//
+// Keys are already normHeader-normalized (lowercase, no spaces, no punctuation).
 const HEADER_ALIASES = {
+  // ── identity ──
   companyname:   'companyName',
+  clientname:    'clientName',   // Google sheet uses "Client Name"
+  // ── contact person ──
   ownercontact:  'contact',
-  'owner/contact': 'contact',
+  contactperson: 'contact',      // Notion
+  contact:       'contact',
+  bestpoc:       'contact',      // Google sheet "Best POC"
+  poc:           'contact',
+  // ── channels ──
   phone:         'phone',
+  contactphone:  'phone',        // Notion
   email:         'email',
+  contactemail:  'email',        // Notion
+  // ── classification ──
   area:          'area',
+  address:       'address',      // exact street address (replaces "area" going forward)
   interested:    'interested',
-  'interested?': 'interested',
   status:        'status',
-  lastcontact:   'lastContact',
-  nextcontact:   'nextContact',
-  nextaction:    'nextAction',
+  stage:         'status',       // Google sheet "Stage" → same status→stage mapper
+  engagementlevel: 'engagement', // Notion "Engagement Level" (High/Medium/Low/Inactive)
+  engagement:    'engagement',
+  orderstatus:   'orderStatus',  // Notion "Order Status" multi-select (Completed/Paid/…)
+  dealvalue:     'dealValue',    // Notion "Deal Value" ($ number)
+  source:        'sourceField',  // Notion "Source" (where the lead came from)
+  // ── dates ──
+  lastcontact:     'lastContact',
+  lastcontactdate: 'lastContact', // Notion "Last Contact Date"
+  nextcontact:     'nextContact',
+  next:            'nextContact', // Google sheet "Next"
+  nextfollowup:    'nextContact', // Notion "Next Follow-up"
+  nextaction:      'nextAction',
+  // ── order linkage (THE customer signal) ──
+  ordernumber:   'orderNumber',  // Notion "Order Number"
+  order:         'orderNumber',  // Google sheet "Order #" (punctuation stripped)
+  // ── free text ──
   notes:         'notes',
 };
 
+// Identity columns: a header row is "real" iff it names at least one of these
+// (so a Notion/Google export with only "Company Name" or only "Client Name"
+// still locates), plus we require a second recognized CRM column so we don't
+// false-positive on a stray data row that happens to contain the word.
+const IDENTITY_CANON = ['companyName', 'clientName'];
+
 function normHeader(h) {
-  return String(h || '').trim().toLowerCase().replace(/\s+/g, '');
+  // Lowercase, then drop EVERYTHING that isn't a letter or digit — so spaces,
+  // slashes, hyphens, "?", "#", "." all vanish. "Owner / Contact" → "ownercontact",
+  // "Next Follow-up" → "nextfollowup", "Order #" → "order", "Interested?" →
+  // "interested". One normalizer for every alias lookup keeps matching uniform.
+  return String(h || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+// Resolve one raw header cell to its canonical column name (or '' if unknown).
+function canonHeader(cell) {
+  return HEADER_ALIASES[normHeader(cell)] || '';
 }
 
 // Given a parsed CSV (array of arrays), find the header row and return
-// { headerIndex, columns } where columns maps canonical-name → column index.
-// The tracker has a title row ("Field Visit Tracker,,,..") above the headers,
-// so we scan for the row that actually contains "Company Name".
+// { headerIndex, columns, format } where columns maps canonical-name → column
+// index. Supports MULTIPLE layouts: the owner's field tracker has a title row
+// ("Field Visit Tracker,,,..") above the headers; Notion/Google exports start
+// straight at the header row. We scan for the FIRST row that both (a) names an
+// identity column (Company/Client Name) and (b) carries ≥1 other recognized CRM
+// column — that's the header row regardless of source.
 function locateHeader(rows) {
   for (let r = 0; r < rows.length; r++) {
     const cells = rows[r] || [];
-    const norm = cells.map(normHeader);
-    if (norm.includes('companyname')) {
-      const columns = {};
-      cells.forEach((cell, idx) => {
-        const key = normHeader(cell);
-        const canon = HEADER_ALIASES[key] || HEADER_ALIASES[key.replace(/[^a-z0-9/]/g, '')];
-        if (canon && !(canon in columns)) columns[canon] = idx;
-      });
-      return { headerIndex: r, columns };
+    const columns = {};
+    cells.forEach((cell, idx) => {
+      const canon = canonHeader(cell);
+      if (canon && !(canon in columns)) columns[canon] = idx;
+    });
+    const hasIdentity = IDENTITY_CANON.some((c) => c in columns);
+    const otherCols = Object.keys(columns).filter((c) => !IDENTITY_CANON.includes(c)).length;
+    if (hasIdentity && otherCols >= 1) {
+      return { headerIndex: r, columns, format: detectFormat(columns, cells) };
     }
   }
-  return { headerIndex: -1, columns: {} };
+  return { headerIndex: -1, columns: {}, format: 'unknown' };
+}
+
+// Best-effort label for WHICH source a header set came from. Informational only
+// (surfaced in the import summary / for debugging) — the actual column mapping
+// is identical across formats, so detection never changes how a row is parsed.
+//   • 'notion'        — has the Notion-only "Contact Person"/"Contact Email" shape
+//   • 'google-sheet'  — has "Best POC" or "Stage"/"Next" without the tracker's cols
+//   • 'field-tracker' — the owner's tracker (Owner/Contact + Interested? + Area)
+//   • 'csv'           — recognized CRM columns but no distinctive fingerprint
+function detectFormat(columns, rawHeaderCells) {
+  const norms = new Set((rawHeaderCells || []).map(normHeader));
+  if (norms.has('contactperson') || norms.has('contactemail') || norms.has('nextfollowup')) return 'notion';
+  if (norms.has('bestpoc') || norms.has('stage') || norms.has('next')) return 'google-sheet';
+  if (norms.has('ownercontact') || norms.has('interested')) return 'field-tracker';
+  // Fall back on the mapped columns when raw cells weren't passed.
+  if ('interested' in columns && 'area' in columns) return 'field-tracker';
+  return 'csv';
 }
 
 // ── Field mapping ─────────────────────────────────────────────────────────────
+
+// Parse a dollar amount out of free text: "$2,500" → 2500, "2.5k" → 2500,
+// "1,200.50" → 1200.5, "" → 0. Returns 0 for anything unparseable (treated as
+// "unset" by the merge — never overwrites an owner-entered value).
+function parseMoney(raw) {
+  const v = String(raw == null ? '' : raw).trim().toLowerCase();
+  if (!v) return 0;
+  const k = /\bk\b|k$/.test(v.replace(/[^a-z0-9.]/g, '')) || /\dk/.test(v);
+  const cleaned = v.replace(/[^0-9.]/g, '');
+  if (!cleaned) return 0;
+  let n = parseFloat(cleaned);
+  if (isNaN(n)) return 0;
+  if (k && n < 1000) n *= 1000;             // "2.5k" → 2500
+  return Math.round(n * 100) / 100;
+}
+
+// Reverse of formatLabel — map a human source label back to a format key, so a
+// caller that only has opts.sourceLabel (not opts.format) still gets the
+// keep-cold/lost behavior right.
+function labelToFormat(label) {
+  const v = String(label || '').toLowerCase();
+  if (v.includes('notion')) return 'notion';
+  if (v.includes('sheet')) return 'google-sheet';
+  if (v.includes('tracker')) return 'field-tracker';
+  return 'csv';
+}
+
+// Record-provenance string (stored on Client.source) per detected format.
+function provenanceFor(format) {
+  if (format === 'notion') return 'notion';
+  if (format === 'google-sheet') return 'crm-sheet';
+  if (format === 'field-tracker') return 'field-tracker';
+  return 'import';
+}
 
 // Interested? → interestType enum. Blank stays ''.
 function mapInterest(raw) {
@@ -169,23 +268,136 @@ function statusImpliesDead(raw) {
   return DEAD_STATUS.some((k) => v.includes(k));
 }
 
-// Status → stage. The tracker's vocabulary is loose ("Visited", etc.). We map
-// the clear ones; anything unrecognized falls back to 'lead' (NOT 'contacted')
-// so we never fabricate a touch that didn't happen. Only a positive-contact
-// keyword promotes to 'contacted'. The RAW status text is preserved in a log.
+// The owner's REAL Notion CRM Status option values (one DB spanning the whole
+// funnel) + the loose temperature words his sheets use → { stage, tag }. Each
+// row carries a stage AND a tag so the warmth/segment is never lost in the
+// translation. Matched as a case-insensitive SUBSTRING, most-specific first.
+//
+// CRITICAL: Cold prospects and Lost (past) projects are REAL records the owner
+// re-contacts — they map to lead/dormant and are KEPT, never skipped (the
+// keep-cold/lost override lives in mapTrackerRow for CRM-DB sources).
+//
+//   "Hot (Clients)"            → customer   + hot          (an existing hot client)
+//   "Won Orders"               → won        + won          (promotes to customer if it has orders)
+//   "Orders In Progress"       → customer   + in-progress
+//   "Warm (Leads)"             → contacted  + warm
+//   "Room Temp (Opportunities)"→ contacted  + room-temp
+//   "Cold (Prospects)"         → lead       + cold         (KEEP)
+//   "Lost Orders"              → dormant    + lost          (KEEP — past project)
+//   "Meta Ad Conversions"      → lead       + meta-ad
+// Plus bare temperature words (hot/warm/cold/lukewarm/opportunity) for the sheets.
+// SPECIFIC: Nate's exact Notion option values (a distinctive multi-word phrase).
+// These are authoritative for BOTH stage and tag, and short-circuit mapStatus —
+// "Hot (Clients)" is a customer, "Won Orders" is won, etc., and the generic
+// free-text vocabulary can't override them.
+const STATUS_MAP_SPECIFIC = [
+  { re: /hot\s*\(\s*client/,          stage: 'customer',  tag: 'hot' },
+  { re: /won\s*order/,                stage: 'won',       tag: 'won' },
+  { re: /orders?\s*in\s*progress/,    stage: 'customer',  tag: 'in-progress' },
+  { re: /warm\s*\(\s*lead/,           stage: 'contacted', tag: 'warm' },
+  { re: /room\s*temp/,                stage: 'contacted', tag: 'room-temp' },
+  { re: /cold\s*\(\s*prospect/,       stage: 'lead',      tag: 'cold' },
+  { re: /lost\s*order/,               stage: 'dormant',   tag: 'lost' },
+  { re: /meta\s*ad/,                  stage: 'lead',      tag: 'meta-ad' },
+];
+
+// GENERIC: loose single temperature/segment words the owner's sheets use. These
+// provide a TAG always, but their STAGE is only used as a LAST resort in
+// mapStatus (after the won/order/lost/quoting vocabulary), so a free-text status
+// like "won - was hot" is read as 'won', not 'quoting'. The bare "lost" mirrors
+// the Notion "Lost Orders" handling (Google "CRM" sheet's LOST tab → dormant).
+const STATUS_MAP_GENERIC = [
+  { re: /\blost\b/,                                       stage: 'dormant',   tag: 'lost' },
+  { re: /\bhot\b/,                                        stage: 'quoting',   tag: 'hot' },
+  { re: /\bwarm\b/,                                       stage: 'contacted', tag: 'warm' },
+  { re: /\b(lukewarm|luke ?warm|opportunit(?:y|ies)|opp)\b/, stage: 'contacted', tag: 'room-temp' },
+  { re: /\bcold\b/,                                       stage: 'lead',      tag: 'cold' },
+];
+
+// Search a map for the first non-negated-suppressed hit. 'lost'/'cold' end-states
+// survive a negated phrase (real kept statuses); positive segments don't.
+function matchStatusMap(map, v, negated) {
+  for (const t of map) {
+    if (t.re.test(v)) {
+      if (negated && !['lost', 'cold'].includes(t.tag)) continue;
+      return t;
+    }
+  }
+  return null;
+}
+
+// Pull the segment/temperature classification (if any) out of a raw status, used
+// for TAGGING (mapTrackerRow). Specific Notion values win; otherwise a generic
+// temperature word. Returns { stage, tag } or null. (mapStatus decides the final
+// STAGE differently — generic-temperature stage is a last resort there.)
+function statusTemperature(raw) {
+  const v = String(raw || '').trim().toLowerCase();
+  if (!v) return null;
+  const negated = isNegatedStatus(v);
+  return matchStatusMap(STATUS_MAP_SPECIFIC, v, negated)
+      || matchStatusMap(STATUS_MAP_GENERIC, v, negated);
+}
+
+// Map the optional "Engagement Level" (Notion: High/Medium/Low/Inactive) to a
+// tag so the segment is captured. '' for blank/unknown.
+function engagementTag(raw) {
+  const v = String(raw || '').trim().toLowerCase();
+  if (!v) return '';
+  if (v.includes('high'))     return 'eng-high';
+  if (v.includes('medium') || v.includes('med')) return 'eng-medium';
+  if (v.includes('low'))      return 'eng-low';
+  if (v.includes('inactive')) return 'eng-inactive';
+  return '';
+}
+
+// Does the "Order Status" multi-select carry a REAL order state (anything beyond
+// a bare Lead/Lost)? Values: Completed / Paid / In Transit / Invoice Sent /
+// Quoting / Mockups in Progress / Lead / Lost. A real order state ⇒ this company
+// is a customer (promote up). Lead/Lost-only ⇒ no order implied.
+function orderStatusImpliesOrder(raw) {
+  const v = String(raw || '').trim().toLowerCase();
+  if (!v) return false;
+  return /(complete|paid|in transit|invoice|quoting|mockup|production|shipped|fulfilled|delivered)/.test(v);
+}
+
+// The single negation predicate shared by mapStatus + statusTemperature: a
+// status carrying "won't / wont / didn't / not / no / never / cancel / no
+// longer" is NOT a live positive, even if it also contains "won"/"order"/"hot".
+function isNegatedStatus(v) {
+  return /\b(wo?n['’]?t|did(?:n['’]?t| not)|cancel(?:l?ed|ling)?|no longer|never|not interested|no\b)/.test(String(v || ''));
+}
+
+// Status → stage. The vocabulary is loose ("Visited", "hot lead", "Stage:
+// quoting"). We map the clear ones; anything unrecognized falls back to 'lead'
+// (NOT 'contacted') so we never fabricate a touch that didn't happen. Only a
+// positive-contact keyword promotes to 'contacted'. The RAW status text is
+// preserved in a log, and any temperature is captured as a tag by the caller.
 function mapStatus(raw) {
   const v = String(raw || '').trim().toLowerCase();
   if (!v) return null;
-  // Negation guard: a status with "won't / wont / didn't / not / no / never /
-  // cancel" is NOT a sale even if it contains "won"/"order"/"reorder"
-  // ("won't reorder", "no order", "cancelled order"). Treat it as lost.
-  const negated = /\b(wo?n['’]?t|did(?:n['’]?t| not)|cancel(?:l?ed|ling)?|no longer|never|not interested|no\b)/.test(v);
-  // Check LOST/DEAD before WON so a negative line can't be misread as a sale.
-  if (v.includes('lost') || statusImpliesDead(v) || (negated && /(won|order|reorder|buy|interest)/.test(v))) return 'lost';
-  if (!negated && (v.includes('won') || v.includes('customer') || v.includes('reorder'))) return 'won';
+  const negated = isNegatedStatus(v);
+
+  // 1) The owner's EXACT CRM Status values take precedence and short-circuit
+  //    (so "Hot (Clients)" → customer, never misread as "won" via "client";
+  //    "Cold (Prospects)" → lead; "Lost Orders" → dormant). These are decided
+  //    first because they're unambiguous; the looser free-text vocabulary below
+  //    can't override them.
+  const specific = matchStatusMap(STATUS_MAP_SPECIFIC, v, negated);
+  if (specific) return specific.stage;
+
+  // 2) Hard dead/lost (field-tracker free-text): a not-interested / DNC / no-answer
+  //    status, or a negated sale ("won't reorder", "cancelled order"), is lost.
+  //    Checked before WON so a negative line can't be misread as a sale. (A bare
+  //    "lost"/"lost the deal" is handled by the generic map in step 5 → dormant.)
+  if (statusImpliesDead(v) || (negated && /(won|order|reorder|buy|interest)/.test(v))) return 'lost';
+  // 3) Positive customer/sale vocab — "won"/"reorder" signal a closed sale.
+  if (!negated && (v.includes('won') || v.includes('reorder'))) return 'won';
+  // "customer"/"client"/"active" signal an existing relationship → customer.
+  if (!negated && (v.includes('customer') || v.includes('client') || v.includes('active'))) return 'customer';
   if (v.includes('quot')) return 'quoting';
   if (v.includes('sampl')) return 'sampling';
   if (!negated && v.includes('order')) return 'won';
+  // 4) Positive-contact keywords.
   if (POSITIVE_CONTACT.some((k) => v.includes(k))) return 'contacted';
   if (v.includes('call') || v.includes('email') || v.includes('text') || v.includes('messag')) {
     // Bare "call back" / "email them" is a TODO, not proof of contact → lead.
@@ -193,6 +405,13 @@ function mapStatus(raw) {
     if (/called|emailed|texted|messaged|reached/.test(v)) return 'contacted';
     return 'lead';
   }
+  // 5) Generic single temperature/segment word as a LAST resort for stage (the
+  //    sheets' bare "hot"/"warm"/"cold"/"lost"). After the sale/order vocabulary
+  //    above, so "won - was hot" already returned 'won' and only a status that is
+  //    *just* a temperature word lands here.
+  const generic = matchStatusMap(STATUS_MAP_GENERIC, v, negated);
+  if (generic) return generic.stage;
+
   return 'lead';
 }
 
@@ -206,6 +425,26 @@ function mapStatus(raw) {
 function extractDateInfo(text, year) {
   const raw = text == null ? '' : String(text);
   if (!raw.trim()) return { date: null, ambiguous: false, raw };
+
+  // ISO first (YYYY-MM-DD) — the shape Notion and most sheet exports use. Build
+  // at UTC noon (same convention as the M/D path) so the calendar day never
+  // shifts across the server's timezone and ET day-bucketing in /today stays
+  // correct. A trailing "T..." time component (full ISO timestamp) is ignored —
+  // we only want the calendar day.
+  const iso = raw.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+  if (iso) {
+    const y = parseInt(iso[1], 10);
+    const mo = parseInt(iso[2], 10);
+    const da = parseInt(iso[3], 10);
+    if (mo >= 1 && mo <= 12 && da >= 1 && da <= 31) {
+      const d = new Date(Date.UTC(y, mo - 1, da, 12, 0, 0));
+      if (!isNaN(d.getTime()) && d.getUTCMonth() === mo - 1 && d.getUTCDate() === da) {
+        return { date: d, ambiguous: false, raw };
+      }
+    }
+    return { date: null, ambiguous: true, raw };
+  }
+
   const m = raw.match(/(\d{1,2})\s*\/\s*(\d{1,2})(?:\s*\/\s*(\d{2,4}))?/);
   if (!m) {
     // No M/D we can trust. If the cell reads like an intended date the owner
@@ -387,20 +626,29 @@ function mapTrackerRow(rowObj, opts = {}) {
   const year = opts.year || new Date().getUTCFullYear();
   const get = (k) => (rowObj && rowObj[k] != null ? String(rowObj[k]).trim() : '');
 
+  // Identity: prefer Company Name, but fall back to Client Name (the Google
+  // sheet's primary column) so a row with only a person/client name still keys.
   const companyName = get('companyName');
-  const companyKey  = deriveCompanyKey(companyName, '');
+  const clientName  = get('clientName');
+  const companyKey  = deriveCompanyKey(companyName, clientName);
   if (!companyKey) return { _skip: true, _skipReason: 'no-company', logs: [] };
 
   const contactBlob = get('contact');
   const phoneRaw    = get('phone');
   const emailRaw    = get('email');
   const area        = get('area');
+  const address     = get('address');     // exact street address (new)
   const interestRaw = get('interested');
   const statusRaw   = get('status');
   const lastRaw     = get('lastContact');
   const nextRaw     = get('nextContact');
   const actionRaw   = get('nextAction');
   const notesRaw    = get('notes');
+  const orderNumRaw = get('orderNumber');  // presence ⇒ this company is a CUSTOMER
+  const orderStatRaw = get('orderStatus'); // Notion "Order Status" multi-select
+  const dealValueRaw = get('dealValue');   // Notion "Deal Value" ($ number)
+  const sourceRaw    = get('sourceField'); // Notion "Source" (lead origin)
+  const engageRaw    = get('engagement');  // Notion "Engagement Level"
 
   const phones = allPhones(phoneRaw);
   const emails = allEmails(emailRaw);
@@ -409,7 +657,42 @@ function mapTrackerRow(rowObj, opts = {}) {
 
   const contacts = buildContacts(contactBlob, phoneRaw, emailRaw);
 
-  const stage        = mapStatus(statusRaw);
+  // Which source is this? CRM-DB sources (the owner's Notion CRM and his Google
+  // "CRM" sheet) span the WHOLE funnel and intentionally include cold prospects
+  // and lost/past projects he re-contacts — those must be KEPT (only a missing
+  // company name skips). The field-visit tracker is a prospecting list where a
+  // dead/no-answer row with no order and no follow-up is genuine dead-weight that
+  // may skip. An unspecified/generic format defaults to the tracker's dead-skip
+  // (back-compat: a bare mapTrackerRow call, and generic prospecting CSVs, behave
+  // like the tracker). The two real CRM-DB formats are recognized by their headers.
+  const fmt = opts.format || labelToFormat(opts.sourceLabel);
+  const isCrmDbSource = fmt === 'notion' || fmt === 'google-sheet';
+
+  // CUSTOMER signal (the #1 fix: "has an order so it's not a lead"): an order
+  // NUMBER on the row, OR an "Order Status" that names a real order state
+  // (Completed/Paid/Quoting/Mockups/…, anything past a bare Lead/Lost). Either
+  // makes this company a customer. It overrides the status-derived stage, but
+  // only UPWARD — applyImportToDoc still never downgrades an owner-advanced stage.
+  const hasOrderNumber = !!orderNumRaw || orderStatusImpliesOrder(orderStatRaw);
+  const statusStage = mapStatus(statusRaw);
+  const stage = hasOrderNumber ? 'customer' : statusStage;
+
+  // Tags: the status segment (hot/warm/room-temp/cold/lost/in-progress/won/
+  // meta-ad) + engagement level — captured so nothing in the warmth/segment is
+  // lost when we translate to a stage.
+  const tags = [];
+  const seg = statusTemperature(statusRaw);
+  if (seg && seg.tag) tags.push(seg.tag);
+  const engTag = engagementTag(engageRaw);
+  if (engTag) tags.push(engTag);
+
+  // Deal value ($) — parse a number out of "$2,500" / "2500" / "2.5k". 0/blank
+  // ⇒ unset (the controller only fills a blank, never overwrites an owner value).
+  const dealValue = parseMoney(dealValueRaw);
+  // Lead origin (Notion "Source" — e.g. "Meta Ad", "Referral"). Distinct from the
+  // Client's provenance `source` field; surfaced in the import line so it's kept.
+  const leadSource = sourceRaw;
+
   const lastInfo     = extractDateInfo(lastRaw, year);
   const nextInfo     = extractDateInfo(nextRaw, year);
   const lastContact  = lastInfo.date;
@@ -419,36 +702,54 @@ function mapTrackerRow(rowObj, opts = {}) {
   if (lastInfo.ambiguous) ambiguousDates.push(`Last contact: "${lastRaw}"`);
   if (nextInfo.ambiguous) ambiguousDates.push(`Next contact: "${nextRaw}"`);
 
-  // Dead-row decision: dead/non-contact status AND no FUTURE follow-up; OR a
-  // hard "interested? = no". (A dead status WITH a real future follow-up is kept
-  // — the owner deliberately scheduled it.)
+  // Dead-row decision. CRM-DB sources (Notion / Google CRM) NEVER dead-skip:
+  // cold prospects and lost/past projects are real kept records. Every other
+  // source (field tracker, or an unspecified/generic import) applies the tracker's
+  // dead-skip: dead/non-contact status AND no future follow-up, OR a hard
+  // "interested? = no". An order ALWAYS keeps the row.
   const hasFutureFollow = !!nextFollowUp; // a parsed next date is a real plan
-  const dead = interestIsNo(interestRaw)
-    || (statusImpliesDead(statusRaw) && !hasFutureFollow);
+  const dead = !isCrmDbSource && !hasOrderNumber && (interestIsNo(interestRaw)
+    || (statusImpliesDead(statusRaw) && !hasFutureFollow));
 
   // ── Logs: ONE structured import line (+ the always-useful free-text notes /
   // next-action). The per-field Status/Last/Next metadata is folded into the
   // single line so a re-import doesn't pile up near-duplicate rows.
   const summaryBits = [];
-  if (statusRaw) summaryBits.push(`status "${statusRaw}"`);
-  if (lastRaw)   summaryBits.push(`last "${lastRaw}"`);
-  if (nextRaw)   summaryBits.push(`next "${nextRaw}"`);
+  if (statusRaw)   summaryBits.push(`status "${statusRaw}"`);
+  if (orderStatRaw) summaryBits.push(`order status "${orderStatRaw}"`);
+  if (leadSource)  summaryBits.push(`source "${leadSource}"`);
+  if (lastRaw)     summaryBits.push(`last "${lastRaw}"`);
+  if (nextRaw)     summaryBits.push(`next "${nextRaw}"`);
   if (phoneRaw && !phone) summaryBits.push(`phone "${phoneRaw}" (unparsed)`);
   const summary = summaryBits.length ? ` — ${summaryBits.join(', ')}` : '';
 
+  // Source label in the import line — defaults to "field tracker" (so the legacy
+  // import reads the same), but a multi-format pull passes the detected source
+  // ("Notion CRM", "CRM sheet"). The dedupKey is ALWAYS `import:<companyKey>` so
+  // re-importing the same company never piles up a second import line, no matter
+  // which source it came from.
+  const sourceLabel = opts.sourceLabel || 'field tracker';
   const logs = [
-    { kind: 'import', text: `Imported from field tracker${summary}`, dedupKey: `import:${companyKey}` },
+    { kind: 'import', text: `Imported from ${sourceLabel}${summary}`, dedupKey: `import:${companyKey}` },
   ];
   if (actionRaw) logs.push({ kind: 'next-action', text: actionRaw, dedupKey: `next-action:${companyKey}:${actionRaw}` });
   if (notesRaw)  logs.push({ kind: 'note', text: notesRaw, dedupKey: `note:${companyKey}:${notesRaw}` });
 
   return {
     companyName,
+    clientName,             // person/client name (Google sheet) — '' if absent
     companyKey,
-    matchKey: matchKey(companyName, ''),
+    matchKey: matchKey(companyName, clientName),
     area,
+    address,                // exact street address — '' if absent
     interestType: mapInterest(interestRaw),
-    stage,                  // may be null
+    stage,                  // may be null (or 'customer' when an order # is present)
+    tags,                   // segment/temperature/engagement tags — may be []
+    dealValue,              // parsed $ deal value (0 ⇒ unset)
+    leadSource,             // lead origin (Notion "Source") — '' if absent
+    provenance: provenanceFor(fmt), // record origin for Client.source ('notion'/…)
+    orderNumber: orderNumRaw, // raw order number from the row (customer signal)
+    hasOrderNumber,         // true ⇒ row carries an order/order-state ⇒ customer
     phone,                  // top-level phone (may be '')
     email,                  // top-level/primary email (may be '')
     contacts,               // array of {name,role,phone,email}
@@ -463,11 +764,31 @@ function mapTrackerRow(rowObj, opts = {}) {
   };
 }
 
+// Human label for the import-line per detected format.
+const FORMAT_LABEL = {
+  notion: 'Notion CRM',
+  'google-sheet': 'CRM sheet',
+  'field-tracker': 'field tracker',
+  csv: 'CSV',
+  unknown: 'CSV',
+};
+function formatLabel(format) {
+  return FORMAT_LABEL[format] || 'CSV';
+}
+
 // Convert a parsed CSV (array of arrays) into an array of canonical row objects,
 // using the located header. Skips the title + header rows and blank rows.
+// Returns just the row objects (back-compat). The detected format rides on a
+// non-enumerable-ish convenience: use rowsToObjectsWithMeta when you need it.
 function rowsToObjects(rows) {
-  const { headerIndex, columns } = locateHeader(rows);
-  if (headerIndex < 0) return [];
+  return rowsToObjectsWithMeta(rows).rows;
+}
+
+// Same as rowsToObjects but also returns { format, columns, headerIndex } so the
+// caller can label the import line by source. Pure.
+function rowsToObjectsWithMeta(rows) {
+  const { headerIndex, columns, format } = locateHeader(rows);
+  if (headerIndex < 0) return { rows: [], format: 'unknown', columns: {}, headerIndex: -1 };
   const out = [];
   for (let r = headerIndex + 1; r < rows.length; r++) {
     const cells = rows[r] || [];
@@ -479,15 +800,17 @@ function rowsToObjects(rows) {
     }
     out.push(obj);
   }
-  return out;
+  return { rows: out, format, columns, headerIndex };
 }
 
 // Top-level convenience: raw CSV text → array of CRM patches (includes skipped
 // rows so the caller can categorize; filter on _skip if you only want keepers).
+// Threads the detected source label into each mapped row's import log line.
 function parseTrackerCsv(text, opts = {}) {
   const rows = parseCsv(text);
-  const objs = rowsToObjects(rows);
-  return objs.map((o) => mapTrackerRow(o, opts));
+  const { rows: objs, format } = rowsToObjectsWithMeta(rows);
+  const sourceLabel = opts.sourceLabel || formatLabel(format);
+  return objs.map((o) => mapTrackerRow(o, { ...opts, format, sourceLabel }));
 }
 
 module.exports = {
@@ -495,13 +818,25 @@ module.exports = {
   matchKey,
   parseCsv,
   locateHeader,
+  detectFormat,
+  canonHeader,
+  formatLabel,
   rowsToObjects,
+  rowsToObjectsWithMeta,
   mapTrackerRow,
   parseTrackerCsv,
   // exported for testing / reuse
+  normHeader,
   mapInterest,
   interestIsNo,
   mapStatus,
+  statusTemperature,
+  engagementTag,
+  orderStatusImpliesOrder,
+  parseMoney,
+  labelToFormat,
+  provenanceFor,
+  isNegatedStatus,
   statusImpliesDead,
   extractDate,
   extractDateInfo,

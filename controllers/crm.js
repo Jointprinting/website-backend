@@ -25,8 +25,9 @@ const Transaction   = require('../models/Transaction');
 // normalization). Never re-derive finance numbers here.
 const { summarizeCompanyFinance, normalizeOrderNumber } = require('./finances');
 const {
-  parseCsv, rowsToObjects, mapTrackerRow,
+  parseCsv, rowsToObjects, rowsToObjectsWithMeta, mapTrackerRow,
   matchKey: deriveMatchKey, normPhone, normEmail,
+  canonHeader, formatLabel, detectFormat,
 } = require('../utils/fieldTrackerImport');
 // Business-timezone day boundaries. The server runs in UTC (ahead of the owner's
 // US-Eastern clock), so every "today / overdue / due-today" decision reasons in
@@ -38,6 +39,29 @@ const { etToday, etStartOfToday, dayDiffFromToday } = require('../utils/time');
 const STAGES = Client.CRM_STAGES;
 // Stages we never surface in the call engine — the deal is closed or parked.
 const CLOSED_STAGES = ['won', 'lost', 'dormant'];
+
+// Funnel rank for "promote-up-only" stage moves on import / order-promotion.
+// Higher = further along. won & customer are both terminal-positive (rank 5) so
+// neither downgrades the other. lost/dormant are DELIBERATE end states and are
+// intentionally OMITTED here — promoteStage refuses to move into OR out of them,
+// so an order can never silently resurrect a deal the owner closed, and an
+// owner-closed stage is never regressed by an import.
+const STAGE_RANK = {
+  lead: 0, contacted: 1, quoting: 2, sampling: 3, won: 5, customer: 5,
+};
+// Move `current` toward `target` ONLY if that's a forward move on the funnel and
+// NEITHER stage is a closed/parked end state (lost/dormant). Returns the stage to
+// keep. Never regresses; never touches lost/dormant.
+function promoteStage(current, target) {
+  const cur = current || 'lead';
+  if (!target || target === cur) return cur;
+  // Don't disturb a deliberate closed/parked stage, and don't promote INTO one.
+  if (cur === 'lost' || cur === 'dormant') return cur;
+  if (target === 'lost' || target === 'dormant') return cur;
+  const cr = STAGE_RANK[cur] != null ? STAGE_RANK[cur] : 0;
+  const tr = STAGE_RANK[target] != null ? STAGE_RANK[target] : 0;
+  return tr > cr ? target : cur;
+}
 
 // Archived (soft-deleted) records are excluded from every WORKING surface —
 // /today, /dashboard, /pipeline, /calendar, and the default /list. They still
@@ -159,12 +183,27 @@ function classifyHeadsUp(c, nowMs, todayMs) {
   const lastLogMs = last && last.at ? new Date(last.at).getTime() : null;
   const updatedMs = c.updatedAt ? new Date(c.updatedAt).getTime() : null;
 
+  // DOWN-RANK cold / never-worked leads so the feed isn't dominated by them. The
+  // "needs attention" feed is for deals in motion (overdue, hot-and-quiet,
+  // warm-but-stalled) — a never-contacted cold prospect with no scheduled step is
+  // NOT today's priority. A record is "cold dead-weight" when it's a bare lead
+  // (stage 'lead') that's either tagged 'cold'/'meta-ad' OR has never been
+  // contacted (no lastContact, no human log) AND has nothing scheduled. We
+  // SUPPRESS the low-signal no_next_step/stale flags for those (they'd otherwise
+  // bury the real work); a real follow-up date or a deal value still surfaces them.
+  const tags = (c.tags || []).map((t) => String(t).toLowerCase());
+  const everContacted = lc != null || (c.log || []).some((l) => ['call', 'text', 'email', 'visit'].includes(l && l.kind));
+  const coldDeadWeight = stage === 'lead'
+    && (tags.includes('cold') || tags.includes('meta-ad') || !everContacted)
+    && value < HEADS_UP.HOT_VALUE;
+
   // Whole-day follow-up vs the owner's today, compared by CALENDAR DAY (see
   // dayDiffFromToday): <0 overdue, 0 due today, >0 upcoming. null = none set.
   const nowDate = new Date(nowMs);
   const followDayDiff = c.nextFollowUp != null ? dayDiffFromToday(c.nextFollowUp, nowDate) : null;
 
   // overdue_followup — active deal whose follow-up day is before today's ET day.
+  // (Always surfaces, even for a cold lead: the owner explicitly scheduled it.)
   if (!closed && followDayDiff != null && followDayDiff < 0) {
     const overdueDays = -followDayDiff;
     items.push({
@@ -177,8 +216,10 @@ function classifyHeadsUp(c, nowMs, todayMs) {
   }
 
   // no_next_step — active deal with nothing scheduled (fall-through risk). Don't
-  // double-flag an overdue one (that already demands action).
-  if (!closed && c.nextFollowUp == null) {
+  // double-flag an overdue one (that already demands action). SKIP cold dead-weight
+  // — a never-worked cold prospect having "no next step" is the normal state, not
+  // an alert worth the owner's attention.
+  if (!closed && c.nextFollowUp == null && !coldDeadWeight) {
     items.push({
       ...base,
       type: 'no_next_step',
@@ -189,8 +230,10 @@ function classifyHeadsUp(c, nowMs, todayMs) {
   }
 
   // stale — active deal with no recent activity: latest of (last log / updatedAt)
-  // is older than STALE_DAYS. updatedAt covers stage changes & field edits.
-  if (!closed) {
+  // is older than STALE_DAYS. updatedAt covers stage changes & field edits. SKIP
+  // cold dead-weight (a cold lead going untouched isn't "stalling" — it never
+  // started).
+  if (!closed && !coldDeadWeight) {
     const lastTouchMs = Math.max(lastLogMs || 0, updatedMs || 0) || null;
     if (lastTouchMs != null) {
       const idleDays = daysBetween(lastTouchMs, nowMs);
@@ -259,7 +302,40 @@ function buildHeadsUp(clients, nowMs, todayMs) {
   return { items: all.slice(0, HEADS_UP.MAX_ITEMS), counts, total: all.length };
 }
 
+// Build a global "find anyone" $or from a free-text query. Matches across the
+// company identity AND people on the card (contact name/email/phone) AND tags —
+// so the owner can "search for a specific person at any stage", Notion-style,
+// from anywhere (today / calendar / pipeline / companies). Phone matching also
+// tries the digits-only form so "(201) 555-1212" finds a stored "201-555-1212".
+// Returns null for an empty query (caller then applies no text constraint).
+function searchOr(q) {
+  const term = String(q == null ? '' : q).trim();
+  if (!term) return null;
+  const rx = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+  const or = [
+    { companyName: rx },
+    { clientName: rx },
+    { companyKey: rx },
+    { email: rx },
+    { phone: rx },
+    { tags: rx },                       // tag contains the term
+    { 'contacts.name': rx },
+    { 'contacts.email': rx },
+    { 'contacts.phone': rx },
+  ];
+  // If the term has ≥7 digits, also match a contact/company phone by its raw
+  // digits (handles formatting differences without storing a normalized copy).
+  const digits = term.replace(/\D/g, '');
+  if (digits.length >= 7) {
+    const drx = new RegExp(digits.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    or.push({ phone: drx }, { 'contacts.phone': drx });
+  }
+  return or;
+}
+
 // GET /api/crm — list with optional filters, sorted by name. Lean.
+// When ?q= is present it's a GLOBAL search: stage/tag filters are IGNORED so the
+// owner finds a person/company at ANY stage (the whole point of the search box).
 async function listCrm(req, res) {
   try {
     const { stage, area, q, tag, archived } = req.query;
@@ -269,13 +345,20 @@ async function listCrm(req, res) {
     if (archived === '1' || archived === 'true') filter.archived = true;
     else if (archived === 'all') { /* no archived constraint */ }
     else Object.assign(filter, NOT_ARCHIVED);
-    if (stage && STAGES.includes(stage)) filter.stage = stage;
-    if (area) filter.area = area;
-    if (tag && String(tag).trim()) filter.tags = String(tag).trim(); // match docs whose tags[] contains this tag
-    if (q && String(q).trim()) {
-      const rx = new RegExp(String(q).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-      filter.$or = [{ companyName: rx }, { clientName: rx }, { companyKey: rx }];
+
+    const or = searchOr(q);
+    if (or) {
+      // Global search: match anywhere, across every stage. Don't constrain by
+      // stage/tag (those are browse filters, not search) — area still scopes if
+      // the caller set it, so a regional global search is possible.
+      filter.$or = or;
+      if (area) filter.area = area;
+    } else {
+      if (stage && STAGES.includes(stage)) filter.stage = stage;
+      if (area) filter.area = area;
+      if (tag && String(tag).trim()) filter.tags = String(tag).trim(); // tags[] contains this tag
     }
+
     const clients = await Client.find(filter).sort({ companyName: 1 }).lean();
     res.json({ clients });
   } catch (e) {
@@ -305,6 +388,9 @@ async function getToday(req, res) {
       .sort({ nextFollowUp: 1 })   // soonest/most-overdue first (oldest date first)
       .lean();
 
+    // Which of these companies have ≥1 Order (⇒ customers)? One batched query.
+    const withOrders = await keysWithOrders(docs.map((c) => c.companyKey));
+
     let overdue = 0;
     let dueToday = 0;
     const rows = docs.map((c) => {
@@ -320,10 +406,12 @@ async function getToday(req, res) {
         contacts:     c.contacts || [],
         stage:        c.stage,
         interestType: c.interestType || '',
+        address:      c.address || '',
         area:         c.area || '',
         nextFollowUp: c.nextFollowUp || null,
         lastContact:  c.lastContact || null,
         overdue:      !!isOverdue,
+        isCustomer:   withOrders.has(c.companyKey),
         lastLog:      last ? { at: last.at, text: last.text, kind: last.kind } : null,
       };
     });
@@ -391,16 +479,18 @@ async function getPipeline(req, res) {
     const { area, q, tag } = req.query;
     const filter = { ...NOT_ARCHIVED };
     if (area) filter.area = area;
-    if (tag && String(tag).trim()) filter.tags = String(tag).trim();
-    if (q && String(q).trim()) {
-      const rx = new RegExp(String(q).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-      filter.$or = [{ companyName: rx }, { clientName: rx }, { companyKey: rx }];
-    }
+    // ?q= is a global search (contacts/tags/identity) — same behavior as /list.
+    const or = searchOr(q);
+    if (or) filter.$or = or;
+    else if (tag && String(tag).trim()) filter.tags = String(tag).trim();
 
     const docs = await Client.find(filter)
-      .select('companyKey companyName clientName dealValue nextFollowUp stage area interestType tags')
+      .select('companyKey companyName clientName dealValue nextFollowUp stage address area interestType tags')
       .sort({ dealValue: -1, companyName: 1 })   // biggest deals first within each column
       .lean();
+
+    // Which companies have ≥1 Order (⇒ customers)? One batched query.
+    const withOrders = await keysWithOrders(docs.map((c) => c.companyKey));
 
     // Seed every stage so empty columns still render in canonical order.
     const byStage = {};
@@ -417,9 +507,11 @@ async function getPipeline(req, res) {
         dealValue:    Number(c.dealValue) || 0,
         nextFollowUp: c.nextFollowUp || null,
         stage:        c.stage,
+        address:      c.address || '',
         area:         c.area || '',
         interestType: c.interestType || '',
         tags:         c.tags || [],
+        isCustomer:   withOrders.has(c.companyKey),
       });
     }
 
@@ -453,9 +545,10 @@ async function getDashboard(req, res) {
     const filter = { ...NOT_ARCHIVED };
     if (area) filter.area = area;
 
-    // One read; we only need the CRM fields (+ timestamps for staleness).
+    // One read; we only need the CRM fields (+ timestamps for staleness, + tags
+    // so the heads-up engine can down-rank cold/meta-ad leads, + address).
     const docs = await Client.find(filter)
-      .select('companyKey companyName clientName phone contacts dealValue stage area interestType nextFollowUp lastContact log updatedAt')
+      .select('companyKey companyName clientName phone contacts dealValue stage address area interestType nextFollowUp lastContact log tags updatedAt')
       .lean();
 
     const now        = new Date();
@@ -525,6 +618,14 @@ async function getDashboard(req, res) {
       interestMap.set(iKey, i);
     }
 
+    // Customer reconciliation: how many of these companies actually have ≥1
+    // Order. This is the authoritative "customers" number (order reality), which
+    // can exceed the count stored under the 'customer'/'won' stages if some
+    // records' stages are stale — surfacing it lets the owner see the true figure
+    // and is what the one-time promote script reconciles into the stored stage.
+    const withOrders = await keysWithOrders(docs.map((c) => c.companyKey));
+    const customersWithOrders = docs.reduce((n, c) => n + (withOrders.has(c.companyKey) ? 1 : 0), 0);
+
     const round2 = (n) => Math.round(n * 100) / 100;
     const stages = STAGES.map((s) => ({ ...stageMap[s], value: round2(stageMap[s].value) }));
     const summary = summarizePipeline(docs);
@@ -542,6 +643,7 @@ async function getDashboard(req, res) {
       generatedAt: now.toISOString(),
       area: area || null,
       totalCompanies: docs.length,
+      customersWithOrders, // authoritative customer count from order reality
       pipeline: {
         stages,
         totalOpenValue: summary.totalOpenValue,
@@ -734,7 +836,15 @@ async function getOne(req, res) {
     // normalizing this company's Order numbers and pulling exactly those Tx rows.
     const finance = await companyFinance(orders);
 
-    res.json({ client, orders, pos, finance });
+    // isCustomer is AUTHORITATIVE from order reality: a company with ≥1 linked
+    // Order is a customer, full stop — even if its stored stage is stale (e.g. an
+    // older import left it at 'lead'). The frontend renders "Customer" off this
+    // boolean so it's reliable BEFORE the one-time promote script runs. The
+    // promote script fixes the stored `stage`; this keeps the UI correct in the
+    // meantime.
+    const isCustomer = orders.length > 0;
+
+    res.json({ client: { ...client, isCustomer }, orders, pos, finance, isCustomer });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -744,7 +854,7 @@ async function getOne(req, res) {
 const PATCHABLE = [
   'companyName', 'clientName', 'email', 'phone', 'paymentTerms',
   'defaultPrinter', 'defaultSupplier', 'defaultMarkup', 'notes',
-  'stage', 'nextFollowUp', 'lastContact', 'area', 'interestType',
+  'stage', 'nextFollowUp', 'lastContact', 'address', 'area', 'interestType',
   'dealValue', 'contacts', 'source', 'tags', 'lostReason',
 ];
 
@@ -864,22 +974,59 @@ async function patchOne(req, res) {
 //   - contacts matched by normalized phone OR email, then blank-filled; new
 //     people appended (no duplicate spawning)
 //   - log de-duped by (kind + dedupKey) so re-import never piles up rows
-function applyImportToDoc(doc, mapped, isNew) {
+function applyImportToDoc(doc, mapped, isNew, opts = {}) {
   if (!Array.isArray(doc.contacts)) doc.contacts = doc.contacts || [];
   if (!Array.isArray(doc.log)) doc.log = doc.log || [];
+  if (!Array.isArray(doc.tags)) doc.tags = doc.tags || [];
 
   // Names / scalar text - fill blanks only.
   if (mapped.companyName && !doc.companyName) doc.companyName = mapped.companyName;
+  if (mapped.clientName && !doc.clientName) doc.clientName = mapped.clientName;
   if (!doc.matchKey && mapped.matchKey) doc.matchKey = mapped.matchKey;
   if (mapped.area && !doc.area) doc.area = mapped.area;
+  if (mapped.address && !doc.address) doc.address = mapped.address;
   if (mapped.phone && !doc.phone) doc.phone = mapped.phone;
   if (mapped.email && !doc.email) doc.email = mapped.email;
   if (mapped.interestType && !doc.interestType) doc.interestType = mapped.interestType;
-  if (!doc.source) doc.source = 'field-tracker';
+  // dealValue: fill a blank/zero only — never overwrite an owner-entered value.
+  if (mapped.dealValue && !(Number(doc.dealValue) > 0)) doc.dealValue = mapped.dealValue;
+  // Provenance: where the RECORD came from. Set on create only (don't relabel an
+  // existing record's origin). The import's source label drives it.
+  if (!doc.source) doc.source = mapped.provenance || 'field-tracker';
 
-  // Stage: only set when the import has a stage AND the doc is still at the
-  // default 'lead' (or empty) - never override an owner-advanced stage.
-  if (mapped.stage && (!doc.stage || doc.stage === 'lead')) doc.stage = mapped.stage;
+  // Stage: PROMOTE-UP-ONLY. The import may carry a status-derived stage, and the
+  // controller may flag that this company has ≥1 linked Order (hasOrders) — in
+  // which case it's a CUSTOMER, never a lead. We take the furthest-along of the
+  // candidates but NEVER regress what the owner already advanced (won stays won,
+  // a manual 'sampling' isn't pulled back to 'customer', etc.). promoteStage
+  // moves up the funnel rank only.
+  //   - an order (on the row OR already linked) ⇒ at least 'customer'
+  //   - else the status-mapped stage, but only from a default/empty/lead doc
+  const hasOrders = !!opts.hasOrders || !!mapped.hasOrderNumber;
+  // First, the status-derived stage — original contract: only fills a doc still
+  // sitting at the import-default floor (empty / 'lead'); never overrides an
+  // owner-advanced stage. (When the row carries an order, mapped.stage is already
+  // 'customer'.)
+  if (mapped.stage && (!doc.stage || doc.stage === 'lead')) {
+    doc.stage = mapped.stage;
+  }
+  // Then order-promotion: a linked Order (on the row OR already in the DB) means
+  // CUSTOMER. promoteStage moves UP only and refuses to touch lost/dormant, so a
+  // won deal stays won, a manual mid-funnel stage isn't regressed, and a
+  // deliberately-closed deal isn't resurrected by an order.
+  if (hasOrders) {
+    doc.stage = promoteStage(doc.stage, 'customer');
+  }
+
+  // Tags: union the import's temperature tags (hot/warm/room-temp/cold) in,
+  // case-insensitively, without clobbering existing owner tags.
+  if (Array.isArray(mapped.tags) && mapped.tags.length) {
+    const seen = new Set(doc.tags.map((t) => String(t).toLowerCase()));
+    for (const t of mapped.tags) {
+      const s = String(t || '').trim();
+      if (s && !seen.has(s.toLowerCase())) { doc.tags.push(s); seen.add(s.toLowerCase()); }
+    }
+  }
 
   // lastContact: monotonic high-water mark - take the NEWER of existing/import.
   if (mapped.lastContact) {
@@ -933,9 +1080,19 @@ async function applyMappedRow(mapped, opts = {}) {
 
   let doc = await Client.findOne({ companyKey: key });
   const isNew = !doc;
-  if (!doc) doc = new Client({ companyKey: key, matchKey: mapped.matchKey || '', source: 'field-tracker' });
+  if (!doc) doc = new Client({ companyKey: key, matchKey: mapped.matchKey || '', source: mapped.provenance || 'field-tracker' });
 
-  applyImportToDoc(doc, mapped, isNew);
+  // Does this company already have ≥1 linked Order? If so it's a customer,
+  // regardless of any status word in the CSV. The caller may pre-compute a Set of
+  // order-bearing keys (opts.keysWithOrders) to avoid a per-row query; otherwise
+  // we look it up. (mapped.hasOrderNumber covers an order carried ON the row.)
+  let hasOrders = !!mapped.hasOrderNumber;
+  if (!hasOrders) {
+    if (opts.keysWithOrders) hasOrders = opts.keysWithOrders.has(key);
+    else hasOrders = !!(await Order.findOne({ companyKey: key }).select('_id').lean());
+  }
+
+  applyImportToDoc(doc, mapped, isNew, { hasOrders });
 
   // If this company was archived by a prior REPLACE pull and now appears again in
   // the CSV, the owner is explicitly re-importing it — bring it back into the
@@ -1017,11 +1174,16 @@ async function importRows(req, res) {
     // -- Live import --
     const replacedArchived = mode === 'replace' ? await archiveReplaceable() : 0;
 
+    // Pre-compute which incoming companies already have ≥1 Order, in ONE query,
+    // so the per-row order→customer promotion doesn't fan out into N lookups.
+    const keeperKeys = [...new Set(mappedRows.filter((m) => !m._skip && m.companyKey).map((m) => m.companyKey))];
+    const keysWithOrdersSet = await keysWithOrders(keeperKeys);
+
     let created = 0, updated = 0;
     for (const mapped of mappedRows) {
       if (mapped._skip) continue; // already tallied in `skip`
       try {
-        const { outcome } = await applyMappedRow(mapped);
+        const { outcome } = await applyMappedRow(mapped, { keysWithOrders: keysWithOrdersSet });
         if (outcome === 'created') created++;
         else if (outcome === 'updated') updated++;
       } catch (rowErr) {
@@ -1040,14 +1202,30 @@ async function importRows(req, res) {
   }
 }
 
-// A "replaceable" record (mode:'replace') is a PURE prior import: from the field
-// tracker, with NO Orders and no sign of owner editing. We soft-archive these
+// Provenance values written by the importer (Client.source) — the "pure import"
+// origins replace-mode may sweep. Owner-created ('manual') and order-bootstrapped
+// ('order') records are never in this set.
+const IMPORT_SOURCES = ['field-tracker', 'notion', 'crm-sheet', 'import'];
+
+// Tags the IMPORTER generates from a row's status/engagement (not owner work).
+// ownerTouched ignores these so a freshly-imported, never-edited record stays
+// "replaceable" even though the import tagged it 'cold'/'warm'/etc.
+const IMPORT_TAGS = new Set([
+  'hot', 'warm', 'room-temp', 'cold', 'lost', 'won', 'in-progress', 'meta-ad',
+  'eng-high', 'eng-medium', 'eng-low', 'eng-inactive',
+]);
+
+// A "replaceable" record (mode:'replace') is a PURE prior import: from an import
+// source, with NO Orders and no sign of owner editing. We soft-archive these
 // before a fresh pull so re-import gives a clean slate without losing anything
 // that has real activity. NOTHING is hard-deleted.
 function ownerTouched(doc) {
   if (doc.stage && !['lead', 'contacted'].includes(doc.stage)) return true; // advanced past import defaults
   if (Number(doc.dealValue) > 0) return true;
-  if ((doc.tags || []).length) return true;
+  // Owner-added tags count as a touch; import-generated temperature/engagement
+  // tags do NOT (otherwise every tagged import would look "edited" and never be
+  // replaceable).
+  if ((doc.tags || []).some((t) => !IMPORT_TAGS.has(String(t).toLowerCase()))) return true;
   if ((doc.notes || '').trim()) return true;
   for (const l of (doc.log || [])) {
     if (['call', 'text', 'email', 'visit'].includes(l.kind)) return true;   // a real human touch
@@ -1062,7 +1240,7 @@ async function keysWithOrders(keys) {
 }
 
 async function findReplaceable() {
-  const candidates = await Client.find({ source: 'field-tracker', ...NOT_ARCHIVED })
+  const candidates = await Client.find({ source: { $in: IMPORT_SOURCES }, ...NOT_ARCHIVED })
     .select('companyKey stage dealValue tags notes log source').lean();
   const withOrders = await keysWithOrders(candidates.map((c) => c.companyKey));
   return candidates.filter((c) => !withOrders.has(c.companyKey) && !ownerTouched(c));
@@ -1082,34 +1260,18 @@ async function archiveReplaceable() {
 }
 
 // Accept rows keyed by the owner's headers OR by canonical names; produce a
-// canonical-keyed object that mapTrackerRow understands.
-const HEADER_TO_CANON = {
-  'company name': 'companyName',
-  'owner / contact': 'contact',
-  'owner/contact': 'contact',
-  'contact': 'contact',
-  'phone': 'phone',
-  'email': 'email',
-  'area': 'area',
-  'interested?': 'interested',
-  'interested': 'interested',
-  'status': 'status',
-  'last contact': 'lastContact',
-  'next contact': 'nextContact',
-  'next action': 'nextAction',
-  'notes': 'notes',
-  // canonical passthroughs
-  'companyname': 'companyName',
-  'lastcontact': 'lastContact',
-  'nextcontact': 'nextContact',
-  'nextaction': 'nextAction',
-};
+// canonical-keyed object that mapTrackerRow understands. This is the JSON-rows
+// path ({ rows: [{...}] }); the raw-CSV path goes through fieldTrackerImport's
+// own header detection. We REUSE that module's single alias table (via
+// canonHeader) so the two paths recognize EXACTLY the same set of headers
+// (Notion / Google sheet / field tracker) with the same case/space/punctuation
+// insensitivity — no second table to drift.
 function normalizeRowKeys(row) {
   if (!row || typeof row !== 'object') return {};
   const out = {};
   for (const k of Object.keys(row)) {
-    const canon = HEADER_TO_CANON[String(k).trim().toLowerCase()];
-    if (canon) out[canon] = row[k];
+    const canon = canonHeader(k);            // shared normHeader + alias lookup
+    if (canon && !(canon in out)) out[canon] = row[k];
   }
   return out;
 }
@@ -1120,13 +1282,30 @@ function normalizeRowKeys(row) {
 function buildMappedRows(body) {
   const year = Number(body && body.year) || new Date().getUTCFullYear();
   if (body && typeof body.csv === 'string' && body.csv.trim()) {
-    return rowsToObjects(parseCsv(body.csv)).map((o) => mapTrackerRow(o, { year }));
+    // Raw CSV: detect the source format from its headers (field tracker / Notion
+    // / Google sheet) and label the import line accordingly. Mapping is identical
+    // across formats — detection only affects the human-readable source label.
+    const { rows: objs, format } = rowsToObjectsWithMeta(parseCsv(body.csv));
+    const sourceLabel = formatLabel(format);
+    return objs.map((o) => mapTrackerRow(o, { year, format, sourceLabel }));
   }
   let rows = [];
   if (Array.isArray(body)) rows = body;
   else if (body && Array.isArray(body.rows)) rows = body.rows;
   else return null;
-  return rows.map((r) => mapTrackerRow(normalizeRowKeys(r), { year }));
+  // Detect the format from the JSON rows' header KEYS (not just canonical
+  // columns), so a Notion / Google-sheet JSON payload gets the same keep-cold/lost
+  // treatment as its CSV equivalent — and so a programmatic { rows } import isn't
+  // wrongly dead-skipped. Sample the union of keys across the batch's first rows.
+  const rawKeyCells = [];
+  for (const r of rows.slice(0, 25)) {
+    if (r && typeof r === 'object') for (const k of Object.keys(r)) rawKeyCells.push(k);
+  }
+  const cols = {};
+  for (const k of rawKeyCells) { const c = canonHeader(k); if (c && !(c in cols)) cols[c] = true; }
+  const format = detectFormat(cols, rawKeyCells);
+  const sourceLabel = formatLabel(format);
+  return rows.map((r) => mapTrackerRow(normalizeRowKeys(r), { year, format, sourceLabel }));
 }
 
 // Propose merges from an import batch: rows whose fuzzy matchKey collides but
@@ -1431,6 +1610,92 @@ async function unarchiveCompanies(req, res) {
   }
 }
 
+// ── Single-card actions (detail page) ──────────────────────────────────────────
+
+// Decide which log entries survive deleting the one identified by `entryId`.
+// Pure (no DB) so it's unit-testable. `entryId` matches an entry's _id (stringy)
+// OR, for legacy entries written before log entries had ids, a numeric INDEX
+// (delete-by-index fallback so nothing is stranded). Returns
+// { next, removed } — the kept array and how many were removed (0 or 1).
+function removeLogEntry(log, entryId) {
+  const arr = Array.isArray(log) ? log : [];
+  const id = String(entryId == null ? '' : entryId);
+  if (!id) return { next: arr, removed: 0 };
+
+  // Prefer an id match (stable handle).
+  let idx = arr.findIndex((e) => e && e._id != null && String(e._id) === id);
+  // Fallback: a pure-integer id is treated as an array index for legacy entries.
+  if (idx < 0 && /^\d+$/.test(id)) {
+    const n = Number(id);
+    if (n >= 0 && n < arr.length) idx = n;
+  }
+  if (idx < 0) return { next: arr, removed: 0 };
+  const next = arr.slice(0, idx).concat(arr.slice(idx + 1));
+  return { next, removed: 1 };
+}
+
+// DELETE /api/crm/:companyKey/log/:entryId — remove ONE log entry from a card.
+// Targets the entry by its _id; falls back to a numeric array index for legacy
+// entries that predate stable ids. Returns the updated client.
+async function deleteLogEntry(req, res) {
+  try {
+    const key = req.params.companyKey;
+    const entryId = req.params.entryId;
+    if (!key) return res.status(400).json({ message: 'companyKey required' });
+    const doc = await Client.findOne({ companyKey: key });
+    if (!doc) return res.status(404).json({ message: 'No CRM record for that key.' });
+
+    const { next, removed } = removeLogEntry(doc.log, entryId);
+    if (!removed) return res.status(404).json({ message: 'Log entry not found.' });
+    doc.log = next;
+    await doc.save();
+    res.json({ ok: true, removed, client: doc.toObject() });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
+// POST /api/crm/:companyKey/archive — soft-archive THIS one card (owner: "fine
+// removing their card"). NEVER hard-deletes; the record + its order links + log
+// are fully preserved and restorable. Archived cards drop out of every working
+// surface (today/dashboard/pipeline/calendar/list) via the NOT_ARCHIVED filter.
+// Unlike the bulk /archive, this is an explicit single-card act, so it archives
+// even an order-bearing company (the owner deliberately chose this card) and
+// records the reason.
+async function archiveOne(req, res) {
+  try {
+    const key = req.params.companyKey;
+    if (!key) return res.status(400).json({ message: 'companyKey required' });
+    const reason = (req.body && req.body.reason) || 'manual';
+    const doc = await Client.findOneAndUpdate(
+      { companyKey: key },
+      { $set: { archived: true, archivedAt: new Date(), archivedReason: reason } },
+      { new: true },
+    ).lean();
+    if (!doc) return res.status(404).json({ message: 'No CRM record for that key.' });
+    res.json({ ok: true, archived: 1, client: doc });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
+// POST /api/crm/:companyKey/unarchive — restore THIS one card (the undo).
+async function unarchiveOne(req, res) {
+  try {
+    const key = req.params.companyKey;
+    if (!key) return res.status(400).json({ message: 'companyKey required' });
+    const doc = await Client.findOneAndUpdate(
+      { companyKey: key },
+      { $set: { archived: false, archivedAt: null, archivedReason: '', mergedInto: '' } },
+      { new: true },
+    ).lean();
+    if (!doc) return res.status(404).json({ message: 'No CRM record for that key.' });
+    res.json({ ok: true, restored: 1, client: doc });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
 module.exports = {
   listCrm,
   getToday,
@@ -1444,6 +1709,9 @@ module.exports = {
   mergeCompanies,
   archiveCompanies,
   unarchiveCompanies,
+  deleteLogEntry,
+  archiveOne,
+  unarchiveOne,
   // exported for tests / reuse
   applyMappedRow,
   applyImportToDoc,
@@ -1462,4 +1730,7 @@ module.exports = {
   classifyHeadsUp,
   buildHeadsUp,
   HEADS_UP,
+  promoteStage,
+  removeLogEntry,
+  searchOr,
 };

@@ -28,6 +28,12 @@ const ContactSchema = new mongoose.Schema({
 // A single timestamped touch in the relationship history (call, text, email,
 // note, imported field-tracker line, etc.). `kind` is free-form so the UI can
 // tag entries ('call', 'text', 'email', 'note', 'next-action', 'import', ...).
+//
+// NOTE on `_id`: each entry carries its own Mongo ObjectId (the default). This
+// is the stable handle the "delete one note" endpoint targets — the owner asked
+// to be able to remove a single log line from a client card. Pre-existing
+// entries written while this schema had `{ _id: false }` have NO id; the delete
+// endpoint falls back to delete-by-index for those, so nothing is stranded.
 const LogEntrySchema = new mongoose.Schema({
   at:   { type: Date, default: Date.now },
   text: { type: String, default: '' },
@@ -36,7 +42,7 @@ const LogEntrySchema = new mongoose.Schema({
   // re-import can recognize "I already wrote this" and skip it instead of piling
   // up near-duplicate rows. Empty for normal human-logged touches.
   dedupKey: { type: String, default: '' },
-}, { _id: false });
+});
 
 const ClientSchema = new mongoose.Schema({
   companyKey:      { type: String, required: true, unique: true, index: true },
@@ -58,7 +64,12 @@ const ClientSchema = new mongoose.Schema({
   stage:        { type: String, enum: CRM_STAGES, default: 'lead', index: true },
   nextFollowUp: { type: Date, default: null, index: true }, // when to call/contact next ("who do I call today")
   lastContact:  { type: Date, default: null },              // when we last touched this company
-  area:         { type: String, default: '' },              // region/state, e.g. "North Jersey", "NY"
+  // EXACT street address — the owner found "Area" (a vague region) useless and
+  // asked for a real address instead. `area` is kept below for back-compat (so
+  // stored regions aren't lost) but is no longer the field we center on; the
+  // detail card edits `address`.
+  address:      { type: String, default: '' },              // exact street address, e.g. "123 Main St, Newark NJ 07102"
+  area:         { type: String, default: '' },              // LEGACY region/state, e.g. "North Jersey", "NY" (kept for back-compat)
   interestType: { type: String, enum: INTEREST_TYPES, default: '' },
   dealValue:    { type: Number, default: 0 },               // estimated/open deal value
   contacts:     { type: [ContactSchema], default: [] },     // people at the company
