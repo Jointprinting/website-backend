@@ -11,6 +11,7 @@ router.get('/summary', ctl.summary);
 router.get('/by-order', ctl.byOrder);
 router.get('/by-month', ctl.byMonth);
 router.get('/by-client', ctl.byClient);
+router.get('/order-actuals', ctl.orderActuals);
 router.get('/export', ctl.exportCsv);
 router.post('/import', ctl.importCsv);
 

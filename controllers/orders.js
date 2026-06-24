@@ -1,7 +1,9 @@
 const Order = require('../models/Order');
+const Transaction = require('../models/Transaction');
 const ContactSubmission = require('../models/ContactSubmission');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
 const { deriveCompanyKey } = require('../models/Order');
+const { normalizeOrderNumber, orderActualCost } = require('./finances');
 const { getDefaultsFor } = require('./clients');
 const { nextNumber, bumpCounterTo } = require('../utils/sequence');
 const r2 = require('../services/r2');
@@ -233,12 +235,47 @@ const nextNumbers = async (req, res) => {
   }
 };
 
+// The receipt-derived ACTUAL cost for one order, attached to the order POJO. The
+// real source of truth for what an order COST is the expense receipts linked to it
+// by order number — not the quote/confirmation estimate (order.cogs). We compute
+// it with the SAME shared finance helpers the ledger uses (normalizeOrderNumber to
+// match leading-zero variants, signed()/COGS_CATEGORIES inside orderActualCost) so
+// it reconciles to /api/finances by-order to the cent. Returns the order unchanged
+// plus: actualCost (Σ receipts), estimatedCost (= order.cogs, the confirmation's
+// estimate, kept as secondary), receiptCount, hasReceipts (false → flag a missing
+// receipt in the UI), and actualMargin (revenue/totalValue − actualCost). When no
+// COGS receipts are linked yet, actualCost is 0 and hasReceipts is false, so the
+// UI falls back to the estimate instead of silently showing $0.
+async function attachActualCost(order) {
+  const key = normalizeOrderNumber(order.orderNumber);
+  let rows = [];
+  if (key) {
+    rows = await Transaction.find({ type: 'expense', orderNumber: new RegExp(`^0*${key}$`) })
+      .select('type category amount isCredit orderNumber receiptUrl').lean();
+  }
+  const a = orderActualCost(rows);
+  const totalValue = Number(order.totalValue) || 0;
+  const estimatedCost = Number(order.cogs) || 0;
+  const actualMargin = totalValue > 0
+    ? Math.round(((totalValue - a.actualCost) / totalValue) * 10000) / 100
+    : 0;
+  return {
+    ...order,
+    actualCost: a.actualCost,
+    estimatedCost,
+    receiptCount: a.receiptCount,
+    cogsLineCount: a.cogsLines,
+    hasReceipts: a.hasReceipts,
+    actualMargin,
+  };
+}
+
 // GET /api/orders/:id
 const getOrder = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id).lean();
     if (!order) return res.status(404).json({ message: 'Not found' });
-    res.json(order);
+    res.json(await attachActualCost(order));
   } catch (e) {
     res.status(500).json({ message: e.message });
   }

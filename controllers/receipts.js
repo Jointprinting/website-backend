@@ -205,10 +205,22 @@ const confirm = async (req, res) => {
     if (!amount) return res.status(400).json({ message: 'An amount is required to book this receipt.' });
     const date = e.date ? new Date(e.date) : new Date();
     const orderNumber = digits(e.orderNumber);
-    // A supplier credit memo / return books as an EXPENSE credit (isCredit) in
-    // its read category — so it nets DOWN that cost/COGS instead of looking like
-    // a charge. (Flip to an income credit by hand if it's a customer refund.)
-    const isCredit = e.kind === 'refund';
+    // Direction (isCredit) is OWNER-CONFIRMED whenever the owner says so, and only
+    // falls back to the scan otherwise. Precedence:
+    //   1. an explicit isCredit boolean from the owner — accepted whether the
+    //      review UI posts it top-level (body.isCredit) OR nested with the other
+    //      corrected fields (body.extracted.isCredit). Owner's call, never silently
+    //      overridden by the AI read (the audit's flip risk);
+    //   2. else the (corrected) extracted kind === 'refund'.
+    // Default is a normal expense charge; a refund/credit must be asserted. This
+    // means a confirmed charge can't be flipped to a credit (or vice-versa) by a
+    // stale AI 'kind' field, which is what was corrupting COGS totals.
+    const ownerIsCredit = typeof req.body.isCredit === 'boolean'
+      ? req.body.isCredit
+      : (req.body.extracted && typeof req.body.extracted.isCredit === 'boolean'
+        ? req.body.extracted.isCredit
+        : null);
+    const isCredit = ownerIsCredit != null ? ownerIsCredit : scanner.isRefundKind(e.kind);
     const type = 'expense';
     const category = e.category || 'Other';
 

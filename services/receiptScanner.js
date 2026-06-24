@@ -155,6 +155,17 @@ async function extract(buffer, mime, folderHint = '') {
   return { data: tool.input || {}, usage: msg.usage || null };
 }
 
+// Decide charge vs refund from the model's `kind`, CONSERVATIVELY. The tool enum
+// is exactly ['charge','refund'], so the ONLY safe refund signal is kind ===
+// 'refund' (case-insensitive, trimmed). The old code matched /refund|credit|return/
+// against the string, which is a direction-flip hazard: a stray "credit card" /
+// "store credit" / "returned to floor" in the field would have booked a normal
+// expense as an isCredit that nets DOWN the order's COGS and corrupts totals (the
+// audit finding). Default is a plain charge — a refund must say so explicitly. A
+// genuine refund is rare and gets caught in review; a misread direction silently
+// wrecks the ledger, so we bias hard toward "charge".
+const isRefundKind = (kind) => String(kind || '').trim().toLowerCase() === 'refund';
+
 // Map the raw tool output onto the Receipt.extracted shape (parse the date,
 // coerce numbers, clamp the category to a known bucket).
 function mapExtracted(d) {
@@ -165,7 +176,7 @@ function mapExtracted(d) {
   return {
     vendor: (d.vendor || '').trim(),
     date,
-    kind: /refund|credit|return/i.test(d.kind || '') ? 'refund' : 'charge',
+    kind: isRefundKind(d.kind) ? 'refund' : 'charge',
     amount: n(d.amount),
     currency: (d.currency || 'USD').toUpperCase(),
     orderNumber: String(d.orderNumber || '').trim(),
@@ -344,6 +355,6 @@ function queueStatus() {
 
 module.exports = {
   isConfigured, enqueue, resumeOnBoot, queueStatus,
-  extract, toContentBlock, mapExtracted,   // exported for tests / batch script
+  extract, toContentBlock, mapExtracted, isRefundKind,   // exported for tests / batch script
   EXPENSE_CATEGORIES, MODEL,
 };

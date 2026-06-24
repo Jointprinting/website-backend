@@ -18,6 +18,8 @@ const {
   summarizeCompanyFinance,
   normalizeOrderNumber,
   orderRevenueCost,
+  orderActualCost,
+  actualCostByOrder,
   pct,
   incomeContribution,
 } = require('../finances');
@@ -97,6 +99,79 @@ test('incomeContribution: Refund reduces income for BOTH plain and credit forms'
   assert.equal(incomeContribution('Other', 42), 42);
 });
 
+// ── ACTUAL cost from receipts (the new source of truth for an order) ─────────
+test('orderActualCost: cost = signed COGS expenses; non-COGS + income excluded', () => {
+  // The ACTUAL an order/project shows = Σ of its linked COGS expense receipts,
+  // same `cost` definition as orderRevenueCost (so they reconcile to the cent).
+  const rows = [
+    sale(1000),                                              // income → not a cost
+    blank(300, { receiptUrl: 'https://r2/a.pdf' }),
+    printc(200, { receiptUrl: 'https://r2/b.jpg' }),
+    { type: 'expense', category: 'Software', amount: 99 },   // non-COGS → excluded
+  ];
+  const a = orderActualCost(rows);
+  assert.equal(a.actualCost, 500);     // 300 + 200, ignoring sale + Software
+  assert.equal(a.cogsLines, 2);
+  assert.equal(a.receiptCount, 2);     // both COGS rows carry a receipt file
+  assert.equal(a.hasReceipts, true);
+  // The actual matches the cost half of the shared per-order profit definition.
+  assert.equal(a.actualCost, orderRevenueCost(rows).cost);
+});
+
+test('orderActualCost: a supplier credit nets the actual cost DOWN (signed rule)', () => {
+  const rows = [
+    blank(400, { receiptUrl: 'r' }),
+    blank(50, { isCredit: true }),     // supplier credit → cost 350, no receipt file
+  ];
+  const a = orderActualCost(rows);
+  assert.equal(a.actualCost, 350);
+  assert.equal(a.cogsLines, 2);
+  assert.equal(a.receiptCount, 1);     // only the charge carries a receipt
+});
+
+test('orderActualCost: no COGS rows → zero cost and hasReceipts false (UI flags missing)', () => {
+  const a = orderActualCost([sale(1000), { type: 'expense', category: 'Software', amount: 12 }]);
+  assert.equal(a.actualCost, 0);
+  assert.equal(a.receiptCount, 0);
+  assert.equal(a.hasReceipts, false);  // → the order view falls back to the estimate
+  assert.deepEqual(orderActualCost([]), { actualCost: 0, cogsLines: 0, receiptCount: 0, hasReceipts: false });
+});
+
+test('actualCostByOrder: groups by CANONICAL order # (leading-zero variants merge)', () => {
+  // The C2 fix carried to actuals: "0000021" and "21" are the SAME order, so a
+  // receipt booked under either variant rolls into one actual-cost bucket.
+  const rows = [
+    blank(300, { orderNumber: '0000021', receiptUrl: 'r1' }),
+    printc(200, { orderNumber: '21',     receiptUrl: 'r2' }),   // same order as 0000021
+    blank(75,  { orderNumber: '022' }),                          // a DIFFERENT order (22)
+    { type: 'expense', category: 'Software', amount: 99, orderNumber: '21' }, // non-COGS → ignored
+    blank(40,  { orderNumber: '' }),                             // no order # → dropped
+  ];
+  const map = actualCostByOrder(rows);
+  assert.deepEqual(Object.keys(map).sort(), ['21', '22']);
+  assert.equal(map['21'].actualCost, 500);   // 300 + 200 across both leading-zero variants
+  assert.equal(map['21'].receiptCount, 2);
+  assert.equal(map['22'].actualCost, 75);
+  assert.equal(map['22'].hasReceipts, false);
+});
+
+// ── ACTUAL vs ESTIMATED cogs on the company rollup ───────────────────────────
+test('summarizeCompanyFinance: cogs is ACTUAL (receipts); estimatedCogs sums Order.cogs', () => {
+  // Headline cost + profit come from the receipts (actual). The estimate is shown
+  // ALONGSIDE (from the confirmation/quote stored on each Order), never replacing.
+  const orders = [
+    order({ orderNumber: '1', paid: true, totalValue: 1000, cogs: 450 }),   // estimate 450
+    order({ orderNumber: '2', paid: true, totalValue: 0,    cogs: 50 }),
+  ];
+  const txns = [sale(1000), blank(300, { receiptUrl: 'r' }), printc(200)];  // actual cost 500
+  const out = summarizeCompanyFinance(orders, txns);
+  assert.equal(out.revenue,       1000);
+  assert.equal(out.cogs,          500);   // ACTUAL from receipts (300 + 200)
+  assert.equal(out.estimatedCogs, 500);   // ESTIMATE from Orders (450 + 50)
+  assert.equal(out.profit,        500);   // revenue − ACTUAL cost
+  assert.equal(out.receiptCount,  1);     // one COGS row carried a receipt file
+});
+
 // ── M7: pct guard (no Infinity/NaN on a ~zero denominator) ───────────────────
 test('pct guards a zero / sub-cent / non-finite denominator', () => {
   assert.equal(pct(500, 1000), 50);
@@ -109,13 +184,50 @@ test('pct guards a zero / sub-cent / non-finite denominator', () => {
   assert.ok(Number.isFinite(pct(1, 0))); // never Infinity/NaN
 });
 
+// ── Owner take-home vs left-in-business (additive cash lens over profit) ──────
+// The /api/finances summary computes, on top of the unchanged draw-EXCLUDED net:
+//   takeHome       = ownerDraw                (cash the owner paid themselves)
+//   leftInBusiness = net − ownerDraw          (profit retained after that draw)
+// Profit/net are NOT redefined (a draw is a distribution of earned profit, not a
+// cost — correct for an LLC/sole-prop taxed on profit). These tests pin the math.
+const round2 = (v) => Math.round((Number(v) + Number.EPSILON) * 100) / 100;
+const takeHomeView = (net, ownerDraw) => ({
+  net: round2(net),
+  takeHome: round2(ownerDraw),
+  leftInBusiness: round2(net - ownerDraw),
+});
+
+test('take-home view: takeHome = draw; leftInBusiness = net − draw (profit unchanged)', () => {
+  // Earned $10k, took home $4k → $6k left in the business.
+  assert.deepEqual(takeHomeView(10000, 4000), { net: 10000, takeHome: 4000, leftInBusiness: 6000 });
+  // No draw → nothing taken home, all profit retained.
+  assert.deepEqual(takeHomeView(10000, 0), { net: 10000, takeHome: 0, leftInBusiness: 10000 });
+});
+
+test('take-home view: drawing MORE than earned → negative left-in-business (a real signal)', () => {
+  // Earned $5k but drew $8k (into prior cash) → −$3k retained this period. The
+  // draw never made profit negative — profit stays $5k — but the owner sees the
+  // cash reality.
+  const v = takeHomeView(5000, 8000);
+  assert.equal(v.net, 5000);            // profit unchanged by the draw
+  assert.equal(v.takeHome, 8000);
+  assert.equal(v.leftInBusiness, -3000);
+});
+
+test('take-home view: the three figures reconcile (net = leftInBusiness + takeHome)', () => {
+  for (const [net, draw] of [[10000, 4000], [5000, 8000], [1234.56, 1000], [0, 0]]) {
+    const v = takeHomeView(net, draw);
+    assert.equal(round2(v.leftInBusiness + v.takeHome), round2(net));
+  }
+});
+
 // ── revenue / COGS / profit / margin ─────────────────────────────────────────
 test('empty input is all zeroes', () => {
   assert.deepEqual(summarizeCompanyFinance([], []), {
-    revenue: 0, cogs: 0, profit: 0, margin: 0, outstanding: 0, orderCount: 0, paidCount: 0,
+    revenue: 0, cogs: 0, estimatedCogs: 0, profit: 0, margin: 0, outstanding: 0, orderCount: 0, paidCount: 0, receiptCount: 0,
   });
   assert.deepEqual(summarizeCompanyFinance(undefined, undefined), {
-    revenue: 0, cogs: 0, profit: 0, margin: 0, outstanding: 0, orderCount: 0, paidCount: 0,
+    revenue: 0, cogs: 0, estimatedCogs: 0, profit: 0, margin: 0, outstanding: 0, orderCount: 0, paidCount: 0, receiptCount: 0,
   });
 });
 
