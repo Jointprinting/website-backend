@@ -344,15 +344,13 @@ function _esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '
 // the client bought, so the approval notification must use this instead.
 function _confirmationTotals(conf) {
   if (!conf || !Array.isArray(conf.items)) return { revenue: 0, cogs: 0 };
-  let revenue = conf.items.reduce((s, it) =>
-    s + (it.sizes || []).reduce((ss, sz) => ss + (Number(sz.qty) || 0) * (Number(sz.unitPrice) || 0), 0), 0);
-  (conf.customLines || []).forEach((l) => {
-    revenue += l.isPercent ? revenue * (Number(l.amount) || 0) / 100 : (Number(l.amount) || 0);
-  });
-  // Per-location sales tax (multi-ship-to). No-op unless a shipTo carries a
-  // taxRate > 0, so single-location revenue is unchanged. Added LAST, exactly
-  // like the grand total in models/Order.js, so totalValue and this stay equal.
-  revenue += Order.computeLocationTax(conf).total;
+  // Revenue = the order's grand total, computed by the ONE canonical function so
+  // the approval-written totalValue, the admin email, the PDF and the model's
+  // stored total can never disagree. computeConfirmationTotals enforces the
+  // double-tax guard (C3) and snaps to cents (H4); this path writes totalValue
+  // via Order.updateOne (bypassing the model hooks), so delegating here is what
+  // keeps the persisted total correct.
+  const revenue = Order.computeConfirmationTotals(conf).grandTotal;
   const cogs = conf.items.reduce((s, it) => {
     const qty = (it.sizes || []).reduce((q, sz) => q + (Number(sz.qty) || 0), 0);
     return s + qty * (Number(it.unitCost) || 0);

@@ -10,6 +10,16 @@ const r2 = require('../services/r2');
 const num = (v) => Number(v) || 0;
 const round2 = (v) => Math.round((num(v) + Number.EPSILON) * 100) / 100;
 
+// Safe percentage: (numer / denom) × 100, rounded to 2 decimals. Returns 0 when
+// the denominator is below a cent in magnitude (or non-finite), so a margin/share
+// can never blow up to Infinity/NaN/a meaningless 9,999,900% off a sub-cent or
+// negative-noise base. Any denom whose absolute value is < $0.005 is "approx zero".
+const pct = (numer, denom) => {
+  const d = num(denom);
+  if (!Number.isFinite(d) || Math.abs(d) < 0.005) return 0;
+  return round2((num(numer) / d) * 100);
+};
+
 // A credit/return reverses the direction of its `type` while staying positive in
 // the DB: an EXPENSE credit (supplier credit) nets DOWN cost; an INCOME credit
 // (customer refund) nets DOWN revenue. Every total is computed on this signed
@@ -18,6 +28,23 @@ const round2 = (v) => Math.round((num(v) + Number.EPSILON) * 100) / 100;
 const signed = (t) => (t && t.isCredit ? -num(t.amount) : num(t.amount));
 // The same rule as a Mongo aggregation expression on the current document.
 const SIGNED_AMOUNT = { $cond: [{ $eq: ['$isCredit', true] }, { $multiply: ['$amount', -1] }, '$amount'] };
+
+// What a per-{category} income subtotal contributes to REPORTED income (the P&L
+// headline and the monthly trend both use this). `signedTotal` is the already-
+// signed sum for one income category in a period. Rules:
+//   • 'Owner Contribution' is equity IN, not earnings → contributes 0.
+//   • 'Refund' is contra-revenue (money handed back to a customer) → contributes
+//     −|signedTotal|, so it REDUCES income whether the refund was booked as a
+//     plain positive amount or as an income credit (abs() can't be flipped
+//     positive by isCredit the way the raw signed total could).
+//   • everything else → contributes its signed total as-is.
+// Pure + exported so the contra-revenue rule is unit-testable without a DB.
+function incomeContribution(category, signedTotal) {
+  const v = num(signedTotal);
+  if (category === 'Owner Contribution') return 0;
+  if (category === 'Refund') return -Math.abs(v) + 0;   // + 0 normalizes -0 to 0
+  return v;
+}
 
 // A transaction belongs to the year of its DATE. We filter on the date itself,
 // not the denormalized `year` field, which can drift when a date is edited (a
@@ -99,7 +126,13 @@ const list = async (req, res) => {
     const q = yearDateMatch(req.query.year);
     if (req.query.type) q.type = req.query.type;
     if (req.query.category) q.category = req.query.category;
-    if (req.query.orderNumber) q.orderNumber = String(req.query.orderNumber).replace(/[^0-9]/g, '');
+    if (req.query.orderNumber) {
+      // Match the canonical number against every stored leading-zero variant: a
+      // request for "21" matches stored "21", "021", "0000021" (stored numbers are
+      // digits-only). Anchored ^0*<digits>$ so "21" never matches "121"/"210".
+      const key = normalizeOrderNumber(req.query.orderNumber);
+      q.orderNumber = key ? new RegExp(`^0*${key}$`) : '';
+    }
     const txns = await Transaction.find(q).sort({ date: 1 }).lean();
     res.json({ transactions: txns });
   } catch (e) { res.status(500).json({ message: e.message }); }
@@ -158,10 +191,19 @@ const summary = async (req, res) => {
     rows.forEach((r) => {
       const amt = round2(r.total);
       if (r._id.type === 'income') {
-        incomeByCategory[r._id.category] = amt;
-        // Owner Contribution is equity IN — not earnings.
-        if (r._id.category === 'Owner Contribution') ownerContribution += amt;
-        else income += amt;
+        if (r._id.category === 'Owner Contribution') {
+          // Equity IN, not earnings — reported on the side, never in income. Its
+          // breakdown row shows the real amount contributed.
+          incomeByCategory[r._id.category] = amt;
+          ownerContribution += amt;
+        } else {
+          // Contra-revenue rule: a 'Refund' nets DOWN income (the audit's inflate
+          // bug); everything else counts as-is. The breakdown stores the SAME
+          // contribution, so a refund shows as a negative that matches the headline.
+          const contrib = incomeContribution(r._id.category, amt);
+          incomeByCategory[r._id.category] = contrib;
+          income += contrib;
+        }
       } else if (r._id.category === 'Owner Draw') {
         // Owner Draw is equity OUT (the owner paying themselves) — NOT a cost of
         // doing business. Must not count against profit or show up as "spend".
@@ -173,11 +215,11 @@ const summary = async (req, res) => {
     });
     const net = round2(income - expense);
     const pctOfSpend = {};
-    Object.entries(expenseByCategory).forEach(([k, v]) => { pctOfSpend[k] = expense ? round2((v / expense) * 100) : 0; });
+    Object.entries(expenseByCategory).forEach(([k, v]) => { pctOfSpend[k] = pct(v, expense); });
     res.json({
       year: req.query.year ? Number(req.query.year) : 'all',
       income: round2(income), expense: round2(expense), net,
-      margin: income ? round2((net / income) * 100) : 0,
+      margin: pct(net, income),
       ownerContribution: round2(ownerContribution),
       ownerDraw: round2(ownerDraw),
       incomeByCategory, expenseByCategory, pctOfSpend,
@@ -185,12 +227,19 @@ const summary = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
-// Order numbers are stored on Transactions as digits-only (the importer strips
-// non-digits). Order.orderNumber is free-form ("0000021", "#21"), so to line a
-// company's Orders up with their ledger rows we normalize the same way. Exported
-// so the CRM (which bridges Orders → Transactions by order number) keys exactly
-// like the ledger does.
-const normalizeOrderNumber = (v) => String(v == null ? '' : v).replace(/[^0-9]/g, '');
+// Canonical order-number key. Order.orderNumber is free-form ("0000021", "#21",
+// "PO-021") and Transaction.orderNumber is stored digits-only but can still carry
+// leading zeros ("0000021"). To line them up we strip EVERY non-digit AND any
+// leading zeros, so "#0000021", "PO-021" and "21" all key to "21". An all-zeros
+// or empty value normalizes to '' (no digits) — deliberately NOT collapsed to a
+// shared "0" bucket that would merge every zero-ish row together.
+//
+// This is the SINGLE source of truth and is applied AT READ TIME on BOTH sides of
+// every comparison (Order numbers and Transaction numbers alike), so grouping is
+// fixed without rewriting stored data — see byOrder/byClient/the drill-in filter
+// here and the CRM company-finance scoping (controllers/crm.js), which all route
+// their keys through this. Exported for that reuse.
+const normalizeOrderNumber = (v) => String(v == null ? '' : v).replace(/[^0-9]/g, '').replace(/^0+/, '');
 
 // Pure per-company finance rollup — the SAME revenue/COGS/profit/margin
 // definitions byOrder/byClient use, reusable from outside the finance routes
@@ -230,11 +279,31 @@ function summarizeCompanyFinance(orders, transactions) {
     revenue: round2(revenue),
     cogs: round2(cogs),
     profit,
-    margin: revenue ? round2((profit / revenue) * 100) : 0,
+    margin: pct(profit, revenue),
     outstanding: round2(outstanding),
     orderCount,
     paidCount,
   };
+}
+
+// THE per-order profit definition — the single rule byOrder, byClient and the
+// drill-in detail all reconcile to. Given a set of ledger rows already scoped to
+// ONE order: revenue = signed sum of income/'Customer Sales'; cost = signed sum
+// of expense rows in COGS_CATEGORIES; profit = revenue − cost. Everything else
+// tagged to the order (a Software expense, a stray non-COGS line, a non-Customer-
+// Sales income) is intentionally OUT of profit — exactly as the byOrder/byClient
+// rollups treat it. The drill-in mirrors this verbatim so its Profit equals the
+// byOrder Profit row to the cent (its In/Out figures are a separate cash lens).
+// Pure (no DB) so it's unit-testable and reusable. `signed` lets credits net down.
+function orderRevenueCost(rows) {
+  const cogsCats = new Set(Transaction.COGS_CATEGORIES);
+  let revenue = 0;
+  let cost = 0;
+  for (const t of (rows || [])) {
+    if (t && t.type === 'income' && t.category === 'Customer Sales') revenue += signed(t);
+    else if (t && t.type === 'expense' && cogsCats.has(t.category)) cost += signed(t);
+  }
+  return { revenue: round2(revenue), cost: round2(cost), profit: round2(revenue - cost) };
 }
 
 // GET /api/finances/by-order?year=  — per-order P&L: revenue, cost, profit,
@@ -251,7 +320,11 @@ const byOrder = async (req, res) => {
     const cogs = new Set(Transaction.COGS_CATEGORIES);
     const map = {};
     rows.forEach((t) => {
-      const o = (map[t.orderNumber] ||= { orderNumber: t.orderNumber, client: '', revenue: 0, cost: 0, saleDate: null, firstDate: null });
+      // Group on the CANONICAL number (leading zeros stripped) so a "0000021" row
+      // and a "21" row are the same order — not two split buckets on the drill-in.
+      const key = normalizeOrderNumber(t.orderNumber);
+      if (!key) return;
+      const o = (map[key] ||= { orderNumber: key, client: '', revenue: 0, cost: 0, saleDate: null, firstDate: null });
       const d = t.date ? new Date(t.date) : null;
       if (d && (!o.firstDate || d < o.firstDate)) o.firstDate = d;
       if (t.type === 'income' && t.category === 'Customer Sales') {
@@ -269,7 +342,7 @@ const byOrder = async (req, res) => {
         orderNumber: o.orderNumber, client: o.client,
         year: anchor ? new Date(anchor).getUTCFullYear() : null,
         revenue: round2(o.revenue), cost: round2(o.cost), profit,
-        margin: o.revenue ? round2((profit / o.revenue) * 100) : 0,
+        margin: pct(profit, o.revenue),
       };
     });
     orders = orders.filter((o) => o.revenue !== 0 || o.cost !== 0);  // real orders only (drop $0/$0 ghosts — an order# stuck on a software/overhead line)
@@ -293,8 +366,12 @@ const byMonth = async (req, res) => {
       const key = `${r._id.y}-${String(r._id.m).padStart(2, '0')}`;
       const o = (map[key] ||= { month: key, income: 0, expense: 0 });
       const amt = round2(r.total);
-      if (r._id.type === 'income') { if (r._id.category !== 'Owner Contribution') o.income += amt; }
-      else if (r._id.category !== 'Owner Draw') o.expense += amt;
+      if (r._id.type === 'income') {
+        // Mirror the P&L via the same contra-revenue rule: a 'Refund' nets DOWN
+        // the month's income (money back to a customer); Owner Contribution is
+        // equity → 0; everything else counts as-is.
+        o.income += incomeContribution(r._id.category, amt);
+      } else if (r._id.category !== 'Owner Draw') o.expense += amt;
     });
     const months = Object.values(map)
       .map((o) => ({ month: o.month, income: round2(o.income), expense: round2(o.expense), net: round2(o.income - o.expense) }))
@@ -313,7 +390,11 @@ const byClient = async (req, res) => {
     const cogs = new Set(Transaction.COGS_CATEGORIES);
     const orders = {};
     rows.forEach((t) => {
-      const o = (orders[t.orderNumber] ||= { client: '', revenue: 0, cost: 0, saleDate: null, firstDate: null });
+      // Same canonical grouping as byOrder so leading-zero variants of one order
+      // number roll into a single order before we attribute it to a client.
+      const key = normalizeOrderNumber(t.orderNumber);
+      if (!key) return;
+      const o = (orders[key] ||= { client: '', revenue: 0, cost: 0, saleDate: null, firstDate: null });
       const d = t.date ? new Date(t.date) : null;
       if (d && (!o.firstDate || d < o.firstDate)) o.firstDate = d;
       if (t.type === 'income' && t.category === 'Customer Sales') {
@@ -333,7 +414,7 @@ const byClient = async (req, res) => {
     });
     const clients = Object.values(byC).map((c) => {
       const profit = round2(c.revenue - c.cost);
-      return { client: c.client, orders: c.orders, revenue: round2(c.revenue), cost: round2(c.cost), profit, margin: c.revenue ? round2((profit / c.revenue) * 100) : 0 };
+      return { client: c.client, orders: c.orders, revenue: round2(c.revenue), cost: round2(c.cost), profit, margin: pct(profit, c.revenue) };
     }).sort((a, b) => b.profit - a.profit);
     res.json({ clients });
   } catch (e) { res.status(500).json({ message: e.message }); }
@@ -378,3 +459,7 @@ module.exports = { importCsv, list, create, update, remove, summary, byOrder, by
 // Reusable, DB-free finance math for other surfaces (CRM company page) + tests.
 module.exports.summarizeCompanyFinance = summarizeCompanyFinance;
 module.exports.normalizeOrderNumber = normalizeOrderNumber;
+module.exports.orderRevenueCost = orderRevenueCost;
+module.exports.pct = pct;
+module.exports.signed = signed;
+module.exports.incomeContribution = incomeContribution;
