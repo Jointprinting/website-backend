@@ -79,16 +79,22 @@ test('numOf parses the leading numeric of a stored PO number', () => {
   assert.equal(_numOf(null), 0);
 });
 
-test('per-vendor counter id is slug-scoped so vendors never share a sequence', () => {
-  // "Heritage", "heritage", "Heritage  Screen Printing" must NOT all collapse —
-  // but case/whitespace variants of the SAME name must. (Matches utils/poCost
-  // vendorKey semantics for the bits that matter.)
+test('per-vendor counter id is keyed by vendorKey so the right vendors share / split', () => {
+  // The counter scope uses the SAME vendorKey (lowercase + trim + collapse-
+  // whitespace) the rest of the PO code groups/looks-up by, so a PO is numbered on
+  // the exact key it is grouped by.
+  // Case + whitespace variants of the SAME name collapse to ONE sequence:
   assert.equal(_counterId('po', 'Heritage'), _counterId('po', 'heritage'));
-  assert.equal(_counterId('po', 'Heritage  Screen  Printing'), 'po:heritage-screen-printing');
+  assert.equal(_counterId('po', 'Heritage  Screen  Printing'), _counterId('po', 'heritage screen printing'));
+  assert.equal(_counterId('po', 'Heritage Screen Printing'), 'po:heritage screen printing');
+  // Genuinely different names stay on DIFFERENT sequences:
   assert.notEqual(_counterId('po', 'Heritage'), _counterId('po', 'Heritage Screen Printing'));
+  // Punctuation is SIGNIFICANT (matches vendorKey) — two distinct printers that
+  // differ only by punctuation must NOT share a sequence (the old slug merged them).
+  assert.notEqual(_counterId('po', 'A&B Printing'), _counterId('po', 'A B Printing'));
   // No scope → the shared 'po' counter (a vendorless draft still numbers).
   assert.equal(_counterId('po', ''), 'po');
-  assert.equal(_slug('Heritage Screen Printing'), 'heritage-screen-printing');
+  assert.equal(_slug('Heritage  Screen Printing'), 'heritage screen printing');
 });
 
 // ───────────────────────── 2. VENDOR-CARD AGGREGATION ────────────────────────

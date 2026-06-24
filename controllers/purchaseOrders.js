@@ -637,10 +637,11 @@ const poPdf = async (req, res) => {
     if ((po.items || []).length > 0) {
       section(po.blanksProvided ? 'Product/Print Info - (blanks provided)' : 'Product/Print Order Summary');
       po.items.forEach((it, i) => {
+        if (!it) return;   // a null array element (malformed save) must not crash the render
         const letter = alpha(i, 65);
         doc.font('Helvetica-Bold').fontSize(10.5).fillColor(INK)
           .text(`${letter})  ${it.title || ''}`, left + 8);
-        (it.details || []).forEach((d, j) => {
+        (it.details || []).filter((d) => d != null).forEach((d, j) => {
           const sub = alpha(j, 97);
           doc.font('Helvetica').fontSize(10).fillColor(MUTED)
             .text(`${sub})  ${d}`, left + 30);
@@ -652,6 +653,7 @@ const poPdf = async (req, res) => {
     if ((po.charges || []).length > 0) {
       section('Order Summary');
       po.charges.forEach((c) => {
+        if (!c) return;   // skip a null charge element rather than throwing mid-PDF
         const rowY = doc.y;
         doc.font('Helvetica').fontSize(10).fillColor(MUTED)
           .text(`•  ${c.label || ''}`, left + 8, rowY, { width: pageW - 110 });
@@ -745,14 +747,18 @@ const getVendor = async (req, res) => {
     const vendor = await Vendor.findById(req.params.id).lean();
     if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
 
-    // POs issued to this vendor (by the SAME normalized vendorKey used everywhere),
-    // so a stray-whitespace/case variant on a PO still rolls into this vendor.
+    // POs issued to this vendor. Narrow in the QUERY with a whitespace-flexible,
+    // case-insensitive anchored name regex (so a "Heritage" / "heritage" / double-
+    // spaced variant is still pulled) instead of scanning every PO, then keep the
+    // exact vendorKey() gate — the SAME normalization used for numbering/grouping —
+    // as the precise filter so only this printer's POs count.
     const wantKey = vendorKey(vendor.name);
-    const allPos = await PurchaseOrder.find({})
+    const nameRe = new RegExp(`^${String(vendor.name || '').trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')}$`, 'i');
+    const candidatePos = await PurchaseOrder.find({ vendorName: nameRe })
       .select('poNumber vendorName grandTotal orderId date createdAt')
       .sort({ date: -1, createdAt: -1 })
       .lean();
-    const vendorPos = allPos.filter((p) => vendorKey(p.vendorName) === wantKey);
+    const vendorPos = candidatePos.filter((p) => vendorKey(p.vendorName) === wantKey);
 
     // The transactions whose counter-party is this vendor (expense money paid to
     // them). Party is free-text, so match the SAME case-insensitive exact name;

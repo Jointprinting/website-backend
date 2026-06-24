@@ -19,15 +19,22 @@
 // Heritage with floor=9 yields #009 next even though the app only ever saw #004.
 
 const Counter = require('../models/Counter');
+const { vendorKey } = require('./poCost');
 
 const FIELD = { project: 'projectNumber', invoice: 'orderNumber' };
 
 // Numeric prefix of a stored number ("22-1" → 22, "135" → 135, "#007" → 7).
 const numOf = (v) => parseInt(String(v || '0').replace(/^#/, '').split('-')[0], 10) || 0;
 
-// Normalize a vendor name so "Heritage", "heritage", and "Heritage  Screen
-// Printing" don't fork into separate sequences.
-const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+// The per-vendor numbering scope. We key off the SAME vendorKey (trim + collapse
+// whitespace + lowercase) used to GROUP a PO, SKIP a duplicate supplier, and LOOK
+// UP the Vendor doc — so the counter identity matches the grouping identity, and a
+// PO is NUMBERED on the exact same key it is grouped/looked-up by. (The old slug
+// stripped ALL punctuation, which merged distinct vendors like "A&B Printing" and
+// "A B Printing" onto one PO sequence even though the rest of the system — and the
+// owner — treat them as different printers.) vendorKey already lowercases + trims +
+// collapses whitespace; that's a valid, stable Counter._id string as-is.
+const slug = (s) => vendorKey(s);
 
 // Counter document id for a kind, optionally scoped (per-vendor PO sequences).
 const counterId = (kind, scope) => (scope && slug(scope) ? `${kind}:${slug(scope)}` : kind);
