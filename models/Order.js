@@ -270,6 +270,7 @@ const OrderSchema = new mongoose.Schema({
       brandName:           { type: String, default: '' },
       styleCode:           { type: String, default: '' },
       printType:           { type: String, default: '' },
+      printDetails:        { type: String, default: '' },    // decoration detail, e.g. "1 color front" — distinguishes a print variant (carried from the quote line)
       color:               { type: String, default: '' },
       printerName:         { type: String, default: '' },    // who's actually printing this item
       unitCost:            { type: Number, default: 0 },     // internal cost/unit carried from the quote — drives the order's COGS, never shown to the client
