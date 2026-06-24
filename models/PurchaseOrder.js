@@ -16,7 +16,20 @@ const PurchaseOrderSchema = new mongoose.Schema({
   contactName:   { type: String, default: '' },      // "Jaide Thomas"
   vendorAddress: { type: String, default: '' },      // "331 York Rd, Warminster, PA 18974"
 
-  // Shipping block (usually the client's delivery address)
+  // Where Joint Printing ships the BLANKS to the printer — the printer's receiving
+  // dock. JP supplies the blanks ~99% of the time, so almost every PO has this. It
+  // was the field missing from the generated PDF vs. the owner's real PO. Defaults
+  // to the vendor's own address (printers usually receive at the same place they're
+  // based) but can be set independently when a printer receives elsewhere.
+  shipToPrinter: {
+    name:          { type: String, default: '' },     // printer / receiving name
+    attention:     { type: String, default: '' },
+    streetAddress: { type: String, default: '' },
+    cityStateZip:  { type: String, default: '' },
+  },
+
+  // Where the FINISHED GOODS ship — usually the client's delivery / drop-ship
+  // address. (Kept as `shipping` for back-compat with existing POs + seeders.)
   shipping: {
     name:          { type: String, default: '' },
     attention:     { type: String, default: '' },

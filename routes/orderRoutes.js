@@ -40,8 +40,14 @@ router.get('/projects',                   listProjects);
 // Must stay above GET '/:id' — a single-segment path, so '/vendors' would
 // otherwise be captured as an order id and 500 on the cast.
 router.get('/vendors',                    poCtl.listVendors);
+// Vendor (printer/supplier) detail card + edits. Two-segment paths, so they don't
+// collide with '/:id'; grouped here with the other vendor routes for clarity.
+router.get('/vendors/:id',                poCtl.getVendor);
+router.patch('/vendors/:id',              poCtl.updateVendor);
 // Same reason: keep above '/:id' so 'po-cost-history' isn't read as an order id.
 router.get('/po-cost-history',            poCtl.poCostHistory);
+// Read-only "next PO # for this vendor" peek (no counter consumed). Above '/:id'.
+router.get('/po-next-number',             poCtl.nextPoNumber);
 router.get('/',                           listOrders);
 router.get('/:id',                        getOrder);
 router.post('/',                          createOrder);
