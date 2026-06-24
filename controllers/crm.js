@@ -451,6 +451,12 @@ async function getCalendar(req, res) {
       .select('companyKey companyName clientName phone stage interestType area nextFollowUp lastContact')
       .lean();
 
+    // isCustomer from order reality (a company with ≥1 linked Order is a
+    // customer, even if its stored stage is a stale 'lead'). Same authoritative
+    // signal /today, /pipeline and /dashboard use — so the calendar marks
+    // customers the same way every other CRM surface does.
+    const withOrders = await keysWithOrders(docs.map((c) => c.companyKey));
+
     const events = docs.map((c) => ({
       companyKey:   c.companyKey,
       name:         c.companyName || c.clientName || c.companyKey,
@@ -460,6 +466,7 @@ async function getCalendar(req, res) {
       area:         c.area || '',
       nextFollowUp: c.nextFollowUp,
       lastContact:  c.lastContact || null,
+      isCustomer:   withOrders.has(c.companyKey),
     }));
     res.json({ from, to, events });
   } catch (e) {
