@@ -18,6 +18,10 @@ const {
   getOne,
   patchOne,
   importRows,
+  getDuplicates,
+  mergeCompanies,
+  archiveCompanies,
+  unarchiveCompanies,
 } = require('../controllers/crm');
 
 router.use(requireAdmin);
@@ -27,7 +31,11 @@ router.get('/today',     getToday);
 router.get('/calendar',  getCalendar);
 router.get('/pipeline',  getPipeline);
 router.get('/dashboard', getDashboard);
+router.get('/duplicates', getDuplicates);
 router.post('/import',   importRows);
+router.post('/merge',    mergeCompanies);
+router.post('/archive',  archiveCompanies);
+router.post('/unarchive', unarchiveCompanies);
 
 router.get('/:companyKey',   getOne);
 router.patch('/:companyKey', patchOne);
