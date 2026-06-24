@@ -23,7 +23,7 @@ const {
 
 const {
   applyImportToDoc, promoteStage, removeLogEntry, searchOr, normalizeRowKeys,
-  classifyHeadsUp, buildHeadsUp, ownerTouched,
+  classifyHeadsUp, buildHeadsUp, ownerTouched, buildMappedRows,
 } = require('../crm');
 
 // ── Header normalization & alias resolution ──────────────────────────────────
@@ -126,6 +126,33 @@ test('the Google sheet bare "LOST" Stage/tab value → dormant + tag lost (kept)
   assert.equal(m._skip, false);
   assert.equal(m.stage, 'dormant');
   assert.ok(m.tags.includes('lost'));
+});
+
+test('a sale word beats a bare temperature word in free text (won - was hot → won)', () => {
+  // The generic temperature stage is a LAST resort — a real sale/order word wins.
+  assert.equal(mapStatus('won - was hot'), 'won');
+  assert.equal(mapStatus('hot - placed order'), 'won');
+  assert.equal(mapStatus('reorder, still warm'), 'won');
+  // but a status that is JUST a temperature word maps by temperature
+  assert.equal(mapStatus('hot'), 'quoting');
+  assert.equal(mapStatus('warm'), 'contacted');
+});
+
+test('Notion/Google JSON rows keep cold/lost; field-tracker JSON still dead-skips', () => {
+  const notionRows = buildMappedRows({ rows: [
+    { 'Company Name': 'Acme', 'Contact Person': 'Jane', 'Status': 'Cold (Prospects)' },
+    { 'Company Name': 'Bygone', 'Contact Person': 'Ed', 'Status': 'no answer' }, // dead word, but Notion-detected → kept
+  ] });
+  assert.equal(notionRows[0]._skip, false);
+  assert.equal(notionRows[0].stage, 'lead');
+  assert.ok(notionRows[0].tags.includes('cold'));
+  assert.equal(notionRows[1]._skip, false); // kept (CRM-DB source never dead-skips)
+
+  const ftRows = buildMappedRows({ rows: [
+    { 'Company Name': 'DeadCo', 'Owner / Contact': 'Bob', 'Interested?': 'no', 'Status': 'not interested', 'Area': 'NJ' },
+  ] });
+  assert.equal(ftRows[0]._skip, true); // field-tracker shape → dead-skip still applies
+  assert.equal(ftRows[0]._skipReason, 'dead');
 });
 
 test('negation guard holds against sale words ("won\'t reorder" → lost, not won)', () => {

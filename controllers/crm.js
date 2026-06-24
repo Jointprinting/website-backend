@@ -27,7 +27,7 @@ const { summarizeCompanyFinance, normalizeOrderNumber } = require('./finances');
 const {
   parseCsv, rowsToObjects, rowsToObjectsWithMeta, mapTrackerRow,
   matchKey: deriveMatchKey, normPhone, normEmail,
-  canonHeader, formatLabel,
+  canonHeader, formatLabel, detectFormat,
 } = require('../utils/fieldTrackerImport');
 // Business-timezone day boundaries. The server runs in UTC (ahead of the owner's
 // US-Eastern clock), so every "today / overdue / due-today" decision reasons in
@@ -1293,7 +1293,19 @@ function buildMappedRows(body) {
   if (Array.isArray(body)) rows = body;
   else if (body && Array.isArray(body.rows)) rows = body.rows;
   else return null;
-  return rows.map((r) => mapTrackerRow(normalizeRowKeys(r), { year }));
+  // Detect the format from the JSON rows' header KEYS (not just canonical
+  // columns), so a Notion / Google-sheet JSON payload gets the same keep-cold/lost
+  // treatment as its CSV equivalent — and so a programmatic { rows } import isn't
+  // wrongly dead-skipped. Sample the union of keys across the batch's first rows.
+  const rawKeyCells = [];
+  for (const r of rows.slice(0, 25)) {
+    if (r && typeof r === 'object') for (const k of Object.keys(r)) rawKeyCells.push(k);
+  }
+  const cols = {};
+  for (const k of rawKeyCells) { const c = canonHeader(k); if (c && !(c in cols)) cols[c] = true; }
+  const format = detectFormat(cols, rawKeyCells);
+  const sourceLabel = formatLabel(format);
+  return rows.map((r) => mapTrackerRow(normalizeRowKeys(r), { year, format, sourceLabel }));
 }
 
 // Propose merges from an import batch: rows whose fuzzy matchKey collides but

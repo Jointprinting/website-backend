@@ -286,8 +286,11 @@ function statusImpliesDead(raw) {
 //   "Lost Orders"              → dormant    + lost          (KEEP — past project)
 //   "Meta Ad Conversions"      → lead       + meta-ad
 // Plus bare temperature words (hot/warm/cold/lukewarm/opportunity) for the sheets.
-const STATUS_MAP = [
-  // —— Nate's exact Notion option values (substring match) ——
+// SPECIFIC: Nate's exact Notion option values (a distinctive multi-word phrase).
+// These are authoritative for BOTH stage and tag, and short-circuit mapStatus —
+// "Hot (Clients)" is a customer, "Won Orders" is won, etc., and the generic
+// free-text vocabulary can't override them.
+const STATUS_MAP_SPECIFIC = [
   { re: /hot\s*\(\s*client/,          stage: 'customer',  tag: 'hot' },
   { re: /won\s*order/,                stage: 'won',       tag: 'won' },
   { re: /orders?\s*in\s*progress/,    stage: 'customer',  tag: 'in-progress' },
@@ -296,9 +299,14 @@ const STATUS_MAP = [
   { re: /cold\s*\(\s*prospect/,       stage: 'lead',      tag: 'cold' },
   { re: /lost\s*order/,               stage: 'dormant',   tag: 'lost' },
   { re: /meta\s*ad/,                  stage: 'lead',      tag: 'meta-ad' },
-  // —— generic / sheet words (looser). The Google "CRM" sheet's LOST tab/Stage
-  //    value is a bare "lost" → dormant + lost (a kept past project), matching the
-  //    Notion "Lost Orders" handling. ——
+];
+
+// GENERIC: loose single temperature/segment words the owner's sheets use. These
+// provide a TAG always, but their STAGE is only used as a LAST resort in
+// mapStatus (after the won/order/lost/quoting vocabulary), so a free-text status
+// like "won - was hot" is read as 'won', not 'quoting'. The bare "lost" mirrors
+// the Notion "Lost Orders" handling (Google "CRM" sheet's LOST tab → dormant).
+const STATUS_MAP_GENERIC = [
   { re: /\blost\b/,                                       stage: 'dormant',   tag: 'lost' },
   { re: /\bhot\b/,                                        stage: 'quoting',   tag: 'hot' },
   { re: /\bwarm\b/,                                       stage: 'contacted', tag: 'warm' },
@@ -306,24 +314,28 @@ const STATUS_MAP = [
   { re: /\bcold\b/,                                       stage: 'lead',      tag: 'cold' },
 ];
 
-// Pull the segment/temperature classification (if any) out of a raw status.
-// Returns { stage, tag } or null. Used by BOTH mapStatus (for the stage) and
-// mapTrackerRow (for the tag). A NEGATED phrase ("won't", "no longer hot") is
-// not a live positive, EXCEPT the explicit "Lost Orders"/"lost" status, which is
-// itself a real (kept) past-project state — so we let 'lost' through.
+// Search a map for the first non-negated-suppressed hit. 'lost'/'cold' end-states
+// survive a negated phrase (real kept statuses); positive segments don't.
+function matchStatusMap(map, v, negated) {
+  for (const t of map) {
+    if (t.re.test(v)) {
+      if (negated && !['lost', 'cold'].includes(t.tag)) continue;
+      return t;
+    }
+  }
+  return null;
+}
+
+// Pull the segment/temperature classification (if any) out of a raw status, used
+// for TAGGING (mapTrackerRow). Specific Notion values win; otherwise a generic
+// temperature word. Returns { stage, tag } or null. (mapStatus decides the final
+// STAGE differently — generic-temperature stage is a last resort there.)
 function statusTemperature(raw) {
   const v = String(raw || '').trim().toLowerCase();
   if (!v) return null;
   const negated = isNegatedStatus(v);
-  for (const t of STATUS_MAP) {
-    if (t.re.test(v)) {
-      // A negated phrase suppresses positive segments (hot/warm/won/in-progress)
-      // but NOT the 'lost'/'cold' end-states, which are real kept statuses.
-      if (negated && !['lost', 'cold'].includes(t.tag)) continue;
-      return { stage: t.stage, tag: t.tag };
-    }
-  }
-  return null;
+  return matchStatusMap(STATUS_MAP_SPECIFIC, v, negated)
+      || matchStatusMap(STATUS_MAP_GENERIC, v, negated);
 }
 
 // Map the optional "Engagement Level" (Notion: High/Medium/Low/Inactive) to a
@@ -363,27 +375,29 @@ function isNegatedStatus(v) {
 function mapStatus(raw) {
   const v = String(raw || '').trim().toLowerCase();
   if (!v) return null;
-
-  // 1) The owner's EXACT CRM Status values + temperature words take precedence
-  //    (so "Hot (Clients)" → customer, not misread as "won" via the word "client";
-  //    "Cold (Prospects)" → lead and kept; "Lost Orders" → dormant and kept).
-  const seg = statusTemperature(v);
-  if (seg) return seg.stage;
-
-  // Negation guard (shared): a negative status is never a sale even if it
-  // contains "won"/"order"/"reorder" ("won't reorder", "no order", "cancelled
-  // order"). Treat it as lost.
   const negated = isNegatedStatus(v);
-  // 2) Generic vocabulary fallback (field-tracker free-text). Check LOST/DEAD
-  //    before WON so a negative line can't be misread as a sale.
-  if (v.includes('lost') || statusImpliesDead(v) || (negated && /(won|order|reorder|buy|interest)/.test(v))) return 'lost';
-  // Positive customer/sale vocab — "won"/"reorder" signal a closed sale.
+
+  // 1) The owner's EXACT CRM Status values take precedence and short-circuit
+  //    (so "Hot (Clients)" → customer, never misread as "won" via "client";
+  //    "Cold (Prospects)" → lead; "Lost Orders" → dormant). These are decided
+  //    first because they're unambiguous; the looser free-text vocabulary below
+  //    can't override them.
+  const specific = matchStatusMap(STATUS_MAP_SPECIFIC, v, negated);
+  if (specific) return specific.stage;
+
+  // 2) Hard dead/lost (field-tracker free-text): a not-interested / DNC / no-answer
+  //    status, or a negated sale ("won't reorder", "cancelled order"), is lost.
+  //    Checked before WON so a negative line can't be misread as a sale. (A bare
+  //    "lost"/"lost the deal" is handled by the generic map in step 5 → dormant.)
+  if (statusImpliesDead(v) || (negated && /(won|order|reorder|buy|interest)/.test(v))) return 'lost';
+  // 3) Positive customer/sale vocab — "won"/"reorder" signal a closed sale.
   if (!negated && (v.includes('won') || v.includes('reorder'))) return 'won';
   // "customer"/"client"/"active" signal an existing relationship → customer.
   if (!negated && (v.includes('customer') || v.includes('client') || v.includes('active'))) return 'customer';
   if (v.includes('quot')) return 'quoting';
   if (v.includes('sampl')) return 'sampling';
   if (!negated && v.includes('order')) return 'won';
+  // 4) Positive-contact keywords.
   if (POSITIVE_CONTACT.some((k) => v.includes(k))) return 'contacted';
   if (v.includes('call') || v.includes('email') || v.includes('text') || v.includes('messag')) {
     // Bare "call back" / "email them" is a TODO, not proof of contact → lead.
@@ -391,6 +405,13 @@ function mapStatus(raw) {
     if (/called|emailed|texted|messaged|reached/.test(v)) return 'contacted';
     return 'lead';
   }
+  // 5) Generic single temperature/segment word as a LAST resort for stage (the
+  //    sheets' bare "hot"/"warm"/"cold"/"lost"). After the sale/order vocabulary
+  //    above, so "won - was hot" already returned 'won' and only a status that is
+  //    *just* a temperature word lands here.
+  const generic = matchStatusMap(STATUS_MAP_GENERIC, v, negated);
+  if (generic) return generic.stage;
+
   return 'lead';
 }
 
@@ -636,12 +657,14 @@ function mapTrackerRow(rowObj, opts = {}) {
 
   const contacts = buildContacts(contactBlob, phoneRaw, emailRaw);
 
-  // Which CSV source is this? CRM-DB sources (the owner's Notion CRM and his
-  // Google "CRM" sheet) span the WHOLE funnel and intentionally include cold
-  // prospects and lost/past projects he re-contacts — those must be KEPT. The
-  // field-visit tracker is a prospecting list where a dead/no-answer row with no
-  // order and no follow-up is genuine dead-weight and may skip. opts.format /
-  // opts.sourceLabel tells us which.
+  // Which source is this? CRM-DB sources (the owner's Notion CRM and his Google
+  // "CRM" sheet) span the WHOLE funnel and intentionally include cold prospects
+  // and lost/past projects he re-contacts — those must be KEPT (only a missing
+  // company name skips). The field-visit tracker is a prospecting list where a
+  // dead/no-answer row with no order and no follow-up is genuine dead-weight that
+  // may skip. An unspecified/generic format defaults to the tracker's dead-skip
+  // (back-compat: a bare mapTrackerRow call, and generic prospecting CSVs, behave
+  // like the tracker). The two real CRM-DB formats are recognized by their headers.
   const fmt = opts.format || labelToFormat(opts.sourceLabel);
   const isCrmDbSource = fmt === 'notion' || fmt === 'google-sheet';
 
@@ -679,13 +702,13 @@ function mapTrackerRow(rowObj, opts = {}) {
   if (lastInfo.ambiguous) ambiguousDates.push(`Last contact: "${lastRaw}"`);
   if (nextInfo.ambiguous) ambiguousDates.push(`Next contact: "${nextRaw}"`);
 
-  // Dead-row decision. For the field-visit TRACKER: dead/non-contact status AND
-  // no future follow-up, OR a hard "interested? = no". For CRM-DB sources
-  // (Notion / Google CRM): NEVER skip on status — cold prospects and lost/past
-  // projects are real records the owner re-contacts, so only a missing company
-  // name skips (handled above). An order ALWAYS keeps the row either way.
+  // Dead-row decision. CRM-DB sources (Notion / Google CRM) NEVER dead-skip:
+  // cold prospects and lost/past projects are real kept records. Every other
+  // source (field tracker, or an unspecified/generic import) applies the tracker's
+  // dead-skip: dead/non-contact status AND no future follow-up, OR a hard
+  // "interested? = no". An order ALWAYS keeps the row.
   const hasFutureFollow = !!nextFollowUp; // a parsed next date is a real plan
-  const dead = !hasOrderNumber && !isCrmDbSource && (interestIsNo(interestRaw)
+  const dead = !isCrmDbSource && !hasOrderNumber && (interestIsNo(interestRaw)
     || (statusImpliesDead(statusRaw) && !hasFutureFollow));
 
   // ── Logs: ONE structured import line (+ the always-useful free-text notes /
