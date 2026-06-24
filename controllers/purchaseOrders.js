@@ -19,6 +19,21 @@ const badId = (id) => !mongoose.isValidObjectId(id);   // 404 instead of a CastE
 const n = (v) => Number(v) || 0;
 const money = (v) => `$${n(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+// Pull the per-unit dollar figure out of a charge label so the cost-history
+// panel can surface "what we paid per unit last time". Charge labels are built
+// by the seeders/builder as "{name}: ${unit}/unit * {qty} units" (see
+// _seedFromOrder / _seedPoForGroup), but they're free-text too — vendors and
+// the owner edit them by hand — so this stays forgiving: an optional "$", a
+// number with optional thousands commas + decimals, optional space, then
+// "/unit" or "/units". Returns the number (commas stripped) or null when there's
+// no per-unit figure (e.g. a flat "set-up fee" line).
+function parseUnitCost(label) {
+  const m = String(label == null ? '' : label).match(/\$?\s*([\d,]+(?:\.\d+)?)\s*\/\s*units?\b/i);
+  if (!m) return null;
+  const num = Number(m[1].replace(/,/g, ''));
+  return Number.isFinite(num) ? num : null;
+}
+
 // Seed a draft PO from the order: vendor from printerName, shipping from the
 // confirmation, items/charges from the chosen quote lines at COST (what JP
 // pays the vendor — blank+print per unit plus setup), never client pricing.
@@ -313,6 +328,52 @@ const listVendors = async (_req, res) => {
   }
 };
 
+// GET /api/orders/po-cost-history?vendor=<name>&q=<term> — "cost memory" for the
+// PO builder. Pulls recent POs for a vendor and flattens their order-summary
+// charges into rows so the owner can re-use a past line (and see its per-unit
+// cost) when pricing the next PO. Read-only; vendor match mirrors the
+// case-insensitive exact-name lookup used by createPo/updatePo.
+const poCostHistory = async (req, res) => {
+  try {
+    const vendor = String((req.query && req.query.vendor) || '').trim();
+    const q = String((req.query && req.query.q) || '').trim().toLowerCase();
+    if (!vendor) return res.json({ vendor: '', rows: [] });
+
+    // Same exact-ish, case-insensitive vendor match the rest of the PO code uses
+    // so "heritage" and "Heritage Screen Printing" resolve consistently.
+    const pos = await PurchaseOrder.find({
+      vendorName: new RegExp(`^${vendor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+    })
+      .sort({ date: -1, createdAt: -1 })
+      .limit(25)                       // newest ~25 POs is plenty of memory
+      .select('poNumber orderId date charges')
+      .lean();
+
+    const rows = [];
+    const ROW_CAP = 40;
+    for (const po of pos) {
+      for (const c of (po.charges || [])) {
+        const label = String((c && c.label) || '');
+        if (q && !label.toLowerCase().includes(q)) continue;
+        rows.push({
+          poNumber: po.poNumber || '',
+          orderId:  po.orderId || null,
+          date:     po.date || null,
+          label,
+          amount:   n(c && c.amount),
+          unitCost: parseUnitCost(label),   // null when the line has no per-unit figure
+        });
+        if (rows.length >= ROW_CAP) break;
+      }
+      if (rows.length >= ROW_CAP) break;
+    }
+
+    res.json({ vendor, rows });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 // POST /api/orders/pos/:poId/pdf — server-rendered PDF in the house format.
 const poPdf = async (req, res) => {
   try {
@@ -426,4 +487,4 @@ const poPdf = async (req, res) => {
   }
 };
 
-module.exports = { listPos, createPo, createPosFromConfirmation, updatePo, deletePo, listVendors, poPdf };
+module.exports = { listPos, createPo, createPosFromConfirmation, updatePo, deletePo, listVendors, poCostHistory, poPdf, parseUnitCost };
