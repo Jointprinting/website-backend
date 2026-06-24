@@ -40,6 +40,8 @@ router.get('/projects',                   listProjects);
 // Must stay above GET '/:id' — a single-segment path, so '/vendors' would
 // otherwise be captured as an order id and 500 on the cast.
 router.get('/vendors',                    poCtl.listVendors);
+// Same reason: keep above '/:id' so 'po-cost-history' isn't read as an order id.
+router.get('/po-cost-history',            poCtl.poCostHistory);
 router.get('/',                           listOrders);
 router.get('/:id',                        getOrder);
 router.post('/',                          createOrder);
