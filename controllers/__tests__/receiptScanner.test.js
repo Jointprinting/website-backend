@@ -66,6 +66,29 @@ test('mapExtracted: direction is carried by `kind`, not by a sign on the amount'
   assert.equal(mapExtracted({ vendor: 'X', amount: 50, kind: 'refund' }).kind, 'refund');
 });
 
+// ── mapExtracted: the order-flow fields (seller / billTo / documentKind) ──────
+test('mapExtracted carries seller, billTo and a valid documentKind', () => {
+  const out = mapExtracted({ seller: 'Joint Printing LLC', billTo: 'NJ Dental 1', documentKind: 'sales_invoice', amount: 100 });
+  assert.equal(out.seller, 'Joint Printing LLC');
+  assert.equal(out.billTo, 'NJ Dental 1');
+  assert.equal(out.documentKind, 'sales_invoice');
+});
+
+test('mapExtracted clamps an unknown documentKind to a purchase_receipt; absent billTo → ""', () => {
+  assert.equal(mapExtracted({ seller: 'SanMar', amount: 1, documentKind: 'garbage' }).documentKind, 'purchase_receipt');
+  assert.equal(mapExtracted({ seller: 'SanMar', amount: 1 }).documentKind, 'purchase_receipt');
+  assert.equal(mapExtracted({ seller: 'SanMar', amount: 1 }).billTo, '');
+});
+
+test('mapExtracted vendor falls back to a NON-self seller, never to us', () => {
+  // A supplier receipt with no explicit vendor → vendor = seller.
+  assert.equal(mapExtracted({ seller: 'SanMar', amount: 1, documentKind: 'purchase_receipt' }).vendor, 'SanMar');
+  // Our OWN invoice: seller is us → vendor stays blank (we are not the vendor).
+  assert.equal(mapExtracted({ seller: 'Joint Printing LLC', amount: 1, documentKind: 'sales_invoice' }).vendor, '');
+  // An explicit vendor is preserved as-is.
+  assert.equal(mapExtracted({ seller: 'SanMar', vendor: 'SanMar Inc', amount: 1 }).vendor, 'SanMar Inc');
+});
+
 // ── confirm() direction precedence (the owner-override contract) ─────────────
 // Mirrors the exact rule in controllers/receipts.js confirm(): an explicit owner
 // isCredit (top-level body.isCredit, else body.extracted.isCredit) WINS; otherwise
