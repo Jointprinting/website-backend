@@ -1,10 +1,18 @@
 // Backup / restore — full-site snapshots so the user can keep weekly
 // archives on a hard drive and recover from a wipe. Everything that
 // matters goes into a single ZIP: per-collection JSON files plus the
-// uploads directory.
+// uploads directory plus the receipt images pulled out of Cloudflare R2.
+//
+// EVERY collection is captured. Rather than a hand-maintained list (which
+// silently dropped Vendor / PurchaseOrder / Counter when those models were
+// added), the set of collections is derived at runtime from
+// mongoose.modelNames(), minus a small, explicit skip-set of transient /
+// machine-local state. A model added in the future is therefore backed up
+// automatically with no code change here — see getBackupModels().
 
 const fs       = require('fs');
 const path     = require('path');
+const mongoose = require('mongoose');
 // archiver@8 ships as ESM-only and dropped the callable factory. The base
 // Archiver class doesn't wire up the zip format module on its own — you
 // have to pick a format-specific subclass (ZipArchive / TarArchive /
@@ -15,57 +23,46 @@ const { ZipArchive } = require('archiver');
 const unzipper = require('unzipper');
 
 const r2 = require('../services/r2');
-const BackupLog        = require('../models/BackupLog');
-const Order            = require('../models/Order');
-const ContactSubmission = require('../models/ContactSubmission');
-const StudioLibraryItem = require('../models/StudioLibraryItem');
-const ClientLogo       = require('../models/ClientLogo');
-const Client           = require('../models/Client');
-const SiteSetting      = require('../models/SiteSetting');
-const Catalog          = require('../models/Catalog');
-const Product          = require('../models/Product');
-const AdminUser        = require('../models/AdminUser');
-const RoadTripLead     = require('../models/RoadTripLead');
-const ScriptVersion    = require('../models/ScriptVersion');
-const DispensaryDenylist = require('../models/DispensaryDenylist');
-const JpwLead          = require('../models/JpwLead');
-const ColdCallState    = require('../models/ColdCallState');
-const Transaction      = require('../models/Transaction');
-const Receipt          = require('../models/Receipt');
+const BackupLog = require('../models/BackupLog');
 
-// Collections included in a backup. Order matters on restore — anything
-// referenced by another collection should come first, but since we're not
-// using real foreign keys (everything's denormalized) the order is more
-// about restore-step reporting clarity.
+// Collections intentionally EXCLUDED from a backup. These are transient
+// rate-limit counters, ephemeral scheduler state, short-lived caches, OAuth
+// tokens that must not move between environments, or the backup log itself —
+// all either reconstructable or actively harmful to carry across a restore.
+// Anything NOT in this set is backed up, so a newly-added business model is
+// captured automatically.
+const SKIP_COLLECTIONS = new Set([
+  'BackupLog',              // the log of backups — would create confusing self-reference
+  'GoogleDriveAuth',        // OAuth refresh token — environment-specific, re-obtained by reconnecting
+  'DispensaryDensityCache', // derived cache, rebuilt on demand
+  'JpwApiUsage',            // transient API rate-limit accounting
+  'JpwSchedulerState',      // ephemeral scheduler bookkeeping
+  'JpwSweepPairHistory',    // transient sweep dedupe history
+]);
+
+// The models that go in a backup: every registered Mongoose model except the
+// skip-set, sorted by name for a deterministic, diff-friendly manifest. Derived
+// fresh each call so models registered after boot are still included.
 //
-// SKIPPED (intentionally): JpwApiUsage, JpwSchedulerState,
-// JpwSweepPairHistory, DispensaryDensityCache, GoogleDriveAuth, BackupLog.
-// These are either transient rate-limit data, ephemeral scheduler state,
-// short-lived caches, or OAuth tokens that shouldn't move between
-// environments and can be re-obtained by reconnecting the integration.
-const COLLECTIONS = [
-  { name: 'Order',             Model: Order             },
-  { name: 'ContactSubmission', Model: ContactSubmission },
-  { name: 'StudioLibraryItem', Model: StudioLibraryItem },
-  { name: 'ClientLogo',        Model: ClientLogo        },
-  { name: 'Client',            Model: Client            },
-  { name: 'SiteSetting',       Model: SiteSetting       },
-  { name: 'Catalog',           Model: Catalog           },
-  { name: 'Product',           Model: Product           },
-  { name: 'AdminUser',         Model: AdminUser         },
-  { name: 'RoadTripLead',      Model: RoadTripLead      },
-  { name: 'ScriptVersion',     Model: ScriptVersion     },
-  { name: 'DispensaryDenylist',Model: DispensaryDenylist },
-  { name: 'JpwLead',           Model: JpwLead           },
-  { name: 'ColdCallState',     Model: ColdCallState     },
-  { name: 'Transaction',       Model: Transaction       },  // the finance ledger
-  { name: 'Receipt',           Model: Receipt           },  // receipt records (file URLs)
-];
+// `extraSkip` lets tests (and only tests) narrow the set; production always
+// passes nothing.
+function getBackupModels(extraSkip = null) {
+  const skip = extraSkip || SKIP_COLLECTIONS;
+  return mongoose.modelNames()
+    .filter((name) => !skip.has(name))
+    .sort()
+    .map((name) => ({ name, Model: mongoose.model(name) }));
+}
 
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
 // Manual hard-drive backups only need to be monthly now that Google Drive
 // auto-pushes a full copy every week — this is just the third, offline safety net.
 const BACKUP_DUE_DAYS = 30;
+
+// Bumped to 3: the manifest now carries per-collection counts and the model set
+// is enumerated dynamically. v2 archives still restore fine (counts are optional
+// on read), so this is backward-compatible.
+const SCHEMA_VERSION = 3;
 
 // Friendly, sortable archive name, e.g. "Joint Printing Backup 2026-06-22 1734.zip".
 function backupFileName() {
@@ -80,16 +77,114 @@ const MIME_BY_EXT = {
   gif: 'image/gif', svg: 'image/svg+xml', heic: 'image/heic', pdf: 'application/pdf',
 };
 
+// ── Pure helpers (unit-tested without a DB) ──────────────────────────────────
+
+// The manifest written into every archive. `counts` is { CollectionName: n }.
+function buildManifest(modelNames, counts) {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    createdAt: new Date().toISOString(),
+    app: 'joint-printing',
+    collections: [...modelNames],
+    counts: { ...counts },
+  };
+}
+
+// Validate a parsed archive BEFORE any database write. Returns nothing on
+// success; THROWS a clear, user-facing error on anything wrong. This is the
+// gate that makes a restore safe: a foreign / truncated / hand-edited file is
+// rejected here, with the database still fully intact.
+//
+//   manifest   – the parsed manifest.json object (or null if missing)
+//   dataNames  – the collection names present as data/<name>.json in the archive
+//   knownNames – the set of collection names this server recognizes
+function validateArchive(manifest, dataNames, knownNames) {
+  if (!manifest || typeof manifest !== 'object') {
+    throw new Error('Not a Joint Printing backup: manifest.json is missing or unreadable. Refusing to touch the database.');
+  }
+  if (!Array.isArray(manifest.collections)) {
+    throw new Error('Backup manifest is malformed (no collections list). Refusing to restore.');
+  }
+  if (manifest.app && manifest.app !== 'joint-printing') {
+    throw new Error(`This backup is for "${manifest.app}", not Joint Printing. Refusing to restore.`);
+  }
+  if (!dataNames || dataNames.length === 0) {
+    throw new Error('Backup contains no collection data (no data/*.json). Refusing to restore.');
+  }
+  // Every data file must be a collection this server knows about. An unknown
+  // collection means a wrong/foreign archive or a schema this code can't map —
+  // safer to refuse than to silently drop it.
+  const known = knownNames instanceof Set ? knownNames : new Set(knownNames);
+  const unknown = dataNames.filter((n) => !known.has(n));
+  if (unknown.length) {
+    throw new Error(`Backup references unknown collections: ${unknown.join(', ')}. Wrong file, or made by a newer version. Refusing to restore.`);
+  }
+}
+
+// Reject any document set that can't be restored safely BEFORE a single write
+// happens. Two guards, both data-loss preventers:
+//   • every doc must carry an _id — an _id-less doc would upsert onto a shared
+//     `{_id: null}` row, silently collapsing many docs into one.
+//   • no two docs in a collection may share an _id — a within-collection
+//     duplicate would make the upsert non-deterministic (and break replace's
+//     insertMany with a duplicate-key error mid-loop).
+// Throws a clear error (DB untouched) on violation; returns nothing on success.
+function assertRestorableDocs(name, docs) {
+  const seen = new Set();
+  for (let i = 0; i < docs.length; i++) {
+    const d = docs[i];
+    if (!d || typeof d !== 'object') {
+      throw new Error(`${name}.json[${i}] is not an object. Refusing to restore.`);
+    }
+    if (d._id === undefined || d._id === null || d._id === '') {
+      throw new Error(`${name}.json[${i}] has no _id. A backup must identify every record — refusing to restore.`);
+    }
+    const key = String(d._id);
+    if (seen.has(key)) {
+      throw new Error(`${name}.json has two records with _id ${key}. Corrupt archive — refusing to restore.`);
+    }
+    seen.add(key);
+  }
+}
+
+// Mongo's _id arrives from JSON as a plain string/number; cast it back to an
+// ObjectId when it looks like one so upsert-by-_id matches the existing doc
+// (and re-importing the same backup is a true no-op).
+function reviveId(id) {
+  if (typeof id === 'string' && mongoose.isObjectIdOrHexString(id) && id.length === 24) {
+    return new mongoose.Types.ObjectId(id);
+  }
+  return id;
+}
+
+// Turn an array of plain documents into bulkWrite replaceOne-upsert ops keyed by
+// _id. Idempotent: importing the same docs twice yields identical data, and
+// nothing is ever deleted in this (default) mode.
+function upsertOps(docs) {
+  return docs.map((doc) => {
+    const _id = reviveId(doc._id);
+    return { replaceOne: { filter: { _id }, replacement: { ...doc, _id }, upsert: true } };
+  });
+}
+
+// ── Archive assembly ─────────────────────────────────────────────────────────
+
 // Every R2 URL referenced by the finance ledger or a receipt record. These are
 // the receipt/invoice images — they live in Cloudflare R2, not in MongoDB, so
 // the JSON dumps alone would leave them out of the backup. We pull the actual
 // bytes into the archive so a Cloudflare/R2 outage can't take the only copy.
+// Resolved by model name so it keeps working even though the model list is now
+// dynamic. Missing models (e.g. in a unit test) are simply skipped.
 async function collectReceiptUrls() {
   const urls = new Set();
-  const txns = await Transaction.find({ receiptUrl: { $ne: '' } }, 'receiptUrl').lean();
-  for (const t of txns) if (r2.isR2Url(t.receiptUrl)) urls.add(t.receiptUrl);
-  const recs = await Receipt.find({ fileUrl: { $ne: '' } }, 'fileUrl').lean();
-  for (const r of recs) if (r2.isR2Url(r.fileUrl)) urls.add(r.fileUrl);
+  const add = async (modelName, field) => {
+    if (!mongoose.modelNames().includes(modelName)) return;
+    const Model = mongoose.model(modelName);
+    const rows = await Model.find({ [field]: { $nin: ['', null] } }, field).lean();
+    for (const r of rows) if (r2.isR2Url(r[field])) urls.add(r[field]);
+  };
+  await add('Transaction', 'receiptUrl');
+  await add('Receipt', 'fileUrl');
   return [...urls];
 }
 
@@ -98,23 +193,23 @@ async function collectReceiptUrls() {
 // download (exportAll) and the Google Drive push (writeBackupToFile) so both
 // produce an identical, complete archive. Returns counts for the BackupLog.
 async function appendBackupContents(archive) {
+  const models = getBackupModels();
   const counts = {};
   let totalDocs = 0, fileCount = 0, r2Count = 0, r2Missing = 0;
 
-  // Manifest first
-  archive.append(JSON.stringify({
-    schemaVersion: 2,
-    createdAt: new Date().toISOString(),
-    collections: COLLECTIONS.map(c => c.name),
-  }, null, 2), { name: 'manifest.json' });
-
-  // Per-collection JSON dumps
-  for (const { name, Model } of COLLECTIONS) {
+  // Per-collection JSON dumps (counts gathered first so the manifest can record them)
+  const dumps = [];
+  for (const { name, Model } of models) {
     const docs = await Model.find({}).lean();
     counts[name] = docs.length;
     totalDocs += docs.length;
-    archive.append(JSON.stringify(docs, null, 2), { name: `data/${name}.json` });
+    dumps.push({ name, json: JSON.stringify(docs, null, 2) });
   }
+
+  // Manifest first (now includes per-collection counts, so a restore can verify)
+  archive.append(JSON.stringify(buildManifest(models.map((m) => m.name), counts), null, 2),
+    { name: 'manifest.json' });
+  for (const { name, json } of dumps) archive.append(json, { name: `data/${name}.json` });
 
   // Uploaded files (project attachments stored on local disk)
   if (fs.existsSync(UPLOADS_DIR)) {
@@ -163,6 +258,8 @@ function writeBackupToFile(filePath) {
   });
 }
 
+// ── HTTP handlers ────────────────────────────────────────────────────────────
+
 // GET /api/admin/backup/status
 const status = async (req, res) => {
   try {
@@ -177,6 +274,8 @@ const status = async (req, res) => {
       isDue, dueAfterDays: BACKUP_DUE_DAYS,
       lastImportAt: lastImport ? lastImport.at : null,
       collections: last ? last.collections : null,
+      // So the UI can show exactly what WILL be captured, even before the first export.
+      backedUpCollections: getBackupModels().map((m) => m.name),
     });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -228,59 +327,133 @@ const exportAll = async (req, res) => {
   }
 };
 
+// Read + parse + VALIDATE an opened archive. Returns
+// { manifest, prepared: [{ name, Model, docs }], dataNames } with the database
+// untouched. Throws (DB intact) on anything malformed. Shared so the validation
+// path is identical for every restore mode.
+async function readAndValidateArchive(directory) {
+  const manifestEntry = directory.files.find((f) => f.path === 'manifest.json');
+  const manifest = manifestEntry
+    ? JSON.parse((await manifestEntry.buffer()).toString('utf-8'))
+    : null;
+
+  const models = getBackupModels();
+  const byName = new Map(models.map((m) => [m.name, m.Model]));
+  const knownNames = new Set(models.map((m) => m.name));
+
+  // Which collections does the archive actually carry data for?
+  const dataNames = directory.files
+    .filter((f) => /^data\/[^/]+\.json$/.test(f.path) && f.type === 'File')
+    .map((f) => f.path.slice('data/'.length, -'.json'.length));
+
+  validateArchive(manifest, dataNames, knownNames);
+
+  // Parse + type-check + validate EVERY collection JSON before returning, so the
+  // caller can apply with confidence that nothing in the archive will blow up
+  // mid-write. This is what keeps a destructive `replace` crash-safe: by the
+  // time the first deleteMany runs, every document of every collection has
+  // already passed structure, _id, and (for real models) schema validation —
+  // so the apply loop can't throw partway and leave the DB half-wiped.
+  const prepared = [];
+  for (const name of dataNames) {
+    const file = directory.files.find((f) => f.path === `data/${name}.json`);
+    const json = (await file.buffer()).toString('utf-8');
+    let docs;
+    try { docs = JSON.parse(json); } catch (e) {
+      throw new Error(`${name}.json is not valid JSON: ${e.message}. Refusing to restore.`);
+    }
+    if (!Array.isArray(docs)) throw new Error(`${name}.json is not an array. Refusing to restore.`);
+    assertRestorableDocs(name, docs);             // _id present + unique
+    dryValidateDocs(byName.get(name), name, docs); // schema check (real models only)
+    prepared.push({ name, Model: byName.get(name), docs });
+  }
+  return { manifest, prepared, dataNames };
+}
+
+// Dry-run schema validation: hydrate each doc through the model and validate it
+// WITHOUT writing, so a schema/enum/required violation is caught up front rather
+// than mid-restore. No-ops for the lightweight fakes used in unit tests (which
+// don't expose a Mongoose schema). Best-effort and tolerant: a doc the current
+// schema can't construct at all (older shape) is skipped rather than rejected,
+// since restore must be able to bring back legacy data — the goal here is only
+// to stop a write-time throw from partial-wiping in replace mode.
+function dryValidateDocs(Model, name, docs) {
+  if (!Model || !Model.schema || typeof Model.hydrate !== 'function') return; // not a real Mongoose model
+  for (let i = 0; i < docs.length; i++) {
+    let doc;
+    try { doc = new Model({ ...docs[i], _id: reviveId(docs[i]._id) }); }
+    catch (_) { continue; }  // can't even construct it — leave it for the insert/upsert to handle
+    const err = typeof doc.validateSync === 'function' ? doc.validateSync() : null;
+    if (err) {
+      throw new Error(`${name}.json[${i}] fails validation: ${err.message}. Refusing to restore.`);
+    }
+  }
+}
+
+// Apply a prepared, already-validated restore.
+//   mode 'merge'   (default) — upsert by _id; never deletes. Idempotent. The
+//                  archive has been fully parsed/validated already, so this
+//                  path cannot partial-wipe: it only ever adds/overwrites.
+//   mode 'replace'           — wipe each collection then insert (full replace).
+//                  Opt-in + typed-confirmation only (see restoreAll). Because a
+//                  standalone Mongo can't span a multi-collection transaction,
+//                  a write error on collection N would leave earlier collections
+//                  replaced and N empty — which is why replace is gated and the
+//                  SAFE merge is the default. The up-front validation still rules
+//                  out malformed input as a trigger.
+// Returns { counts, totalDocs }.
+async function applyRestore(prepared, mode) {
+  const counts = {};
+  let totalDocs = 0;
+  for (const { name, Model, docs } of prepared) {
+    if (mode === 'replace') {
+      await Model.deleteMany({});
+      for (let i = 0; i < docs.length; i += 500) {
+        const slice = docs.slice(i, i + 500).map((d) => ({ ...d, _id: reviveId(d._id) }));
+        if (slice.length) await Model.insertMany(slice, { ordered: false });
+      }
+    } else {
+      const ops = upsertOps(docs);
+      for (let i = 0; i < ops.length; i += 500) {
+        await Model.bulkWrite(ops.slice(i, i + 500), { ordered: false });
+      }
+    }
+    counts[name] = docs.length;
+    totalDocs += docs.length;
+  }
+  return { counts, totalDocs };
+}
+
 // POST /api/admin/backup/restore — body: multipart/form-data with file=<zip>
+// Query/body options:
+//   mode=replace + confirm=REPLACE  → destructive full replace (otherwise: safe merge/upsert).
 const restoreAll = async (req, res) => {
   if (!req.file) return res.status(400).json({ message: 'No backup file provided' });
   const startedAt = Date.now();
-  const counts = {};
-  let totalDocs = 0;
-  let fileCount = 0;
 
+  // Default is the SAFE, idempotent merge. The destructive replace must be asked
+  // for explicitly AND confirmed, so a stray click can never wipe live data.
+  const wantReplace = (req.query.mode || req.body.mode) === 'replace';
+  const confirmed   = (req.query.confirm || req.body.confirm) === 'REPLACE';
+  const mode = wantReplace ? 'replace' : 'merge';
+  if (wantReplace && !confirmed) {
+    try { fs.unlinkSync(req.file.path); } catch (_) {}
+    return res.status(400).json({
+      message: 'Destructive replace requires confirm=REPLACE. Aborting — no data changed.',
+    });
+  }
+
+  let fileCount = 0;
   try {
     const buf = fs.readFileSync(req.file.path);
     const directory = await unzipper.Open.buffer(buf);
 
-    // Parse manifest first
-    const manifestEntry = directory.files.find(f => f.path === 'manifest.json');
-    if (!manifestEntry) {
-      throw new Error('Backup file is missing manifest.json — wrong format?');
-    }
+    // SAFETY: parse + validate the WHOLE archive before any DB write. A corrupt
+    // or foreign file aborts here with the database completely intact — the bug
+    // that earlier delete-then-insert loops could leave half the DB wiped.
+    const { prepared } = await readAndValidateArchive(directory);
 
-    // SAFETY: parse + validate every collection JSON in the archive BEFORE
-    // we delete anything. Earlier versions of this code did delete-then-
-    // insert inside a single loop, so a corrupt Product.json (caught on the
-    // 7th collection) would leave the first 6 collections wiped with no
-    // recovery. Now an unreadable archive aborts cleanly with the DB intact.
-    const prepared = [];
-    for (const { name, Model } of COLLECTIONS) {
-      const file = directory.files.find(f => f.path === `data/${name}.json`);
-      if (!file) {
-        counts[name] = 0;
-        prepared.push({ name, Model, docs: null });  // null = collection wasn't in archive
-        continue;
-      }
-      const json = (await file.buffer()).toString('utf-8');
-      let docs;
-      try { docs = JSON.parse(json); } catch (e) {
-        throw new Error(`${name}.json is not valid JSON: ${e.message}`);
-      }
-      if (!Array.isArray(docs)) throw new Error(`${name}.json is not an array`);
-      prepared.push({ name, Model, docs });
-    }
-
-    // Apply restores now that every JSON has been validated.
-    for (const { name, Model, docs } of prepared) {
-      if (docs === null) continue;  // collection missing from archive — leave existing rows alone
-      await Model.deleteMany({});
-      if (docs.length > 0) {
-        // Insert in chunks of 500 to avoid Mongo limits on huge collections
-        for (let i = 0; i < docs.length; i += 500) {
-          await Model.insertMany(docs.slice(i, i + 500), { ordered: false });
-        }
-      }
-      counts[name] = docs.length;
-      totalDocs += docs.length;
-    }
+    const { counts, totalDocs } = await applyRestore(prepared, mode);
 
     // Restore uploaded files
     if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -289,8 +462,7 @@ const restoreAll = async (req, res) => {
       const rel = file.path.replace(/^files\//, '');
       if (!rel || rel.includes('..') || rel.includes('/')) continue;  // ignore subdirs or traversal
       const dest = path.join(UPLOADS_DIR, rel);
-      const data = await file.buffer();
-      fs.writeFileSync(dest, data);
+      fs.writeFileSync(dest, await file.buffer());
       fileCount++;
     }
 
@@ -312,23 +484,28 @@ const restoreAll = async (req, res) => {
     }
     fileCount += r2Count;
 
-    // Cleanup uploaded zip
     try { fs.unlinkSync(req.file.path); } catch (_) {}
 
     await BackupLog.create({
       kind: 'import', status: 'ok',
       collections: counts, totalDocs, fileCount,
-      note: `Restored in ${Math.round((Date.now() - startedAt) / 1000)}s`,
+      note: `Restored (${mode}) in ${Math.round((Date.now() - startedAt) / 1000)}s`,
     });
 
-    res.json({ ok: true, collections: counts, totalDocs, fileCount });
+    res.json({ ok: true, mode, collections: counts, totalDocs, fileCount });
   } catch (e) {
     try { if (req.file && req.file.path) fs.unlinkSync(req.file.path); } catch (_) {}
     try {
       await BackupLog.create({ kind: 'import', status: 'failed', note: e.message });
     } catch (_) {}
-    res.status(500).json({ message: e.message });
+    res.status(400).json({ message: e.message });
   }
 };
 
-module.exports = { status, exportAll, restoreAll, writeBackupToFile, backupFileName };
+module.exports = {
+  status, exportAll, restoreAll, writeBackupToFile, backupFileName,
+  // exported for tests + the Drive push / status surface
+  getBackupModels, buildManifest, validateArchive, upsertOps, reviveId,
+  assertRestorableDocs, dryValidateDocs,
+  readAndValidateArchive, applyRestore, SKIP_COLLECTIONS, SCHEMA_VERSION,
+};

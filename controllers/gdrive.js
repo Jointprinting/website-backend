@@ -42,6 +42,11 @@ const FOLDER_NAME  = 'Joint Printing Backups';
 // the Drive). userinfo.email is just so status can show which account is linked.
 const SCOPE = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email';
 
+// Keep this many of the most recent backups in Drive; older ones are trashed
+// after each successful push so the folder doesn't grow without bound. ~12 weeks
+// at the weekly cadence — three months of history. Override with GDRIVE_KEEP.
+const KEEP_BACKUPS = Math.max(1, parseInt(process.env.GDRIVE_KEEP, 10) || 12);
+
 const isConfigured = () => !!(CLIENT_ID && CLIENT_SECRET && REDIRECT_URI);
 
 // ── OAuth token plumbing ─────────────────────────────────────────────────────
@@ -115,16 +120,67 @@ async function uploadFile(accessToken, folderId, filePath, fileName, mime, size)
   return put.data;
 }
 
+// Trash backups beyond the newest KEEP_BACKUPS in the folder. Best-effort: a
+// failure to prune must never fail the backup itself (the new copy is already
+// safely uploaded), so this swallows its own errors and just logs. Only files
+// this app created are visible under the drive.file scope, and we additionally
+// match our own "Joint Printing Backup …zip" name so nothing else is touched.
+async function pruneOldBackups(accessToken, folderId) {
+  try {
+    const r = await axios.get(FILES_URL, {
+      params: {
+        q: `'${folderId}' in parents and trashed = false and mimeType = 'application/zip'`,
+        fields: 'files(id,name,createdTime)',
+        orderBy: 'createdTime desc',
+        pageSize: 1000,
+      },
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const files = (r.data.files || []).filter((f) => /^Joint Printing Backup .*\.zip$/.test(f.name));
+    const stale = files.slice(KEEP_BACKUPS);   // already newest-first
+    let trashed = 0;
+    for (const f of stale) {
+      try {
+        await axios.patch(`${FILES_URL}/${f.id}`, { trashed: true },
+          { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } });
+        trashed++;
+      } catch (e) { console.warn('[gdrive] prune failed for', f.name, e.message); }
+    }
+    if (trashed) console.log(`[gdrive] pruned ${trashed} old backup(s); kept newest ${KEEP_BACKUPS}.`);
+    return trashed;
+  } catch (e) {
+    console.warn('[gdrive] prune skipped:', e.message);
+    return 0;
+  }
+}
+
+// A push in progress, shared by BOTH the weekly cron and the manual button so
+// they can never run concurrently. Two overlapping pushes would otherwise build
+// archives at the same time and (before the unique temp name below) could even
+// clobber each other's file mid-upload. Single dyno → an in-process promise is
+// enough; if this ever scales out, move the lock onto GoogleDriveAuth.
+let inFlight = null;
+
 // Build a full backup ZIP and push it to Drive. Shared by the manual button and
 // the weekly cron. Throws on failure (caller records auth.lastError). `reason`
-// is just for the BackupLog note ('manual' | 'scheduled').
-async function pushBackupToDrive(reason) {
+// is just for the BackupLog note ('manual' | 'scheduled'). Serialized: a second
+// call while one is running joins the in-flight push instead of starting another.
+function pushBackupToDrive(reason) {
+  if (inFlight) return inFlight;
+  inFlight = _doPushBackupToDrive(reason).finally(() => { inFlight = null; });
+  return inFlight;
+}
+
+async function _doPushBackupToDrive(reason) {
   if (!isConfigured()) throw new Error('Google Drive is not configured on the backend.');
   const auth = await GoogleDriveAuth.findOne();
   if (!auth || !auth.refreshToken) throw new Error('Google Drive is not connected.');
 
   const fileName = backup.backupFileName();
-  const tmpPath  = path.join(os.tmpdir(), fileName);
+  // Unique on-disk path (random prefix) so two pushes never share a temp file —
+  // the human-readable `fileName` is still what lands in Drive. Avoids the
+  // truncate/unlink race when a manual run overlaps the cron in the same minute.
+  const tmpPath  = path.join(os.tmpdir(), `${crypto.randomUUID()}-${fileName}`);
 
   try {
     const stats = await backup.writeBackupToFile(tmpPath);     // complete archive incl. R2 receipts
@@ -132,6 +188,10 @@ async function pushBackupToDrive(reason) {
     const accessToken = await freshAccessToken(auth);
     const folderId = await ensureFolder(auth, accessToken);
     const file = await uploadFile(accessToken, folderId, tmpPath, fileName, 'application/zip', size);
+
+    // Retention: drop the oldest beyond KEEP_BACKUPS. Best-effort — never undoes
+    // the upload we just completed.
+    await pruneOldBackups(accessToken, folderId);
 
     auth.lastBackupAt    = new Date();
     auth.lastBackupName   = file.name || fileName;
@@ -160,6 +220,8 @@ const status = async (req, res) => {
       lastBackupName: auth ? auth.lastBackupName : '',
       lastBackupBytes: auth ? auth.lastBackupBytes : 0,
       lastError:      auth ? auth.lastError : '',
+      keepBackups:    KEEP_BACKUPS,
+      schedule:       'Weekly · Sunday 03:30 (server time)',
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
@@ -243,4 +305,4 @@ const backupNow = async (req, res) => {
   }
 };
 
-module.exports = { status, connect, callback, disconnect, backupNow, pushBackupToDrive, isConfigured };
+module.exports = { status, connect, callback, disconnect, backupNow, pushBackupToDrive, isConfigured, KEEP_BACKUPS };
