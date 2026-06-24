@@ -93,9 +93,32 @@ function _confItemSupplier(it, order) {
     || UNASSIGNED;
 }
 
+// Human label for a ship-to destination, used in the per-location PO callouts.
+// Prefer the friendly label, then the recipient name, then the city line; fall
+// back to a short form of the key so a half-filled destination still reads.
+function _shipToName(st) {
+  return String((st && (st.label || st.name || st.cityStateZip)) || '').trim()
+    || (st && st.key ? `Location ${st.key}` : 'Location');
+}
+
+// Per-location split line for one confirmation item, e.g.
+// "Ship split — Brooklyn HQ: 20, Newark Store: 15". Returns '' unless the
+// order actually has destinations AND this item carries allocations to them —
+// so single-location items (no allocations) produce nothing and the PO output
+// stays byte-identical to today.
+function _itemShipSplit(it, shipTos) {
+  if (!Array.isArray(shipTos) || shipTos.length === 0) return '';
+  const byKey = new Map(shipTos.map(st => [String(st && st.key || ''), st]));
+  const parts = (Array.isArray(it && it.allocations) ? it.allocations : [])
+    .filter(a => a && n(a.qty) > 0 && byKey.has(String(a.key)))
+    .map(a => `${_shipToName(byKey.get(String(a.key)))}: ${n(a.qty)}`);
+  return parts.length ? `Ship split — ${parts.join(', ')}` : '';
+}
+
 // Build one PO draft (existing PO shape) for a single supplier's items.
 function _seedPoForGroup(order, vendorName, groupItems) {
   const conf = order.confirmation || {};
+  const shipTos = Array.isArray(conf.shipTos) ? conf.shipTos : [];
   const items = [];
   const charges = [];
   groupItems.forEach((it) => {
@@ -112,13 +135,18 @@ function _seedPoForGroup(order, vendorName, groupItems) {
     const run = sizes.filter(sz => n(sz.qty) > 0).map(sz => `${sz.label || '—'}: ${n(sz.qty)}`).join(' · ');
     if (run) details.push(run);
     if (unitCost && qty) details.push(`${money(unitCost)}/unit * ${qty} units = ${money(unitCost * qty)}`);
+    // Per-location breakdown — only appears when this order ships to multiple
+    // destinations and this item is split across them (additive; absent for
+    // every single-location PO, keeping that output unchanged).
+    const split = _itemShipSplit(it, shipTos);
+    if (split) details.push(split);
     items.push({ title, details });
 
     if (unitCost && qty) {
       charges.push({ label: `${colorTitle}: ${money(unitCost)}/unit * ${qty} units`, amount: unitCost * qty });
     }
   });
-  return {
+  const seeded = {
     vendorName,
     shipping: {
       name:          (conf.shipping && conf.shipping.name) || order.companyName || '',
@@ -130,6 +158,26 @@ function _seedPoForGroup(order, vendorName, groupItems) {
     charges,
     grandTotal: charges.reduce((s, c) => s + n(c.amount), 0),
   };
+  // When the order ships to multiple destinations, lead the PO notes with a
+  // concise roster of where things go so the vendor sees it at a glance. Only
+  // added when shipTos is non-empty — single-location POs keep blank notes.
+  const note = _shipNotes(shipTos);
+  if (note) seeded.notes = note;
+  return seeded;
+}
+
+// Concise multi-location roster for the PO Notes section. One line per
+// destination with its address. '' when there are no destinations, so the PO's
+// notes stay empty for single-location orders (output unchanged).
+function _shipNotes(shipTos) {
+  if (!Array.isArray(shipTos) || shipTos.length === 0) return '';
+  const rows = shipTos
+    .map((st) => {
+      const where = [st && st.street, st && st.cityStateZip].map(s => String(s || '').trim()).filter(Boolean).join(', ');
+      const label = _shipToName(st);
+      return where ? `• ${label} — ${where}` : `• ${label}`;
+    });
+  return `Shipping to ${shipTos.length} locations:\n${rows.join('\n')}`;
 }
 
 // Group confirmation items by supplier, preserving first-seen order so the
@@ -488,3 +536,7 @@ const poPdf = async (req, res) => {
 };
 
 module.exports = { listPos, createPo, createPosFromConfirmation, updatePo, deletePo, listVendors, poCostHistory, poPdf, parseUnitCost };
+// Exported for unit tests — pure helpers for the multi-location ship-split PO output.
+module.exports._itemShipSplit = _itemShipSplit;
+module.exports._shipNotes = _shipNotes;
+module.exports._seedPoForGroup = _seedPoForGroup;

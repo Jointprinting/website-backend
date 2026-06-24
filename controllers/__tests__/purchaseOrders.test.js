@@ -14,7 +14,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { parseUnitCost } = require('../purchaseOrders');
+const { parseUnitCost, _itemShipSplit, _shipNotes, _seedPoForGroup } = require('../purchaseOrders');
 
 // ── the canonical seeded shape ───────────────────────────────────────────────
 test('pulls the per-unit figure from a standard charge label', () => {
@@ -67,4 +67,74 @@ test('does not match "unit" without a number/slash (e.g. prose)', () => {
 test('takes the figure attached to /unit, not other dollar amounts', () => {
   // "$60" is the line total, "$2.40/unit" is the per-unit — we want 2.4.
   assert.equal(parseUnitCost('Run Charge $60: $2.40/unit * 25 units'), 2.4);
+});
+
+// ── Multi-ship-to: per-item split line (logistics overlay; no money) ─────────
+// _itemShipSplit turns an item's allocations into a vendor-readable
+// "Ship split — Loc A: 20, Loc B: 15" detail line. It must stay silent for
+// single-location orders so the PO output is byte-identical to today.
+const SHIP_TOS = [
+  { key: 'a', label: 'Brooklyn HQ',  street: '1 Front St',   cityStateZip: 'Brooklyn, NY 11201', state: 'NY' },
+  { key: 'b', label: 'Newark Store', street: '22 Market St', cityStateZip: 'Newark, NJ 07102',   state: 'NJ' },
+];
+
+test('builds a per-location split line from item allocations', () => {
+  const it = { allocations: [{ key: 'a', qty: 20 }, { key: 'b', qty: 15 }] };
+  assert.equal(_itemShipSplit(it, SHIP_TOS), 'Ship split — Brooklyn HQ: 20, Newark Store: 15');
+});
+
+test('split line falls back to recipient/city when a destination has no label', () => {
+  const tos = [{ key: 'a', name: 'Acme Receiving' }, { key: 'b', cityStateZip: 'Newark, NJ 07102' }];
+  const it = { allocations: [{ key: 'a', qty: 5 }, { key: 'b', qty: 7 }] };
+  assert.equal(_itemShipSplit(it, tos), 'Ship split — Acme Receiving: 5, Newark, NJ 07102: 7');
+});
+
+test('split line omits zero / unknown-key allocations and is empty for single-location', () => {
+  // Zero qty and an allocation to a key that is not a real destination drop out.
+  const it = { allocations: [{ key: 'a', qty: 20 }, { key: 'b', qty: 0 }, { key: 'zzz', qty: 99 }] };
+  assert.equal(_itemShipSplit(it, SHIP_TOS), 'Ship split — Brooklyn HQ: 20');
+  // No destinations at all → never any split line (single-location, unchanged).
+  assert.equal(_itemShipSplit({ allocations: [{ key: 'a', qty: 20 }] }, []), '');
+  assert.equal(_itemShipSplit({}, SHIP_TOS), '');
+});
+
+test('_shipNotes rosters destinations, empty when none', () => {
+  assert.equal(_shipNotes([]), '');
+  const note = _shipNotes(SHIP_TOS);
+  assert.match(note, /^Shipping to 2 locations:/);
+  assert.match(note, /• Brooklyn HQ — 1 Front St, Brooklyn, NY 11201/);
+  assert.match(note, /• Newark Store — 22 Market St, Newark, NJ 07102/);
+});
+
+// ── Multi-ship-to: PO seed stays byte-identical for single-location ──────────
+test('_seedPoForGroup output is unchanged when there are no shipTos', () => {
+  const order = {
+    companyName: 'Acme', clientName: 'Jane',
+    confirmation: { shipping: { name: 'Acme', attention: 'Jane', streetAddress: '1 Front St', cityStateZip: 'Brooklyn, NY 11201' } },
+  };
+  const item = { brandName: 'Bella', styleCode: '3001', color: 'Black', printType: 'Screen Print',
+    unitCost: 4, sizes: [{ label: 'M', qty: 10 }, { label: 'L', qty: 15 }] };
+  const seeded = _seedPoForGroup(order, 'Heritage', [item]);
+  // No notes added, no extra detail line beyond print/size-run/cost.
+  assert.equal(seeded.notes, undefined);
+  assert.deepEqual(seeded.items[0].details, ['Screen Print · Black', 'M: 10 · L: 15', '$4.00/unit * 25 units = $100.00']);
+  assert.equal(seeded.charges[0].amount, 100);
+});
+
+test('_seedPoForGroup appends split detail + notes when shipTos present', () => {
+  const order = {
+    companyName: 'Acme', clientName: 'Jane',
+    confirmation: {
+      shipping: { name: 'Acme', attention: 'Jane', streetAddress: '1 Front St', cityStateZip: 'Brooklyn, NY 11201' },
+      shipTos: SHIP_TOS,
+    },
+  };
+  const item = { brandName: 'Bella', styleCode: '3001', color: 'Black', printType: 'Screen Print',
+    unitCost: 4, sizes: [{ label: 'M', qty: 10 }, { label: 'L', qty: 15 }],
+    allocations: [{ key: 'a', qty: 20 }, { key: 'b', qty: 5 }] };
+  const seeded = _seedPoForGroup(order, 'Heritage', [item]);
+  assert.ok(seeded.items[0].details.includes('Ship split — Brooklyn HQ: 20, Newark Store: 5'));
+  assert.match(seeded.notes, /^Shipping to 2 locations:/);
+  // Money is untouched — charge still reflects qty × unitCost from sizes only.
+  assert.equal(seeded.charges[0].amount, 100);
 });

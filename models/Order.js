@@ -147,6 +147,22 @@ const OrderSchema = new mongoose.Schema({
       streetAddress:{ type: String, default: '' },
       cityStateZip: { type: String, default: '' },
     },
+    // Optional multi-destination shipping. When EMPTY (the common case) the
+    // order ships to the single `shipping` block above and nothing about the
+    // doc, totals, PDF, or client page changes. When the client wants one
+    // order split across several of their own locations, each destination is
+    // captured here and items carry per-location `allocations` (below). Purely
+    // additive — `state` is captured now for a future per-state tax pass but is
+    // unused in this one (no money/tax math touches this field yet).
+    shipTos: [{
+      key:          { type: String, default: '' },  // stable id linking allocations to this location
+      label:        { type: String, default: '' },  // friendly name, e.g. "Brooklyn HQ"
+      name:         { type: String, default: '' },  // ship-to company/recipient
+      street:       { type: String, default: '' },
+      cityStateZip: { type: String, default: '' },
+      state:        { type: String, default: '' },  // reserved for the future tax pass — unused here
+      _id: false,
+    }],
     items: [{
       mockupNum:           { type: String, default: '' },   // ref into project's saved mockups
       customMockupDataUrl: { type: String, default: '' },   // legacy single-image (kept for back-compat)
@@ -167,6 +183,17 @@ const OrderSchema = new mongoose.Schema({
         label:     { type: String, default: '' },  // 'XS', 'S', ..., 'OS', or any custom
         qty:       { type: Number, default: 0 },
         unitPrice: { type: Number, default: 0 },
+        _id: false,
+      }],
+      // Per-location split of THIS item's total quantity, keyed to
+      // confirmation.shipTos[].key. Optional and additive: when absent (every
+      // single-location order, and any item the owner hasn't split) the item
+      // ships whole to the single `shipping` address and nothing changes. The
+      // allocations are a logistics overlay only — they never feed totals, tax,
+      // revenue, or COGS, which stay driven purely by `sizes` (qty × unitPrice).
+      allocations: [{
+        key: { type: String, default: '' },  // matches a confirmation.shipTos[].key
+        qty: { type: Number, default: 0 },    // units of this item going to that location
         _id: false,
       }],
       _id: false,
