@@ -216,12 +216,25 @@ const summary = async (req, res) => {
     const net = round2(income - expense);
     const pctOfSpend = {};
     Object.entries(expenseByCategory).forEach(([k, v]) => { pctOfSpend[k] = pct(v, expense); });
+    // Owner cash lens (additive — does NOT change the profit definition). Profit
+    // stays draw-EXCLUDED (a draw is a distribution of earned profit, not a cost,
+    // and an LLC/sole-prop is taxed on profit, not draws). On top of that we show:
+    //   • takeHome       = what the owner actually paid themselves this period (Σ
+    //                      Owner Draw, already separated above) — the cash out.
+    //   • leftInBusiness = profit retained AFTER that draw (net − draw). Negative
+    //                      means the owner drew more than the business earned this
+    //                      period (drawing into prior cash) — a real signal to see.
+    // Owner Contribution (equity IN) is intentionally NOT added back here: this is
+    // "of the profit I earned, how much did I keep vs take", not a cash-flow stmt.
+    const takeHome = round2(ownerDraw);
+    const leftInBusiness = round2(net - ownerDraw);
     res.json({
       year: req.query.year ? Number(req.query.year) : 'all',
       income: round2(income), expense: round2(expense), net,
       margin: pct(net, income),
       ownerContribution: round2(ownerContribution),
       ownerDraw: round2(ownerDraw),
+      takeHome, leftInBusiness,
       incomeByCategory, expenseByCategory, pctOfSpend,
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
@@ -258,31 +271,39 @@ const normalizeOrderNumber = (v) => String(v == null ? '' : v).replace(/[^0-9]/g
 function summarizeCompanyFinance(orders, transactions) {
   const cogsCats = new Set(Transaction.COGS_CATEGORIES);
   let revenue = 0;
-  let cogs = 0;
+  let cogs = 0;                 // ACTUAL cost — from the receipts/expense ledger
+  let receiptCount = 0;         // COGS rows that carry a stored receipt file
   for (const t of (transactions || [])) {
     if (t && t.type === 'income' && t.category === 'Customer Sales') revenue += signed(t);
-    else if (t && t.type === 'expense' && cogsCats.has(t.category)) cogs += signed(t);
+    else if (t && t.type === 'expense' && cogsCats.has(t.category)) {
+      cogs += signed(t);
+      if (t.receiptUrl) receiptCount += 1;
+    }
   }
-  const profit = round2(revenue - cogs);
+  const profit = round2(revenue - cogs);   // profit is on the ACTUAL (receipt) cost
 
   let outstanding = 0;
   let orderCount = 0;
   let paidCount = 0;
+  let estimatedCogs = 0;        // the confirmation/quote estimate, summed off Orders
   for (const o of (orders || [])) {
     if (!o) continue;
     orderCount += 1;
     if (o.paid) paidCount += 1;
     else outstanding += num(o.totalValue);   // invoiced (has a total) but not yet paid
+    estimatedCogs += num(o.cogs);            // each Order's stored estimate (quote/confirmation)
   }
 
   return {
     revenue: round2(revenue),
-    cogs: round2(cogs),
+    cogs: round2(cogs),                      // ACTUAL (receipts) — the headline cost
+    estimatedCogs: round2(estimatedCogs),    // ESTIMATE (confirmation) — shown alongside
     profit,
     margin: pct(profit, revenue),
     outstanding: round2(outstanding),
     orderCount,
     paidCount,
+    receiptCount,                            // how much of the cost is receipt-backed
   };
 }
 
@@ -305,6 +326,66 @@ function orderRevenueCost(rows) {
   }
   return { revenue: round2(revenue), cost: round2(cost), profit: round2(revenue - cost) };
 }
+
+// The ACTUAL cost of an order, straight from the receipts/expense ledger. Given
+// ledger rows already scoped to ONE order, cost = signed sum of expense rows in
+// COGS_CATEGORIES — the SAME definition orderRevenueCost/byOrder use for `cost`,
+// so the "actual" an order/project shows always reconciles to the finance ledger.
+// `receiptCount` counts the COGS rows that carry a stored receipt file (the proof
+// behind the number); `hasReceipts` is whether ANY cost receipt is linked yet, so
+// a missing-receipt order is flaggable. Pure (no DB) + exported for reuse + tests.
+function orderActualCost(rows) {
+  const cogsCats = new Set(Transaction.COGS_CATEGORIES);
+  let cost = 0;
+  let cogsLines = 0;
+  let receiptCount = 0;
+  for (const t of (rows || [])) {
+    if (t && t.type === 'expense' && cogsCats.has(t.category)) {
+      cost += signed(t);
+      cogsLines += 1;
+      if (t.receiptUrl) receiptCount += 1;
+    }
+  }
+  return { actualCost: round2(cost), cogsLines, receiptCount, hasReceipts: receiptCount > 0 };
+}
+
+// Build a map of canonical-order-number → actual-cost summary from a flat list of
+// ledger rows (each carrying an orderNumber). Keys via normalizeOrderNumber so a
+// "0000021" row and a "21" row land in the SAME order bucket (leading-zero-safe,
+// the C2 fix). Used to attach receipt-derived ACTUAL cost to orders/projects
+// without re-querying per order. Pure (no DB) + exported for reuse + tests.
+function actualCostByOrder(transactions) {
+  const buckets = {};
+  for (const t of (transactions || [])) {
+    const key = normalizeOrderNumber(t && t.orderNumber);
+    if (!key) continue;
+    (buckets[key] ||= []).push(t);
+  }
+  const out = {};
+  for (const [key, rows] of Object.entries(buckets)) out[key] = orderActualCost(rows);
+  return out;
+}
+
+// GET /api/finances/order-actuals?orderNumbers=21,022,#23  — the receipt-derived
+// ACTUAL cost for a set of orders, keyed by canonical order number. This is the
+// "source of truth = the receipts I upload" figure, surfaced wherever an order or
+// project shows its cost (the OrderTracker drawer asks for the open project's
+// numbers). Reuses the same COGS_CATEGORIES + signed() rules as the ledger, so the
+// actual here equals the by-order `cost` to the cent. With no orderNumbers given,
+// returns an empty map (callers always know which orders they're asking about).
+const orderActuals = async (req, res) => {
+  try {
+    const raw = String((req.query && req.query.orderNumbers) || '');
+    const keys = [...new Set(raw.split(',').map(normalizeOrderNumber).filter(Boolean))];
+    if (!keys.length) return res.json({ actuals: {} });
+    // Pull only this set's rows. We over-match on the stored leading-zero variants
+    // by anchoring ^0*<digits>$ per key, then group canonically.
+    const orRegex = keys.map((k) => new RegExp(`^0*${k}$`));
+    const rows = await Transaction.find({ type: 'expense', orderNumber: { $in: orRegex } })
+      .select('type category amount isCredit orderNumber receiptUrl').lean();
+    res.json({ actuals: actualCostByOrder(rows) });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
 
 // GET /api/finances/by-order?year=  — per-order P&L: revenue, cost, profit,
 // margin %. An order's economics span time — the sale lands one day, the blanks
@@ -455,11 +536,14 @@ const resyncYears = async () => {
   return fixed;
 };
 
-module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, resyncYears };
-// Reusable, DB-free finance math for other surfaces (CRM company page) + tests.
+module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, resyncYears };
+// Reusable, DB-free finance math for other surfaces (CRM company page, the order
+// view) + tests. All keyed off the SAME Transaction truth via these helpers.
 module.exports.summarizeCompanyFinance = summarizeCompanyFinance;
 module.exports.normalizeOrderNumber = normalizeOrderNumber;
 module.exports.orderRevenueCost = orderRevenueCost;
+module.exports.orderActualCost = orderActualCost;
+module.exports.actualCostByOrder = actualCostByOrder;
 module.exports.pct = pct;
 module.exports.signed = signed;
 module.exports.incomeContribution = incomeContribution;

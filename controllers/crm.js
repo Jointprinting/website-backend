@@ -721,7 +721,7 @@ async function companyFinance(orders) {
   }
 
   const rows = await Transaction.find({ orderNumber: { $in: orderNums } })
-    .select('type category amount isCredit orderNumber party')
+    .select('type category amount isCredit orderNumber party receiptUrl')
     .lean();
 
   // Which of our order numbers are shared with at least one OTHER company? Only
