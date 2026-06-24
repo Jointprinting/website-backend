@@ -8,12 +8,39 @@
 
 const Receipt = require('../models/Receipt');
 const Transaction = require('../models/Transaction');
+const Order = require('../models/Order');
 const r2 = require('../services/r2');
 const scanner = require('../services/receiptScanner');
+const { normalizeOrderNumber } = require('./finances');
+const { isSelf } = require('../services/selfIdentity');
 
 const num = (v) => Number(v) || 0;
 const round2 = (v) => Math.round((num(v) + Number.EPSILON) * 100) / 100;
 const digits = (v) => String(v == null ? '' : v).replace(/[^0-9]/g, '');
+
+// Find the Order a receipt's order/invoice number links to. Order.orderNumber is
+// FREE-FORM ("0000021", "#21", "PO-021") while a receipt's number is digits-ish,
+// so we normalize the receipt to the canonical key (digits only, leading zeros
+// stripped — the same key the whole finance system uses), pull a candidate set
+// whose number contains that digit run, then confirm with normalizeOrderNumber on
+// both sides. The contains-regex catches the non-digit-decorated forms ("#21",
+// "PO-021") that an anchored ^0*<key>$ would miss; the canonical filter is what
+// actually decides the match, so "21" never links to "121"/"210". `key` is pure
+// digits (no metachars), so the RegExp is injection-safe. The matched Order is the
+// SOURCE OF TRUTH for who the client is (its companyName/clientName) — that's how an
+// income invoice gets the right party instead of the seller off the letterhead.
+// Returns the Order POJO or null ('' / no-digits key never matches a blank order#).
+async function _findLinkedOrder(rawOrderNumber) {
+  const key = normalizeOrderNumber(rawOrderNumber);
+  if (!key) return null;
+  const candidates = await Order.find({ orderNumber: new RegExp(key) })  // coarse: contains the digit run
+    .select('orderNumber companyName clientName projectNumber totalValue paid')
+    .lean();
+  const exact = candidates.filter((o) => normalizeOrderNumber(o.orderNumber) === key);  // canonical: the real match
+  if (!exact.length) return null;
+  // On the rare order-number collision, pick deterministically: prefer a named one.
+  return exact.find((o) => (o.companyName || o.clientName)) || exact[0];
+}
 
 const EXT_MIME = {
   pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
@@ -74,24 +101,33 @@ const scan = async (req, res) => {
     if (!m) return res.status(400).json({ message: 'Provide a receipt file (dataUrl).' });
     const { data } = await scanner.extract(Buffer.from(m[2], 'base64'), m[1].toLowerCase());
     const ex = scanner.mapExtracted(data);
-    const isRefund = ex.kind === 'refund';
+    // Order-flow-aware decision. Link by the receipt's order/invoice # → the
+    // matching Order (the source of truth for the client), then let
+    // decideTransaction set type/party/category/direction:
+    //   • our OWN invoice (seller = us) → income · Customer Sales · party = the
+    //     CLIENT (the Order's company, else the bill-to) — NEVER Joint Printing;
+    //   • a supplier receipt → expense · party = the vendor we paid.
+    // The party is left BLANK when no client can be determined, for the owner to
+    // fill, rather than guessing the company itself (the reported bug).
+    const order = await _findLinkedOrder(ex.orderNumber);
+    const d = scanner.decideTransaction(ex, order);
     res.json({
       configured: true,
       fields: {
-        // A supplier credit memo / return reads as a CREDIT against cost (money
-        // coming back from a vendor): an expense with isCredit set, kept in the
-        // read category so it nets down that order's COGS. The owner flips it to
-        // Income if it's actually a customer refund. A normal receipt is a plain
-        // expense.
-        type:        'expense',
-        category:    ex.category || 'Other',
-        isCredit:    isRefund,
-        party:       ex.vendor || '',
+        type:        d.type,
+        category:    d.category,
+        isCredit:    d.isCredit,
+        party:       d.party,
         amount:      ex.amount != null ? ex.amount : '',
         date:        ex.date ? new Date(ex.date).toISOString().slice(0, 10) : '',
         orderNumber: digits(ex.orderNumber),
         description: ex.summary || '',
       },
+      // Additive order-link context for the modal (ignored by older clients): when
+      // the order# matched an Order, the client/project the prefill was enriched from.
+      link: order
+        ? { orderNumber: normalizeOrderNumber(order.orderNumber), client: (order.companyName || order.clientName || '').trim(), projectNumber: order.projectNumber || '' }
+        : null,
     });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -220,15 +256,38 @@ const confirm = async (req, res) => {
       : (req.body.extracted && typeof req.body.extracted.isCredit === 'boolean'
         ? req.body.extracted.isCredit
         : null);
-    const isCredit = ownerIsCredit != null ? ownerIsCredit : scanner.isRefundKind(e.kind);
-    const type = 'expense';
-    const category = e.category || 'Other';
 
-    // Duplicate guard: a same-type, same-amount entry with the same order #
-    // (or vendor) is very likely already in the ledger.
-    if (!req.body.force) {
+    // Order-flow-aware defaults: link by order# → the Order (source of truth for the
+    // client), then decide type/category/party/direction. Our OWN invoice books as
+    // income/Customer Sales with the CLIENT as party (never Joint Printing); a
+    // supplier receipt books as an expense with the vendor as party. The OWNER's
+    // explicit corrections still win over the read — confirm is the owner's final
+    // say — so an edited type/party/category/isCredit is honored verbatim.
+    const order = await _findLinkedOrder(orderNumber);
+    const decided = scanner.decideTransaction(e, order);
+    const ownerType = req.body.extracted && req.body.extracted.type;
+    const type = ownerType === 'income' || ownerType === 'expense' ? ownerType : decided.type;
+    const category = (req.body.extracted && req.body.extracted.category) || decided.category;
+    // party: owner's explicit correction wins; else the order-flow decision (which
+    // never yields the company itself). A blank correction is honored (the owner
+    // clearing it), but the company itself is NEVER booked as the party even if
+    // posted — that is exactly the bug this guards. Falls back to '' over a guess.
+    const ownerParty = req.body.extracted && req.body.extracted.party;
+    const party = (typeof ownerParty === 'string' && (ownerParty.trim() === '' || !isSelf(ownerParty)))
+      ? ownerParty
+      : decided.party;
+    const isCredit = ownerIsCredit != null ? ownerIsCredit : decided.isCredit;
+
+    // Duplicate guard: a same-type, same-amount entry with the same order # (or
+    // counter-party) is very likely already in the ledger. For income the party is
+    // the client; for expense it's the vendor — so the no-order# fallback matches on
+    // whoever the counter-party actually is (not the self-seller). When there's
+    // NEITHER an order# NOR a party (a valid blank-party income the owner will fill),
+    // we skip the probe entirely — otherwise every blank-party row of the same amount
+    // would falsely collide and block a genuinely distinct sale.
+    if (!req.body.force && (orderNumber || party)) {
       const dupQ = { type, amount, _id: { $exists: true } };
-      if (orderNumber) dupQ.orderNumber = orderNumber; else dupQ.party = e.vendor || '';
+      if (orderNumber) dupQ.orderNumber = orderNumber; else dupQ.party = party;
       const dup = await Transaction.findOne(dupQ).lean();
       if (dup && String(dup._id) !== String(rec.transactionId || '')) {
         return res.status(409).json({
@@ -240,7 +299,7 @@ const confirm = async (req, res) => {
 
     const fields = {
       date, type, category, orderNumber, isCredit,
-      party: e.vendor || '', description: e.summary || '', amount,
+      party, description: e.summary || '', amount,
       receiptUrl: rec.fileUrl, source: 'receipt',
     };
     let txn;

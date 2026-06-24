@@ -25,6 +25,15 @@ const LineItemSchema = new mongoose.Schema({
 // timeline info). Nate edits these in review before booking.
 const ExtractedSchema = new mongoose.Schema({
   vendor:      { type: String, default: '' },   // who he paid (a supplier)
+  // The two parties + the document's nature, so the order-flow-aware party/
+  // direction decision (income vs expense, client vs vendor) survives the scan→
+  // confirm round-trip. Without these here, Mongoose's sub-schema would strip them
+  // and confirm() would lose them. `seller` = the issuer/letterhead; `billTo` =
+  // the customer the doc is addressed to; documentKind = 'sales_invoice' (our own
+  // invoice → money IN) | 'purchase_receipt' (a supplier bill we paid → money OUT).
+  seller:      { type: String, default: '' },
+  billTo:      { type: String, default: '' },
+  documentKind:{ type: String, default: '' },
   date:        { type: Date,   default: null }, // receipt date (timeline)
   kind:        { type: String, default: 'charge' }, // 'charge' (money out) | 'refund' (a credit back to you)
   amount:      { type: Number, default: null }, // the total he was charged

@@ -5,6 +5,7 @@
 // per-order and per-client margin. Admin-only.
 
 const Transaction = require('../models/Transaction');
+const Order = require('../models/Order');
 const r2 = require('../services/r2');
 
 const num = (v) => Number(v) || 0;
@@ -366,6 +367,86 @@ function actualCostByOrder(transactions) {
   return out;
 }
 
+// ── revenue gap: billed vs collected vs cost (why profit looks too low) ───────
+// PURE per-order gap analysis (no DB) — surfaces the money that's missing because
+// vendor COST receipts were entered but the matching CLIENT PAYMENT income wasn't.
+// For each Order it lines up three figures, all on the SAME definitions the P&L
+// uses (so this never re-derives profit, only explains a gap):
+//   • billed    = what the client was charged = Order.totalValue (the confirmation
+//                 grand total — the order is the source of truth for the invoice).
+//   • collected = Σ signed income/'Customer Sales' transactions linked to the order
+//                 (the cash actually recorded as received — same revenue rule as
+//                 byOrder/summarizeCompanyFinance; a customer-refund credit nets down).
+//   • cost      = Σ signed COGS expense transactions = orderActualCost.actualCost
+//                 (the actual money spent producing it; a supplier credit nets down).
+// Transactions are matched to Orders by normalizeOrderNumber (leading-zero safe),
+// the SAME canonical key everywhere else. Two gap signals per order:
+//   • costWithoutPayment — cost > 0 but collected === 0: a job we paid to produce
+//     with NO recorded client payment. The loudest flag (this is what's hiding the
+//     real profit — costs in, the income not yet entered).
+//   • outstanding — billed > 0 and collected < billed: invoiced but not (fully)
+//     collected = max(billed − collected, 0).
+// Only orders WITH a gap are returned (a fully-collected order isn't clutter).
+// Pure + exported for reuse + tests; the endpoint adds the year anchoring.
+function paymentGapsForOrders(orders, transactions) {
+  const byKey = {};
+  for (const t of (transactions || [])) {
+    const k = normalizeOrderNumber(t && t.orderNumber);
+    if (!k) continue;                       // a row with no order# can't be linked
+    (byKey[k] ||= []).push(t);
+  }
+  const rows = [];
+  let costWithoutPayment = 0;
+  let costWithoutPaymentCount = 0;
+  let billedNotCollected = 0;
+
+  for (const o of (orders || [])) {
+    if (!o) continue;
+    const key = normalizeOrderNumber(o.orderNumber);
+    if (!key) continue;                     // an order with no number can't be matched
+    const linked = byKey[key] || [];
+    let collected = 0;
+    for (const t of linked) {
+      if (t && t.type === 'income' && t.category === 'Customer Sales') collected += signed(t);
+    }
+    collected = round2(collected);
+    const cost = orderActualCost(linked).actualCost;   // signed COGS — reused, not re-derived
+    const billed = round2(num(o.totalValue));
+    const client = ((o.companyName || '').trim()) || ((o.clientName || '').trim()) || '—';
+
+    // "Cost recorded but no payment": cost > 0 and NO positive payment collected.
+    // Tested as collected <= 0 (not === 0) so a customer CREDIT that nets collected
+    // negative (a refund with no offsetting payment) still counts as unpaid rather
+    // than silently suppressing the flag and dropping the order from the report.
+    const noPayment = cost > 0 && collected <= 0;
+    const outstanding = round2(Math.max(billed - collected, 0));
+
+    if (noPayment) { costWithoutPayment = round2(costWithoutPayment + cost); costWithoutPaymentCount += 1; }
+    if (billed > 0 && outstanding > 0) billedNotCollected = round2(billedNotCollected + outstanding);
+
+    if (noPayment || (billed > 0 && outstanding > 0)) {
+      rows.push({
+        orderNumber: key, client, billed, collected, cost,
+        outstanding, costWithoutPayment: noPayment, paid: !!o.paid,
+      });
+    }
+  }
+  // Loudest first: cost-without-payment, then biggest outstanding, then newest #.
+  rows.sort((a, b) =>
+    (Number(b.costWithoutPayment) - Number(a.costWithoutPayment)) ||
+    (b.outstanding - a.outstanding) ||
+    (Number(b.orderNumber) - Number(a.orderNumber)));
+
+  return {
+    orders: rows,
+    totals: {
+      costWithoutPayment: round2(costWithoutPayment),
+      costWithoutPaymentCount,
+      billedNotCollected: round2(billedNotCollected),
+    },
+  };
+}
+
 // GET /api/finances/order-actuals?orderNumbers=21,022,#23  — the receipt-derived
 // ACTUAL cost for a set of orders, keyed by canonical order number. This is the
 // "source of truth = the receipts I upload" figure, surfaced wherever an order or
@@ -430,6 +511,53 @@ const byOrder = async (req, res) => {
     if (year) orders = orders.filter((o) => o.year === year);  // by the year it SOLD, not by cost dates
     orders.sort((a, b) => Number(b.orderNumber) - Number(a.orderNumber));
     res.json({ orders });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+// GET /api/finances/payment-gaps?year=  — the "money owed to you / unrecorded
+// payments" lens: per order, billed vs collected vs cost, flagging orders with
+// COST recorded but NO client payment, and billed-but-not-collected. This is the
+// additive view that EXPLAINS why net profit reads low — vendor costs were entered
+// without the matching customer income. The P&L itself stays cash-honest; this
+// just surfaces the gap so the owner can close it (record the missing payment).
+//
+// Year scoping mirrors byOrder's sale-anchor, with one addition: an order that has
+// cost but NO sale has no Customer-Sales date to anchor on, so it would vanish from
+// every year. For those we anchor to the EARLIEST cost (COGS) date instead, so a
+// "cost in 2026, no payment yet" order correctly shows under 2026 — exactly the
+// order the owner needs to see. Reuses paymentGapsForOrders for all the math.
+const paymentGaps = async (req, res) => {
+  try {
+    const year = req.query.year ? Number(req.query.year) : null;
+    const orders = await Order.find({ orderNumber: { $ne: '' } })
+      .select('orderNumber companyName clientName totalValue paid').lean();
+    const txns = await Transaction.find({ orderNumber: { $ne: '' } })
+      .select('type category amount isCredit orderNumber date').lean();
+
+    if (!year) return res.json(paymentGapsForOrders(orders, txns));
+
+    // Per canonical order key: the sale-anchor year (first Customer-Sales date),
+    // and the earliest cost year as a fallback for orders with cost but no sale.
+    const cogs = new Set(Transaction.COGS_CATEGORIES);
+    const saleYear = {}, costYear = {};
+    for (const t of txns) {
+      const k = normalizeOrderNumber(t.orderNumber);
+      if (!k || !t.date) continue;
+      const y = new Date(t.date).getUTCFullYear();
+      if (t.type === 'income' && t.category === 'Customer Sales') {
+        if (saleYear[k] == null || y < saleYear[k]) saleYear[k] = y;
+      } else if (t.type === 'expense' && cogs.has(t.category)) {
+        if (costYear[k] == null || y < costYear[k]) costYear[k] = y;
+      }
+    }
+    const inYear = (key) => {
+      const anchor = saleYear[key] != null ? saleYear[key] : costYear[key];
+      return anchor === year;
+    };
+    const scopedOrders = orders.filter((o) => inYear(normalizeOrderNumber(o.orderNumber)));
+    // Keep all txns (the pure fn only pulls the ones matching scopedOrders' keys),
+    // so a cross-year cost still nets correctly into its order's figures.
+    res.json(paymentGapsForOrders(scopedOrders, txns));
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
@@ -536,7 +664,7 @@ const resyncYears = async () => {
   return fixed;
 };
 
-module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, resyncYears };
+module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, paymentGaps, resyncYears };
 // Reusable, DB-free finance math for other surfaces (CRM company page, the order
 // view) + tests. All keyed off the SAME Transaction truth via these helpers.
 module.exports.summarizeCompanyFinance = summarizeCompanyFinance;
@@ -544,6 +672,7 @@ module.exports.normalizeOrderNumber = normalizeOrderNumber;
 module.exports.orderRevenueCost = orderRevenueCost;
 module.exports.orderActualCost = orderActualCost;
 module.exports.actualCostByOrder = actualCostByOrder;
+module.exports.paymentGapsForOrders = paymentGapsForOrders;
 module.exports.pct = pct;
 module.exports.signed = signed;
 module.exports.incomeContribution = incomeContribution;
