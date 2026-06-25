@@ -26,6 +26,9 @@ const {
   classifyHeadsUp, buildHeadsUp, ownerTouched, buildMappedRows,
 } = require('../crm');
 
+const { PLACED_STATUSES } = require('../../models/Order');
+const { isPlacedStatus } = require('../orders');
+
 // ── Header normalization & alias resolution ──────────────────────────────────
 test('normHeader strips case / spaces / punctuation uniformly', () => {
   assert.equal(normHeader('Owner / Contact'), 'ownercontact');
@@ -93,9 +96,12 @@ test('still detects the legacy field-visit tracker (title row above headers)', (
 // ── Status / temperature vocabulary → stage + tag ────────────────────────────
 test('Nate\'s exact Notion Status values map to the right stage + tag', () => {
   const cases = [
-    ['Hot (Clients)',             'customer',  'hot'],
+    // NEW CONTRACT: a status WORD never yields 'customer' — that's reserved for a
+    // verified placed Order. "Hot (Clients)" is just warmth (→ contacted, tag hot);
+    // "Orders In Progress" is in-flight (→ quoting, tag in-progress).
+    ['Hot (Clients)',             'contacted', 'hot'],
     ['Won Orders',                'won',       'won'],
-    ['Orders In Progress',        'customer',  'in-progress'],
+    ['Orders In Progress',        'quoting',   'in-progress'],
     ['Warm (Leads)',              'contacted', 'warm'],
     ['Room Temp (Opportunities)', 'contacted', 'room-temp'],
     ['Cold (Prospects)',          'lead',      'cold'],
@@ -216,24 +222,32 @@ test('a Notion ISO row produces nextFollowUp at UTC noon, bucketing on its day',
   assert.equal(m.nextFollowUp.getUTCHours(), 12);
 });
 
-// ── Order → customer (row-level) ─────────────────────────────────────────────
-test('a row carrying an Order Number is a CUSTOMER regardless of status word', () => {
+// ── Order-number HINT (row-level): a free-text order cell is NOT a customer ───
+// NEW CONTRACT: a free-text "Order Number"/"Order Status" cell is only a HINT
+// (no verified Order doc behind it). The importer NEVER emits stage 'customer' —
+// the stage follows the status word, and an 'order-ref' tag records the hint.
+// Real customer promotion is owner-approved on placed-order placement (controller).
+test('a row carrying an Order Number is a HINT, not a customer (stage follows status)', () => {
   const m = mapTrackerRow(
     { companyName: 'Acme', status: 'Cold (Prospects)', orderNumber: '21' },
     { format: 'notion' },
   );
   assert.equal(m.hasOrderNumber, true);
-  assert.equal(m.stage, 'customer');
-  assert.equal(m._skip, false); // never skipped — it's a real customer
+  assert.notEqual(m.stage, 'customer');  // never customer from a free-text cell
+  assert.equal(m.stage, 'lead');         // Cold (Prospects) → lead
+  assert.ok(m.tags.includes('order-ref'));
+  assert.equal(m._skip, false); // never skipped — order hint always keeps the row
 });
 
-test('an Order Status of a real order-state also makes it a customer', () => {
+test('an Order Status of a real order-state is also just a hint (not customer)', () => {
   const m = mapTrackerRow(
     { companyName: 'Acme', status: 'Warm (Leads)', orderStatus: 'Paid' },
     { format: 'notion' },
   );
   assert.equal(m.hasOrderNumber, true);
-  assert.equal(m.stage, 'customer');
+  assert.notEqual(m.stage, 'customer');
+  assert.equal(m.stage, 'contacted');    // Warm (Leads) → contacted
+  assert.ok(m.tags.includes('order-ref'));
 });
 
 // ── promoteStage: UP-only, never touches closed/parked ───────────────────────
@@ -498,4 +512,105 @@ test('full Notion CSV maps a warm lead with deal value, tags, and ISO follow-up'
   assert.equal(m.nextFollowUp.getUTCDate(), 25);
   assert.equal(m.email, 'jane@acme.com');
   assert.match(m.logs[0].text, /Imported from Notion CRM/);
+});
+
+// ── NEW CONTRACT: the importer NEVER yields stage 'customer' ──────────────────
+// "customer" is earned only by a VERIFIED placed Order, promoted owner-side by
+// the controller — never fabricated by an import from a status word or a
+// free-text order-number cell. These guard the whole importer surface.
+test('mapStatus never returns "customer" for any status vocabulary', () => {
+  const vocab = [
+    'Hot (Clients)', 'Orders In Progress', 'Won Orders', 'Warm (Leads)',
+    'Room Temp (Opportunities)', 'Cold (Prospects)', 'Lost Orders', 'Meta Ad Conversions',
+    'customer', 'client', 'active', 'existing customer', 'active client',
+    'hot', 'warm', 'cold', 'opportunity', 'reorder', 'won', 'order placed',
+    'quoting', 'sampling', 'visited', 'left vm', 'not interested',
+  ];
+  for (const s of vocab) {
+    assert.notEqual(mapStatus(s), 'customer', `mapStatus(${JSON.stringify(s)}) must not be "customer"`);
+  }
+});
+
+test('mapTrackerRow never emits stage "customer" — even with an order number/status', () => {
+  const rows = [
+    { companyName: 'A', status: 'Hot (Clients)' },
+    { companyName: 'B', status: 'Orders In Progress' },
+    { companyName: 'C', status: 'customer' },
+    { companyName: 'D', status: 'active client' },
+    { companyName: 'E', status: 'Cold (Prospects)', orderNumber: '21' },     // order HINT
+    { companyName: 'F', status: 'Warm (Leads)', orderStatus: 'Paid' },        // order-state HINT
+    { companyName: 'G', status: 'Won Orders', orderNumber: '99' },
+  ];
+  for (const r of rows) {
+    const m = mapTrackerRow(r, { format: 'notion' });
+    assert.notEqual(m.stage, 'customer', `row ${r.companyName} must not map to customer`);
+  }
+});
+
+test('the "customer"/"client" status word maps to contacted (not customer)', () => {
+  assert.equal(mapStatus('customer'), 'contacted');
+  assert.equal(mapStatus('existing client'), 'contacted');
+  assert.equal(mapStatus('active'), 'contacted');
+});
+
+test('applyImportToDoc never sets customer from a status WORD of "customer"', () => {
+  // Even if a mapped row somehow carries stage 'customer' (it shouldn't), a doc
+  // with no verified placed order must NOT be promoted by the status-word branch.
+  const d = doc({ stage: 'lead' });
+  applyImportToDoc(d, mapped({ stage: 'customer' }), false, { hasOrders: false });
+  assert.notEqual(d.stage, 'customer');
+  assert.equal(d.stage, 'lead'); // untouched — only a real placed order promotes
+});
+
+// ── isCustomer is true ONLY with a real PLACED order ─────────────────────────
+// Mirrors getOne's rule exactly: isCustomer = orders.some(o => PLACED includes).
+const isCustomerFrom = (orders) => orders.some((o) => PLACED_STATUSES.includes(o.status));
+
+test('PLACED_STATUSES is the real-order set (excludes quoted/approved/cancelled)', () => {
+  assert.deepEqual(PLACED_STATUSES, ['placed', 'in_production', 'shipped', 'delivered']);
+  for (const s of ['quoted', 'approved', 'cancelled']) {
+    assert.ok(!PLACED_STATUSES.includes(s), `${s} must NOT be a placed status`);
+  }
+});
+
+test('isCustomer is FALSE for a company with only quotes/approved/cancelled', () => {
+  assert.equal(isCustomerFrom([{ status: 'quoted' }]), false);
+  assert.equal(isCustomerFrom([{ status: 'approved' }]), false);
+  assert.equal(isCustomerFrom([{ status: 'cancelled' }]), false);
+  assert.equal(isCustomerFrom([{ status: 'quoted' }, { status: 'approved' }, { status: 'cancelled' }]), false);
+  assert.equal(isCustomerFrom([]), false);
+});
+
+test('isCustomer is TRUE as soon as one order is in a placed status', () => {
+  for (const s of PLACED_STATUSES) {
+    assert.equal(isCustomerFrom([{ status: 'quoted' }, { status: s }]), true, `placed via ${s}`);
+  }
+  assert.equal(isCustomerFrom([{ status: 'delivered' }]), true);
+});
+
+// ── Auto-bump on placement: fires on placed; never regresses won/lost/dormant ─
+// The controller helper promotes via promoteStage(stage,'customer'). We verify
+// (a) the placed-status gate, and (b) the exact promotion composition it uses.
+test('isPlacedStatus gates exactly the placed statuses', () => {
+  for (const s of ['placed', 'in_production', 'shipped', 'delivered']) {
+    assert.equal(isPlacedStatus(s), true, s);
+  }
+  for (const s of ['quoted', 'approved', 'cancelled', '', undefined]) {
+    assert.equal(isPlacedStatus(s), false, String(s));
+  }
+});
+
+test('auto-bump promotes a pre-customer stage to customer on placement', () => {
+  // The helper does promoteStage(current, 'customer') for each placed order.
+  for (const from of ['lead', 'contacted', 'quoting', 'sampling']) {
+    assert.equal(promoteStage(from, 'customer'), 'customer', `bump from ${from}`);
+  }
+});
+
+test('auto-bump on placement NEVER regresses won / lost / dormant', () => {
+  assert.equal(promoteStage('won', 'customer'), 'won');         // stays won (not regressed)
+  assert.equal(promoteStage('lost', 'customer'), 'lost');       // deliberate end state untouched
+  assert.equal(promoteStage('dormant', 'customer'), 'dormant'); // parked deal not resurrected
+  // and an already-customer stays customer (idempotent)
+  assert.equal(promoteStage('customer', 'customer'), 'customer');
 });

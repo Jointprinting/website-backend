@@ -2,11 +2,36 @@ const Order = require('../models/Order');
 const Transaction = require('../models/Transaction');
 const ContactSubmission = require('../models/ContactSubmission');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
-const { deriveCompanyKey } = require('../models/Order');
+// REUSE the canonical key + the single PLACED_STATUSES list so "placed order"
+// means exactly the same thing here as in the CRM.
+const { deriveCompanyKey, PLACED_STATUSES } = require('../models/Order');
 const { normalizeOrderNumber, orderActualCost } = require('./finances');
 const { getDefaultsFor } = require('./clients');
+// REUSE the CRM's customer-promotion (which itself reuses promoteStage) so a
+// placed order bumps the company to 'customer' without ever regressing a
+// won/lost/dormant record. Order writes never depend on this succeeding.
+const { promoteCompanyToCustomerOnPlacement } = require('./crm');
 const { nextNumber, bumpCounterTo } = require('../utils/sequence');
 const r2 = require('../services/r2');
+
+// True when an order status counts as a REAL placed order (a customer signal).
+const isPlacedStatus = (s) => PLACED_STATUSES.includes(s);
+
+// Best-effort: a placed order means the company is a customer. Promote its CRM
+// record (UP-only; never touches won/lost/dormant). Wrapped so a CRM hiccup can
+// NEVER fail the order write that triggered it — we only log and move on.
+async function bumpCustomerOnPlacement(order) {
+  try {
+    if (!order || !isPlacedStatus(order.status)) return;
+    const key = order.companyKey || deriveCompanyKey(order.companyName, order.clientName);
+    await promoteCompanyToCustomerOnPlacement(key, {
+      companyName: order.companyName || '',
+      clientName:  order.clientName  || '',
+    });
+  } catch (e) {
+    console.warn('[orders] customer auto-promote skipped:', e.message);
+  }
+}
 
 // ─── Notion seed data ─────────────────────────────────────────────────────────
 // Exported from the Notion "Orders" database (the source of truth). Project #
@@ -349,6 +374,9 @@ const createOrder = async (req, res) => {
 
     body.activity = [{ kind: 'created', actor: 'admin', message: `Project #${body.projectNumber} created`, at: new Date() }];
     const order = await Order.create(body);
+    // If this order is created already in a PLACED status, the company is a
+    // customer — promote its CRM record (best-effort; never blocks the create).
+    if (isPlacedStatus(order.status)) await bumpCustomerOnPlacement(order);
     res.status(201).json(order);
   } catch (e) {
     res.status(400).json({ message: e.message });
@@ -412,6 +440,11 @@ const updateOrder = async (req, res) => {
       { new: true, runValidators: true },
     ).lean();
     if (!order) return res.status(404).json({ message: 'Not found' });
+    // Auto-promote to customer ONLY on a real transition INTO a placed status
+    // (prior status was not placed). Best-effort — never blocks the response.
+    if (isPlacedStatus(order.status) && !isPlacedStatus(current.status)) {
+      await bumpCustomerOnPlacement(order);
+    }
     res.json(order);
   } catch (e) {
     res.status(400).json({ message: e.message });
@@ -1199,4 +1232,6 @@ module.exports = {
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
   dashboard, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
   cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups, assignMockupNumber,
+  // exported for tests / reuse
+  isPlacedStatus, bumpCustomerOnPlacement,
 };
