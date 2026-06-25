@@ -1790,6 +1790,163 @@ async function unarchiveOne(req, res) {
   }
 }
 
+// ── Dedup-on-entry: "did you mean an existing company?" ─────────────────────────
+// When the owner types a NEW company name, we surface the most likely EXISTING
+// records BEFORE a card is created — so an accidental duplicate never gets made.
+// This is the same dedup philosophy as the duplicate finder (matchKey + a light
+// fuzzy fallback), but applied live against a single typed name. It only ever
+// SUGGESTS: the caller is free to ignore every candidate and create a genuinely
+// new, distinct company. Nothing here merges, blocks, or mutates.
+
+// Tokenize a name into lowercased word tokens (apostrophes folded, punctuation
+// dropped). Mirrors the vendor dedup tokenizer so the two read the same.
+function nameTokens(name) {
+  return String(name == null ? '' : name)
+    .toLowerCase()
+    .replace(/['’`]/g, '')
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
+
+// Is token array `a` an in-order prefix of `b`? ("bleu leaf" ⊂ "bleu leaf
+// dispensary"). Order matters, so "leaf bleu" is NOT a prefix.
+function isNameTokenPrefix(a, b) {
+  if (a.length === 0 || a.length > b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+// Jaccard overlap of two token SETS (|A∩B| / |A∪B|), 0..1.
+function nameTokenJaccard(a, b) {
+  const A = new Set(a);
+  const B = new Set(b);
+  if (A.size === 0 || B.size === 0) return 0;
+  let inter = 0;
+  for (const t of A) if (B.has(t)) inter += 1;
+  const union = A.size + B.size - inter;
+  return union ? inter / union : 0;
+}
+
+// Score how strongly a typed name matches one existing record. Returns
+//   { score: 0..1, reason } — higher = more confident it's the SAME company.
+// Tiers (most → least confident), reusing the CRM matchKey as the strong signal:
+//   1.00  identical IDENTITY key (companyKey) — already that exact company
+//   0.92  identical fuzzy matchKey (corp-suffix/punct/apostrophe stripped):
+//         "Acme Inc" ≈ "Acme, Inc." (same stem)
+//   0.78  one name's tokens are an in-order prefix of the other AND the shorter
+//         stem is meaningful (≥3 chars) — "Acme" vs "Acme Apparel" (a likely
+//         dupe worth surfacing as a SUGGESTION, never an auto-merge)
+//   0.60..0.75  strong token-set overlap (Jaccard ≥ 0.5), scaled by overlap
+// Anything weaker scores 0 (not a candidate). Empty inputs never match.
+function scoreNameMatch(typedKey, typedMatchKey, typedTokens, rec) {
+  const recKey = rec.companyKey || '';
+  if (!typedKey || !recKey) return { score: 0, reason: '' };
+  if (recKey === typedKey) return { score: 1, reason: 'exact' };
+
+  const recMatch = rec.matchKey || deriveMatchKey(rec.companyName, rec.clientName);
+  if (typedMatchKey && recMatch && recMatch === typedMatchKey) {
+    return { score: 0.92, reason: 'matchKey' };
+  }
+
+  const recTokens = nameTokens(rec.companyName || rec.clientName || rec.companyKey);
+  if (typedTokens.length && recTokens.length) {
+    const shorter = typedTokens.length <= recTokens.length ? typedTokens : recTokens;
+    const longer  = shorter === typedTokens ? recTokens : typedTokens;
+    const shortStem = shorter.join('');
+    if (shortStem.length >= 3 && isNameTokenPrefix(shorter, longer)) {
+      return { score: 0.78, reason: 'prefix' };
+    }
+    const j = nameTokenJaccard(typedTokens, recTokens);
+    if (j >= 0.5) return { score: 0.6 + 0.15 * Math.min(1, (j - 0.5) / 0.5), reason: 'overlap' };
+  }
+  return { score: 0, reason: '' };
+}
+
+// Rank existing records against a typed company name — the pure core of the
+// match endpoint (no DB / no Express, so it's unit-testable). `docs` are lean
+// Client POJOs ({ companyKey, companyName, clientName, matchKey, stage, ... }).
+// Options: { limit = 5, excludeKey } drops the record being edited (so editing a
+// company never flags itself). Returns the top candidates, most-confident first,
+// each a compact card the UI shows as "did you mean <name>?". SUGGEST-only.
+function rankMatchCandidates(name, docs, opts = {}) {
+  const typedKey = deriveCompanyKey(name, '');
+  if (!typedKey) return [];                        // nothing typed yet → no suggestions
+  const typedMatchKey = deriveMatchKey(name, '');
+  const typedTokens   = nameTokens(name);
+  const excludeKey    = opts.excludeKey || '';
+  const limit = Math.max(1, Math.min(25, Number(opts.limit) || 5));
+
+  const scored = [];
+  for (const rec of (docs || [])) {
+    if (!rec || !rec.companyKey) continue;
+    if (excludeKey && rec.companyKey === excludeKey) continue;
+    const { score, reason } = scoreNameMatch(typedKey, typedMatchKey, typedTokens, rec);
+    if (score <= 0) continue;
+    scored.push({
+      companyKey:   rec.companyKey,
+      name:         rec.companyName || rec.clientName || rec.companyKey,
+      stage:        rec.stage || 'lead',
+      isCustomer:   !!rec.isCustomer,
+      address:      rec.address || '',
+      lastContact:  rec.lastContact || null,
+      score:        Math.round(score * 100) / 100,
+      reason,
+    });
+  }
+  // Most-confident first; tie-break a real customer ahead, then by name so the
+  // ordering is stable for the UI.
+  scored.sort((a, b) =>
+    b.score - a.score
+    || (b.isCustomer ? 1 : 0) - (a.isCustomer ? 1 : 0)
+    || String(a.name).localeCompare(String(b.name)));
+  return scored.slice(0, limit);
+}
+
+// GET /api/crm/match?name=&excludeKey=&limit= — dedup-on-entry suggestions.
+// Returns the existing companies that most likely ALREADY ARE the one being
+// typed, so the owner can reuse a card instead of making a duplicate. Pure
+// suggestions — the client decides; this endpoint never merges or blocks.
+async function matchCandidates(req, res) {
+  try {
+    const name = String(req.query.name || '').trim();
+    // Too-short / empty input: return an empty candidate list (not an error) so
+    // the UI can call this on every keystroke without noise.
+    if (name.length < 2) return res.json({ query: name, candidates: [] });
+
+    // Search non-archived records only — a duplicate suggestion should point at a
+    // live card, not a soft-deleted one. Narrow the scan with a coarse $or
+    // (matchKey OR a loose name regex) so we don't load the whole book, then do
+    // the precise ranking in memory.
+    const typedMatchKey = deriveMatchKey(name, '');
+    const firstToken = nameTokens(name)[0] || '';
+    const or = [];
+    if (typedMatchKey) or.push({ matchKey: typedMatchKey });
+    if (firstToken) {
+      const rx = new RegExp(firstToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      or.push({ companyName: rx }, { clientName: rx }, { companyKey: rx });
+    }
+    const filter = or.length ? { ...NOT_ARCHIVED, $or: or } : { ...NOT_ARCHIVED };
+    const docs = await Client.find(filter)
+      .select('companyKey companyName clientName matchKey stage address lastContact')
+      .limit(400)
+      .lean();
+
+    const candidates = rankMatchCandidates(name, docs, {
+      excludeKey: req.query.excludeKey,
+      limit: req.query.limit,
+    });
+    // Flag which suggestions are real customers (placed an order) so the UI can
+    // mark them — keys off order reality, the Phase-1 signal, not the stage text.
+    if (candidates.length) {
+      const withOrders = await keysWithOrders(candidates.map((c) => c.companyKey));
+      candidates.forEach((c) => { c.isCustomer = withOrders.has(c.companyKey); });
+    }
+    res.json({ query: name, candidates });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
 module.exports = {
   listCrm,
   getToday,
@@ -1806,7 +1963,10 @@ module.exports = {
   deleteLogEntry,
   archiveOne,
   unarchiveOne,
+  matchCandidates,
   // exported for tests / reuse
+  rankMatchCandidates,
+  scoreNameMatch,
   applyMappedRow,
   applyImportToDoc,
   normalizeRowKeys,

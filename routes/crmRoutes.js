@@ -25,6 +25,7 @@ const {
   deleteLogEntry,
   archiveOne,
   unarchiveOne,
+  matchCandidates,
 } = require('../controllers/crm');
 const {
   reconcilePreview,
@@ -40,6 +41,9 @@ router.get('/calendar',  getCalendar);
 router.get('/pipeline',  getPipeline);
 router.get('/dashboard', getDashboard);
 router.get('/duplicates', getDuplicates);
+// Dedup-on-entry: top existing candidates for a typed name (SUGGEST-only, never
+// merges/blocks). Fixed path, declared before the dynamic /:companyKey.
+router.get('/match',     matchCandidates);
 router.post('/import',   importRows);
 router.post('/merge',    mergeCompanies);
 router.post('/archive',  archiveCompanies);
