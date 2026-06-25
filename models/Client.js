@@ -17,6 +17,14 @@ const CRM_STAGES = ['lead', 'contacted', 'quoting', 'sampling', 'won', 'customer
 // What the company is interested in. '' = unknown/unset.
 const INTEREST_TYPES = ['', 'promos', 'apparel', 'both'];
 
+// Structured, FILTERABLE lead-source enum (where the relationship originated).
+// '' = unknown/unset (the default). Kept byte-for-byte in sync with the
+// LEAD_SOURCES list in utils/fieldTrackerImport.js, which is the single place the
+// raw "Source" text is normalized into one of these values. Indexed so the CRM
+// list/pipeline can filter by it cheaply.
+const LEAD_SOURCES = ['', 'Website', 'Referral', 'Event', 'Social Media',
+  'Cold Outreach', 'Partnership', 'Advertising', 'Organic Search'];
+
 // One person at the company. Several may share a single CRM record.
 const ContactSchema = new mongoose.Schema({
   name:  { type: String, default: '' },
@@ -75,6 +83,15 @@ const ClientSchema = new mongoose.Schema({
   contacts:     { type: [ContactSchema], default: [] },     // people at the company
   log:          { type: [LogEntrySchema], default: [] },    // timestamped touch history
   source:       { type: String, default: '' },              // where the record came from ("field-tracker", "order", "manual", ...)
+  // Structured, filterable origin of the relationship. Distinct from `source`
+  // (the record's import provenance); this is the SALES lead source the owner
+  // filters the pipeline by. One of LEAD_SOURCES; '' when unknown.
+  leadSource:   { type: String, enum: LEAD_SOURCES, default: '', index: true },
+  // Alternate names this ONE company also goes by — populated when an alias-style
+  // cell ("Happy Leaf / One Green Leaf / The Healing Side") is collapsed into a
+  // single client. Keeps the other names searchable/visible without spawning
+  // duplicate cards. Primary stays companyName/companyKey.
+  akas:         { type: [String], default: [] },
   tags:         { type: [String], default: [], index: true }, // freeform labels for grouping/filtering ("vip", "promos-only", "wholesale", ...)
   lostReason:   { type: String, default: '' },              // why a deal was marked lost (captured when stage → 'lost')
 
@@ -86,15 +103,23 @@ const ClientSchema = new mongoose.Schema({
   // import 'replace' mode (on stale pure-import records).
   archived:     { type: Boolean, default: false, index: true },
   archivedAt:   { type: Date, default: null },
-  archivedReason: { type: String, default: '' },            // 'merged', 'replaced', 'dead-cleanup', 'manual'
+  archivedReason: { type: String, default: '' },            // 'merged', 'replaced', 'dead-cleanup', 'manual', 'meta-ad-import', 'bad-import'
   mergedInto:   { type: String, default: '' },              // survivor companyKey when archivedReason === 'merged'
+
+  // Reconcile audit/revert handle. Every record TOUCHED by a single run of the
+  // owner-triggered data reconcile (created, updated, or archived) is stamped with
+  // that run's batch id, so the whole batch is identifiable and reversible as a
+  // unit. Empty for records the reconcile never touched.
+  reconcileBatchId: { type: String, default: '', index: true },
 }, { timestamps: true });
 
 ClientSchema.statics.CRM_STAGES     = CRM_STAGES;
 ClientSchema.statics.INTEREST_TYPES = INTEREST_TYPES;
+ClientSchema.statics.LEAD_SOURCES   = LEAD_SOURCES;
 
 const Client = mongoose.model('Client', ClientSchema);
 Client.CRM_STAGES     = CRM_STAGES;
 Client.INTEREST_TYPES = INTEREST_TYPES;
+Client.LEAD_SOURCES   = LEAD_SOURCES;
 
 module.exports = Client;

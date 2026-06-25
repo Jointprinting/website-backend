@@ -245,6 +245,137 @@ function interestIsNo(raw) {
   return v === 'no' || v === 'n' || v === 'not interested' || v === 'none';
 }
 
+// The STRUCTURED, FILTERABLE lead-source vocabulary. The owner's Notion "Source"
+// column is free text (or, in his current export, empty), so we normalize it into
+// a fixed enum the CRM can filter/group by — instead of storing raw strings that
+// never line up. '' (unknown/unset) is the default and is ALWAYS valid: an empty
+// or unrecognized Source maps to '' rather than being force-bucketed, so we never
+// invent an origin we don't actually know. Order matters only for readability; the
+// matchers are independent substrings.
+const LEAD_SOURCES = ['', 'Website', 'Referral', 'Event', 'Social Media',
+  'Cold Outreach', 'Partnership', 'Advertising', 'Organic Search'];
+
+// Substring rules (most-specific first) mapping a raw Source cell → an enum value.
+// Kept deliberately conservative: only confident hits map; everything else → ''
+// (unknown), so a mystery value is surfaced as "unset" rather than mis-filed.
+const LEAD_SOURCE_RULES = [
+  { re: /\b(meta|facebook|fb|instagram|ig|tiktok|linkedin|twitter|\bx\b|social)\b/i, v: 'Social Media' },
+  { re: /\b(referr?al|referred|word of mouth|wom)\b/i,                                 v: 'Referral' },
+  { re: /\b(event|trade ?show|expo|conference|booth|convention|fair)\b/i,             v: 'Event' },
+  { re: /\b(cold|outreach|outbound|cold call|cold email|prospect(?:ing)?|door)\b/i,   v: 'Cold Outreach' },
+  { re: /\b(partner(?:ship)?|reseller|affiliate|collab(?:oration)?)\b/i,              v: 'Partnership' },
+  { re: /\b(organic|seo|search|google search)\b/i,                                    v: 'Organic Search' },
+  { re: /\b(ad|ads|advert|advertis|ppc|sem|paid|campaign|promo(?:tion)?)\b/i,         v: 'Advertising' },
+  { re: /\b(website|web ?site|web ?form|contact form|landing|site|inbound|online)\b/i, v: 'Website' },
+];
+
+// Raw "Source" cell → structured leadSource enum. Empty / unrecognized → '' so we
+// never fabricate an origin. Pure + exported so the seed builder, the importer,
+// and the tests all agree on the exact same mapping.
+function mapLeadSource(raw) {
+  const v = String(raw == null ? '' : raw).trim();
+  if (!v) return '';
+  for (const r of LEAD_SOURCE_RULES) { if (r.re.test(v)) return r.v; }
+  return '';
+}
+
+// Corporate suffixes whose presence at the END of a name we want to drop when
+// computing the SHORT display name for an alias segment. Reuses the same list as
+// the fuzzy match key. Returns the trimmed segment.
+function stripTrailingCorpSuffix(name) {
+  let raw = String(name || '').trim();
+  for (const suf of CORP_SUFFIXES) {
+    const re = new RegExp(`[\\s,.&-]+${suf.replace(/\./g, '\\.')}\\.?$`, 'i');
+    if (re.test(raw)) { raw = raw.replace(re, '').trim(); break; }
+  }
+  return raw;
+}
+
+// Split an owner alias-style company cell like
+//   "Happy Leaf / One Green Leaf / The Healing Side"
+//   "Swan Rose Holdings (Cannabis Connoisseur / Premier High Life / Mush Love)"
+//   "Voodoo Brewing Co -> Good Company"
+// into a PRIMARY name (first real segment) + the remaining akas, collapsing the
+// whole thing to ONE client. We split on '/', '|', '->', '→', and a parenthetical
+// list (the part inside (...) is treated as a slash-list of akas). Pure.
+//
+// Returns { primary, akas }:
+//   • primary — the first non-empty segment, trimmed, original spelling kept.
+//   • akas    — de-duped list of the remaining segments (and any names from a
+//               trailing parenthetical), original spelling, primary excluded.
+// A segment is a plausible company name (not a fragment/number) only if it has a
+// letter and at least two alphanumerics. "24" / "7" / "" are NOT names.
+function looksLikeName(seg) {
+  const s = String(seg || '').trim();
+  if (!s) return false;
+  if (!/[a-z]/i.test(s)) return false;                 // must contain a letter
+  return s.replace(/[^a-z0-9]/gi, '').length >= 2;     // and ≥2 alphanumerics
+}
+
+// Parenthetical words that read as a LOCATION/BRANCH/note rather than a brand
+// alias — so "Dunder Mifflin (Scranton Branch)" keeps the parenthetical as part
+// of the name instead of inventing an aka. A '/' inside the parens always wins
+// (an explicit alias LIST), regardless of these words.
+const PAREN_NOTE_RE = /\b(branch|location|hq|store|#?\d+|north|south|east|west|downtown|uptown|suite|ste|unit|dba|formerly|aka)\b/i;
+
+function parseAliasNames(rawName) {
+  const raw = String(rawName == null ? '' : rawName).trim();
+  if (!raw) return { primary: '', akas: [] };
+
+  // GUARD: a numeric fraction/ratio like "24/7", "9/11", "1/2" is NOT an alias
+  // delimiter — never split a slash sitting between digits. If the only slashes
+  // are numeric, treat the whole thing as one name.
+  const slashIsNumericOnly = /\//.test(raw)
+    && !/[^\d\s]\s*\/\s*\d/.test(raw)   // no "<non-digit> / <digit>"
+    && !/\d\s*\/\s*[^\d\s]/.test(raw)   // no "<digit> / <non-digit>"
+    && !/[^\d\s]\s*\/\s*[^\d\s]/.test(raw); // no "<word> / <word>"
+
+  const segments = [];
+  const parenMatch = raw.match(/^([^(]*)\(([^)]*)\)\s*(.*)$/);
+  if (parenMatch) {
+    const before = parenMatch[1].trim();
+    const inside = parenMatch[2].trim();
+    const after  = parenMatch[3].trim();
+    const lead = [before, after].filter(Boolean).join(' ').trim() || before;
+    if (lead) segments.push(lead);
+    // Only mine the parenthetical for akas when it's an explicit alias LIST (has a
+    // '/' separator) OR a clean single brand name that ISN'T a location/branch
+    // note. Otherwise keep the parenthetical text out of the akas (the lead is the
+    // company; the note rides along in the original name elsewhere).
+    const insideHasList = /[/|]|->|→/.test(inside);
+    if (insideHasList) {
+      for (const part of inside.split(/[/|]|->|→/)) { const p = part.trim(); if (p) segments.push(p); }
+    } else if (inside && looksLikeName(inside) && !PAREN_NOTE_RE.test(inside)) {
+      segments.push(inside);
+    }
+  } else if (slashIsNumericOnly) {
+    segments.push(raw);
+  } else {
+    for (const part of raw.split(/[/|]|->|→/)) { const p = part.trim(); if (p) segments.push(p); }
+  }
+
+  const cleaned = segments.map((s) => s.trim()).filter(Boolean);
+  if (!cleaned.length) return { primary: raw, akas: [] };
+
+  // ABORT splitting if the chosen primary isn't a plausible company name (e.g.
+  // "24/7 Foo" would have made primary "24"): fall back to the WHOLE original
+  // name as one company, so we never key a company on a number/fragment.
+  let primary = cleaned[0];
+  if (!looksLikeName(primary)) return { primary: raw, akas: [] };
+  if (!deriveCompanyKey(primary, '')) return { primary: raw, akas: [] };
+
+  const seenKeys = new Set([deriveCompanyKey(primary, '')]);
+  const akas = [];
+  for (const s of cleaned.slice(1)) {
+    if (!looksLikeName(s)) continue;             // skip fragments/numbers as akas
+    const k = deriveCompanyKey(s, '');
+    if (!k || seenKeys.has(k)) continue;
+    seenKeys.add(k);
+    akas.push(s);
+  }
+  return { primary, akas };
+}
+
 // Positive-contact keywords: ONLY these upgrade an unknown status to 'contacted'.
 // (The old code defaulted EVERYTHING non-empty to 'contacted', which fabricated
 // contact that never happened — e.g. a bare "left vm" became "contacted".)
@@ -422,8 +553,28 @@ function mapStatus(raw) {
   return 'lead';
 }
 
-// Pull an M/D (or M/D/Y) date out of free text like "texted 6/9",
-// "call 7/7 between 9-2:30", "reply email 6/11". Returns
+// Month name → 0-based index, full + 3-letter abbreviations. Used to parse the
+// owner's Notion long-form dates ("June 19, 2025", "Feb 23, 2026").
+const MONTH_INDEX = {
+  january: 0, jan: 0, february: 1, feb: 1, march: 2, mar: 2, april: 3, apr: 3,
+  may: 4, june: 5, jun: 5, july: 6, jul: 6, august: 7, aug: 7,
+  september: 8, sep: 8, sept: 8, october: 9, oct: 9, november: 10, nov: 10,
+  december: 11, dec: 11,
+};
+
+// Build a UTC-noon Date for an explicit y/m(0-based)/d, or null if it rolls over
+// (e.g. Feb 31). Shared by every date path so the convention (UTC noon, calendar
+// day stable across TZ) is identical everywhere.
+function utcNoon(y, moIdx, da) {
+  if (!(moIdx >= 0 && moIdx <= 11) || !(da >= 1 && da <= 31)) return null;
+  const d = new Date(Date.UTC(y, moIdx, da, 12, 0, 0));
+  if (isNaN(d.getTime()) || d.getUTCMonth() !== moIdx || d.getUTCDate() !== da) return null;
+  return d;
+}
+
+// Pull an M/D (or M/D/Y), an ISO YYYY-MM-DD, or a long-form "Month DD, YYYY" date
+// out of free text like "texted 6/9", "call 7/7 between 9-2:30", "June 19, 2025".
+// Returns
 //   { date: Date|null, ambiguous: bool, raw }
 // date is UTC noon (dodges TZ edge-cases). Month/day with no year → assumes
 // `year`. `ambiguous` is true when there was date-looking text we couldn't
@@ -440,16 +591,24 @@ function extractDateInfo(text, year) {
   // we only want the calendar day.
   const iso = raw.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
   if (iso) {
-    const y = parseInt(iso[1], 10);
-    const mo = parseInt(iso[2], 10);
-    const da = parseInt(iso[3], 10);
-    if (mo >= 1 && mo <= 12 && da >= 1 && da <= 31) {
-      const d = new Date(Date.UTC(y, mo - 1, da, 12, 0, 0));
-      if (!isNaN(d.getTime()) && d.getUTCMonth() === mo - 1 && d.getUTCDate() === da) {
-        return { date: d, ambiguous: false, raw };
-      }
+    const d = utcNoon(parseInt(iso[1], 10), parseInt(iso[2], 10) - 1, parseInt(iso[3], 10));
+    return d ? { date: d, ambiguous: false, raw } : { date: null, ambiguous: true, raw };
+  }
+
+  // Long-form month name: "June 19, 2025", "Feb 23 2026", "September 8, 2025".
+  // This is the shape the owner's Notion CRM export uses for Last Contact / Next
+  // Follow-up. Comma + year may be present or absent; year defaults to `year`.
+  const named = raw.match(/\b([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,?\s*(\d{2,4}))?\b/);
+  if (named) {
+    const moIdx = MONTH_INDEX[named[1].toLowerCase()];
+    if (moIdx != null) {
+      const da = parseInt(named[2], 10);
+      let yr = named[3] ? parseInt(named[3], 10) : year;
+      if (named[3] && yr < 100) yr += 2000;
+      const d = utcNoon(yr, moIdx, da);
+      return d ? { date: d, ambiguous: false, raw } : { date: null, ambiguous: true, raw };
     }
-    return { date: null, ambiguous: true, raw };
+    // A word that LOOKS like a month-date but isn't a real month → fall through.
   }
 
   const m = raw.match(/(\d{1,2})\s*\/\s*(\d{1,2})(?:\s*\/\s*(\d{2,4}))?/);
@@ -465,17 +624,10 @@ function extractDateInfo(text, year) {
   const da = parseInt(m[2], 10);
   let yr = m[3] ? parseInt(m[3], 10) : year;
   if (m[3] && yr < 100) yr += 2000;             // "26" → 2026
-  if (!(mo >= 1 && mo <= 12) || !(da >= 1 && da <= 31)) {
-    return { date: null, ambiguous: true, raw };
-  }
-  // Build at UTC noon so the calendar date never shifts across server TZ.
-  const d = new Date(Date.UTC(yr, mo - 1, da, 12, 0, 0));
-  if (isNaN(d.getTime())) return { date: null, ambiguous: true, raw };
-  // Guard against rollover (e.g. 2/31 → Mar 3).
-  if (d.getUTCMonth() !== mo - 1 || d.getUTCDate() !== da) {
-    return { date: null, ambiguous: true, raw };
-  }
-  return { date: d, ambiguous: false, raw };
+  // Build at UTC noon so the calendar date never shifts across server TZ; utcNoon
+  // also guards against rollover (e.g. 2/31 → Mar 3) and out-of-range month/day.
+  const d = utcNoon(yr, mo - 1, da);
+  return d ? { date: d, ambiguous: false, raw } : { date: null, ambiguous: true, raw };
 }
 
 // Back-compat thin wrapper — returns just the Date (or null). Kept because
@@ -839,6 +991,10 @@ module.exports = {
   normHeader,
   mapInterest,
   interestIsNo,
+  mapLeadSource,
+  LEAD_SOURCES,
+  parseAliasNames,
+  stripTrailingCorpSuffix,
   mapStatus,
   statusTemperature,
   engagementTag,

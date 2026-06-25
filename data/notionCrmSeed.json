@@ -1,0 +1,2762 @@
+{
+  "generatedAt": "2026-06-25T21:34:06.496Z",
+  "sourceFile": "notion_crm_export.csv",
+  "summary": {
+    "realClients": 53,
+    "metaAdJunk": 111,
+    "orders": 10,
+    "skipped": 0,
+    "discrepancies": 3,
+    "byStage": {
+      "dormant": 6,
+      "contacted": 37,
+      "lead": 6,
+      "won": 3,
+      "quoting": 1
+    },
+    "byLeadSource": {
+      "(unset)": 53
+    }
+  },
+  "clients": [
+    {
+      "companyKey": "doobiedocs",
+      "companyName": "Doobie Docs",
+      "clientName": "",
+      "matchKey": "doobiedocs",
+      "akas": [],
+      "stage": "dormant",
+      "tags": [
+        "lost"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "TJ Harrell",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2025-06-20T12:00:00.000Z",
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Lost Orders",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Lost Orders\", last \"June 20, 2025\"",
+          "dedupKey": "import:doobiedocs"
+        }
+      ]
+    },
+    {
+      "companyKey": "swanroseholdings",
+      "companyName": "Swan Rose Holdings",
+      "clientName": "",
+      "matchKey": "swanroseholdings",
+      "akas": [
+        "Cannabis Connoisseur",
+        "Premier High Life",
+        "Mush Love",
+        "New Era",
+        "Alter Ego"
+      ],
+      "stage": "contacted",
+      "tags": [
+        "hot",
+        "order-ref",
+        "eng-high"
+      ],
+      "leadSource": "",
+      "dealValue": 8000,
+      "email": "lhj@swanroseholdings.com",
+      "phone": "7197259724",
+      "contacts": [
+        {
+          "name": "Leon Harris Jr",
+          "role": "",
+          "phone": "7197259724",
+          "email": "lhj@swanroseholdings.com"
+        }
+      ],
+      "lastContact": "2026-02-23T12:00:00.000Z",
+      "nextFollowUp": "2026-06-26T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Hot (Clients)",
+      "orderStatusRaw": "Awaiting Client Approval, Mockups in Progress, Quoting",
+      "orderNumberRaw": "104",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Hot (Clients)\", order status \"Awaiting Client Approval, Mockups in Progress, Quoting\", last \"February 23, 2026\", next \"June 26, 2026\"",
+          "dedupKey": "import:swanroseholdingscannabisconnoisseurpremierhighlifemushloveneweraalterego"
+        }
+      ]
+    },
+    {
+      "companyKey": "jointchiropractic",
+      "companyName": "Joint Chiropractic",
+      "clientName": "",
+      "matchKey": "jointchiropractic",
+      "akas": [
+        "Digital Cloak"
+      ],
+      "stage": "contacted",
+      "tags": [
+        "room-temp",
+        "eng-inactive"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Scott Huber",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2025-12-10T12:00:00.000Z",
+      "nextFollowUp": "2026-07-07T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Room Temp (Opportunities)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Room Temp (Opportunities)\", last \"December 10, 2025\", next \"July 7, 2026\"",
+          "dedupKey": "import:jointchiropracticdigitalcloak"
+        }
+      ]
+    },
+    {
+      "companyKey": "hazybulldogdispensary",
+      "companyName": "Hazy Bulldog Dispensary",
+      "clientName": "",
+      "matchKey": "hazybulldogdispensary",
+      "akas": [],
+      "stage": "lead",
+      "tags": [
+        "cold",
+        "eng-inactive"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Jeff Muzio",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2026-05-11T12:00:00.000Z",
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Cold (Prospects)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Cold (Prospects)\", last \"May 11, 2026\"",
+          "dedupKey": "import:hazybulldogdispensary"
+        }
+      ]
+    },
+    {
+      "companyKey": "laytonsurfco",
+      "companyName": "Layton Surf Co",
+      "clientName": "",
+      "matchKey": "laytonsurf",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "warm",
+        "eng-low"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Jonathon Layton",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2026-02-19T12:00:00.000Z",
+      "nextFollowUp": "2026-07-22T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Warm (Leads)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Warm (Leads)\", last \"February 19, 2026\", next \"July 22, 2026\"",
+          "dedupKey": "import:laytonsurfco"
+        }
+      ]
+    },
+    {
+      "companyKey": "santacruzgunlocks",
+      "companyName": "Santa Cruz Gunlocks",
+      "clientName": "",
+      "matchKey": "santacruzgunlocks",
+      "akas": [],
+      "stage": "lead",
+      "tags": [
+        "cold",
+        "eng-low"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Jason Plourde",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2025-12-01T12:00:00.000Z",
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Cold (Prospects)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Cold (Prospects)\", last \"December 1, 2025\"",
+          "dedupKey": "import:santacruzgunlocks"
+        }
+      ]
+    },
+    {
+      "companyKey": "forge",
+      "companyName": "Forge",
+      "clientName": "",
+      "matchKey": "forge",
+      "akas": [
+        "Circlez"
+      ],
+      "stage": "contacted",
+      "tags": [
+        "room-temp",
+        "eng-low"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Aiden Tahmazian",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2025-12-16T12:00:00.000Z",
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Room Temp (Opportunities)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Room Temp (Opportunities)\", last \"December 16, 2025\"",
+          "dedupKey": "import:forgecirclez"
+        }
+      ]
+    },
+    {
+      "companyKey": "nicstick",
+      "companyName": "NicStick",
+      "clientName": "",
+      "matchKey": "nicstick",
+      "akas": [],
+      "stage": "lead",
+      "tags": [
+        "cold",
+        "eng-low"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Michael Young",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2025-06-20T12:00:00.000Z",
+      "nextFollowUp": "2025-08-04T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Cold (Prospects)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Cold (Prospects)\", last \"June 20, 2025\", next \"August 4, 2025\"",
+          "dedupKey": "import:nicstick"
+        }
+      ]
+    },
+    {
+      "companyKey": "bleuleafdispensary",
+      "companyName": "Bleu Leaf Dispensary",
+      "clientName": "",
+      "matchKey": "bleuleafdispensary",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "warm",
+        "eng-medium"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "jay@bleuleafdispensary.com",
+      "phone": "6313356305",
+      "contacts": [
+        {
+          "name": "Jay Cassuto",
+          "role": "",
+          "phone": "6313356305",
+          "email": "jay@bleuleafdispensary.com"
+        }
+      ],
+      "lastContact": "2026-02-24T12:00:00.000Z",
+      "nextFollowUp": "2026-06-24T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Warm (Leads)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Warm (Leads)\", last \"February 24, 2026\", next \"June 24, 2026\"",
+          "dedupKey": "import:bleuleafdispensary"
+        }
+      ]
+    },
+    {
+      "companyKey": "victoryarchery",
+      "companyName": "Victory Archery",
+      "clientName": "",
+      "matchKey": "victoryarchery",
+      "akas": [],
+      "stage": "lead",
+      "tags": [
+        "cold",
+        "eng-inactive"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Matthew",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2026-01-20T12:00:00.000Z",
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Cold (Prospects)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Cold (Prospects)\", last \"January 20, 2026\"",
+          "dedupKey": "import:victoryarchery"
+        }
+      ]
+    },
+    {
+      "companyKey": "mindlift",
+      "companyName": "MindLift",
+      "clientName": "",
+      "matchKey": "mindlift",
+      "akas": [],
+      "stage": "dormant",
+      "tags": [
+        "lost"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Aaron Nieves",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": null,
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Lost Orders",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Lost Orders\"",
+          "dedupKey": "import:mindlift"
+        }
+      ]
+    },
+    {
+      "companyKey": "mothaplant",
+      "companyName": "MothaPlant",
+      "clientName": "",
+      "matchKey": "mothaplant",
+      "akas": [],
+      "stage": "dormant",
+      "tags": [
+        "lost"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Ashley Hammond",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": null,
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Lost Orders",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Lost Orders\"",
+          "dedupKey": "import:mothaplant"
+        }
+      ]
+    },
+    {
+      "companyKey": "strainstars",
+      "companyName": "Strain Stars",
+      "clientName": "",
+      "matchKey": "strainstars",
+      "akas": [],
+      "stage": "dormant",
+      "tags": [
+        "lost"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Yuvraj Singh",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": null,
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Lost Orders",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Lost Orders\"",
+          "dedupKey": "import:strainstars"
+        }
+      ]
+    },
+    {
+      "companyKey": "blackdiamondtattoo",
+      "companyName": "Black Diamond Tattoo",
+      "clientName": "",
+      "matchKey": "blackdiamondtattoo",
+      "akas": [],
+      "stage": "dormant",
+      "tags": [
+        "lost"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Bree Solomon",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": null,
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Lost Orders",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Lost Orders\"",
+          "dedupKey": "import:blackdiamondtattoo"
+        }
+      ]
+    },
+    {
+      "companyKey": "solarcannabisco",
+      "companyName": "Solar Cannabis Co",
+      "clientName": "",
+      "matchKey": "solarcannabis",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "room-temp",
+        "eng-inactive"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Aaron Correia",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2025-03-19T12:00:00.000Z",
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Room Temp (Opportunities)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Room Temp (Opportunities)\", last \"March 19, 2025\"",
+          "dedupKey": "import:solarcannabisco"
+        }
+      ]
+    },
+    {
+      "companyKey": "theaxelair",
+      "companyName": "The Axe Lair",
+      "clientName": "",
+      "matchKey": "theaxelair",
+      "akas": [],
+      "stage": "lead",
+      "tags": [
+        "cold",
+        "eng-inactive"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "George Garro",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2025-03-17T12:00:00.000Z",
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Cold (Prospects)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Cold (Prospects)\", last \"March 17, 2025\"",
+          "dedupKey": "import:theaxelair"
+        }
+      ]
+    },
+    {
+      "companyKey": "humanaf",
+      "companyName": "Human AF",
+      "clientName": "",
+      "matchKey": "humanaf",
+      "akas": [],
+      "stage": "dormant",
+      "tags": [
+        "lost"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Amber Theurer",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": null,
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Lost Orders",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Lost Orders\"",
+          "dedupKey": "import:humanaf"
+        }
+      ]
+    },
+    {
+      "companyKey": "umaflowers",
+      "companyName": "Uma Flowers",
+      "clientName": "",
+      "matchKey": "umaflowers",
+      "akas": [
+        "Bliss Cannabis",
+        "Stories Cannabis"
+      ],
+      "stage": "contacted",
+      "tags": [
+        "hot",
+        "order-ref",
+        "eng-high"
+      ],
+      "leadSource": "",
+      "dealValue": 4000,
+      "email": "emerald@vvksconsulting.com",
+      "phone": "6034864663",
+      "contacts": [
+        {
+          "name": "Emerald Monaco",
+          "role": "",
+          "phone": "6034864663",
+          "email": "emerald@vvksconsulting.com"
+        }
+      ],
+      "lastContact": "2026-02-23T12:00:00.000Z",
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Hot (Clients)",
+      "orderStatusRaw": "Awaiting Client Approval",
+      "orderNumberRaw": "110",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Hot (Clients)\", order status \"Awaiting Client Approval\", last \"February 23, 2026\"",
+          "dedupKey": "import:umaflowersblisscannabisstoriescannabis"
+        }
+      ]
+    },
+    {
+      "companyKey": "thecannabosslady",
+      "companyName": "The CannaBoss Lady",
+      "clientName": "",
+      "matchKey": "thecannabosslady",
+      "akas": [],
+      "stage": "won",
+      "tags": [
+        "won",
+        "order-ref",
+        "eng-high"
+      ],
+      "leadSource": "",
+      "dealValue": 5000,
+      "email": "jill@thecannabosslady.com",
+      "phone": "9174165455",
+      "contacts": [
+        {
+          "name": "Jill Cohen",
+          "role": "",
+          "phone": "9174165455",
+          "email": "jill@thecannabosslady.com"
+        }
+      ],
+      "lastContact": "2026-01-20T12:00:00.000Z",
+      "nextFollowUp": "2026-06-25T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Won Orders",
+      "orderStatusRaw": "Completed",
+      "orderNumberRaw": "114",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Won Orders\", order status \"Completed\", last \"January 20, 2026\", next \"June 25, 2026\"",
+          "dedupKey": "import:thecannabosslady"
+        }
+      ]
+    },
+    {
+      "companyKey": "m4ji",
+      "companyName": "M4JI",
+      "clientName": "",
+      "matchKey": "m4ji",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "room-temp",
+        "order-ref",
+        "eng-low"
+      ],
+      "leadSource": "",
+      "dealValue": 2000,
+      "email": "majimiyagi@gmail.com",
+      "phone": "8565582751",
+      "contacts": [
+        {
+          "name": "Maji",
+          "role": "",
+          "phone": "8565582751",
+          "email": "majimiyagi@gmail.com"
+        }
+      ],
+      "lastContact": "2026-03-06T12:00:00.000Z",
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Room Temp (Opportunities)",
+      "orderStatusRaw": "Awaiting Client Approval",
+      "orderNumberRaw": "111",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Room Temp (Opportunities)\", order status \"Awaiting Client Approval\", last \"March 6, 2026\"",
+          "dedupKey": "import:m4ji"
+        }
+      ]
+    },
+    {
+      "companyKey": "voodoobrewingco",
+      "companyName": "Voodoo Brewing Co",
+      "clientName": "",
+      "matchKey": "voodoobrewing",
+      "akas": [
+        "Good Company"
+      ],
+      "stage": "won",
+      "tags": [
+        "won",
+        "order-ref",
+        "eng-high"
+      ],
+      "leadSource": "",
+      "dealValue": 4000,
+      "email": "info@voodooboise.com",
+      "phone": "2083407838",
+      "contacts": [
+        {
+          "name": "Megan Hammaker",
+          "role": "",
+          "phone": "2083407838",
+          "email": "info@voodooboise.com"
+        }
+      ],
+      "lastContact": "2026-02-18T12:00:00.000Z",
+      "nextFollowUp": "2026-06-30T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Won Orders",
+      "orderStatusRaw": "Completed",
+      "orderNumberRaw": "115",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Won Orders\", order status \"Completed\", last \"February 18, 2026\", next \"June 30, 2026\"",
+          "dedupKey": "import:voodoobrewingcogoodcompany"
+        }
+      ]
+    },
+    {
+      "companyKey": "santateresacanapa",
+      "companyName": "Santa Teresa Canapa",
+      "clientName": "",
+      "matchKey": "santateresacanapa",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "hot",
+        "order-ref",
+        "eng-low"
+      ],
+      "leadSource": "",
+      "dealValue": 2000,
+      "email": "joe@stcanapa.com",
+      "phone": "952270916",
+      "contacts": [
+        {
+          "name": "Jose Hernandez",
+          "role": "",
+          "phone": "952270916",
+          "email": "joe@stcanapa.com"
+        }
+      ],
+      "lastContact": "2026-01-20T12:00:00.000Z",
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Hot (Clients)",
+      "orderStatusRaw": "Lead",
+      "orderNumberRaw": "116",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Hot (Clients)\", order status \"Lead\", last \"January 20, 2026\"",
+          "dedupKey": "import:santateresacanapa"
+        }
+      ]
+    },
+    {
+      "companyKey": "madmartianfarms",
+      "companyName": "Mad Martian Farms",
+      "clientName": "",
+      "matchKey": "madmartianfarms",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "warm",
+        "order-ref",
+        "eng-low"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Meridith Reames",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2026-02-26T12:00:00.000Z",
+      "nextFollowUp": "2026-07-07T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Warm (Leads)",
+      "orderStatusRaw": "Lead",
+      "orderNumberRaw": "117",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Warm (Leads)\", order status \"Lead\", last \"February 26, 2026\", next \"July 7, 2026\"",
+          "dedupKey": "import:madmartianfarms"
+        }
+      ]
+    },
+    {
+      "companyKey": "exclusivecaregiversofca",
+      "companyName": "Exclusive Caregivers of CA",
+      "clientName": "",
+      "matchKey": "exclusivecaregiversofca",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "room-temp",
+        "order-ref",
+        "eng-low"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Suley",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": null,
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Room Temp (Opportunities)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "118",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Room Temp (Opportunities)\"",
+          "dedupKey": "import:exclusivecaregiversofca"
+        }
+      ]
+    },
+    {
+      "companyKey": "njdental1",
+      "companyName": "NJ Dental 1",
+      "clientName": "",
+      "matchKey": "njdental1",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "hot"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "alexgelman@yahoo.com",
+      "phone": "8563132500",
+      "contacts": [
+        {
+          "name": "Alex Gelman",
+          "role": "",
+          "phone": "8563132500",
+          "email": "alexgelman@yahoo.com"
+        }
+      ],
+      "lastContact": null,
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Hot (Clients)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Hot (Clients)\"",
+          "dedupKey": "import:njdental1"
+        }
+      ]
+    },
+    {
+      "companyKey": "vt3d",
+      "companyName": "VT3D",
+      "clientName": "",
+      "matchKey": "vt3d",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "hot"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "vt3dprint@gmail.com",
+      "phone": "3155215406",
+      "contacts": [
+        {
+          "name": "Logan Davis",
+          "role": "",
+          "phone": "3155215406",
+          "email": "vt3dprint@gmail.com"
+        }
+      ],
+      "lastContact": null,
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Hot (Clients)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Hot (Clients)\"",
+          "dedupKey": "import:vt3d"
+        }
+      ]
+    },
+    {
+      "companyKey": "stadiumgardens",
+      "companyName": "Stadium Gardens",
+      "clientName": "",
+      "matchKey": "stadiumgardens",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "hot"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "rita.tsalyuk@gmail.com",
+      "phone": "303522863",
+      "contacts": [
+        {
+          "name": "Rita Tsalyuk",
+          "role": "",
+          "phone": "303522863",
+          "email": "rita.tsalyuk@gmail.com"
+        }
+      ],
+      "lastContact": "2026-01-20T12:00:00.000Z",
+      "nextFollowUp": "2026-06-25T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Hot (Clients)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Hot (Clients)\", last \"January 20, 2026\", next \"June 25, 2026\"",
+          "dedupKey": "import:stadiumgardens"
+        }
+      ]
+    },
+    {
+      "companyKey": "vantagerealestate",
+      "companyName": "Vantage Real Estate",
+      "clientName": "",
+      "matchKey": "vantagerealestate",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "hot"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "maorshemo@gmail.com",
+      "phone": "2155141899",
+      "contacts": [
+        {
+          "name": "Ma’or Hemo",
+          "role": "",
+          "phone": "2155141899",
+          "email": "maorshemo@gmail.com"
+        }
+      ],
+      "lastContact": null,
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Hot (Clients)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Hot (Clients)\"",
+          "dedupKey": "import:vantagerealestate"
+        }
+      ]
+    },
+    {
+      "companyKey": "shaggysbaggy",
+      "companyName": "Shaggy’s Baggy",
+      "clientName": "",
+      "matchKey": "shaggysbaggy",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "hot",
+        "eng-inactive"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "keegan@shaggysbaggy.com",
+      "phone": "2073185491",
+      "contacts": [
+        {
+          "name": "Keegan Lapointe",
+          "role": "",
+          "phone": "2073185491",
+          "email": "keegan@shaggysbaggy.com"
+        }
+      ],
+      "lastContact": "2026-02-18T12:00:00.000Z",
+      "nextFollowUp": "2026-07-01T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Hot (Clients)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Hot (Clients)\", last \"February 18, 2026\", next \"July 1, 2026\"",
+          "dedupKey": "import:shaggysbaggy"
+        }
+      ]
+    },
+    {
+      "companyKey": "bracthouse",
+      "companyName": "Bract House",
+      "clientName": "",
+      "matchKey": "bracthouse",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "hot",
+        "order-ref",
+        "eng-low"
+      ],
+      "leadSource": "",
+      "dealValue": 8000,
+      "email": "greengold1981@att.net",
+      "phone": "2095595799",
+      "contacts": [
+        {
+          "name": "Thomas Calmese",
+          "role": "",
+          "phone": "2095595799",
+          "email": "greengold1981@att.net"
+        }
+      ],
+      "lastContact": "2026-02-18T12:00:00.000Z",
+      "nextFollowUp": "2026-06-24T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Hot (Clients)",
+      "orderStatusRaw": "Lead",
+      "orderNumberRaw": "119",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Hot (Clients)\", order status \"Lead\", last \"February 18, 2026\", next \"June 24, 2026\"",
+          "dedupKey": "import:bracthouse"
+        }
+      ]
+    },
+    {
+      "companyKey": "osnyc",
+      "companyName": "OS NYC",
+      "clientName": "",
+      "matchKey": "osnyc",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "hot",
+        "eng-low"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "hello@os-nyc.com",
+      "phone": "7188649260",
+      "contacts": [
+        {
+          "name": "Daequan Langhorn",
+          "role": "",
+          "phone": "7188649260",
+          "email": "hello@os-nyc.com"
+        }
+      ],
+      "lastContact": "2026-02-23T12:00:00.000Z",
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Hot (Clients)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Hot (Clients)\", last \"February 23, 2026\"",
+          "dedupKey": "import:osnyc"
+        }
+      ]
+    },
+    {
+      "companyKey": "earlandtomsdispensary",
+      "companyName": "Earl and Tom's Dispensary",
+      "clientName": "",
+      "matchKey": "earlandtomsdispensary",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "warm",
+        "eng-medium"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "earlandtom@gmail.com",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Trevor Mercer",
+          "role": "",
+          "phone": "",
+          "email": "earlandtom@gmail.com"
+        }
+      ],
+      "lastContact": "2026-02-24T12:00:00.000Z",
+      "nextFollowUp": "2026-06-24T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Warm (Leads)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Warm (Leads)\", last \"February 24, 2026\", next \"June 24, 2026\"",
+          "dedupKey": "import:earlandtomsdispensary"
+        }
+      ]
+    },
+    {
+      "companyKey": "saucemeafry",
+      "companyName": "Sauce Me A Fry",
+      "clientName": "",
+      "matchKey": "saucemeafry",
+      "akas": [],
+      "stage": "quoting",
+      "tags": [
+        "in-progress",
+        "order-ref",
+        "eng-high"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "saucemeafry@gmail.com",
+      "phone": "8563046513",
+      "contacts": [
+        {
+          "name": "Jason Grandizio",
+          "role": "",
+          "phone": "8563046513",
+          "email": "saucemeafry@gmail.com"
+        }
+      ],
+      "lastContact": "2025-12-16T12:00:00.000Z",
+      "nextFollowUp": "2026-06-30T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Orders In Progress",
+      "orderStatusRaw": "In Transit",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Orders In Progress\", order status \"In Transit\", last \"December 16, 2025\", next \"June 30, 2026\"",
+          "dedupKey": "import:saucemeafry"
+        }
+      ]
+    },
+    {
+      "companyKey": "jotkofffinancialservices",
+      "companyName": "Jotkoff Financial Services",
+      "clientName": "",
+      "matchKey": "jotkofffinancialservices",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "room-temp",
+        "eng-low"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "rjotkoff@jotkoff.com",
+      "phone": "9542943666",
+      "contacts": [
+        {
+          "name": "Ryan Jotkoff",
+          "role": "",
+          "phone": "9542943666",
+          "email": "rjotkoff@jotkoff.com"
+        }
+      ],
+      "lastContact": null,
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Room Temp (Opportunities)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Room Temp (Opportunities)\"",
+          "dedupKey": "import:jotkofffinancialservices"
+        }
+      ]
+    },
+    {
+      "companyKey": "electricstarshiparcade",
+      "companyName": "Electric Starship Arcade",
+      "clientName": "",
+      "matchKey": "electricstarshiparcade",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "room-temp",
+        "eng-inactive"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "mike@electricstarshiparcade.com",
+      "phone": "8173001404",
+      "contacts": [
+        {
+          "name": "Mike Woods",
+          "role": "",
+          "phone": "8173001404",
+          "email": "mike@electricstarshiparcade.com"
+        }
+      ],
+      "lastContact": null,
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Room Temp (Opportunities)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Room Temp (Opportunities)\"",
+          "dedupKey": "import:electricstarshiparcade"
+        }
+      ]
+    },
+    {
+      "companyKey": "cannapi",
+      "companyName": "Cannapi",
+      "clientName": "",
+      "matchKey": "cannapi",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "room-temp",
+        "eng-inactive"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "jocelyn@cannapidispensary.com",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Jocelyn Melo?",
+          "role": "",
+          "phone": "",
+          "email": "jocelyn@cannapidispensary.com"
+        }
+      ],
+      "lastContact": null,
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Room Temp (Opportunities)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Room Temp (Opportunities)\"",
+          "dedupKey": "import:cannapi"
+        }
+      ]
+    },
+    {
+      "companyKey": "pointintimestudios",
+      "companyName": "Point In Time Studios",
+      "clientName": "",
+      "matchKey": "pointintimestudios",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "room-temp",
+        "eng-inactive"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "elizabeth@pointintimestudios.com",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Elizabeth Brockmann",
+          "role": "",
+          "phone": "",
+          "email": "elizabeth@pointintimestudios.com"
+        }
+      ],
+      "lastContact": null,
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Room Temp (Opportunities)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Room Temp (Opportunities)\"",
+          "dedupKey": "import:pointintimestudios"
+        }
+      ]
+    },
+    {
+      "companyKey": "duckiesrevengearcade",
+      "companyName": "Duckies Revenge Arcade",
+      "clientName": "",
+      "matchKey": "duckiesrevengearcade",
+      "akas": [],
+      "stage": "won",
+      "tags": [
+        "won",
+        "order-ref",
+        "eng-high"
+      ],
+      "leadSource": "",
+      "dealValue": 2000,
+      "email": "duckiesrev@gmail.com",
+      "phone": "8179294646",
+      "contacts": [
+        {
+          "name": "Douglas Hampton",
+          "role": "",
+          "phone": "8179294646",
+          "email": "duckiesrev@gmail.com"
+        }
+      ],
+      "lastContact": "2026-01-20T12:00:00.000Z",
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Won Orders",
+      "orderStatusRaw": "Completed",
+      "orderNumberRaw": "120",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Won Orders\", order status \"Completed\", last \"January 20, 2026\"",
+          "dedupKey": "import:duckiesrevengearcade"
+        }
+      ]
+    },
+    {
+      "companyKey": "dockstreetbrewery",
+      "companyName": "Dock Street Brewery",
+      "clientName": "",
+      "matchKey": "dockstreetbrewery",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "room-temp",
+        "eng-inactive"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Renata Certo",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2026-02-18T12:00:00.000Z",
+      "nextFollowUp": "2026-06-30T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Room Temp (Opportunities)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Room Temp (Opportunities)\", last \"February 18, 2026\", next \"June 30, 2026\"",
+          "dedupKey": "import:dockstreetbrewery"
+        }
+      ]
+    },
+    {
+      "companyKey": "harvestmoonfarms",
+      "companyName": "Harvest Moon Farms",
+      "clientName": "",
+      "matchKey": "harvestmoonfarms",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "warm",
+        "eng-medium"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Wasiu",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2026-04-25T12:00:00.000Z",
+      "nextFollowUp": "2026-06-26T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Warm (Leads)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Warm (Leads)\", last \"April 25, 2026\", next \"June 26, 2026\"",
+          "dedupKey": "import:harvestmoonfarms"
+        }
+      ]
+    },
+    {
+      "companyKey": "risedispensarynj",
+      "companyName": "Rise Dispensary NJ",
+      "clientName": "",
+      "matchKey": "risedispensarynj",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "room-temp"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Danielle Delre",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": null,
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Room Temp (Opportunities)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Room Temp (Opportunities)\"",
+          "dedupKey": "import:risedispensarynj"
+        }
+      ]
+    },
+    {
+      "companyKey": "northlakesupply",
+      "companyName": "North Lake Supply",
+      "clientName": "",
+      "matchKey": "northlakesupply",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "room-temp"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "mailto:alex@northlake.supply",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2026-05-11T12:00:00.000Z",
+      "nextFollowUp": "2026-06-30T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Room Temp (Opportunities)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Room Temp (Opportunities)\", last \"May 11, 2026\", next \"June 30, 2026\"",
+          "dedupKey": "import:northlakesupply"
+        }
+      ]
+    },
+    {
+      "companyKey": "theleafandseed",
+      "companyName": "The Leaf and Seed",
+      "clientName": "",
+      "matchKey": "theleafandseed",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "room-temp"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Robert",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2026-05-11T12:00:00.000Z",
+      "nextFollowUp": "2026-07-21T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Room Temp (Opportunities)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Room Temp (Opportunities)\", last \"May 11, 2026\", next \"July 21, 2026\"",
+          "dedupKey": "import:theleafandseed"
+        }
+      ]
+    },
+    {
+      "companyKey": "easterngreendispensary",
+      "companyName": "Eastern Green Dispensary",
+      "clientName": "",
+      "matchKey": "easterngreendispensary",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "room-temp",
+        "eng-medium"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Mukesh Patel",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2026-05-12T12:00:00.000Z",
+      "nextFollowUp": "2026-06-29T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Room Temp (Opportunities)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Room Temp (Opportunities)\", last \"May 12, 2026\", next \"June 29, 2026\"",
+          "dedupKey": "import:easterngreendispensary"
+        }
+      ]
+    },
+    {
+      "companyKey": "highway90",
+      "companyName": "Highway 90",
+      "clientName": "",
+      "matchKey": "highway90",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "warm"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Siara Price",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2026-05-28T12:00:00.000Z",
+      "nextFollowUp": "2026-06-30T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Warm (Leads)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Warm (Leads)\", last \"May 28, 2026\", next \"June 30, 2026\"",
+          "dedupKey": "import:highway90"
+        }
+      ]
+    },
+    {
+      "companyKey": "happyleaf",
+      "companyName": "Happy Leaf",
+      "clientName": "",
+      "matchKey": "happyleaf",
+      "akas": [
+        "One Green Leaf",
+        "The Healing Side"
+      ],
+      "stage": "contacted",
+      "tags": [
+        "room-temp"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Nathan Vigil",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": null,
+      "nextFollowUp": "2026-06-25T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Room Temp (Opportunities)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Room Temp (Opportunities)\", next \"June 25, 2026\"",
+          "dedupKey": "import:happyleafonegreenleafthehealingside"
+        }
+      ]
+    },
+    {
+      "companyKey": "highprofiledispensary",
+      "companyName": "High Profile Dispensary",
+      "clientName": "",
+      "matchKey": "highprofiledispensary",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "room-temp"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "DJ",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2026-05-11T12:00:00.000Z",
+      "nextFollowUp": null,
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Room Temp (Opportunities)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Room Temp (Opportunities)\", last \"May 11, 2026\"",
+          "dedupKey": "import:highprofiledispensary"
+        }
+      ]
+    },
+    {
+      "companyKey": "enlightendispensary",
+      "companyName": "Enlighten Dispensary",
+      "clientName": "",
+      "matchKey": "enlightendispensary",
+      "akas": [
+        "Coastline Dispensary"
+      ],
+      "stage": "contacted",
+      "tags": [
+        "room-temp"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Andrew Beauchamps",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2026-05-11T12:00:00.000Z",
+      "nextFollowUp": "2026-06-25T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Room Temp (Opportunities)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Room Temp (Opportunities)\", last \"May 11, 2026\", next \"June 25, 2026\"",
+          "dedupKey": "import:enlightendispensarycoastlinedispensary"
+        }
+      ]
+    },
+    {
+      "companyKey": "sweetspotfarms",
+      "companyName": "Sweetspot Farms",
+      "clientName": "",
+      "matchKey": "sweetspotfarms",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "room-temp"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Rachel",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": null,
+      "nextFollowUp": "2026-07-07T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Room Temp (Opportunities)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Room Temp (Opportunities)\", next \"July 7, 2026\"",
+          "dedupKey": "import:sweetspotfarms"
+        }
+      ]
+    },
+    {
+      "companyKey": "holidayzecannabis",
+      "companyName": "Holidayze Cannabis",
+      "clientName": "",
+      "matchKey": "holidayzecannabis",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "room-temp"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Alexa Hunt",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": null,
+      "nextFollowUp": "2026-06-26T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Room Temp (Opportunities)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Room Temp (Opportunities)\", next \"June 26, 2026\"",
+          "dedupKey": "import:holidayzecannabis"
+        }
+      ]
+    },
+    {
+      "companyKey": "dredo",
+      "companyName": "Dredo",
+      "clientName": "",
+      "matchKey": "dredo",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "hot",
+        "eng-high"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Dredo",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2026-05-11T12:00:00.000Z",
+      "nextFollowUp": "2026-07-01T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Hot (Clients)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Hot (Clients)\", last \"May 11, 2026\", next \"July 1, 2026\"",
+          "dedupKey": "import:dredo"
+        }
+      ]
+    },
+    {
+      "companyKey": "nirvanadispensary",
+      "companyName": "Nirvana Dispensary",
+      "clientName": "",
+      "matchKey": "nirvanadispensary",
+      "akas": [],
+      "stage": "lead",
+      "tags": [
+        "cold"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Nick",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2026-05-28T12:00:00.000Z",
+      "nextFollowUp": "2026-07-07T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Cold (Prospects)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Cold (Prospects)\", last \"May 28, 2026\", next \"July 7, 2026\"",
+          "dedupKey": "import:nirvanadispensary"
+        }
+      ]
+    },
+    {
+      "companyKey": "gilferreirapainting",
+      "companyName": "Gil Ferreira Painting",
+      "clientName": "",
+      "matchKey": "gilferreirapainting",
+      "akas": [],
+      "stage": "contacted",
+      "tags": [
+        "warm"
+      ],
+      "leadSource": "",
+      "dealValue": 0,
+      "email": "",
+      "phone": "",
+      "contacts": [
+        {
+          "name": "Gil Ferreira",
+          "role": "",
+          "phone": "",
+          "email": ""
+        }
+      ],
+      "lastContact": "2026-06-08T12:00:00.000Z",
+      "nextFollowUp": "2026-07-02T12:00:00.000Z",
+      "notes": "",
+      "source": "notion",
+      "statusRaw": "Warm (Leads)",
+      "orderStatusRaw": "",
+      "orderNumberRaw": "",
+      "logs": [
+        {
+          "kind": "import",
+          "text": "Imported from Notion CRM — status \"Warm (Leads)\", last \"June 8, 2026\", next \"July 2, 2026\"",
+          "dedupKey": "import:gilferreirapainting"
+        }
+      ]
+    }
+  ],
+  "orders": [
+    {
+      "orderNumber": "104",
+      "normalizedOrderNumber": "104",
+      "companyKey": "swanroseholdings",
+      "companyName": "Swan Rose Holdings",
+      "clientName": "",
+      "status": "approved",
+      "paid": false,
+      "totalValue": 8000,
+      "importedFrom": "notion",
+      "notes": "Notion order status: Awaiting Client Approval, Mockups in Progress, Quoting",
+      "orderStatusRaw": "Awaiting Client Approval, Mockups in Progress, Quoting"
+    },
+    {
+      "orderNumber": "110",
+      "normalizedOrderNumber": "110",
+      "companyKey": "umaflowers",
+      "companyName": "Uma Flowers",
+      "clientName": "",
+      "status": "approved",
+      "paid": false,
+      "totalValue": 4000,
+      "importedFrom": "notion",
+      "notes": "Notion order status: Awaiting Client Approval",
+      "orderStatusRaw": "Awaiting Client Approval"
+    },
+    {
+      "orderNumber": "114",
+      "normalizedOrderNumber": "114",
+      "companyKey": "thecannabosslady",
+      "companyName": "The CannaBoss Lady",
+      "clientName": "",
+      "status": "delivered",
+      "paid": true,
+      "totalValue": 5000,
+      "importedFrom": "notion",
+      "notes": "Notion order status: Completed",
+      "orderStatusRaw": "Completed"
+    },
+    {
+      "orderNumber": "111",
+      "normalizedOrderNumber": "111",
+      "companyKey": "m4ji",
+      "companyName": "M4JI",
+      "clientName": "",
+      "status": "approved",
+      "paid": false,
+      "totalValue": 2000,
+      "importedFrom": "notion",
+      "notes": "Notion order status: Awaiting Client Approval",
+      "orderStatusRaw": "Awaiting Client Approval"
+    },
+    {
+      "orderNumber": "115",
+      "normalizedOrderNumber": "115",
+      "companyKey": "voodoobrewingco",
+      "companyName": "Voodoo Brewing Co",
+      "clientName": "",
+      "status": "delivered",
+      "paid": true,
+      "totalValue": 4000,
+      "importedFrom": "notion",
+      "notes": "Notion order status: Completed",
+      "orderStatusRaw": "Completed"
+    },
+    {
+      "orderNumber": "116",
+      "normalizedOrderNumber": "116",
+      "companyKey": "santateresacanapa",
+      "companyName": "Santa Teresa Canapa",
+      "clientName": "",
+      "status": "quoted",
+      "paid": false,
+      "totalValue": 2000,
+      "importedFrom": "notion",
+      "notes": "Notion order status: Lead",
+      "orderStatusRaw": "Lead"
+    },
+    {
+      "orderNumber": "117",
+      "normalizedOrderNumber": "117",
+      "companyKey": "madmartianfarms",
+      "companyName": "Mad Martian Farms",
+      "clientName": "",
+      "status": "quoted",
+      "paid": false,
+      "totalValue": 0,
+      "importedFrom": "notion",
+      "notes": "Notion order status: Lead",
+      "orderStatusRaw": "Lead"
+    },
+    {
+      "orderNumber": "118",
+      "normalizedOrderNumber": "118",
+      "companyKey": "exclusivecaregiversofca",
+      "companyName": "Exclusive Caregivers of CA",
+      "clientName": "",
+      "status": "quoted",
+      "paid": false,
+      "totalValue": 0,
+      "importedFrom": "notion",
+      "notes": "",
+      "orderStatusRaw": ""
+    },
+    {
+      "orderNumber": "119",
+      "normalizedOrderNumber": "119",
+      "companyKey": "bracthouse",
+      "companyName": "Bract House",
+      "clientName": "",
+      "status": "quoted",
+      "paid": false,
+      "totalValue": 8000,
+      "importedFrom": "notion",
+      "notes": "Notion order status: Lead",
+      "orderStatusRaw": "Lead"
+    },
+    {
+      "orderNumber": "120",
+      "normalizedOrderNumber": "120",
+      "companyKey": "duckiesrevengearcade",
+      "companyName": "Duckies Revenge Arcade",
+      "clientName": "",
+      "status": "delivered",
+      "paid": true,
+      "totalValue": 2000,
+      "importedFrom": "notion",
+      "notes": "Notion order status: Completed",
+      "orderStatusRaw": "Completed"
+    }
+  ],
+  "metaAdJunk": [
+    {
+      "companyKey": "tracijackson",
+      "name": "Traci Jackson",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "winliving",
+      "name": "Win Living",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "journeesracingh99",
+      "name": "Journee’s Racing (H99)",
+      "orderNumber": "92"
+    },
+    {
+      "companyKey": "quinonesolney",
+      "name": "Quinones Olney",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "chivisbetancourt",
+      "name": "Chivis Betancourt",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "lesliejamiyezjcotoreal",
+      "name": "Leslie Jamiyez (Jco To Real)",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "albertdaffin",
+      "name": "Albert Daffin",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "bluegrassking",
+      "name": "BluegrassKing",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "yousycreations",
+      "name": "Yousy Creations",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "serge",
+      "name": "Serge",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "danielhernandez",
+      "name": "Daniel Hernandez",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "verosammy",
+      "name": "Vero (Sammy?)",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "sheldongreen",
+      "name": "Sheldon Green",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "riccidcalhoun",
+      "name": "Ricci D. Calhoun",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "battkmobile",
+      "name": "Bat (TK) Mobile",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "tronsturdypainsirfoodalot",
+      "name": "TronSturdyPain (Sir FoodAlot)",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "codystaytohigh",
+      "name": "Codystaytohigh",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "ocasiomusicalrecords",
+      "name": "Ocasio Musical Records",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "helimaphotographer",
+      "name": "Heli (MA Photographer)",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "greatchynavisuals",
+      "name": "GreatChynaVisuals",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "casamiarealestate",
+      "name": "Casa Mia Real Estate",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "afterlifeentertainment",
+      "name": "Afterlife Entertainment",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "joobernardobern",
+      "name": "João Bernardo Bern",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "maccbeasley",
+      "name": "Macc Beasley",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "carolinadiamonds",
+      "name": "Carolina Diamonds",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "caldeezzi",
+      "name": "Cal Deezzi",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "andreaselenaventures",
+      "name": "AndreaSelenaVentures",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "jibrilmelgenoldgabrielsanchezroque",
+      "name": "Jibril Melgen (Old Gabriel Sanchez Roque)",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "magikmccoy",
+      "name": "Magik McCoy",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "inece",
+      "name": "Inece",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "gtt",
+      "name": "GüTTå",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "feebawear",
+      "name": "Feebawear",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "deangelobryant",
+      "name": "De'Angelo Bryant",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "martha",
+      "name": "Martha",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "joanvaldez",
+      "name": "Joan Valdez",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "imwaybetter8521",
+      "name": "Imwaybetter8521",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "zaegwap",
+      "name": "Zae Gwap",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "rahmeekrasulphotography",
+      "name": "Rahmeek Rasul Photography",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "charleseddiebuckles",
+      "name": "Charles Eddie Buckles",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "donmayberry",
+      "name": "Don Mayberry",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "blueinkmajors",
+      "name": "Blue Ink Majors",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "jaylongordon",
+      "name": "Jaylon Gordon",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "ryguersonmaxime",
+      "name": "Ryguerson Maxime",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "daynitedavamp",
+      "name": "DayNite Davamp",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "kasheemherbertindustries",
+      "name": "Kasheem Herbert Industries",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "camilasilva",
+      "name": "Camila Silva",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "antoinettetonedormer",
+      "name": "Antoinette (Tone) Dormer",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "thekittrellcompany",
+      "name": "The Kittrell Company",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "taep",
+      "name": "Tae P",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "johnwilliamsiii",
+      "name": "John Williams III",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "alexconejero",
+      "name": "Alex Conejero",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "42dateam",
+      "name": "42 Da Team",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "aleciajohnson",
+      "name": "Alecia Johnson",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "jalonjones",
+      "name": "Jalon Jones",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "bullakauhi",
+      "name": "Bulla Kauhi",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "2dollarellout",
+      "name": "2 Dollar $ellout",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "michaelbloxton",
+      "name": "Michael Bloxton",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "jebenajoycafecoffeeceremonies",
+      "name": "Jebena Joy Cafe | Coffee Ceremonies",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "gamblelucky",
+      "name": "Gamble Lucky",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "marcopacheco",
+      "name": "Marco Pacheco",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "oppa",
+      "name": "Oppa",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "ralphycasanova",
+      "name": "Ralphy Casanova",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "jonathonlamour",
+      "name": "Jonathon Lamour",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "seanharrison",
+      "name": "Sean Harrison",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "micahoxendine",
+      "name": "Micah Oxendine",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "mrmiddy",
+      "name": "Mr. Middy",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "zitogreen",
+      "name": "Zito Green",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "ryanlworley",
+      "name": "Ryan L. Worley",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "statepositive",
+      "name": "State Positive",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "hakimdonadelle",
+      "name": "Hakim Donadelle",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "halahabash",
+      "name": "Hala Habash",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "navarretejose",
+      "name": "Navarrete Jose",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "belledayaneachry",
+      "name": "Belle Dayane A. CHÉRY",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "bascott",
+      "name": "B.A. Scott",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "mihiretbelay",
+      "name": "Mihiret Belay",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "maxinereid",
+      "name": "Maxine Reid",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "aprilsimms",
+      "name": "April Simms",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "jerombrown",
+      "name": "Jerom Brown",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "walterbaker",
+      "name": "Walter Baker",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "bonezznyc",
+      "name": "BonezzNyc",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "chefjay",
+      "name": "Chefjay",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "clayropp",
+      "name": "Clay Ropp",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "kamarasamba",
+      "name": "Kamara Samba",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "owenpeaelisan",
+      "name": "Owen Peña Elisan",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "bryamrodriguez",
+      "name": "Bryam Rodriguez",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "lecurtismtaylor",
+      "name": "LeCurtis M. Taylor",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "calcamby",
+      "name": "Cal Camby",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "sandra",
+      "name": "Sandra",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "rrisktakerr",
+      "name": "RRISK-TAKERR",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "farhananoor",
+      "name": "Farhana Noor",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "chefkatiya",
+      "name": "Chef Katiya",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "jeanmcorrea",
+      "name": "Jean M. Correa",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "masaratimike",
+      "name": "Masarati Mike",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "docpierce",
+      "name": "Doc Pierce",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "harmonyee",
+      "name": "Harmonyee",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "jaypep",
+      "name": "Jay-Pep",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "hoodbarbiee",
+      "name": "Hood Barbiee",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "kainobudlord",
+      "name": "Kaino Budlord",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "ohdatsquee",
+      "name": "OhDatsQuee",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "ansleysims",
+      "name": "Ansley Sims",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "smileydadon",
+      "name": "SmileyDaDon",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "mohanalbrgti",
+      "name": "Mohan Albërgti",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "christopherweagbadeahsmith",
+      "name": "Christopher Weagbadeah Smith",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "francescagoldman",
+      "name": "Francesca Goldman",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "familytofeedllc",
+      "name": "Family To Feed LLC",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "carlosfields",
+      "name": "Carlos Fields",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "solosavfashion",
+      "name": "SoloSavFashion",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "enigmatic",
+      "name": "Enigmatic",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "nathanaelmiranda",
+      "name": "Nathanael Miranda",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "freddieking",
+      "name": "Freddie King",
+      "orderNumber": ""
+    },
+    {
+      "companyKey": "cj",
+      "name": "CJ",
+      "orderNumber": ""
+    }
+  ],
+  "skipped": [],
+  "discrepancies": [
+    {
+      "kind": "order-implied-no-number",
+      "severity": "warn",
+      "company": "Sauce Me A Fry",
+      "companyKey": "saucemeafry",
+      "detail": "Status \"Orders In Progress\" / order status \"In Transit\" implies a real order, but no order number is set. If this company has completed/in-progress orders, add the order number(s)."
+    },
+    {
+      "kind": "meta-ad-with-order",
+      "severity": "warn",
+      "company": "Journee’s Racing (H99)",
+      "companyKey": "journeesracingh99",
+      "orderNumber": "92",
+      "detail": "Row \"Journee’s Racing (H99)\" is tagged \"Meta Ad Conversions\" (queued to archive) but carries order number 92. Confirm it's really junk before archiving."
+    },
+    {
+      "kind": "order-implied-no-number",
+      "severity": "warn",
+      "company": "Happy Leaf",
+      "companyKey": "happyleaf",
+      "detail": "Owner-flagged: Happy Leaf (Status \"Room Temp (Opportunities)\") has at least one COMPLETED order, but the Notion export carries no order number for it. Add the order number(s) so the historical order(s) load and finances link.",
+      "ownerFlagged": true
+    }
+  ]
+}

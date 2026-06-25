@@ -432,6 +432,17 @@ const OrderSchema = new mongoose.Schema({
   shipDate:      { type: Date },
   deliveredDate: { type: Date },
   importedFrom:  { type: String, default: '' },
+
+  // Soft-delete (mirrors Client). An order is NEVER hard-deleted by the reconcile
+  // tooling: a mis-staged / bad-import order is archived (drops out of working
+  // surfaces) with all data preserved and restorable. Set by the reconcile
+  // service when undoing a bad import.
+  archived:       { type: Boolean, default: false, index: true },
+  archivedAt:     { type: Date, default: null },
+  archivedReason: { type: String, default: '' },     // 'bad-import', 'meta-ad-import', 'manual'
+  // Reconcile audit/revert handle — the run that created or archived this order,
+  // so a whole reconcile batch is reversible as a unit. Empty if untouched.
+  reconcileBatchId: { type: String, default: '', index: true },
   files: [{
     filename:     { type: String },
     originalName: { type: String },
