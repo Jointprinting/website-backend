@@ -44,6 +44,16 @@ const VendorSchema = new mongoose.Schema({
   // Conservative learned vendor↔order links (see VendorOrderLinkSchema). Keyed by
   // canonical order number; we keep one entry per order, refreshing `at`.
   vendorOrders: { type: [VendorOrderLinkSchema], default: [] },
+
+  // Soft-delete for the dedup/merge tooling — mirrors the CRM Client archive. When
+  // two records for the same printer are merged, the loser is folded into the
+  // survivor (its POs/receipts/learning re-pointed) and then ARCHIVED here rather
+  // than hard-deleted, so a merge is recoverable and nothing is ever truly lost.
+  // All vendor LISTs/lookups exclude archived records.
+  archived:   { type: Boolean, default: false, index: true },
+  archivedAt: { type: Date, default: null },
+  archivedReason: { type: String, default: '' },   // 'merged' | …
+  mergedInto: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', default: null },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Vendor', VendorSchema);

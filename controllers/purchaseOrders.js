@@ -18,9 +18,48 @@ const { normalizeOrderNumber } = require('./finances');
 const {
   vendorKey, lineKey, chosenQuoteLines, costLineFromQuoteLine, costLineFromConfItem, buildPoLines,
 } = require('../utils/poCost');
+const {
+  vendorMatchKey, isRealVendorName, groupVendorDuplicates,
+  pickVendorSurvivor, foldVendorFields, resolveVendorFromList,
+} = require('../utils/vendorMatch');
 
 // A blank/unassigned vendor: no real supplier yet, so we never auto-number it.
 const isUnassignedVendor = (name) => !vendorKey(name) || vendorKey(name) === vendorKey(UNASSIGNED);
+
+// Exclude soft-deleted (merged-away) vendors from every list/lookup so a merged
+// alias never resurfaces in the picker, the resolver, or the dedup grouping.
+const NOT_ARCHIVED = { archived: { $ne: true } };
+
+// Resolve a free-text PO vendor name to an EXISTING Vendor record so a typed short
+// name ("Heritage") attaches to the real record ("Heritage Screen Printing")
+// instead of minting a near-duplicate. Three tiers, most-confident first:
+//   1) exact case-insensitive name (what the seeders already used);
+//   2) equal fuzzy matchKey (corp/trade suffix stripped) among existing vendors;
+//   3) the conservative sameVendor() test (prefix / strong token overlap).
+// Tiers 2-3 are AMBIGUITY-SAFE: if more than one distinct existing vendor matches,
+// we DON'T guess — we return null (mint/keep the typed name) rather than risk
+// attaching to the wrong printer. Returns the matched Vendor doc, or null.
+// `candidates` (optional) lets a caller pass an already-fetched vendor list to
+// avoid a DB round-trip; otherwise the whole (small) contact book is loaded.
+async function _resolveCanonicalVendor(name, candidates = null) {
+  const raw = String(name || '').trim();
+  if (!isRealVendorName(raw)) return null;
+  // Load the (small) contact book once, then run the SHARED pure resolver so the
+  // exact → matchKey → conservative-fuzzy decision is identical to what the unit
+  // tests pin. Archived (merged-away) records are excluded.
+  const all = Array.isArray(candidates) ? candidates : await Vendor.find(NOT_ARCHIVED).lean();
+  return resolveVendorFromList(raw, all);
+}
+
+// The canonical NAME a typed vendor name should be stored as on a PO. Resolves to
+// an existing record's name when one matches; otherwise returns the typed name
+// trimmed. Keeps free-text fully allowed (a genuinely new vendor) while folding a
+// short alias onto the real record. Returns { name, vendor } (vendor may be null).
+async function _canonicalVendorName(typed, candidates = null) {
+  const raw = String(typed || '').trim();
+  const vendor = await _resolveCanonicalVendor(raw, candidates);
+  return { name: vendor ? (vendor.name || raw) : raw, vendor };
+}
 
 const JP_LOGO_PATH = path.join(__dirname, '..', 'assets', 'jp-logo.png');
 const badId = (id) => !mongoose.isValidObjectId(id);   // 404 instead of a CastError 500
@@ -268,31 +307,33 @@ const createPosFromConfirmation = async (req, res) => {
     const held = [];         // Unassigned/blank supplier — no number assigned yet (H1)
     const warnings = [];     // zero-cost line warnings (C3)
     for (const g of groups) {
-      const key = vendorKey(g.vendorName);
-
       // H1: never auto-number a blank / "Unassigned" supplier. Hold its items
       // for when a real vendor is set, rather than minting an "Unassigned"
       // sequence that collides with the next unassigned order.
       if (isUnassignedVendor(g.vendorName)) { held.push(g.vendorName || UNASSIGNED); continue; }
 
-      // Advisory skip: surface it, but only suppress when not forced (H3).
-      if (key && existingKeys.has(key) && !force) { skipped.push(g.vendorName); continue; }
+      // Canonicalize the supplier name to an existing vendor record (exact →
+      // matchKey → conservative fuzzy) so a typed short name attaches to the real
+      // printer, then pre-fill its contact card. This is also where
+      // vendor.blanksProvided is READ: the contact book remembers each vendor's
+      // typical mode. Default true (JP supplies blanks ~99%). The skip + numbering
+      // keys are taken from the CANONICAL name so two aliases of one printer
+      // ("Heritage" + "Heritage Screen Printing") don't fork into two POs.
+      const { name: canonName, vendor } = await _canonicalVendorName(g.vendorName);
+      const vendorName = canonName || g.vendorName;
+      const key = vendorKey(vendorName);
 
-      // Pre-fill vendor contact card exactly like createPo (case-insensitive
-      // exact-name match) — this is also where vendor.blanksProvided is finally
-      // READ (it was written but never read before): the contact book remembers
-      // each vendor's typical mode. Default true (JP supplies blanks ~99%).
-      const vendor = await Vendor.findOne({
-        name: new RegExp(`^${g.vendorName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
-      }).lean();
+      // Advisory skip: surface it, but only suppress when not forced (H3).
+      if (key && existingKeys.has(key) && !force) { skipped.push(vendorName); continue; }
+
       const blanksProvided = vendor && vendor.blanksProvided != null ? !!vendor.blanksProvided : true;
 
-      const seeded = _seedPoForGroup(order, g.vendorName, g.items, blanksProvided, quoteLineByKey);
+      const seeded = _seedPoForGroup(order, vendorName, g.items, blanksProvided, quoteLineByKey);
       if (seeded.zeroCostCount > 0) {
-        warnings.push(`${g.vendorName}: ${seeded.zeroCostCount} line(s) have no cost — fill them in.`);
+        warnings.push(`${vendorName}: ${seeded.zeroCostCount} line(s) have no cost — fill them in.`);
       }
       if (seeded.allocMismatchCount > 0) {
-        warnings.push(`${g.vendorName}: ${seeded.allocMismatchCount} item(s) have a per-location split that doesn't add up to the item quantity — check the ship-to amounts.`);
+        warnings.push(`${vendorName}: ${seeded.allocMismatchCount} item(s) have a per-location split that doesn't add up to the item quantity — check the ship-to amounts.`);
       }
       const { zeroCostCount, allocMismatchCount, ...seedFields } = seeded;
       const vendorAddress = vendor ? vendor.address : '';
@@ -300,14 +341,14 @@ const createPosFromConfirmation = async (req, res) => {
         orderId: order._id,
         // Per-vendor number, floored by the owner-set start (vendor.nextPoStart)
         // so Heritage continues from his real Google-Docs run, not the app's #004.
-        poNumber: `#${(await nextNumber('po', g.vendorName, vendor && vendor.nextPoStart)).padStart(3, '0')}`,
+        poNumber: `#${(await nextNumber('po', vendorName, vendor && vendor.nextPoStart)).padStart(3, '0')}`,
         date,
-        vendorName: g.vendorName,
+        vendorName,
         contactName: vendor ? vendor.contactName : '',
         vendorAddress,
         // Default the printer receiving block to the vendor's own address (where
         // JP ships the blanks), editable per PO; finished goods stay in `shipping`.
-        shipToPrinter: { name: g.vendorName, attention: vendor ? vendor.contactName : '', streetAddress: vendorAddress, cityStateZip: '' },
+        shipToPrinter: { name: vendorName, attention: vendor ? vendor.contactName : '', streetAddress: vendorAddress, cityStateZip: '' },
         shipMethod: vendor ? vendor.shipMethod : '',
         blanksProvided,
         ...seedFields,
@@ -353,16 +394,25 @@ const createPo = async (req, res) => {
     if (!order) return res.status(404).json({ message: 'Project not found' });
 
     const vendorNameRaw = (req.body && req.body.vendorName) || (order.printerName || order.supplier || '') || '';
+    // Canonicalize the typed name to an EXISTING vendor record when one matches
+    // (exact → matchKey → conservative fuzzy), so typing "Heritage" attaches to
+    // "Heritage Screen Printing" instead of minting a near-duplicate. Falls back
+    // to the typed name for a genuinely new vendor.
     let vendor = null;
+    let vendorName = vendorNameRaw;
     if (vendorNameRaw) {
-      vendor = await Vendor.findOne({ name: new RegExp(`^${vendorNameRaw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }).lean();
+      const resolved = await _canonicalVendorName(vendorNameRaw);
+      vendor = resolved.vendor;
+      vendorName = resolved.name || vendorNameRaw;
     }
     // Honor the vendor's remembered mode (vendor.blanksProvided — previously
     // written but never read). Default true (JP supplies the blanks ~99%).
     const blanksProvided = vendor && vendor.blanksProvided != null ? !!vendor.blanksProvided : true;
 
     const seeded = req.body && req.body.seed === false ? {} : _seedFromOrder(order, blanksProvided);
-    const vendorName = (req.body && req.body.vendorName) || seeded.vendorName || '';
+    // Prefer the canonicalized vendor name; only fall back to the seed when no
+    // name was typed and the order had none.
+    if (!vendorName) vendorName = seeded.vendorName || '';
     const { zeroCostCount = 0, ...seedFields } = seeded;
 
     // The builder sends its local calendar day (YYYY-MM-DD) — the server
@@ -409,6 +459,15 @@ const updatePo = async (req, res) => {
     // Keep the grand total honest: recompute from charges when present.
     if (Array.isArray(body.charges)) {
       body.grandTotal = body.charges.reduce((s, c) => s + n(c && c.amount), 0);
+    }
+    // Canonicalize the vendor name to an existing record when the owner typed a
+    // short alias ("Heritage" → "Heritage Screen Printing"), so the save updates
+    // the real contact book entry instead of forking a bare duplicate. Only
+    // touches the name when a confident match exists; a genuinely new vendor name
+    // is preserved verbatim.
+    if (typeof body.vendorName === 'string' && body.vendorName.trim()) {
+      const { name: canonName } = await _canonicalVendorName(body.vendorName);
+      if (canonName) body.vendorName = canonName;
     }
     // Snapshot the number BEFORE the write so we can tell a real hand-edit from a
     // routine save (H2). Auto-saves that don't touch the number must NOT bump any
@@ -458,11 +517,127 @@ const deletePo = async (req, res) => {
   }
 };
 
-// GET /api/orders/vendors — the contact book, for the builder's vendor picker.
+// Per-vendor usage stats (PO count + grand-total, distinct order count, and a
+// rough actual-spend from the expense ledger), keyed by canonical vendorKey, in a
+// few aggregate queries. Used to (a) pick the survivor when the list collapses a
+// duplicate group and (b) inform /vendors/duplicates. Leading-zero-safe on order
+// numbers isn't needed here (we count POs/txns, not reconcile to orders).
+async function _vendorUsageByKey() {
+  const [poAgg, txAgg] = await Promise.all([
+    PurchaseOrder.aggregate([
+      { $group: { _id: null, rows: { $push: { vendorName: '$vendorName', grandTotal: '$grandTotal', orderId: '$orderId' } } } },
+    ]).then((r) => (r[0] && r[0].rows) || []).catch(() => []),
+    Transaction.aggregate([
+      { $match: { type: 'expense' } },
+      { $group: { _id: null, rows: { $push: { party: '$party', amount: '$amount', isCredit: '$isCredit' } } } },
+    ]).then((r) => (r[0] && r[0].rows) || []).catch(() => []),
+  ]);
+  const byKey = new Map();
+  const get = (k) => {
+    if (!byKey.has(k)) byKey.set(k, { poCount: 0, poTotal: 0, spend: 0, orderIds: new Set() });
+    return byKey.get(k);
+  };
+  for (const p of poAgg) {
+    const k = vendorKey(p.vendorName);
+    if (!k) continue;
+    const s = get(k);
+    s.poCount += 1;
+    s.poTotal += Number(p.grandTotal) || 0;
+    if (p.orderId) s.orderIds.add(String(p.orderId));
+  }
+  for (const t of txAgg) {
+    const k = vendorKey(t.party);
+    if (!k) continue;
+    get(k).spend += (t.isCredit ? -1 : 1) * (Number(t.amount) || 0);
+  }
+  // Finalize: orderIds Set → orderCount.
+  for (const [, s] of byKey) { s.orderCount = s.orderIds.size; delete s.orderIds; }
+  return byKey;
+};
+
+// GET /api/orders/vendors — the contact book, for the builder's vendor picker and
+// the Vendors list. DEDUPED by canonical identity: likely-duplicate records (a
+// bare "Heritage" beside the real "Heritage Screen Printing") collapse to ONE row
+// — the survivor (the record WITH details / most POs / most spend) — annotated
+// with how many aliases fold in and their ids, so the owner sees a single printer
+// and can make the merge permanent from the card. Nothing is deleted here; this is
+// a presentation-time fold (the underlying records stay until an explicit merge).
 const listVendors = async (_req, res) => {
   try {
-    const vendors = await Vendor.find({}).sort({ name: 1 }).lean();
-    res.json({ vendors });
+    const vendors = await Vendor.find(NOT_ARCHIVED).sort({ name: 1 }).lean();
+    const usage = await _vendorUsageByKey();
+    const statsOf = (v) => usage.get(vendorKey(v.name)) || { poCount: 0, poTotal: 0, spend: 0, orderCount: 0 };
+
+    // Cluster likely-duplicates; everything not in a cluster passes through as-is.
+    const groups = groupVendorDuplicates(vendors);
+    const groupedIds = new Set();
+    const collapsed = [];
+    for (const g of groups) {
+      g.forEach((v) => groupedIds.add(String(v._id)));
+      const survivor = pickVendorSurvivor(g, statsOf);
+      const aliases = g.filter((v) => String(v._id) !== String(survivor._id));
+      collapsed.push({
+        ...survivor,
+        // Surfaced so the UI can show "+N duplicate" and offer a one-tap merge.
+        duplicateOf: aliases.map((v) => ({ _id: v._id, name: v.name })),
+        aliasCount: aliases.length,
+      });
+    }
+    const singles = vendors.filter((v) => !groupedIds.has(String(v._id)));
+    const out = [...singles, ...collapsed]
+      .sort((a, b) => String(a.name || '').toLowerCase().localeCompare(String(b.name || '').toLowerCase()));
+
+    res.json({ vendors: out });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+// GET /api/orders/vendors/search?q= — typeahead for the PO builder's printer field.
+// Returns vendors whose name/contact/address matches `q`, each with a short detail
+// hint + the profile fields the builder pre-fills (contact/address/ship method/
+// blanksProvided), so picking one reuses the real record. Deduped like the list
+// (one row per canonical printer). Capped; admin-only (whole router is requireAdmin
+// so cost data never leaks — this returns only contact-book fields, no $).
+const searchVendors = async (req, res) => {
+  try {
+    const q = String((req.query && req.query.q) || '').trim();
+    const vendors = await Vendor.find(NOT_ARCHIVED).sort({ name: 1 }).lean();
+    const usage = await _vendorUsageByKey();
+    const statsOf = (v) => usage.get(vendorKey(v.name)) || { poCount: 0, poTotal: 0, spend: 0, orderCount: 0 };
+
+    // Collapse duplicates to survivors first so the typeahead never shows both
+    // "Heritage" and "Heritage Screen Printing".
+    const groups = groupVendorDuplicates(vendors);
+    const groupedIds = new Set();
+    const survivors = [];
+    for (const g of groups) {
+      g.forEach((v) => groupedIds.add(String(v._id)));
+      survivors.push(pickVendorSurvivor(g, statsOf));
+    }
+    let list = [...vendors.filter((v) => !groupedIds.has(String(v._id))), ...survivors];
+
+    if (q) {
+      const t = q.toLowerCase();
+      list = list.filter((v) => [v.name, v.contactName, v.email, v.address, v.shipMethod]
+        .filter(Boolean).join(' ').toLowerCase().includes(t));
+    }
+    list.sort((a, b) => String(a.name || '').toLowerCase().localeCompare(String(b.name || '').toLowerCase()));
+
+    const out = list.slice(0, 25).map((v) => ({
+      _id: v._id,
+      name: v.name || '',
+      contactName: v.contactName || '',
+      email: v.email || '',
+      phone: v.phone || '',
+      address: v.address || '',
+      shipMethod: v.shipMethod || '',
+      accountNumber: v.accountNumber || '',
+      blanksProvided: v.blanksProvided !== false,
+      // A compact hint for the dropdown's secondary line (no $ figures).
+      hint: [v.contactName, v.address, v.shipMethod].filter(Boolean).join(' · '),
+    }));
+    res.json({ vendors: out, total: out.length });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -689,7 +864,7 @@ const poPdf = async (req, res) => {
 async function _findVendorByName(name) {
   const v = String(name || '').trim();
   if (!v) return null;
-  return Vendor.findOne({ name: new RegExp(`^${v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }).lean();
+  return Vendor.findOne({ name: new RegExp(`^${v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'), ...NOT_ARCHIVED }).lean();
 }
 
 // GET /api/orders/po-next-number?vendor=<name> — the number that WOULD be assigned
@@ -935,9 +1110,163 @@ const updateVendor = async (req, res) => {
   }
 };
 
+// ── Vendor dedup detection + merge (mirror of the CRM cleanup tooling) ────────
+
+// GET /api/orders/vendors/duplicates — groups of likely-same vendors with a
+// suggested survivor (the record WITH details / most POs / most spend). Mirrors
+// CRM getDuplicates: PROPOSE only; merging is an explicit, reversible owner act.
+// Admin-only (whole router is requireAdmin). Conservative grouping (utils/
+// vendorMatch.groupVendorDuplicates) so two genuinely-different printers never
+// land in the same group.
+const vendorDuplicates = async (_req, res) => {
+  try {
+    const vendors = await Vendor.find(NOT_ARCHIVED).lean();
+    const usage = await _vendorUsageByKey();
+    const statsOf = (v) => usage.get(vendorKey(v.name)) || { poCount: 0, poTotal: 0, spend: 0, orderCount: 0 };
+
+    const groups = groupVendorDuplicates(vendors);
+    const out = groups.map((g) => {
+      const survivor = pickVendorSurvivor(g, statsOf);
+      return {
+        // Stable group id for the UI key (the survivor's match stem).
+        matchKey: vendorMatchKey(survivor.name) || vendorKey(survivor.name),
+        suggestedSurvivor: String(survivor._id),
+        members: g.map((v) => {
+          const s = statsOf(v);
+          return {
+            _id: String(v._id),
+            name: v.name || '',
+            contactName: v.contactName || '',
+            address: v.address || '',
+            shipMethod: v.shipMethod || '',
+            hasDetails: ['contactName', 'email', 'phone', 'address', 'shipMethod', 'accountNumber']
+              .some((f) => String(v[f] || '').trim()),
+            poCount: s.poCount,
+            poTotal: round2(s.poTotal),
+            spend: round2(s.spend),
+            orderCount: s.orderCount,
+            learnedLinks: Array.isArray(v.vendorOrders) ? v.vendorOrders.length : 0,
+          };
+        }),
+      };
+    });
+    // Most-actionable first: groups whose members carry POs/spend, then by size.
+    out.sort((a, b) =>
+      (b.members.some((m) => m.poCount || m.spend) ? 1 : 0) - (a.members.some((m) => m.poCount || m.spend) ? 1 : 0)
+      || b.members.length - a.members.length);
+
+    res.json({ groups: out, total: out.length });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+// POST /api/orders/vendors/merge { survivor, merged }
+// Fold the merged vendor's profile blanks + notes + learned order links into the
+// survivor, RE-POINT every record that referenced the merged vendor BY NAME to
+// the survivor's name — its POs (vendorName + shipToPrinter.name), its expense
+// Transactions (party), — then soft-delete (archive) the merged record. Mirrors
+// CRM mergeCompanies: preserves ALL data; re-points BEFORE delete; recoverable.
+// `survivor`/`merged` are Vendor ids.
+const mergeVendors = async (req, res) => {
+  try {
+    const survivorId = String((req.body && req.body.survivor) || '').trim();
+    const mergedId   = String((req.body && req.body.merged) || '').trim();
+    if (!survivorId || !mergedId) return res.status(400).json({ message: 'survivor and merged ids are required' });
+    if (survivorId === mergedId)   return res.status(400).json({ message: 'survivor and merged must differ' });
+    if (badId(survivorId) || badId(mergedId)) return res.status(404).json({ message: 'Vendor not found' });
+
+    const survivor = await Vendor.findById(survivorId);
+    const merged   = await Vendor.findById(mergedId);
+    if (!survivor) return res.status(404).json({ message: 'survivor vendor not found' });
+    if (!merged)   return res.status(404).json({ message: 'merged vendor not found' });
+    if (merged.archived) return res.status(400).json({ message: 'merged vendor is already archived' });
+
+    const survivorName = survivor.name || '';
+    const mergedName = merged.name || '';
+
+    // Fold profile blanks + notes + learned links into the survivor (pure policy,
+    // leading-zero-safe on the order links via normalizeOrderNumber).
+    foldVendorFields(survivor, merged, normalizeOrderNumber);
+    await survivor.save();
+
+    // RE-POINT everything that referenced the merged vendor to the survivor's
+    // name. We match by CANONICAL vendorKey, not exact bytes — a PO/receipt saved
+    // with a whitespace variant ("Heritage  Screen Printing", a leading space)
+    // shares the merged vendor's vendorKey and legitimately belongs to it (the
+    // vendor CARD surfaces those via the same whitespace-flexible match), so the
+    // re-point must be just as tolerant or those records orphan on the archive.
+    // A whitespace-flexible anchored regex narrows the query; the exact vendorKey
+    // gate is the precise filter (identical to getVendor). Skip the whole block on
+    // a same-key merge (a pure case/whitespace alias collapse) — the survivor's
+    // card already matches those POs case-insensitively, so nothing orphans.
+    const mergedKeyVal = vendorKey(mergedName);
+    const wsRe = (s) => new RegExp(`^${String(s || '').trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')}$`, 'i');
+    let posRepointed = 0;
+    let txnsRepointed = 0;
+    if (mergedName && mergedKeyVal && mergedKeyVal !== vendorKey(survivorName)) {
+      const mergedNameRe = wsRe(mergedName);
+      // POs: vendorName (and keep the printer receiving-block name in sync where it
+      // equals the old name). Filter to the exact vendorKey so only this printer's
+      // POs move, even though the regex over-matches whitespace variants.
+      const candidatePos = await PurchaseOrder.find({
+        $or: [{ vendorName: mergedNameRe }, { 'shipToPrinter.name': mergedNameRe }],
+      }).select('vendorName shipToPrinter').lean();
+      for (const p of candidatePos) {
+        const set = {};
+        if (vendorKey(p.vendorName) === mergedKeyVal) set.vendorName = survivorName;
+        if (p.shipToPrinter && vendorKey(p.shipToPrinter.name) === mergedKeyVal) set['shipToPrinter.name'] = survivorName;
+        if (Object.keys(set).length === 0) continue;
+        // eslint-disable-next-line no-await-in-loop
+        await PurchaseOrder.updateOne({ _id: p._id }, { $set: set });
+        if (set.vendorName) posRepointed += 1;
+      }
+
+      // Expense Transactions: re-point the counter-party (the dollars paid).
+      const candidateTx = await Transaction.find({ type: 'expense', party: mergedNameRe })
+        .select('party').lean();
+      const txIds = candidateTx.filter((t) => vendorKey(t.party) === mergedKeyVal).map((t) => t._id);
+      if (txIds.length) {
+        const txUpd = await Transaction.updateMany(
+          { _id: { $in: txIds } },
+          { $set: { party: survivorName } },
+        );
+        txnsRepointed = txUpd.modifiedCount != null ? txUpd.modifiedCount : (txUpd.nModified || 0);
+      }
+    }
+    // The learned receipt→vendor links lived on the merged Vendor doc itself and
+    // were already folded into the survivor by foldVendorFields above — re-saving
+    // the survivor (done) is the re-point for those.
+
+    // Soft-delete the merged record (recoverable; nothing hard-deleted).
+    merged.archived = true;
+    merged.archivedAt = new Date();
+    merged.archivedReason = 'merged';
+    merged.mergedInto = survivor._id;
+    await merged.save();
+
+    // Keep the survivor's per-vendor PO counter collision-safe with any number it
+    // just absorbed (the merged vendor's run may have been ahead).
+    if (survivor.nextPoStart && survivor.nextPoStart > 0) {
+      await bumpCounterTo('po', survivor.nextPoStart - 1, survivorName).catch(() => {});
+    }
+
+    res.json({
+      ok: true,
+      survivor: survivor.toObject(),
+      posRepointed,
+      txnsRepointed,
+      mergedId,
+    });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+};
+
 module.exports = {
   listPos, createPo, createPosFromConfirmation, updatePo, deletePo, listVendors,
   poCostHistory, poPdf, parseUnitCost, nextPoNumber, getVendor, updateVendor,
+  searchVendors, vendorDuplicates, mergeVendors,
 };
 // Exported for unit tests — pure helpers for the multi-location ship-split PO output.
 module.exports._itemShipSplit = _itemShipSplit;

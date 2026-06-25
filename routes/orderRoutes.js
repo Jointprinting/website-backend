@@ -40,6 +40,13 @@ router.get('/projects',                   listProjects);
 // Must stay above GET '/:id' — a single-segment path, so '/vendors' would
 // otherwise be captured as an order id and 500 on the cast.
 router.get('/vendors',                    poCtl.listVendors);
+// Vendor dedup + merge + typeahead. These STATIC two-segment paths MUST be
+// registered before '/vendors/:id' so 'duplicates'/'search'/'merge' aren't read
+// as a vendor id. Admin-only (router.use(requireAdmin) above) — cost data never
+// leaks client-side.
+router.get('/vendors/duplicates',         poCtl.vendorDuplicates);
+router.get('/vendors/search',             poCtl.searchVendors);
+router.post('/vendors/merge',             poCtl.mergeVendors);
 // Vendor (printer/supplier) detail card + edits. Two-segment paths, so they don't
 // collide with '/:id'; grouped here with the other vendor routes for clarity.
 router.get('/vendors/:id',                poCtl.getVendor);
