@@ -277,9 +277,9 @@ function statusImpliesDead(raw) {
 // re-contacts — they map to lead/dormant and are KEPT, never skipped (the
 // keep-cold/lost override lives in mapTrackerRow for CRM-DB sources).
 //
-//   "Hot (Clients)"            → customer   + hot          (an existing hot client)
-//   "Won Orders"               → won        + won          (promotes to customer if it has orders)
-//   "Orders In Progress"       → customer   + in-progress
+//   "Hot (Clients)"            → contacted  + hot          (warmth only; customer comes from a placed Order)
+//   "Won Orders"               → won        + won          (promotes to customer if it has a placed order)
+//   "Orders In Progress"       → quoting    + in-progress  (in-flight; not yet a verified placed order)
 //   "Warm (Leads)"             → contacted  + warm
 //   "Room Temp (Opportunities)"→ contacted  + room-temp
 //   "Cold (Prospects)"         → lead       + cold         (KEEP)
@@ -288,12 +288,17 @@ function statusImpliesDead(raw) {
 // Plus bare temperature words (hot/warm/cold/lukewarm/opportunity) for the sheets.
 // SPECIFIC: Nate's exact Notion option values (a distinctive multi-word phrase).
 // These are authoritative for BOTH stage and tag, and short-circuit mapStatus —
-// "Hot (Clients)" is a customer, "Won Orders" is won, etc., and the generic
-// free-text vocabulary can't override them.
+// "Won Orders" is won, "Warm (Leads)" is contacted, etc., and the generic
+// free-text vocabulary can't override them. None of them yield 'customer':
+// customer status is earned by a verified placed Order, not by a status word.
 const STATUS_MAP_SPECIFIC = [
-  { re: /hot\s*\(\s*client/,          stage: 'customer',  tag: 'hot' },
+  // 'customer' is reserved for a VERIFIED placed Order — never a status word. A
+  // "Hot (Clients)" / "Orders In Progress" label is just warmth/segment, so it
+  // maps to a pre-customer stage and KEEPS its tag; real customer promotion is
+  // owner-approved on order placement (controllers/orders.js).
+  { re: /hot\s*\(\s*client/,          stage: 'contacted', tag: 'hot' },
   { re: /won\s*order/,                stage: 'won',       tag: 'won' },
-  { re: /orders?\s*in\s*progress/,    stage: 'customer',  tag: 'in-progress' },
+  { re: /orders?\s*in\s*progress/,    stage: 'quoting',   tag: 'in-progress' },
   { re: /warm\s*\(\s*lead/,           stage: 'contacted', tag: 'warm' },
   { re: /room\s*temp/,                stage: 'contacted', tag: 'room-temp' },
   { re: /cold\s*\(\s*prospect/,       stage: 'lead',      tag: 'cold' },
@@ -378,10 +383,10 @@ function mapStatus(raw) {
   const negated = isNegatedStatus(v);
 
   // 1) The owner's EXACT CRM Status values take precedence and short-circuit
-  //    (so "Hot (Clients)" → customer, never misread as "won" via "client";
+  //    (so "Hot (Clients)" → contacted, never misread as "won" via "client";
   //    "Cold (Prospects)" → lead; "Lost Orders" → dormant). These are decided
   //    first because they're unambiguous; the looser free-text vocabulary below
-  //    can't override them.
+  //    can't override them. None of them yield 'customer' (a placed-order signal).
   const specific = matchStatusMap(STATUS_MAP_SPECIFIC, v, negated);
   if (specific) return specific.stage;
 
@@ -392,8 +397,10 @@ function mapStatus(raw) {
   if (statusImpliesDead(v) || (negated && /(won|order|reorder|buy|interest)/.test(v))) return 'lost';
   // 3) Positive customer/sale vocab — "won"/"reorder" signal a closed sale.
   if (!negated && (v.includes('won') || v.includes('reorder'))) return 'won';
-  // "customer"/"client"/"active" signal an existing relationship → customer.
-  if (!negated && (v.includes('customer') || v.includes('client') || v.includes('active'))) return 'customer';
+  // "customer"/"client"/"active" signal an existing relationship → 'contacted'.
+  // NOT 'customer': a status WORD never makes a customer — that's reserved for a
+  // verified placed Order (promoted by the controller, owner-approved).
+  if (!negated && (v.includes('customer') || v.includes('client') || v.includes('active'))) return 'contacted';
   if (v.includes('quot')) return 'quoting';
   if (v.includes('sampl')) return 'sampling';
   if (!negated && v.includes('order')) return 'won';
@@ -644,7 +651,7 @@ function mapTrackerRow(rowObj, opts = {}) {
   const nextRaw     = get('nextContact');
   const actionRaw   = get('nextAction');
   const notesRaw    = get('notes');
-  const orderNumRaw = get('orderNumber');  // presence ⇒ this company is a CUSTOMER
+  const orderNumRaw = get('orderNumber');  // free-text HINT only (not a verified order)
   const orderStatRaw = get('orderStatus'); // Notion "Order Status" multi-select
   const dealValueRaw = get('dealValue');   // Notion "Deal Value" ($ number)
   const sourceRaw    = get('sourceField'); // Notion "Source" (lead origin)
@@ -668,21 +675,24 @@ function mapTrackerRow(rowObj, opts = {}) {
   const fmt = opts.format || labelToFormat(opts.sourceLabel);
   const isCrmDbSource = fmt === 'notion' || fmt === 'google-sheet';
 
-  // CUSTOMER signal (the #1 fix: "has an order so it's not a lead"): an order
-  // NUMBER on the row, OR an "Order Status" that names a real order state
-  // (Completed/Paid/Quoting/Mockups/…, anything past a bare Lead/Lost). Either
-  // makes this company a customer. It overrides the status-derived stage, but
-  // only UPWARD — applyImportToDoc still never downgrades an owner-advanced stage.
+  // ORDER HINT (NOT a customer promotion): a free-text "Order Number" cell, or an
+  // "Order Status" naming a real order state, SUGGESTS this company has ordered —
+  // but it's just text, with no verified Order doc behind it. So it does NOT make
+  // the import emit stage 'customer'. The importer NEVER outputs 'customer';
+  // customer is earned only by a real PLACED Order, promoted owner-side by the
+  // controller (which checks actual placed Orders by companyKey). We keep the
+  // signal as a tag so it's surfaced, and the controller resolves it for real.
   const hasOrderNumber = !!orderNumRaw || orderStatusImpliesOrder(orderStatRaw);
-  const statusStage = mapStatus(statusRaw);
-  const stage = hasOrderNumber ? 'customer' : statusStage;
+  const stage = mapStatus(statusRaw);
 
   // Tags: the status segment (hot/warm/room-temp/cold/lost/in-progress/won/
   // meta-ad) + engagement level — captured so nothing in the warmth/segment is
-  // lost when we translate to a stage.
+  // lost when we translate to a stage. An order hint adds an 'order-ref' tag so
+  // the free-text order number isn't lost (without forcing customer).
   const tags = [];
   const seg = statusTemperature(statusRaw);
   if (seg && seg.tag) tags.push(seg.tag);
+  if (hasOrderNumber) tags.push('order-ref');
   const engTag = engagementTag(engageRaw);
   if (engTag) tags.push(engTag);
 
@@ -743,13 +753,13 @@ function mapTrackerRow(rowObj, opts = {}) {
     area,
     address,                // exact street address — '' if absent
     interestType: mapInterest(interestRaw),
-    stage,                  // may be null (or 'customer' when an order # is present)
+    stage,                  // status-derived stage; may be null — NEVER 'customer'
     tags,                   // segment/temperature/engagement tags — may be []
     dealValue,              // parsed $ deal value (0 ⇒ unset)
     leadSource,             // lead origin (Notion "Source") — '' if absent
     provenance: provenanceFor(fmt), // record origin for Client.source ('notion'/…)
-    orderNumber: orderNumRaw, // raw order number from the row (customer signal)
-    hasOrderNumber,         // true ⇒ row carries an order/order-state ⇒ customer
+    orderNumber: orderNumRaw, // raw order number from the row (free-text hint)
+    hasOrderNumber,         // true ⇒ row carries an order # / order-state HINT (not customer)
     phone,                  // top-level phone (may be '')
     email,                  // top-level/primary email (may be '')
     contacts,               // array of {name,role,phone,email}

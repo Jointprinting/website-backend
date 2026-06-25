@@ -17,7 +17,9 @@
 
 const Client = require('../models/Client');
 const Order  = require('../models/Order');
-const { deriveCompanyKey } = require('../models/Order'); // REUSE canonical key normalization
+// REUSE canonical key normalization + the single source of truth for which order
+// statuses count as a REAL placed order (a customer). Never re-list these here.
+const { deriveCompanyKey, PLACED_STATUSES } = require('../models/Order');
 const PurchaseOrder = require('../models/PurchaseOrder');
 const Transaction   = require('../models/Transaction');
 // REUSE the finance definitions verbatim — the company money summary must match
@@ -61,6 +63,46 @@ function promoteStage(current, target) {
   const cr = STAGE_RANK[cur] != null ? STAGE_RANK[cur] : 0;
   const tr = STAGE_RANK[target] != null ? STAGE_RANK[target] : 0;
   return tr > cr ? target : cur;
+}
+
+// Auto-promote a company's CRM record to 'customer' when one of its orders has
+// been PLACED (owner-approved). Best-effort and idempotent:
+//   • get-or-create the Client by companyKey (race-safe upsert; seeds identity
+//     from the order on insert),
+//   • move stage via promoteStage(stage,'customer') — UP-only, and NEVER touches
+//     won/lost/dormant, so a closed/parked deal is never resurrected or regressed.
+// Returns the resulting stage (or null on no-op). The CALLER wraps this in
+// try/catch — an order write must never fail because of a CRM hiccup — but we
+// also keep this self-contained and side-effect-light. `sample` carries the
+// order's companyName/clientName so a brand-new record gets a real name.
+async function promoteCompanyToCustomerOnPlacement(companyKey, sample = {}) {
+  const key = (companyKey || '').trim();
+  if (!key) return null;
+  const companyName = sample.companyName || '';
+  const clientName  = sample.clientName  || '';
+  // Race-safe get-or-create: upsert on the unique companyKey (mirrors getOne) so
+  // two concurrent placements can't both insert. $setOnInsert only writes on a
+  // genuine insert; an existing record keeps its fields (incl. an owner-set name).
+  const doc = await Client.findOneAndUpdate(
+    { companyKey: key },
+    {
+      $setOnInsert: {
+        companyKey:  key,
+        companyName,
+        clientName,
+        matchKey:    deriveMatchKey(companyName, clientName),
+        source:      'order',
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true },
+  );
+  if (!doc) return null;
+  const next = promoteStage(doc.stage, 'customer');
+  if (next !== doc.stage) {
+    doc.stage = next;
+    await doc.save();
+  }
+  return next;
 }
 
 // Archived (soft-deleted) records are excluded from every WORKING surface —
@@ -388,7 +430,7 @@ async function getToday(req, res) {
       .sort({ nextFollowUp: 1 })   // soonest/most-overdue first (oldest date first)
       .lean();
 
-    // Which of these companies have ≥1 Order (⇒ customers)? One batched query.
+    // Which of these companies have ≥1 PLACED order (⇒ customers)? One batched query.
     const withOrders = await keysWithOrders(docs.map((c) => c.companyKey));
 
     let overdue = 0;
@@ -451,7 +493,7 @@ async function getCalendar(req, res) {
       .select('companyKey companyName clientName phone stage interestType area nextFollowUp lastContact')
       .lean();
 
-    // isCustomer from order reality (a company with ≥1 linked Order is a
+    // isCustomer from order reality (a company with ≥1 linked PLACED Order is a
     // customer, even if its stored stage is a stale 'lead'). Same authoritative
     // signal /today, /pipeline and /dashboard use — so the calendar marks
     // customers the same way every other CRM surface does.
@@ -496,7 +538,7 @@ async function getPipeline(req, res) {
       .sort({ dealValue: -1, companyName: 1 })   // biggest deals first within each column
       .lean();
 
-    // Which companies have ≥1 Order (⇒ customers)? One batched query.
+    // Which companies have ≥1 PLACED order (⇒ customers)? One batched query.
     const withOrders = await keysWithOrders(docs.map((c) => c.companyKey));
 
     // Seed every stage so empty columns still render in canonical order.
@@ -816,6 +858,8 @@ async function getOne(req, res) {
       .sort({ orderDate: -1, createdAt: -1 })
       .select('projectNumber orderNumber status paid totalValue cogs orderDate createdAt')
       .lean();
+    // ALL orders (incl. quotes) are returned to the UI list above; only the
+    // isCustomer flag below keys off a real PLACED order.
 
     // ── Linked POs ──────────────────────────────────────────────────────────────
     // POs hang off Orders (PurchaseOrder.orderId). Gather this company's order ids
@@ -843,13 +887,13 @@ async function getOne(req, res) {
     // normalizing this company's Order numbers and pulling exactly those Tx rows.
     const finance = await companyFinance(orders);
 
-    // isCustomer is AUTHORITATIVE from order reality: a company with ≥1 linked
-    // Order is a customer, full stop — even if its stored stage is stale (e.g. an
-    // older import left it at 'lead'). The frontend renders "Customer" off this
-    // boolean so it's reliable BEFORE the one-time promote script runs. The
-    // promote script fixes the stored `stage`; this keeps the UI correct in the
-    // meantime.
-    const isCustomer = orders.length > 0;
+    // isCustomer is AUTHORITATIVE from order reality: a company is a customer iff
+    // it has ≥1 linked Order in a REAL PLACED status (placed/in_production/shipped/
+    // delivered) — a bare quote or approved-but-not-placed order does NOT count.
+    // The frontend renders "Customer" off this boolean, and it stays reliable even
+    // if the stored `stage` is stale. (ALL orders, including quotes, still show in
+    // the list above; only this flag keys off placed.)
+    const isCustomer = orders.some((o) => PLACED_STATUSES.includes(o.status));
 
     res.json({ client: { ...client, isCustomer }, orders, pos, finance, isCustomer });
   } catch (e) {
@@ -1002,24 +1046,29 @@ function applyImportToDoc(doc, mapped, isNew, opts = {}) {
   if (!doc.source) doc.source = mapped.provenance || 'field-tracker';
 
   // Stage: PROMOTE-UP-ONLY. The import may carry a status-derived stage, and the
-  // controller may flag that this company has ≥1 linked Order (hasOrders) — in
-  // which case it's a CUSTOMER, never a lead. We take the furthest-along of the
+  // controller may flag that this company has ≥1 linked PLACED Order (hasOrders) —
+  // in which case it's a CUSTOMER, never a lead. We take the furthest-along of the
   // candidates but NEVER regress what the owner already advanced (won stays won,
   // a manual 'sampling' isn't pulled back to 'customer', etc.). promoteStage
   // moves up the funnel rank only.
   //   - an order (on the row OR already linked) ⇒ at least 'customer'
   //   - else the status-mapped stage, but only from a default/empty/lead doc
-  const hasOrders = !!opts.hasOrders || !!mapped.hasOrderNumber;
+  // hasOrders means a VERIFIED placed Order (resolved by the caller against real
+  // Order docs) — NOT the free-text mapped.hasOrderNumber hint, which never
+  // promotes on its own. Only this flag may lift a record to 'customer'.
+  const hasOrders = !!opts.hasOrders;
   // First, the status-derived stage — original contract: only fills a doc still
   // sitting at the import-default floor (empty / 'lead'); never overrides an
-  // owner-advanced stage. (When the row carries an order, mapped.stage is already
-  // 'customer'.)
-  if (mapped.stage && (!doc.stage || doc.stage === 'lead')) {
+  // owner-advanced stage. CRITICAL: a status WORD must NEVER set 'customer' —
+  // "customer" is reserved for a verified PLACED Order (the hasOrders branch
+  // below). The importer no longer emits stage 'customer', but we hard-guard here
+  // too so a stray value can't slip a quote-only record to customer.
+  if (mapped.stage && mapped.stage !== 'customer' && (!doc.stage || doc.stage === 'lead')) {
     doc.stage = mapped.stage;
   }
-  // Then order-promotion: a linked Order (on the row OR already in the DB) means
-  // CUSTOMER. promoteStage moves UP only and refuses to touch lost/dormant, so a
-  // won deal stays won, a manual mid-funnel stage isn't regressed, and a
+  // Then order-promotion: a real PLACED Order (on the row OR already in the DB)
+  // means CUSTOMER. promoteStage moves UP only and refuses to touch lost/dormant,
+  // so a won deal stays won, a manual mid-funnel stage isn't regressed, and a
   // deliberately-closed deal isn't resurrected by an order.
   if (hasOrders) {
     doc.stage = promoteStage(doc.stage, 'customer');
@@ -1089,15 +1138,14 @@ async function applyMappedRow(mapped, opts = {}) {
   const isNew = !doc;
   if (!doc) doc = new Client({ companyKey: key, matchKey: mapped.matchKey || '', source: mapped.provenance || 'field-tracker' });
 
-  // Does this company already have ≥1 linked Order? If so it's a customer,
-  // regardless of any status word in the CSV. The caller may pre-compute a Set of
-  // order-bearing keys (opts.keysWithOrders) to avoid a per-row query; otherwise
-  // we look it up. (mapped.hasOrderNumber covers an order carried ON the row.)
-  let hasOrders = !!mapped.hasOrderNumber;
-  if (!hasOrders) {
-    if (opts.keysWithOrders) hasOrders = opts.keysWithOrders.has(key);
-    else hasOrders = !!(await Order.findOne({ companyKey: key }).select('_id').lean());
-  }
+  // Does this company already have ≥1 REAL PLACED Order? Only that makes it a
+  // customer — a free-text order-number cell on the CSV (mapped.hasOrderNumber) is
+  // NOT proof and must not promote. The caller may pre-compute a Set of
+  // placed-order keys (opts.keysWithOrders — already filtered to PLACED_STATUSES)
+  // to avoid a per-row query; otherwise we look one up with the same filter.
+  let hasOrders;
+  if (opts.keysWithOrders) hasOrders = opts.keysWithOrders.has(key);
+  else hasOrders = !!(await Order.findOne({ companyKey: key, status: { $in: PLACED_STATUSES } }).select('_id').lean());
 
   applyImportToDoc(doc, mapped, isNew, { hasOrders });
 
@@ -1181,8 +1229,8 @@ async function importRows(req, res) {
     // -- Live import --
     const replacedArchived = mode === 'replace' ? await archiveReplaceable() : 0;
 
-    // Pre-compute which incoming companies already have ≥1 Order, in ONE query,
-    // so the per-row order→customer promotion doesn't fan out into N lookups.
+    // Pre-compute which incoming companies already have ≥1 PLACED order, in ONE
+    // query, so the per-row order→customer promotion doesn't fan out into N lookups.
     const keeperKeys = [...new Set(mappedRows.filter((m) => !m._skip && m.companyKey).map((m) => m.companyKey))];
     const keysWithOrdersSet = await keysWithOrders(keeperKeys);
 
@@ -1219,6 +1267,7 @@ const IMPORT_SOURCES = ['field-tracker', 'notion', 'crm-sheet', 'import'];
 // "replaceable" even though the import tagged it 'cold'/'warm'/etc.
 const IMPORT_TAGS = new Set([
   'hot', 'warm', 'room-temp', 'cold', 'lost', 'won', 'in-progress', 'meta-ad',
+  'order-ref',
   'eng-high', 'eng-medium', 'eng-low', 'eng-inactive',
 ]);
 
@@ -1240,7 +1289,26 @@ function ownerTouched(doc) {
   return false;
 }
 
+// Which of these companyKeys are CUSTOMERS — i.e. have at least one REAL PLACED
+// order (status in PLACED_STATUSES). A bare quote/approved/cancelled order does
+// NOT make a company a customer, so it's excluded here. This single query keys
+// isCustomer across listCrm / getToday / getPipeline / getDashboard at once.
 async function keysWithOrders(keys) {
+  if (!keys.length) return new Set();
+  const rows = await Order.find({
+    companyKey: { $in: keys },
+    status: { $in: PLACED_STATUSES },
+  }).select('companyKey').lean();
+  return new Set(rows.map((r) => r.companyKey));
+}
+
+// Which of these companyKeys have ANY linked Order at all — including a live
+// quote (quoted/approved). This is the ARCHIVE/SWEEP-PROTECTION signal: "any
+// order means real history worth keeping visible", deliberately broader than the
+// customer test above. Used by the cleanup/replace safety gates so a real
+// prospect mid-deal (only a quote so far) is never archived out of the working
+// set. NOT a customer signal — isCustomer still keys off placed orders only.
+async function keysWithAnyOrder(keys) {
   if (!keys.length) return new Set();
   const rows = await Order.find({ companyKey: { $in: keys } }).select('companyKey').lean();
   return new Set(rows.map((r) => r.companyKey));
@@ -1249,7 +1317,9 @@ async function keysWithOrders(keys) {
 async function findReplaceable() {
   const candidates = await Client.find({ source: { $in: IMPORT_SOURCES }, ...NOT_ARCHIVED })
     .select('companyKey stage dealValue tags notes log source').lean();
-  const withOrders = await keysWithOrders(candidates.map((c) => c.companyKey));
+  // PROTECTION gate: shield ANY company with order history (incl. a live quote),
+  // not just placed customers — a real prospect mid-deal must survive a replace.
+  const withOrders = await keysWithAnyOrder(candidates.map((c) => c.companyKey));
   return candidates.filter((c) => !withOrders.has(c.companyKey) && !ownerTouched(c));
 }
 
@@ -1397,7 +1467,10 @@ async function getDuplicates(req, res) {
       const distinct = [...new Map(arr.map((d) => [d.companyKey, d])).values()];
       if (distinct.length > 1) { dupGroups.push(distinct); distinct.forEach((d) => allKeys.push(d.companyKey)); }
     }
-    const withOrders = await keysWithOrders(allKeys);
+    // Merge tooling: "has order history" (incl. a live quote) is the signal for
+    // survivor preference + the UI's hasOrders hint — broader than the customer
+    // flag, so a quote-only duplicate isn't treated as a blank record on merge.
+    const withOrders = await keysWithAnyOrder(allKeys);
 
     const out = dupGroups.map((arr) => ({
       matchKey: arr[0].matchKey || deriveMatchKey(arr[0].companyName, arr[0].clientName),
@@ -1553,7 +1626,9 @@ async function archiveCompanies(req, res) {
       if (force) {
         keys = requested;
       } else {
-        const withOrders = await keysWithOrders(requested);
+        // Protect ANY order-bearing company (incl. a live quote), per the safety
+        // note above — broader than the customer test on purpose.
+        const withOrders = await keysWithAnyOrder(requested);
         keys = requested.filter((k) => !withOrders.has(k));
         if (keys.length < requested.length) {
           const skippedWithOrders = requested.filter((k) => withOrders.has(k));
@@ -1573,8 +1648,8 @@ async function archiveCompanies(req, res) {
         $or: [{ nextFollowUp: null }, { stage: { $in: CLOSED_STAGES } }],
       }).select('companyKey stage dealValue tags notes log nextFollowUp').lean();
       const keyList = candidates.map((c) => c.companyKey);
-      const withOrders = await keysWithOrders(keyList);
-      // Never sweep a record with orders or clear owner activity (safety).
+      // Never sweep a record with ANY order (incl. a live quote) or owner activity.
+      const withOrders = await keysWithAnyOrder(keyList);
       keys = candidates
         .filter((c) => !withOrders.has(c.companyKey) && !ownerTouched(c))
         .map((c) => c.companyKey);
@@ -1738,6 +1813,7 @@ module.exports = {
   buildHeadsUp,
   HEADS_UP,
   promoteStage,
+  promoteCompanyToCustomerOnPlacement,
   removeLogEntry,
   searchOr,
 };

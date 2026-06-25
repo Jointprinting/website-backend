@@ -212,6 +212,13 @@ function confirmationShareIssues(conf) {
   return issues;
 }
 
+// A "real placed order" — the statuses that mark a company as an actual CUSTOMER
+// (money committed, work underway/done). DELIBERATELY excludes the pre-sale
+// statuses 'quoted' and 'approved' (still a quote/proposal) and 'cancelled' (no
+// sale). isCustomer and the auto-promote-on-placement logic key off this set so
+// "customer" means a verified placed order, never just a quote.
+const PLACED_STATUSES = ['placed', 'in_production', 'shipped', 'delivered'];
+
 const OrderSchema = new mongoose.Schema({
   projectNumber: { type: String, index: true },
   orderNumber:   { type: String, index: true },
@@ -492,6 +499,7 @@ OrderSchema.pre('findOneAndUpdate', async function () {
 });
 
 module.exports = mongoose.model('Order', OrderSchema);
+module.exports.PLACED_STATUSES = PLACED_STATUSES;
 module.exports.deriveCompanyKey = deriveCompanyKey;
 module.exports.computeQuoteTotals = computeQuoteTotals;
 module.exports.computeConfirmationTotals = computeConfirmationTotals;
