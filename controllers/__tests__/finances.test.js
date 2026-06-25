@@ -17,6 +17,7 @@ const assert = require('node:assert/strict');
 const {
   summarizeCompanyFinance,
   normalizeOrderNumber,
+  companyKeyByOrderNumber,
   orderRevenueCost,
   orderActualCost,
   actualCostByOrder,
@@ -603,4 +604,46 @@ test('HARDENING: paymentGapsForOrders tolerates bad orders, dates and parties', 
   assert.equal(row.cost, 400);
   assert.equal(row.collected, 300);
   assert.equal(row.outstanding, 700);                        // billed 1000 − collected 300
+});
+
+// ── companyKeyByOrderNumber (the byOrder → CRM card deep-link bridge) ──────────
+test('companyKeyByOrderNumber: keys by CANONICAL order # to the order\'s stored companyKey', () => {
+  const m = companyKeyByOrderNumber([
+    { orderNumber: '#0000021', companyKey: 'acme' },
+    { orderNumber: 'PO-022',   companyKey: 'globex' },
+  ]);
+  // "#0000021" / "PO-022" normalize to "21" / "22" — the SAME keys a finance row
+  // lands on — and map to the authoritative stored companyKey.
+  assert.equal(m['21'], 'acme');
+  assert.equal(m['22'], 'globex');
+});
+
+test('companyKeyByOrderNumber: leading-zero variants of ONE order collapse to one key', () => {
+  const m = companyKeyByOrderNumber([
+    { orderNumber: '0000021', companyKey: 'acme' },
+    { orderNumber: '21',      companyKey: 'acme' },   // same company, same canonical #
+  ]);
+  assert.equal(m['21'], 'acme');
+});
+
+test('companyKeyByOrderNumber: ANTI-MISLINK — two different companies sharing a number → not linked', () => {
+  const m = companyKeyByOrderNumber([
+    { orderNumber: '21', companyKey: 'acme' },
+    { orderNumber: '21', companyKey: 'globex' },   // genuine collision: DON'T guess
+  ]);
+  // Ambiguous → '' so the UI disables the link instead of mis-linking to a
+  // near-miss company that merely shares the order number.
+  assert.equal(m['21'], '');
+});
+
+test('companyKeyByOrderNumber: a blank/absent companyKey never overwrites a real one (and yields no link alone)', () => {
+  const m = companyKeyByOrderNumber([
+    { orderNumber: '21', companyKey: 'acme' },
+    { orderNumber: '21', companyKey: '' },          // blank must not clobber 'acme'
+    { orderNumber: '22', companyKey: '' },          // only blanks → no entry to link on
+    { orderNumber: '',   companyKey: 'ghost' },     // no number → skipped
+    null,                                            // tolerated
+  ]);
+  assert.equal(m['21'], 'acme');
+  assert.equal(m['22'] || '', '');
 });
