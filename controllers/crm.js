@@ -380,13 +380,18 @@ function searchOr(q) {
 // owner finds a person/company at ANY stage (the whole point of the search box).
 async function listCrm(req, res) {
   try {
-    const { stage, area, q, tag, archived } = req.query;
+    const { stage, area, q, tag, archived, leadSource } = req.query;
     // Default list EXCLUDES archived; ?archived=1 shows only archived, =all shows
     // everything (for an "Archived" tab / restore surface).
     const filter = {};
     if (archived === '1' || archived === 'true') filter.archived = true;
     else if (archived === 'all') { /* no archived constraint */ }
     else Object.assign(filter, NOT_ARCHIVED);
+
+    // Structured lead-source filter (?leadSource=Referral). Applies in BOTH the
+    // browse and the global-search path so "find X from referrals" works. Only a
+    // recognized enum value constrains; anything else is ignored.
+    if (leadSource && Client.LEAD_SOURCES.includes(leadSource)) filter.leadSource = leadSource;
 
     const or = searchOr(q);
     if (or) {
@@ -525,16 +530,19 @@ async function getCalendar(req, res) {
 // narrowed the same way Companies is.
 async function getPipeline(req, res) {
   try {
-    const { area, q, tag } = req.query;
+    const { area, q, tag, leadSource } = req.query;
     const filter = { ...NOT_ARCHIVED };
     if (area) filter.area = area;
+    // Structured lead-source filter — same enum the list endpoint uses, so the
+    // board narrows by where the deals came from (?leadSource=Referral).
+    if (leadSource && Client.LEAD_SOURCES.includes(leadSource)) filter.leadSource = leadSource;
     // ?q= is a global search (contacts/tags/identity) — same behavior as /list.
     const or = searchOr(q);
     if (or) filter.$or = or;
     else if (tag && String(tag).trim()) filter.tags = String(tag).trim();
 
     const docs = await Client.find(filter)
-      .select('companyKey companyName clientName dealValue nextFollowUp stage address area interestType tags')
+      .select('companyKey companyName clientName dealValue nextFollowUp stage address area interestType tags leadSource')
       .sort({ dealValue: -1, companyName: 1 })   // biggest deals first within each column
       .lean();
 
@@ -560,6 +568,7 @@ async function getPipeline(req, res) {
         area:         c.area || '',
         interestType: c.interestType || '',
         tags:         c.tags || [],
+        leadSource:   c.leadSource || '',
         isCustomer:   withOrders.has(c.companyKey),
       });
     }
@@ -573,6 +582,9 @@ async function getPipeline(req, res) {
       groups,
       summary: summarizePipeline(docs),
       probability: STAGE_PROBABILITY,
+      // The structured lead-source enum, so the board's filter dropdown can list
+      // the exact filterable values without hardcoding them on the client.
+      leadSources: Client.LEAD_SOURCES.filter(Boolean),
     });
   } catch (e) {
     res.status(500).json({ message: e.message });

@@ -1,0 +1,8 @@
+[
+  {
+    "companyKey": "happyleaf",
+    "kind": "order-implied-no-number",
+    "severity": "warn",
+    "detail": "Owner-flagged: Happy Leaf (Status \"Room Temp (Opportunities)\") has at least one COMPLETED order, but the Notion export carries no order number for it. Add the order number(s) so the historical order(s) load and finances link."
+  }
+]

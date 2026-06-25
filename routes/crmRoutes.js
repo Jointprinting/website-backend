@@ -26,6 +26,11 @@ const {
   archiveOne,
   unarchiveOne,
 } = require('../controllers/crm');
+const {
+  reconcilePreview,
+  reconcileApply,
+  reconcileRevert,
+} = require('../controllers/crmReconcile');
 
 router.use(requireAdmin);
 
@@ -39,6 +44,16 @@ router.post('/import',   importRows);
 router.post('/merge',    mergeCompanies);
 router.post('/archive',  archiveCompanies);
 router.post('/unarchive', unarchiveCompanies);
+
+// ── Owner-triggered data reconcile (preview → confirm; idempotent; reversible).
+// Fixed paths, declared BEFORE the dynamic /:companyKey so they aren't swallowed.
+//   GET/POST /reconcile/preview  → the plan (no writes)
+//   POST     /reconcile/apply    → execute the plan (requires { confirm: true })
+//   POST     /reconcile/revert   → undo a prior apply batch by id
+router.get('/reconcile/preview',  reconcilePreview);
+router.post('/reconcile/preview', reconcilePreview);
+router.post('/reconcile/apply',   reconcileApply);
+router.post('/reconcile/revert',  reconcileRevert);
 
 router.get('/:companyKey',   getOne);
 router.patch('/:companyKey', patchOne);
