@@ -635,6 +635,35 @@ const orderActuals = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
+// CANONICAL order-number → CRM companyKey map, for cross-linking a finance row
+// (which only carries a free-text client name) to the RIGHT CRM company card.
+// Keys via normalizeOrderNumber on BOTH sides so a "0000021" order and a "21"
+// ledger row resolve identically — the SAME bridge byOrder/byClient already use.
+//
+// The authoritative key is the Order's stored `companyKey` (derived from
+// company/client name), NOT a re-slug of the ledger `party` name — so the link
+// can't drift to a near-miss company. Safety on ambiguity: if two Orders that
+// share a canonical number map to DIFFERENT companyKeys, we DON'T guess — that
+// number's entry is left '' so the frontend disables the link rather than
+// mis-linking two companies that happen to share a number. A blank/absent
+// companyKey on an order never overwrites a real one already seen for that key.
+// Pure (POJOs in, plain object out) so it's unit-testable without Mongo.
+function companyKeyByOrderNumber(orders) {
+  const map = {};
+  (Array.isArray(orders) ? orders : []).forEach((o) => {
+    if (!o) return;
+    const key = normalizeOrderNumber(o.orderNumber);
+    if (!key) return;
+    const ck = String(o.companyKey || '').trim();
+    if (!ck) return;                                  // nothing to link on
+    if (!(key in map)) { map[key] = ck; return; }     // first real key wins
+    if (map[key] && map[key] !== ck) map[key] = null; // genuine collision → ambiguous, don't guess
+  });
+  // Normalize the ambiguous sentinel to '' for a clean, JSON-friendly shape.
+  Object.keys(map).forEach((k) => { if (!map[k]) map[k] = ''; });
+  return map;
+}
+
 // GET /api/finances/by-order?year=  — per-order P&L: revenue, cost, profit,
 // margin %. An order's economics span time — the sale lands one day, the blanks
 // and the printer invoice another, a reprint or trailing freight weeks later,
@@ -642,10 +671,20 @@ const orderActuals = async (req, res) => {
 // net full revenue vs. full cost, and anchor it to the year it was SOLD (its
 // first Customer Sales date). That stops a late-December order whose costs hit
 // in January from showing up as a phantom loss in the new year.
+//
+// Each row also carries an authoritative `companyKey` (Order join on the
+// canonical number) so the UI can deep-link the client name straight to its CRM
+// card — '' when no order resolves (or the number is shared/ambiguous), which
+// the UI treats as "not linked" (no dead-end).
 const byOrder = async (req, res) => {
   try {
     const year = req.query.year ? Number(req.query.year) : null;
     const rows = await Transaction.find({ orderNumber: { $ne: '' } }).lean();
+    // CRM bridge: this order#→companyKey map is built from the Orders' stored
+    // canonical companyKey, so the client-name link resolves to the exact card.
+    const orderDocs = await Order.find({ orderNumber: { $ne: '' } })
+      .select('orderNumber companyKey').lean();
+    const ckByOrder = companyKeyByOrderNumber(orderDocs);
     const cogs = new Set(Transaction.COGS_CATEGORIES);
     const map = {};
     rows.forEach((t) => {
@@ -674,6 +713,7 @@ const byOrder = async (req, res) => {
       const profit = round2(o.revenue - o.cost);
       return {
         orderNumber: o.orderNumber, client: o.client,
+        companyKey: ckByOrder[o.orderNumber] || '',   // '' = not linkable (no/ambiguous order)
         year: anchor ? new Date(anchor).getUTCFullYear() : null,
         revenue: round2(o.revenue), cost: round2(o.cost), profit,
         margin: pct(profit, o.revenue),
@@ -858,6 +898,7 @@ module.exports = { importCsv, list, create, update, remove, summary, byOrder, by
 // view) + tests. All keyed off the SAME Transaction truth via these helpers.
 module.exports.summarizeCompanyFinance = summarizeCompanyFinance;
 module.exports.normalizeOrderNumber = normalizeOrderNumber;
+module.exports.companyKeyByOrderNumber = companyKeyByOrderNumber;
 module.exports.orderRevenueCost = orderRevenueCost;
 module.exports.orderActualCost = orderActualCost;
 module.exports.actualCostByOrder = actualCostByOrder;
