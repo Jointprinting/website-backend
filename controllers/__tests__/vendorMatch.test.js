@@ -51,6 +51,10 @@ test('sameVendor: Heritage variants are the same printer', () => {
   assert.equal(sameVendor('heritage', 'Heritage Screen Printing'), true);   // case-insensitive
   assert.equal(sameVendor('Heritage Inc', 'Heritage, Inc.'), true);         // matchKey collapse
   assert.equal(sameVendor('Heritage Screen Printing', 'Heritage Printing'), true); // strong overlap
+  // Prefix tier still fires when the extra words are a GENERIC trade tail (this is
+  // the case the BUG-1 fix must keep working — extra = {screen, printing}).
+  assert.equal(sameVendor('Heritage Screen', 'Heritage Screen Printing'), true);
+  assert.equal(sameVendor('Apex', 'Apex Printing'), true);   // extra = {printing}, generic
 });
 
 test('sameVendor: distinct printers do NOT merge (conservative)', () => {
@@ -60,6 +64,14 @@ test('sameVendor: distinct printers do NOT merge (conservative)', () => {
   assert.equal(sameVendor('Heritage Screen Printing', 'Forward Printing'), false);
   assert.equal(sameVendor('Apex Apparel', 'Vertex Apparel'), false); // share only "apparel"
   assert.equal(sameVendor('Bay Graphics', 'Sun Graphics'), false);   // share only "graphics"
+  // A BARE brand that is a token-prefix of a DIFFERENT business must NOT merge when
+  // the extra word is DISTINGUISHING (not a generic trade tail). This is the
+  // regression guard for the prefix-rule false-merge.
+  assert.equal(sameVendor('Apex', 'Apex Apparel'), false);
+  assert.equal(sameVendor('Liberty', 'Liberty Sportswear'), false);
+  assert.equal(sameVendor('Crown', 'Crown Trophy'), false);
+  assert.equal(sameVendor('Eagle', 'Eagle Promotions'), false);
+  assert.equal(sameVendor('Blue', 'Blue Ridge Apparel'), false);
   // Blank / Unassigned never matches a real vendor.
   assert.equal(sameVendor('', 'Heritage'), false);
   assert.equal(sameVendor('Unassigned', 'Heritage Screen Printing'), false);
@@ -177,12 +189,20 @@ test('resolveVendorFromList: exact name wins over a fuzzy sibling', () => {
 });
 
 test('resolveVendorFromList: ambiguous fuzzy match does NOT guess (returns null)', () => {
-  // Two DIFFERENT existing printers both fuzzily match a typed stem → don't guess.
+  // Two existing records that BOTH genuinely reduce to the typed stem (same
+  // matchKey "heritage" after the trade tail is stripped) → ambiguous, don't guess.
   const book = [
-    { _id: 'a', name: 'Heritage Screen Printing' },
-    { _id: 'b', name: 'Heritage Apparel' },
+    { _id: 'a', name: 'Heritage Screen Printing' },   // → "heritage"
+    { _id: 'b', name: 'Heritage Printing' },           // → "heritage"
   ];
   assert.equal(resolveVendorFromList('Heritage', book), null);
+  // A distinguishing extra word is NOT ambiguous: "Heritage" + "Heritage Apparel"
+  // (different printer) resolves to the real "Heritage Screen Printing" alone.
+  const book2 = [
+    { _id: 'a', name: 'Heritage Screen Printing' },
+    { _id: 'b', name: 'Heritage Apparel' },            // genuinely different printer
+  ];
+  assert.equal(resolveVendorFromList('Heritage', book2)._id, 'a');
 });
 
 test('resolveVendorFromList: a genuinely new vendor resolves to null (keep typed)', () => {

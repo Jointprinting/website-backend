@@ -89,6 +89,19 @@ function isTokenPrefix(a, b) {
   return true;
 }
 
+// The generic suffix/trade WORDS (single tokens) — the bits that carry no
+// distinguishing identity. A bare-name-vs-longer-name prefix match is only a SAME-
+// printer signal when every EXTRA word in the longer name is one of these (so
+// "Heritage" ⊂ "Heritage Screen Printing" is same — extra = {screen, printing} —
+// but "Apex" ⊄ "Apex Apparel" — "apparel" is a distinguishing word). Derived from
+// VENDOR_SUFFIXES, expanded to the individual words of the multi-word entries.
+const GENERIC_TOKENS = new Set();
+for (const suf of [
+  'screen', 'printing', 'print', 'prints', 'screenprinting', 'screenprint', 'shop',
+  'incorporated', 'corporation', 'company', 'limited', 'co',
+  'inc', 'llc', 'llc', 'corp', 'ltd', 'lp', 'llp', 'plc', 'the', 'and',
+]) GENERIC_TOKENS.add(suf);
+
 // Jaccard overlap of two token SETS (|A∩B| / |A∪B|). 0..1.
 function tokenJaccard(a, b) {
   const A = new Set(a);
@@ -105,15 +118,18 @@ function tokenJaccard(a, b) {
 //   1) identical canonical vendorKey (case/whitespace only) — trivially same; OR
 //   2) identical fuzzy vendorMatchKey (corp/trade suffix stripped) — "Heritage
 //      Inc" ≈ "Heritage Screen Printing"; OR
-//   3) one name's token sequence is an in-order PREFIX of the other AND the
-//      shorter has a meaningful stem (≥ 4 chars, to avoid "A"/"AB" coincidences)
-//      — "Heritage" ⊂ "Heritage Screen Printing"; OR
+//   3) one name's token sequence is an in-order PREFIX of the other, the shorter
+//      has a meaningful stem (≥ 4 chars), AND every EXTRA word in the longer name
+//      is a generic suffix/trade word — "Heritage" ⊂ "Heritage Screen Printing"
+//      (extra = {screen, printing}, all generic) is SAME, but "Apex" ⊂ "Apex
+//      Apparel" (extra = {apparel}, a distinguishing word) is NOT; OR
 //   4) strong token-set overlap (Jaccard ≥ 0.6) — handles re-orderings / a shared
 //      multi-word core ("Heritage Screen Printing" vs "Heritage Printing").
 // Returns FALSE for genuinely different printers that merely share ONE generic
-// token ("Heritage Screen Printing" vs "Heritage Sportswear" — different stems,
-// prefix is only the 1 generic token, Jaccard 0.25). Empty/whitespace names never
-// match anything (so "Unassigned"/'' can't swallow a real vendor).
+// token ("Heritage Screen Printing" vs "Heritage Sportswear"), AND for a bare
+// brand that is a prefix of a DIFFERENT business ("Apex" vs "Apex Apparel") — the
+// extra word there is distinguishing, not a trade tail. Empty/whitespace names
+// never match anything (so "Unassigned"/'' can't swallow a real vendor).
 function sameVendor(nameA, nameB) {
   const ka = vendorKey(nameA);
   const kb = vendorKey(nameB);
@@ -133,11 +149,17 @@ function sameVendor(nameA, nameB) {
   if (ta.length === 0 || tb.length === 0) return false;
 
   // (3) In-order prefix, with a meaningful shorter stem so a 1-3 char coincidence
-  //     can't trigger. The shorter side's first token must be ≥ 4 chars (a real
-  //     name like "Heritage", not "A&"/"AB").
+  //     can't trigger (the shorter side's first token must be ≥ 4 chars — a real
+  //     name like "Heritage", not "A&"/"AB"), AND every EXTRA word the longer name
+  //     adds must be a generic suffix/trade word. This is the key guard against a
+  //     bare brand swallowing a DIFFERENT business that merely starts with it:
+  //     "Apex"⊂"Apex Apparel" has extra {apparel} (distinguishing) → NOT same.
   const shorter = ta.length <= tb.length ? ta : tb;
   const longer = ta.length <= tb.length ? tb : ta;
-  if (shorter[0] && shorter[0].length >= 4 && isTokenPrefix(shorter, longer)) return true;
+  if (shorter[0] && shorter[0].length >= 4 && isTokenPrefix(shorter, longer)) {
+    const extra = longer.slice(shorter.length);
+    if (extra.length > 0 && extra.every((t) => GENERIC_TOKENS.has(t))) return true;
+  }
 
   // (4) Strong token-set overlap. 0.6 keeps a single shared generic token (0.25–0.33
   //     for typical lengths) from qualifying, while a shared multi-word core does.

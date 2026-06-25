@@ -1190,32 +1190,49 @@ const mergeVendors = async (req, res) => {
     foldVendorFields(survivor, merged, normalizeOrderNumber);
     await survivor.save();
 
-    // RE-POINT everything that referenced the merged vendor BY NAME (case-
-    // insensitive exact, the same match the rest of the PO code uses) to the
-    // survivor's name. Skip the no-op when the names already match (a pure
-    // alias collapse where both rows share a name is possible after edits).
-    const mergedNameRe = new RegExp(`^${mergedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+    // RE-POINT everything that referenced the merged vendor to the survivor's
+    // name. We match by CANONICAL vendorKey, not exact bytes — a PO/receipt saved
+    // with a whitespace variant ("Heritage  Screen Printing", a leading space)
+    // shares the merged vendor's vendorKey and legitimately belongs to it (the
+    // vendor CARD surfaces those via the same whitespace-flexible match), so the
+    // re-point must be just as tolerant or those records orphan on the archive.
+    // A whitespace-flexible anchored regex narrows the query; the exact vendorKey
+    // gate is the precise filter (identical to getVendor). Skip the whole block on
+    // a same-key merge (a pure case/whitespace alias collapse) — the survivor's
+    // card already matches those POs case-insensitively, so nothing orphans.
+    const mergedKeyVal = vendorKey(mergedName);
+    const wsRe = (s) => new RegExp(`^${String(s || '').trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')}$`, 'i');
     let posRepointed = 0;
     let txnsRepointed = 0;
-    if (mergedName && vendorKey(mergedName) !== vendorKey(survivorName)) {
-      // POs: vendorName + the printer receiving block's name.
-      const poUpd = await PurchaseOrder.updateMany(
-        { vendorName: mergedNameRe },
-        { $set: { vendorName: survivorName } },
-      );
-      posRepointed = poUpd.modifiedCount != null ? poUpd.modifiedCount : (poUpd.nModified || 0);
-      // Keep the printer receiving-block name in sync where it equals the old name.
-      await PurchaseOrder.updateMany(
-        { 'shipToPrinter.name': mergedNameRe },
-        { $set: { 'shipToPrinter.name': survivorName } },
-      ).catch(() => { /* best-effort cosmetic sync */ });
+    if (mergedName && mergedKeyVal && mergedKeyVal !== vendorKey(survivorName)) {
+      const mergedNameRe = wsRe(mergedName);
+      // POs: vendorName (and keep the printer receiving-block name in sync where it
+      // equals the old name). Filter to the exact vendorKey so only this printer's
+      // POs move, even though the regex over-matches whitespace variants.
+      const candidatePos = await PurchaseOrder.find({
+        $or: [{ vendorName: mergedNameRe }, { 'shipToPrinter.name': mergedNameRe }],
+      }).select('vendorName shipToPrinter').lean();
+      for (const p of candidatePos) {
+        const set = {};
+        if (vendorKey(p.vendorName) === mergedKeyVal) set.vendorName = survivorName;
+        if (p.shipToPrinter && vendorKey(p.shipToPrinter.name) === mergedKeyVal) set['shipToPrinter.name'] = survivorName;
+        if (Object.keys(set).length === 0) continue;
+        // eslint-disable-next-line no-await-in-loop
+        await PurchaseOrder.updateOne({ _id: p._id }, { $set: set });
+        if (set.vendorName) posRepointed += 1;
+      }
 
       // Expense Transactions: re-point the counter-party (the dollars paid).
-      const txUpd = await Transaction.updateMany(
-        { type: 'expense', party: mergedNameRe },
-        { $set: { party: survivorName } },
-      );
-      txnsRepointed = txUpd.modifiedCount != null ? txUpd.modifiedCount : (txUpd.nModified || 0);
+      const candidateTx = await Transaction.find({ type: 'expense', party: mergedNameRe })
+        .select('party').lean();
+      const txIds = candidateTx.filter((t) => vendorKey(t.party) === mergedKeyVal).map((t) => t._id);
+      if (txIds.length) {
+        const txUpd = await Transaction.updateMany(
+          { _id: { $in: txIds } },
+          { $set: { party: survivorName } },
+        );
+        txnsRepointed = txUpd.modifiedCount != null ? txUpd.modifiedCount : (txUpd.nModified || 0);
+      }
     }
     // The learned receipt→vendor links lived on the merged Vendor doc itself and
     // were already folded into the survivor by foldVendorFields above — re-saving
