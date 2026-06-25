@@ -11,10 +11,16 @@ const mongoose = require('mongoose');
 
 const CATEGORIES = [
   'Customer Sales', 'Blank COGS', 'Printer COGS', 'Shipping', 'Art', 'Commission',
-  'Software', 'Owner Draw', 'Owner Contribution', 'Sales Tax', 'Refund', 'Other',
+  'Processing Fee', 'Software', 'Owner Draw', 'Owner Contribution', 'Sales Tax', 'Refund', 'Other',
 ];
 // COGS categories that net against an order's revenue for per-order margin.
-const COGS_CATEGORIES = ['Blank COGS', 'Printer COGS', 'Shipping', 'Art', 'Commission'];
+// 'Processing Fee' is the merchant fee a payment processor takes out of a client
+// payment (CC ~2.99%, ACH ~1%). It's a REAL cost of making the sale, booked as an
+// expense linked to the SAME order, so it reduces that order's profit exactly like
+// blanks/printer/shipping do. Owner-side only (the client-facing fee-on-approval is
+// a later phase). It is intentionally LAST among the COGS group so existing COGS
+// ordering is undisturbed.
+const COGS_CATEGORIES = ['Blank COGS', 'Printer COGS', 'Shipping', 'Art', 'Commission', 'Processing Fee'];
 
 const TransactionSchema = new mongoose.Schema({
   date:        { type: Date, required: true, index: true },
@@ -33,6 +39,22 @@ const TransactionSchema = new mongoose.Schema({
   isCredit:    { type: Boolean, default: false },
   qbSynced:    { type: Boolean, default: false },
   receiptUrl:  { type: String, default: '' },                // stored invoice/receipt file (R2)
+  // How a CLIENT PAYMENT (income/Customer Sales) was taken — drives the auto-booked
+  // merchant Processing Fee expense. 'cc' (~2.99%) | 'ach' (~1%) | 'none'/'' (no fee,
+  // e.g. cash/check or a fee the owner waived). Only meaningful on the payment row;
+  // ignored on expenses. Default '' so every legacy/historical row is "no method"
+  // and is NEVER retro-charged a fee.
+  paymentMethod: { type: String, default: '' },
+  // Optional OWNER OVERRIDE of the fee rate for THIS payment (a fraction, e.g. 0.025
+  // for a negotiated 2.5%). Persisted so re-rating on a later edit uses the owner's
+  // rate, not the default — null/absent means "use the CC/ACH default". Stored on the
+  // payment row (the fee row is derived from it).
+  feeRateOverride: { type: Number, default: null },
+  // Set on the auto-generated Processing Fee EXPENSE row, pointing at the _id of the
+  // client-payment row that spawned it. Makes the fee idempotent: re-saving or
+  // editing a payment can find-and-replace its single fee row instead of stacking a
+  // second one, and a manually-added fee (no link) is left alone.
+  feeForTxn:   { type: String, default: '' },
   year:        { type: Number, index: true },                // denormalized for fast filtering
   source:      { type: String, default: 'manual' },          // 'import' | 'order:auto' | 'manual'
 }, { timestamps: true });
@@ -60,5 +82,13 @@ TransactionSchema.pre('findOneAndUpdate', function syncYearOnUpdate(next) {
 
 TransactionSchema.statics.CATEGORIES = CATEGORIES;
 TransactionSchema.statics.COGS_CATEGORIES = COGS_CATEGORIES;
+
+// Default merchant-processing rates (as fractions of the payment amount). These
+// match the owner's real numbers — orders already carry notes like "JP pays …
+// (2.99%) CC fee" and "ACH 1%". Overridable per-call (owner can pass a custom
+// rate) but these are the defaults. 'none'/'' = no processor fee (cash/check or a
+// waived fee). Kept on the model so the controller, tests, and any future surface
+// all read ONE source of truth.
+TransactionSchema.statics.PROCESSING_FEE_RATES = { cc: 0.0299, ach: 0.01, none: 0 };
 
 module.exports = mongoose.model('Transaction', TransactionSchema);

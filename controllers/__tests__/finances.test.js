@@ -20,15 +20,24 @@ const {
   orderRevenueCost,
   orderActualCost,
   actualCostByOrder,
+  paymentGapsForOrders,
   pct,
   incomeContribution,
+  orderRevenueContribution,
+  processingFeeRate,
+  computeProcessingFee,
+  buildProcessingFeeDoc,
+  inferRowType,
 } = require('../finances');
+const Transaction = require('../../models/Transaction');
 
 // Ledger-row factories matching Transaction shape (amount is always positive;
 // isCredit flips direction within the type bucket — same rule as the ledger).
 const sale   = (amount, over = {}) => ({ type: 'income',  category: 'Customer Sales', amount, ...over });
 const blank  = (amount, over = {}) => ({ type: 'expense', category: 'Blank COGS',     amount, ...over });
 const printc = (amount, over = {}) => ({ type: 'expense', category: 'Printer COGS',   amount, ...over });
+const refund = (amount, over = {}) => ({ type: 'income',  category: 'Refund',         amount, ...over });
+const procFee = (amount, over = {}) => ({ type: 'expense', category: 'Processing Fee', amount, ...over });
 const order  = (over = {}) => ({ orderNumber: '0000001', totalValue: 0, paid: false, ...over });
 
 // ── normalizeOrderNumber ─────────────────────────────────────────────────────
@@ -53,19 +62,22 @@ test('normalizeOrderNumber strips non-digits AND leading zeros (canonical key)',
 });
 
 // ── M6: ONE per-order profit definition (byOrder == drill-in) ────────────────
-test('orderRevenueCost: profit = Customer Sales − COGS; other rows excluded', () => {
+test('orderRevenueCost: profit = Customer Sales − COGS; non-COGS/non-revenue rows excluded', () => {
   // This is the shared definition byOrder/byClient AND the drill-in reconcile to.
+  // A non-COGS expense (Software) and a non-revenue income (Other) are both OUT;
+  // a 'Refund' income row is now contra-revenue (Phase 2b — see the refund-parity
+  // tests below), so it's covered there, not here.
   const rows = [
     sale(1000),
     blank(300),
     printc(200),
     { type: 'expense', category: 'Software', amount: 99 },  // non-COGS → not in profit
-    { type: 'income',  category: 'Refund',   amount: 50 },  // non-Customer-Sales → not in revenue
+    { type: 'income',  category: 'Other',    amount: 50 },  // non-Customer-Sales income → not revenue
   ];
   const out = orderRevenueCost(rows);
   assert.equal(out.revenue, 1000);
   assert.equal(out.cost,    500);
-  assert.equal(out.profit,  500);   // 1000 − 500, ignoring the Software + Refund rows
+  assert.equal(out.profit,  500);   // 1000 − 500, ignoring the Software + Other rows
 });
 
 test('orderRevenueCost: credits net down both buckets (same signed() rule)', () => {
@@ -231,13 +243,13 @@ test('empty input is all zeroes', () => {
   });
 });
 
-test('revenue counts only income/Customer Sales; COGS only expense/COGS categories', () => {
+test('revenue counts income/Customer Sales (+ Refund contra); COGS only expense/COGS categories', () => {
   const txns = [
     sale(1000),
     blank(300),
     printc(200),
     { type: 'expense', category: 'Software', amount: 99 },   // not a COGS category → ignored
-    { type: 'income',  category: 'Refund',   amount: 50 },   // income but not Customer Sales → ignored
+    { type: 'income',  category: 'Other',    amount: 50 },   // income but not revenue → ignored
   ];
   const out = summarizeCompanyFinance([], txns);
   assert.equal(out.revenue, 1000);
@@ -311,4 +323,284 @@ test('non-numeric totalValue is treated as 0 for outstanding', () => {
   const out = summarizeCompanyFinance(orders, []);
   assert.equal(out.outstanding, 300);
   assert.equal(out.orderCount,  3);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// PHASE 2b — refund-match unification (the #1 "numbers feel wrong" bug)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// The bug: a customer refund booked as category 'Refund' reduced the HEADLINE P&L
+// (incomeContribution → −|amount|) but was DROPPED from byOrder/byClient/
+// summarizeCompanyFinance/paymentGaps (which counted revenue strictly as
+// income·'Customer Sales'). So the refunded order kept full profit while the
+// top-line fell — they never reconciled. orderRevenueContribution is now the ONE
+// rule both sides use, so a refund nets the SAME order/client down by the SAME
+// amount as the headline. These tests pin that AND the safety guarantee: a normal
+// (non-refund) order's revenue/profit is byte-for-byte unchanged.
+
+test('orderRevenueContribution: the single per-order revenue rule (matches headline)', () => {
+  // Customer Sales counts as-is; a Customer-Sales credit nets down; a 'Refund' row
+  // is always contra (−|amount|, plain OR credit form); other income is NOT revenue.
+  assert.equal(orderRevenueContribution(sale(1000)), 1000);
+  assert.equal(orderRevenueContribution(sale(100, { isCredit: true })), -100);
+  assert.equal(orderRevenueContribution(refund(50)), -50);                 // plain refund
+  assert.equal(orderRevenueContribution(refund(50, { isCredit: true })), -50); // credit-form refund
+  assert.equal(orderRevenueContribution({ type: 'income', category: 'Other', amount: 42 }), 0);
+  assert.equal(orderRevenueContribution({ type: 'income', category: 'Owner Contribution', amount: 5000 }), 0);
+  assert.equal(orderRevenueContribution(blank(300)), 0);                   // an expense isn't revenue
+  assert.equal(orderRevenueContribution(null), 0);
+  // For Customer Sales / Refund it equals the headline's incomeContribution on the
+  // signed amount — so per-order revenue and the P&L headline cannot drift.
+  assert.equal(orderRevenueContribution(sale(1000)),  incomeContribution('Customer Sales', 1000));
+  assert.equal(orderRevenueContribution(refund(50)),  incomeContribution('Refund', 50));
+});
+
+test('SAFETY: a normal (no-refund) order is unchanged by the unification', () => {
+  // The whole point — a normal order with only Customer Sales + COGS reads exactly
+  // as before. Revenue = sale, cost = COGS, profit = revenue − cost. Nothing moved.
+  const rows = [sale(2000), blank(600), printc(400)];
+  const out = orderRevenueCost(rows);
+  assert.equal(out.revenue, 2000);
+  assert.equal(out.cost,    1000);
+  assert.equal(out.profit,  1000);
+  // And it equals the company rollup profit for the same rows (no drift).
+  assert.equal(out.profit, summarizeCompanyFinance([], rows).profit);
+});
+
+test('REFUND PARITY: a partial refund reduces order profit AND headline by the SAME amount', () => {
+  // The core reconciliation proof. Same order: $1000 sale, $400 COGS, then a $150
+  // partial refund booked as category 'Refund'. The refund must reduce BOTH the
+  // order's profit and the headline income by exactly $150 — and they must match.
+  const base   = [sale(1000), blank(400)];
+  const withRf = [sale(1000), blank(400), refund(150)];
+
+  // ── per-order (byOrder / drill-in / company rollup all share orderRevenueCost) ──
+  const orderBase = orderRevenueCost(base).profit;     // 1000 − 400 = 600
+  const orderRf   = orderRevenueCost(withRf).profit;   // (1000 − 150) − 400 = 450
+  assert.equal(orderBase, 600);
+  assert.equal(orderRf,   450);
+  assert.equal(orderBase - orderRf, 150);              // order profit dropped by the refund
+
+  // ── headline (the P&L sums incomeContribution per income category) ──
+  const headlineIncome = (rows) => rows
+    .filter((t) => t.type === 'income')
+    .reduce((s, t) => s + incomeContribution(t.category, t.isCredit ? -t.amount : t.amount), 0);
+  const hlBase = headlineIncome(base);                 // 1000
+  const hlRf   = headlineIncome(withRf);               // 1000 − 150 = 850
+  assert.equal(hlBase - hlRf, 150);                    // headline income dropped by the refund
+
+  // SAME amount on both sides — the reconciliation the owner was missing.
+  assert.equal(orderBase - orderRf, hlBase - hlRf);
+
+  // summarizeCompanyFinance agrees (it's the CRM company page's number).
+  assert.equal(summarizeCompanyFinance([], withRf).revenue, 850);
+  assert.equal(summarizeCompanyFinance([], withRf).profit,  450);
+});
+
+test('REFUND PARITY: a Customer-Sales credit form gives the identical result', () => {
+  // Booking the refund the OTHER consistent way (Customer Sales + isCredit) must
+  // land on the same numbers as the 'Refund'-category form.
+  const viaRefundCat = orderRevenueCost([sale(1000), blank(400), refund(150)]);
+  const viaCredit    = orderRevenueCost([sale(1000), blank(400), sale(150, { isCredit: true })]);
+  assert.deepEqual(viaCredit, viaRefundCat);
+  assert.equal(viaCredit.revenue, 850);
+  assert.equal(viaCredit.profit,  450);
+});
+
+test('REFUND PARITY: paymentGaps "collected" nets the refund down too', () => {
+  // collected must use the same contra rule, so a refunded order's collected matches
+  // its revenue (otherwise the gap report would over-state what was collected).
+  const orders = [order({ orderNumber: '21', totalValue: 1000, paid: false })];
+  const txns = [
+    sale(1000,  { orderNumber: '21' }),
+    refund(150, { orderNumber: '21' }),
+    blank(400,  { orderNumber: '21' }),
+  ];
+  const out = paymentGapsForOrders(orders, txns);
+  const row = out.orders.find((r) => r.orderNumber === '21');
+  assert.ok(row, 'order 21 should appear (billed 1000 > collected 850)');
+  assert.equal(row.collected, 850);                    // 1000 − 150 refund
+  assert.equal(row.outstanding, 150);                  // billed 1000 − collected 850
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// PHASE 2b — processing fee (CC 2.99% / ACH 1% / none), auto-booked on the order
+// ════════════════════════════════════════════════════════════════════════════
+
+test('processingFeeRate: CC/ACH/none defaults + owner override + clamp', () => {
+  assert.equal(processingFeeRate('cc'),   0.0299);
+  assert.equal(processingFeeRate('CC'),   0.0299);     // case-insensitive
+  assert.equal(processingFeeRate('ach'),  0.01);
+  assert.equal(processingFeeRate('none'), 0);
+  assert.equal(processingFeeRate(''),     0);
+  assert.equal(processingFeeRate(undefined), 0);
+  assert.equal(processingFeeRate('weird'), 0);         // unknown method → no fee
+  // Owner override (a fraction) overrides the RATE for a chargeable method (cc/ach).
+  assert.equal(processingFeeRate('cc', 0.025), 0.025);
+  assert.equal(processingFeeRate('ach', 0.015), 0.015);
+  // …but 'none' means NO fee even with a (stale) override — the method is the on/off
+  // switch, so a waived fee can't be resurrected by a leftover rate.
+  assert.equal(processingFeeRate('none', 0.03), 0);
+  // A bad/over-1 override can't book a fee bigger than the payment.
+  assert.equal(processingFeeRate('cc', 5), 0.9999);
+  assert.equal(processingFeeRate('cc', -1), 0);
+  assert.equal(processingFeeRate('cc', 'abc'), 0);
+  // Defaults live on the model (single source of truth).
+  assert.equal(processingFeeRate('cc'), Transaction.PROCESSING_FEE_RATES.cc);
+});
+
+test('computeProcessingFee: amount × rate, rounded, only on a real client payment', () => {
+  // $5600 CC payment → 2.99% = $167.44 (matches the owner's real ledger note).
+  assert.equal(computeProcessingFee(sale(5600), 'cc'), 167.44);
+  assert.equal(computeProcessingFee(sale(1000), 'ach'), 10);
+  assert.equal(computeProcessingFee(sale(1000), 'none'), 0);
+  assert.equal(computeProcessingFee(sale(1000), 'cc', 0.02), 20);   // override
+  // NOT a fee on: a refund/credit, an expense, a non-sale income, or a zero amount.
+  assert.equal(computeProcessingFee(sale(1000, { isCredit: true }), 'cc'), 0);
+  assert.equal(computeProcessingFee(refund(1000), 'cc'), 0);
+  assert.equal(computeProcessingFee(blank(1000), 'cc'), 0);
+  assert.equal(computeProcessingFee({ type: 'income', category: 'Other', amount: 1000 }, 'cc'), 0);
+  assert.equal(computeProcessingFee(sale(0), 'cc'), 0);
+  assert.equal(computeProcessingFee(null, 'cc'), 0);
+});
+
+test('OVERRIDE PERSISTENCE: a stored override re-rates correctly; null falls back to default', () => {
+  // The edit-re-rate bug: syncProcessingFee re-rates from the SAVED row's method +
+  // feeRateOverride. So an edit that doesn't resend the rate must still use the
+  // owner's stored override, and a null override (never set) uses the CC default.
+  const paidCustom = sale(1000, { _id: 'P', paymentMethod: 'cc', feeRateOverride: 0.02 });
+  // This mirrors what update() passes: (t, t.paymentMethod, t.feeRateOverride).
+  assert.equal(computeProcessingFee(paidCustom, paidCustom.paymentMethod, paidCustom.feeRateOverride), 20);
+  assert.equal(buildProcessingFeeDoc(paidCustom, paidCustom.paymentMethod, paidCustom.feeRateOverride).amount, 20);
+  // No override stored (null) → CC default 2.99%.
+  const paidDefault = sale(1000, { _id: 'P', paymentMethod: 'cc', feeRateOverride: null });
+  assert.equal(computeProcessingFee(paidDefault, paidDefault.paymentMethod, paidDefault.feeRateOverride), 29.9);
+  // Method switched to none on the saved row → no fee regardless of a stale override.
+  const paidNone = sale(1000, { _id: 'P', paymentMethod: 'none', feeRateOverride: 0.02 });
+  assert.equal(buildProcessingFeeDoc(paidNone, paidNone.paymentMethod, paidNone.feeRateOverride), null);
+});
+
+test('buildProcessingFeeDoc: a linked COGS expense on the SAME order (or null)', () => {
+  const payment = sale(5600, { _id: 'PAY1', orderNumber: '129', party: 'Stadium Gardens', date: new Date('2025-03-01') });
+  const doc = buildProcessingFeeDoc(payment, 'cc');
+  assert.ok(doc);
+  assert.equal(doc.type, 'expense');
+  assert.equal(doc.category, 'Processing Fee');         // a COGS category → reduces order profit
+  assert.equal(doc.amount, 167.44);
+  assert.equal(doc.orderNumber, '129');                 // SAME order as the payment
+  assert.equal(doc.party, 'Stadium Gardens');
+  assert.equal(doc.isCredit, false);
+  assert.equal(doc.feeForTxn, 'PAY1');                  // back-link → idempotent
+  assert.equal(doc.source, 'fee:auto');
+  assert.equal(doc.date, payment.date);
+  // No method / none / a non-payment → no doc at all.
+  assert.equal(buildProcessingFeeDoc(payment, 'none'), null);
+  assert.equal(buildProcessingFeeDoc(payment, ''), null);
+  assert.equal(buildProcessingFeeDoc(sale(1000, { _id: 'X' }), 'weird'), null);
+});
+
+test('Processing Fee is in COGS_CATEGORIES → it reduces the order profit', () => {
+  // Front-to-back: a $5600 sale with a $167.44 CC fee on the same order nets the
+  // order's profit DOWN by the fee (it's a real cost of the sale).
+  assert.ok(Transaction.COGS_CATEGORIES.includes('Processing Fee'));
+  const noFee = orderRevenueCost([sale(5600), blank(4000)]);
+  const withFee = orderRevenueCost([sale(5600), blank(4000), procFee(167.44)]);
+  assert.equal(noFee.profit,   1600);                   // 5600 − 4000
+  assert.equal(withFee.profit, 1432.56);                // 5600 − (4000 + 167.44)
+  assert.equal(round2(noFee.profit - withFee.profit), 167.44);  // exactly the fee
+  // And the company rollup counts the fee in COGS the same way.
+  assert.equal(summarizeCompanyFinance([], [sale(5600), procFee(167.44)]).cogs, 167.44);
+});
+
+test('SAFETY: a fee only ever applies ONCE (computeProcessingFee is on the payment, not the fee row)', () => {
+  // The fee is derived from the PAYMENT row; the Processing Fee expense it produces
+  // is itself an expense, so feeding it back through computeProcessingFee yields 0 —
+  // it can never spawn a fee-on-a-fee.
+  const payment = sale(1000, { _id: 'P' });
+  const feeDoc = buildProcessingFeeDoc(payment, 'cc');
+  assert.equal(computeProcessingFee(feeDoc, 'cc'), 0);  // no fee on the fee
+  assert.equal(buildProcessingFeeDoc(feeDoc, 'cc'), null);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// PHASE 2b — HARDENING: malformed/missing data never throws or corrupts a total
+// ════════════════════════════════════════════════════════════════════════════
+// The finance screen must be unbreakable. These pin that the pure rollups (which
+// every report endpoint feeds) coerce or skip garbage rows and keep going —
+// NaN/string amounts, null/blank parties, bad dates, missing order #s, weird
+// categories — without throwing and without letting one bad row poison a total.
+
+test('HARDENING: garbage ledger rows are coerced/skipped, real rows still total', () => {
+  const txns = [
+    sale(1000),                                            // the one real row
+    { type: 'income',  category: 'Customer Sales', amount: 'not-a-number' }, // NaN amount → 0
+    { type: 'income',  category: 'Customer Sales', amount: null },           // null amount → 0
+    { type: 'expense', category: 'Blank COGS',     amount: NaN },            // NaN → 0
+    { type: 'expense', category: null,             amount: 50 },             // null category → not COGS, ignored from cost
+    null,                                                  // a null row
+    undefined,                                             // an undefined row
+    {},                                                    // an empty row
+  ];
+  // Must not throw, and the real $1000 sale is intact (garbage contributes 0).
+  const out = summarizeCompanyFinance([], txns);
+  assert.equal(out.revenue, 1000);
+  assert.equal(out.cogs,    0);
+  assert.equal(out.profit,  1000);
+  // Same garbage-tolerance for the per-order definition.
+  assert.equal(orderRevenueCost(txns).revenue, 1000);
+  assert.equal(orderActualCost(txns).actualCost, 0);
+});
+
+test('HARDENING: string/numeric-string amounts coerce via num() (no NaN leak)', () => {
+  // A numeric STRING is a real value (num('1500') = 1500); a non-numeric string is 0.
+  const out = summarizeCompanyFinance([], [
+    { type: 'income',  category: 'Customer Sales', amount: '1500' },   // → 1500
+    { type: 'expense', category: 'Printer COGS',   amount: '600.50' }, // → 600.50
+    { type: 'expense', category: 'Printer COGS',   amount: 'oops' },   // → 0
+  ]);
+  assert.equal(out.revenue, 1500);
+  assert.equal(out.cogs,    600.5);
+  assert.equal(out.profit,  899.5);
+  assert.ok(Number.isFinite(out.margin));
+});
+
+// ── CSV import: a QuickBooks-style refund must not become a mis-typed expense ──
+test('inferRowType: explicit Type wins; else infer income from the category', () => {
+  // Explicit Type column is authoritative.
+  assert.equal(inferRowType('Income', 'Customer Sales'), 'income');
+  assert.equal(inferRowType('Expense', 'Customer Sales'), 'expense');
+  assert.equal(inferRowType('income', 'Blank COGS'), 'income');   // user said income, honored
+  // Blank/unknown Type → infer from the category (the QuickBooks-export case).
+  assert.equal(inferRowType('', 'Customer Sales'), 'income');
+  assert.equal(inferRowType('', 'Refund'), 'income');             // a refund row → income (credit set from sign)
+  assert.equal(inferRowType(undefined, 'Owner Contribution'), 'income');
+  assert.equal(inferRowType('', 'Printer COGS'), 'expense');      // a cost category → expense
+  assert.equal(inferRowType('', 'Blank COGS'), 'expense');
+  assert.equal(inferRowType('', ''), 'expense');                  // truly ambiguous → expense (most ledger lines)
+  assert.equal(inferRowType('', 'refund'), 'income');             // case-insensitive
+  // The key bug guard: a NEGATIVE-amount Refund with NO Type column → income (so,
+  // combined with isCredit-from-negative-sign, it nets revenue down — not a phantom
+  // expense). inferRowType decides type; the import sets isCredit = amount < 0.
+  assert.equal(inferRowType('', 'Refund'), 'income');
+});
+
+test('HARDENING: paymentGapsForOrders tolerates bad orders, dates and parties', () => {
+  const orders = [
+    null,                                                    // skipped
+    order({ orderNumber: '',  totalValue: 500 }),            // no number → skipped
+    order({ orderNumber: '#0000030', totalValue: 1000, paid: false, companyName: null, clientName: '' }), // null/blank party
+  ];
+  const txns = [
+    null,
+    { type: 'expense', category: 'Blank COGS', amount: 400, orderNumber: '30', date: 'not-a-date' }, // bad date, valid cost
+    sale(300, { orderNumber: '30' }),
+  ];
+  let out;
+  assert.doesNotThrow(() => { out = paymentGapsForOrders(orders, txns); });
+  const row = out.orders.find((r) => r.orderNumber === '30');
+  assert.ok(row);
+  assert.equal(row.client, '—');                             // null/blank party → em dash, no crash
+  assert.equal(row.cost, 400);
+  assert.equal(row.collected, 300);
+  assert.equal(row.outstanding, 700);                        // billed 1000 − collected 300
 });

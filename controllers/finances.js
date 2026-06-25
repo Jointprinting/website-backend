@@ -47,6 +47,120 @@ function incomeContribution(category, signedTotal) {
   return v;
 }
 
+// What ONE income row contributes to a SPECIFIC order's / client's revenue — the
+// single rule that makes per-order/per-client revenue reconcile to the headline
+// P&L, fixing the "numbers feel wrong" bug. The headline already nets a customer
+// refund DOWN (incomeContribution: a 'Refund' row → −|amount|; a 'Customer Sales'
+// credit → −amount). But byOrder/byClient/summarizeCompanyFinance/paymentGaps used
+// to count revenue as STRICTLY income·'Customer Sales', so a refund booked under the
+// 'Refund' category lowered the top-line yet left the refunded order at full profit
+// — they never reconciled. Now an order's revenue counts BOTH consistent forms of a
+// refund as contra-revenue, IDENTICAL to the headline:
+//   • 'Customer Sales'           → signed(t)            (a Customer-Sales CREDIT nets down)
+//   • 'Refund'                   → −|signed(t)|         (always reduces, never inflates —
+//                                                        same as incomeContribution)
+//   • anything else (Other / Owner Contribution / a stray income line) → 0
+//                                  (never was order revenue; deliberately excluded so a
+//                                   normal order with ONLY Customer-Sales rows is 100%
+//                                   unchanged — the safety guarantee).
+// Pure + exported so the contra-revenue rule is unit-testable and reused everywhere.
+function orderRevenueContribution(t) {
+  if (!t || t.type !== 'income') return 0;
+  if (t.category === 'Customer Sales') return signed(t);
+  if (t.category === 'Refund') return -Math.abs(signed(t)) + 0;   // + 0 normalizes -0 to 0
+  return 0;
+}
+
+// ── processing fee (merchant fee on a client payment) ───────────────────────
+// Resolve the fee RATE (a fraction of the payment) for a payment method. CC/ACH
+// use the owner-overridable defaults on the model; an explicit numeric `override`
+// (fraction, e.g. 0.025) always wins so the owner can set their real rate. 'none'/
+// blank/unknown → 0 (no fee). Clamped to [0, 1) so a bad override can't ever book
+// a fee larger than the payment. Pure + exported for tests.
+function processingFeeRate(method, override) {
+  const key = String(method || '').toLowerCase();
+  // 'none'/blank/unknown method = no fee, FULL STOP — a stale override never
+  // resurrects a fee the owner waived (the method is the on/off switch).
+  if (key !== 'cc' && key !== 'ach') return 0;
+  if (override != null && override !== '') {
+    const r = num(override);
+    return Number.isFinite(r) && r > 0 ? Math.min(r, 0.9999) : 0;
+  }
+  const rates = Transaction.PROCESSING_FEE_RATES || {};
+  const r = num(rates[key]);
+  return Number.isFinite(r) && r > 0 ? Math.min(r, 0.9999) : 0;
+}
+
+// The fee AMOUNT a processor takes out of a payment = round2(amount × rate). Only a
+// real client payment (income · Customer Sales, NOT a credit/refund) is charged a
+// fee — a refund or a non-sale income row returns 0. Pure + exported for tests.
+function computeProcessingFee(paymentTxn, method, override) {
+  const t = paymentTxn || {};
+  if (t.type !== 'income' || t.category !== 'Customer Sales' || t.isCredit) return 0;
+  const amt = Math.abs(num(t.amount));
+  if (!amt) return 0;
+  const rate = processingFeeRate(method, override);
+  if (!rate) return 0;
+  return round2(amt * rate);
+}
+
+// Build the linked Processing Fee EXPENSE doc for a saved payment row (or null when
+// no fee applies). Same order #, party, date and (canonical) details as the payment
+// so it rolls into the SAME order's COGS and reconciles. `feeForTxn` links it back
+// to the payment _id so it stays idempotent (one fee per payment, replace-not-stack).
+// Pure (no DB) + exported for tests — the async sync below just persists it.
+function buildProcessingFeeDoc(paymentTxn, method, override) {
+  const fee = computeProcessingFee(paymentTxn, method, override);
+  if (!fee) return null;
+  const t = paymentTxn || {};
+  const m = String(method || '').toLowerCase();
+  const label = m === 'cc' ? 'Credit card' : m === 'ach' ? 'ACH' : 'Card';
+  return {
+    date: t.date,
+    type: 'expense',
+    category: 'Processing Fee',
+    orderNumber: t.orderNumber || '',
+    party: t.party || '',
+    description: `${label} processing fee${t.orderNumber ? ` — order #${t.orderNumber}` : ''}`,
+    amount: fee,
+    isCredit: false,
+    paymentMethod: m,
+    feeForTxn: String(t._id || ''),
+    source: 'fee:auto',
+  };
+}
+
+// Persist (create / replace / remove) the auto Processing Fee for a payment row.
+// IDEMPOTENT and race-safe: keyed on { feeForTxn, source:'fee:auto' }, there is
+// AT MOST ONE auto-fee per payment.
+//   • a fee applies  → upsert (findOneAndUpdate, upsert:true) that single row, so a
+//                      changed amount/method/rate updates it in place — two racing
+//                      saves converge on one row instead of stacking duplicates;
+//   • no fee applies → delete it (method switched to 'none', amount cleared, or the
+//                      row is no longer a client payment).
+// A manually-entered Processing Fee (no feeForTxn link) is never matched, so it's
+// never touched. No-op unless the row is a real client payment with an _id.
+async function syncProcessingFee(paymentTxn, method, override) {
+  const t = paymentTxn || {};
+  if (!t._id) return;
+  const filter = { feeForTxn: String(t._id), source: 'fee:auto' };
+  const doc = buildProcessingFeeDoc(t, method, override);
+  if (doc) {
+    // Replace-in-place (or create). Upsert on the unique link makes concurrent saves
+    // converge on ONE row; the older delete-then-insert could briefly stack two.
+    await Transaction.findOneAndUpdate(filter, { $set: doc }, { upsert: true, new: true });
+    // Belt-and-suspenders: if a prior bug ever left duplicates, collapse them to the
+    // one we just upserted (cheap, idempotent — normally matches nothing).
+    const dupes = await Transaction.find(filter).select('_id').sort({ _id: 1 }).lean();
+    if (dupes.length > 1) {
+      await Transaction.deleteMany({ _id: { $in: dupes.slice(1).map((d) => d._id) } });
+    }
+  } else {
+    // No fee now applies → remove any existing linked auto-fee.
+    await Transaction.deleteMany(filter);
+  }
+}
+
 // A transaction belongs to the year of its DATE. We filter on the date itself,
 // not the denormalized `year` field, which can drift when a date is edited (a
 // Dec-2025 row left tagged 2026 was surfacing as a phantom "Dec" bar in the 2026
@@ -78,6 +192,24 @@ const csvCell = (v) => {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
+// Income-looking categories — used to recover a CSV row's DIRECTION when the Type
+// column is blank/unrecognized (a QuickBooks-style export often omits it). Lower-cased.
+const INCOME_CATS = new Set(['customer sales', 'refund', 'owner contribution']);
+
+// Decide income vs expense for an imported row. An explicit Type cell ("Income"/
+// "Expense") always wins; otherwise INFER from the category so a typeless refund or
+// sale row (negative or positive) isn't silently dropped into 'expense' (the bug a
+// QuickBooks refund import would otherwise hit). Default 'expense' only for genuinely
+// ambiguous rows — most ledger lines are costs. `isCredit` is decided separately from
+// the amount sign, so a NEGATIVE 'Customer Sales'/'Refund' row → income + credit =
+// a customer refund that correctly nets revenue down. Pure + exported for tests.
+function inferRowType(typeCell, category) {
+  const tc = String(typeCell || '');
+  if (/income/i.test(tc)) return 'income';
+  if (/expense/i.test(tc)) return 'expense';
+  return INCOME_CATS.has(String(category || '').trim().toLowerCase()) ? 'income' : 'expense';
+}
+
 // POST /api/finances/import  — body: { csv } in the JP Ledger schema
 // (Date,Type,Category,Order #,Customer/Vendor,Description,Amount,QB Synced).
 // Replaces all imported rows (source:'import') so re-importing is idempotent.
@@ -96,21 +228,21 @@ const importCsv = async (req, res) => {
     const docs = [];
     for (let i = 1; i < lines.length; i++) {
       const c = parseCsvLine(lines[i]);
-      const date = new Date(c[ix.date]);
+      const date = ix.date >= 0 ? new Date(c[ix.date]) : new Date('');
       const rawAmount = num(c[ix.amount]);
       const amount = Math.abs(rawAmount);
-      if (isNaN(date.getTime()) || !amount) continue;
+      if (isNaN(date.getTime()) || !amount) continue;   // skip undated / zero-amount rows
+      const category = String(c[ix.category] || 'Other').trim() || 'Other';
       docs.push({
         date,
-        type: /income/i.test(c[ix.type]) ? 'income' : 'expense',
-        category: (c[ix.category] || 'Other').trim(),
+        type: inferRowType(c[ix.type], category),       // explicit Type wins; else infer from category
+        category,
         orderNumber: String(c[ix.order] || '').replace(/[^0-9]/g, ''),
-        party: (c[ix.party] || '').trim(),
-        description: (c[ix.desc] || '').trim(),
+        party: String(c[ix.party] || '').trim(),
+        description: String(c[ix.desc] || '').trim(),
         amount,
         isCredit: rawAmount < 0,   // a negative ledger amount = a credit / return
-
-        qbSynced: /yes/i.test(c[ix.qb] || ''),
+        qbSynced: /yes/i.test(String(c[ix.qb] || '')),
         year: date.getUTCFullYear(),
         source: 'import',
       });
@@ -147,12 +279,22 @@ const create = async (req, res) => {
   try {
     const body = { ...req.body };
     const dataUrl = body.receiptDataUrl; delete body.receiptDataUrl;
+    // Payment-method tagging drives the auto Processing Fee. An optional `feeRate`
+    // (fraction) overrides the CC/ACH default; we PERSIST it on the payment row (as
+    // feeRateOverride) so a later edit re-rates at the owner's rate, not the default.
+    if (body.feeRate != null && body.feeRate !== '') body.feeRateOverride = num(body.feeRate);
+    delete body.feeRate;
     if (dataUrl && r2.isR2Configured()) {
       const m = String(dataUrl).match(/^data:([a-z0-9.+/-]+);base64,(.+)$/i);
       if (m) body.receiptUrl = await r2.uploadBuffer(Buffer.from(m[2], 'base64'), m[1].toLowerCase(), 'receipts');
     }
     if (body.amount != null) body.amount = Math.abs(num(body.amount));
-    res.json({ transaction: await Transaction.create(body) });
+    const txn = await Transaction.create(body);
+    // Auto-book the merchant fee as a linked Processing Fee expense on the SAME
+    // order (only when this is a real client payment with a CC/ACH method). Reads
+    // method + override from the saved row, so the persisted values are the source.
+    await syncProcessingFee(txn, txn.paymentMethod, txn.feeRateOverride);
+    res.json({ transaction: txn });
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 const update = async (req, res) => {
@@ -160,6 +302,10 @@ const update = async (req, res) => {
     const body = { ...req.body };
     // Allow attaching (or replacing) a receipt on an existing entry later.
     const dataUrl = body.receiptDataUrl; delete body.receiptDataUrl;
+    // A re-sent feeRate persists as the new override; if absent we DON'T clear the
+    // stored one (so an unrelated edit keeps the owner's negotiated rate).
+    if (body.feeRate != null && body.feeRate !== '') body.feeRateOverride = num(body.feeRate);
+    delete body.feeRate;
     if (dataUrl && r2.isR2Configured()) {
       const m = String(dataUrl).match(/^data:([a-z0-9.+/-]+);base64,(.+)$/i);
       if (m) body.receiptUrl = await r2.uploadBuffer(Buffer.from(m[2], 'base64'), m[1].toLowerCase(), 'receipts');
@@ -167,12 +313,23 @@ const update = async (req, res) => {
     if (body.amount != null) body.amount = Math.abs(num(body.amount));
     const t = await Transaction.findByIdAndUpdate(req.params.id, body, { new: true, runValidators: true });
     if (!t) return res.status(404).json({ message: 'Not found' });
+    // Re-sync the linked Processing Fee from the UPDATED payment (replace-not-stack):
+    // a changed amount/method updates the single fee row; switching to 'none' clears
+    // it. method + override are read from the SAVED row, so an edit that doesn't
+    // resend them still re-rates at the persisted rate (not the default). Never
+    // touches a manual (unlinked) fee row.
+    await syncProcessingFee(t, t.paymentMethod, t.feeRateOverride);
     res.json({ transaction: t });
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 const remove = async (req, res) => {
-  try { await Transaction.findByIdAndDelete(req.params.id); res.json({ ok: true }); }
-  catch (e) { res.status(400).json({ message: e.message }); }
+  try {
+    await Transaction.findByIdAndDelete(req.params.id);
+    // Tidy up: delete any auto Processing Fee that was linked to this payment, so a
+    // removed payment doesn't leave an orphan fee expense skewing the order's cost.
+    await Transaction.deleteMany({ feeForTxn: String(req.params.id), source: 'fee:auto' });
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
 // GET /api/finances/summary?year=  — the P&L: income, expense-by-category, net,
@@ -190,27 +347,34 @@ const summary = async (req, res) => {
     let income = 0, expense = 0, ownerContribution = 0, ownerDraw = 0;
     const expenseByCategory = {}, incomeByCategory = {};
     rows.forEach((r) => {
+      if (!r || !r._id) return;                          // defensive: skip a malformed group
+      // Coerce a missing/null/blank category to 'Other' and a non-finite total to 0
+      // so one dirty row can never poison a whole bucket or surface a `null` key.
+      const cat = (r._id.category == null || r._id.category === '') ? 'Other' : String(r._id.category);
+      r._id.category = cat;
       const amt = round2(r.total);
       if (r._id.type === 'income') {
-        if (r._id.category === 'Owner Contribution') {
+        if (cat === 'Owner Contribution') {
           // Equity IN, not earnings — reported on the side, never in income. Its
           // breakdown row shows the real amount contributed.
-          incomeByCategory[r._id.category] = amt;
+          incomeByCategory[cat] = round2((incomeByCategory[cat] || 0) + amt);
           ownerContribution += amt;
         } else {
           // Contra-revenue rule: a 'Refund' nets DOWN income (the audit's inflate
           // bug); everything else counts as-is. The breakdown stores the SAME
           // contribution, so a refund shows as a negative that matches the headline.
-          const contrib = incomeContribution(r._id.category, amt);
-          incomeByCategory[r._id.category] = contrib;
+          // We ACCUMULATE into the bucket (not overwrite) so a coerced-to-'Other'
+          // null-category group can't clobber a real 'Other' group's subtotal.
+          const contrib = incomeContribution(cat, amt);
+          incomeByCategory[cat] = round2((incomeByCategory[cat] || 0) + contrib);
           income += contrib;
         }
-      } else if (r._id.category === 'Owner Draw') {
+      } else if (cat === 'Owner Draw') {
         // Owner Draw is equity OUT (the owner paying themselves) — NOT a cost of
         // doing business. Must not count against profit or show up as "spend".
         ownerDraw += amt;
       } else {
-        expenseByCategory[r._id.category] = amt;
+        expenseByCategory[cat] = round2((expenseByCategory[cat] || 0) + amt);
         expense += amt;
       }
     });
@@ -275,7 +439,7 @@ function summarizeCompanyFinance(orders, transactions) {
   let cogs = 0;                 // ACTUAL cost — from the receipts/expense ledger
   let receiptCount = 0;         // COGS rows that carry a stored receipt file
   for (const t of (transactions || [])) {
-    if (t && t.type === 'income' && t.category === 'Customer Sales') revenue += signed(t);
+    if (t && t.type === 'income') revenue += orderRevenueContribution(t);   // Customer Sales + Refund contra (headline-consistent)
     else if (t && t.type === 'expense' && cogsCats.has(t.category)) {
       cogs += signed(t);
       if (t.receiptUrl) receiptCount += 1;
@@ -322,7 +486,7 @@ function orderRevenueCost(rows) {
   let revenue = 0;
   let cost = 0;
   for (const t of (rows || [])) {
-    if (t && t.type === 'income' && t.category === 'Customer Sales') revenue += signed(t);
+    if (t && t.type === 'income') revenue += orderRevenueContribution(t);   // Customer Sales + Refund contra (headline-consistent)
     else if (t && t.type === 'expense' && cogsCats.has(t.category)) cost += signed(t);
   }
   return { revenue: round2(revenue), cost: round2(cost), profit: round2(revenue - cost) };
@@ -407,12 +571,15 @@ function paymentGapsForOrders(orders, transactions) {
     const linked = byKey[key] || [];
     let collected = 0;
     for (const t of linked) {
-      if (t && t.type === 'income' && t.category === 'Customer Sales') collected += signed(t);
+      // Net cash collected from the client: Customer-Sales payments, LESS any
+      // refund (a 'Refund' row OR a Customer-Sales credit) — the same contra rule
+      // as the headline, so a refunded order's "collected" matches its revenue.
+      if (t && t.type === 'income') collected += orderRevenueContribution(t);
     }
     collected = round2(collected);
     const cost = orderActualCost(linked).actualCost;   // signed COGS — reused, not re-derived
     const billed = round2(num(o.totalValue));
-    const client = ((o.companyName || '').trim()) || ((o.clientName || '').trim()) || '—';
+    const client = (String(o.companyName == null ? '' : o.companyName).trim()) || (String(o.clientName == null ? '' : o.clientName).trim()) || '—';
 
     // "Cost recorded but no payment": cost > 0 and NO positive payment collected.
     // Tested as collected <= 0 (not === 0) so a customer CREDIT that nets collected
@@ -487,12 +654,17 @@ const byOrder = async (req, res) => {
       const key = normalizeOrderNumber(t.orderNumber);
       if (!key) return;
       const o = (map[key] ||= { orderNumber: key, client: '', revenue: 0, cost: 0, saleDate: null, firstDate: null });
-      const d = t.date ? new Date(t.date) : null;
+      const d = t.date && !isNaN(new Date(t.date).getTime()) ? new Date(t.date) : null;
       if (d && (!o.firstDate || d < o.firstDate)) o.firstDate = d;
-      if (t.type === 'income' && t.category === 'Customer Sales') {
-        o.revenue += signed(t);   // a Customer-Sales credit = customer refund → nets revenue down
-        if (!o.client) o.client = t.party;
-        if (d && (!o.saleDate || d < o.saleDate)) o.saleDate = d;        // anchor = when it sold
+      if (t.type === 'income') {
+        // Customer Sales counts as-is (a credit nets down); a 'Refund' row is
+        // contra-revenue (−|amount|) — identical to the headline P&L, so the
+        // refunded order and the top-line finally reconcile. Other income → 0.
+        o.revenue += orderRevenueContribution(t);
+        if (t.category === 'Customer Sales') {
+          if (!o.client) o.client = t.party;
+          if (d && (!o.saleDate || d < o.saleDate)) o.saleDate = d;      // anchor = when it sold
+        }
       } else if (t.type === 'expense' && cogs.has(t.category)) {
         o.cost += signed(t);      // a COGS credit = supplier credit → nets cost down
       }
@@ -572,15 +744,21 @@ const byMonth = async (req, res) => {
     ]);
     const map = {};
     rows.forEach((r) => {
+      if (!r || !r._id) return;
+      // A row with no/invalid date yields null $year/$month → skip it from the
+      // trend rather than emit a "null-NaN" phantom bar. (It still counts in the
+      // year totals via summary; the trend just needs a real month to place it.)
+      if (r._id.y == null || r._id.m == null) return;
       const key = `${r._id.y}-${String(r._id.m).padStart(2, '0')}`;
+      const cat = (r._id.category == null || r._id.category === '') ? 'Other' : String(r._id.category);
       const o = (map[key] ||= { month: key, income: 0, expense: 0 });
       const amt = round2(r.total);
       if (r._id.type === 'income') {
         // Mirror the P&L via the same contra-revenue rule: a 'Refund' nets DOWN
         // the month's income (money back to a customer); Owner Contribution is
         // equity → 0; everything else counts as-is.
-        o.income += incomeContribution(r._id.category, amt);
-      } else if (r._id.category !== 'Owner Draw') o.expense += amt;
+        o.income += incomeContribution(cat, amt);
+      } else if (cat !== 'Owner Draw') o.expense += amt;
     });
     const months = Object.values(map)
       .map((o) => ({ month: o.month, income: round2(o.income), expense: round2(o.expense), net: round2(o.income - o.expense) }))
@@ -604,11 +782,14 @@ const byClient = async (req, res) => {
       const key = normalizeOrderNumber(t.orderNumber);
       if (!key) return;
       const o = (orders[key] ||= { client: '', revenue: 0, cost: 0, saleDate: null, firstDate: null });
-      const d = t.date ? new Date(t.date) : null;
+      const d = t.date && !isNaN(new Date(t.date).getTime()) ? new Date(t.date) : null;
       if (d && (!o.firstDate || d < o.firstDate)) o.firstDate = d;
-      if (t.type === 'income' && t.category === 'Customer Sales') {
-        o.revenue += signed(t); if (!o.client) o.client = t.party;
-        if (d && (!o.saleDate || d < o.saleDate)) o.saleDate = d;
+      if (t.type === 'income') {
+        o.revenue += orderRevenueContribution(t);   // Customer Sales + Refund contra (headline-consistent)
+        if (t.category === 'Customer Sales') {
+          if (!o.client) o.client = t.party;
+          if (d && (!o.saleDate || d < o.saleDate)) o.saleDate = d;
+        }
       } else if (t.type === 'expense' && cogs.has(t.category)) o.cost += signed(t);
     });
     const byC = {};
@@ -617,7 +798,7 @@ const byClient = async (req, res) => {
       const oy = anchor ? new Date(anchor).getUTCFullYear() : null;
       if (year && oy !== year) return;
       if (o.revenue === 0 && o.cost === 0) return;             // skip $0/$0 ghosts (order# on a non-COGS line)
-      const name = ((o.client || '').trim()) || '—';
+      const name = (String(o.client == null ? '' : o.client).trim()) || '—';
       const c = (byC[name] ||= { client: name, revenue: 0, cost: 0, orders: 0 });
       c.revenue += o.revenue; c.cost += o.cost; c.orders += 1;
     });
@@ -636,13 +817,21 @@ const exportCsv = async (req, res) => {
     const txns = await Transaction.find(q).sort({ date: 1 }).lean();
     const header = ['Date', 'Type', 'Category', 'Order #', 'Customer/Vendor', 'Description', 'Amount', 'QB Synced'];
     const lines = [header.join(',')];
-    txns.forEach((t) => lines.push([
-      new Date(t.date).toISOString().slice(0, 10),
-      t.type === 'income' ? 'Income' : 'Expense',
-      t.category, t.orderNumber, t.party, t.description,
-      // Credits export as a negative amount so a re-import re-flags them.
-      round2(signed(t)), t.qbSynced ? 'Yes' : 'No',
-    ].map(csvCell).join(',')));
+    txns.forEach((t) => {
+      if (!t) return;                                   // skip a null row rather than throw
+      // A missing/invalid date must NOT crash the whole export — .toISOString()
+      // throws on an Invalid Date. Emit a blank date cell for that one row and keep
+      // going (the export stays downloadable no matter how dirty the data is).
+      const d = t.date ? new Date(t.date) : null;
+      const dateCell = d && !isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : '';
+      lines.push([
+        dateCell,
+        t.type === 'income' ? 'Income' : 'Expense',
+        t.category, t.orderNumber, t.party, t.description,
+        // Credits export as a negative amount so a re-import re-flags them.
+        round2(signed(t)), t.qbSynced ? 'Yes' : 'No',
+      ].map(csvCell).join(','));
+    });
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="JP-Ledger-${req.query.year || 'all'}.csv"`);
     res.send(lines.join('\n'));
@@ -676,3 +865,8 @@ module.exports.paymentGapsForOrders = paymentGapsForOrders;
 module.exports.pct = pct;
 module.exports.signed = signed;
 module.exports.incomeContribution = incomeContribution;
+module.exports.orderRevenueContribution = orderRevenueContribution;
+module.exports.processingFeeRate = processingFeeRate;
+module.exports.computeProcessingFee = computeProcessingFee;
+module.exports.buildProcessingFeeDoc = buildProcessingFeeDoc;
+module.exports.inferRowType = inferRowType;
