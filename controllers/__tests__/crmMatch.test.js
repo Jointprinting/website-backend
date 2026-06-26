@@ -166,3 +166,40 @@ test('scoreNameMatch: identical companyKey is the top score', () => {
   assert.equal(score, 1);
   assert.equal(reason, 'exact');
 });
+
+// ── Typo tolerance (the Happy Leaf fix) ───────────────────────────────────────
+// A one-letter slip in the name ("Dispensary" → "Dispesary") still surfaces the
+// existing card as a strong suggestion, so a misspelled duplicate is caught at
+// entry time — without ever proposing a genuinely different company.
+test('a one-letter typo surfaces the existing company (Happy Leaf Dispensary ≈ Dispesary)', () => {
+  const docs = [mk({ name: 'Happy Leaf Dispensary' })];
+  const out = rankMatchCandidates('Happy Leaf Dispesary', docs); // typo: missing 'n'
+  assert.equal(out.length, 1);
+  assert.equal(out[0].name, 'Happy Leaf Dispensary');
+  assert.equal(out[0].reason, 'matchKey-typo');
+  assert.ok(out[0].score >= 0.85 && out[0].score < 0.92, 'typo is strong but below an exact/matchKey hit');
+});
+
+test('typo tolerance is symmetric (typed correct, existing misspelled)', () => {
+  const docs = [mk({ name: 'Happy Leaf Dispesary' })]; // the misspelled one already exists
+  const out = rankMatchCandidates('Happy Leaf Dispensary', docs);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].reason, 'matchKey-typo');
+});
+
+// The no-false-merge guard: a typo'd LAST WORD that is actually a DIFFERENT word
+// (not a spelling slip of the same one) must NOT be treated as the same company.
+test('typo tolerance does NOT fuse two genuinely different companies (Acme Print vs Acme Prince)', () => {
+  const docs = [mk({ name: 'Acme Prince' })];
+  const out = rankMatchCandidates('Acme Print', docs);
+  // No matchKey-typo hit (acmeprint vs acmeprince is over the conservative budget
+  // for a 9-char key). "Acme" is a shared token but neither is a prefix of the
+  // other and Jaccard is below threshold → no suggestion.
+  assert.ok(!out.some((c) => c.reason === 'matchKey-typo'), 'must not claim a typo match');
+});
+
+test('typo tolerance never fires on short/generic stems', () => {
+  const docs = [mk({ name: 'Acne' })];
+  const out = rankMatchCandidates('Acme', docs); // 1 edit apart but only 4 chars
+  assert.equal(out.length, 0);
+});

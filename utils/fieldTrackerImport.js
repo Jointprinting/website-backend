@@ -48,6 +48,93 @@ function matchKey(companyName, clientName) {
   return raw.replace(/[^a-z0-9]+/g, '');
 }
 
+// Levenshtein edit distance (insert/delete/substitute), iterative two-row DP so
+// it stays cheap on the short normalized keys the dedup compares. Pure + small —
+// the typo-tolerance primitive for "Dispensary" vs "Dispesary" (a 1-char miss).
+function levenshtein(a, b) {
+  const s = String(a == null ? '' : a);
+  const t = String(b == null ? '' : b);
+  if (s === t) return 0;
+  if (!s.length) return t.length;
+  if (!t.length) return s.length;
+  let prev = new Array(t.length + 1);
+  let curr = new Array(t.length + 1);
+  for (let j = 0; j <= t.length; j++) prev[j] = j;
+  for (let i = 1; i <= s.length; i++) {
+    curr[0] = i;
+    const sc = s.charCodeAt(i - 1);
+    for (let j = 1; j <= t.length; j++) {
+      const cost = sc === t.charCodeAt(j - 1) ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    const tmp = prev; prev = curr; curr = tmp;
+  }
+  return prev[t.length];
+}
+
+// CONSERVATIVE typo tolerance for two already-normalized matchKeys: are they the
+// SAME company name with at most a tiny spelling slip — a dropped/added letter or
+// a swapped adjacent pair? This bridges "happyleafdispensary" ≈ "happyleafdispesary"
+// (a missing 'n') so a typo'd duplicate surfaces — WITHOUT ever fusing two
+// genuinely different companies.
+//
+// The trap a naïve "edit distance ≤ N" falls into: a SINGLE substitution can flip
+// a word's meaning while staying 1 edit away with a long shared prefix —
+// "riversideprinting" vs "riversidepainting", "mountainviewdental" vs
+// "…rental". Those are DIFFERENT companies and must NOT merge. So we peel the
+// shared head AND tail off both keys and look only at the differing MIDDLE:
+//   • a genuine typo leaves a tiny middle that is an INSERTION/DELETION (one side
+//     empty: dispe|n|sary vs dispe||sary) or an ADJACENT TRANSPOSITION (both
+//     sides length 2, same letters swapped).
+//   • a meaning-flipping SUBSTITUTION leaves two non-empty, same-length middles
+//     of DIFFERENT letters (printing→painting: middle "r" vs "a"). We reject that
+//     — it's the signature of a different word, not a slip.
+//
+// Outer guards (all must hold first):
+//   • both keys ≥ 6 chars — short/generic stems collide by chance, never fuzzed.
+//   • a shared prefix OR suffix of ≥ 4 chars — anchors them as the same name.
+//   • the differing middle on the LONGER side is ≤ 2 chars — one slip, not a word.
+// Exact equality is handled by the caller's strong key; this is the soft tier.
+function matchKeysFuzzyEqual(a, b) {
+  const x = String(a == null ? '' : a);
+  const y = String(b == null ? '' : b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const minLen = Math.min(x.length, y.length);
+  const maxLen = Math.max(x.length, y.length);
+  if (minLen < 6) return false;                       // too short to fuzz safely
+  if (maxLen - minLen > 2) return false;              // length gap too big for a typo
+
+  // Peel the longest shared prefix and (independently) the longest shared suffix.
+  let p = 0;
+  while (p < minLen && x[p] === y[p]) p++;
+  let s = 0;
+  while (s < (minLen - p) && x[x.length - 1 - s] === y[y.length - 1 - s]) s++;
+
+  // Must be anchored as the same name by a real shared prefix OR suffix.
+  if (p < 4 && s < 4) return false;
+
+  // The differing middles (what's left after peeling head+tail) on each side.
+  const midX = x.slice(p, x.length - s);
+  const midY = y.slice(p, y.length - s);
+  const mid = Math.max(midX.length, midY.length);
+  if (mid === 0) return false;                        // identical after peel (shouldn't happen — x!==y)
+  if (mid > 2) return false;                          // more than a one/two-char slip → different word
+
+  // INSERTION / DELETION: one side's middle is empty (a dropped/added letter or
+  // two). This is the classic typo — accept. (Happy Leaf Dispe[n]sary lands here.)
+  if (midX.length === 0 || midY.length === 0) return true;
+
+  // ADJACENT TRANSPOSITION: both middles are the SAME two letters swapped
+  // ("...ie..." vs "...ei...") — accept (a real typo).
+  if (midX.length === 2 && midY.length === 2 && midX[0] === midY[1] && midX[1] === midY[0]) return true;
+
+  // Otherwise both middles are non-empty with DIFFERENT letters → a substitution
+  // that changes the word (dental/rental, printing/painting). REJECT — these are
+  // different companies, not a spelling slip.
+  return false;
+}
+
 // ── CSV parser ───────────────────────────────────────────────────────────────
 // Returns an array of rows; each row is an array of string cells. Handles:
 //   • fields wrapped in double quotes
@@ -978,6 +1065,8 @@ function parseTrackerCsv(text, opts = {}) {
 module.exports = {
   deriveCompanyKey,
   matchKey,
+  levenshtein,
+  matchKeysFuzzyEqual,
   parseCsv,
   locateHeader,
   detectFormat,

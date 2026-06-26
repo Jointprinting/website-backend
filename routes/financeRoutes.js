@@ -23,6 +23,7 @@ router.get('/restart/preview', restart.restartPreview);
 router.post('/restart/preview', restart.restartPreview);
 router.post('/restart/apply', restart.restartApply);
 router.post('/restart/revert', restart.restartRevert);
+router.get('/restart/status', restart.restartStatus);
 
 router.get('/transactions', ctl.list);
 router.post('/transactions', ctl.create);

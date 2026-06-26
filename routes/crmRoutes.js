@@ -31,6 +31,7 @@ const {
   reconcilePreview,
   reconcileApply,
   reconcileRevert,
+  reconcileStatus,
 } = require('../controllers/crmReconcile');
 
 router.use(requireAdmin);
@@ -54,10 +55,12 @@ router.post('/unarchive', unarchiveCompanies);
 //   GET/POST /reconcile/preview  → the plan (no writes)
 //   POST     /reconcile/apply    → execute the plan (requires { confirm: true })
 //   POST     /reconcile/revert   → undo a prior apply batch by id
+//   GET      /reconcile/status   → has it ever been applied? (auto-hide the entry)
 router.get('/reconcile/preview',  reconcilePreview);
 router.post('/reconcile/preview', reconcilePreview);
 router.post('/reconcile/apply',   reconcileApply);
 router.post('/reconcile/revert',  reconcileRevert);
+router.get('/reconcile/status',   reconcileStatus);
 
 router.get('/:companyKey',   getOne);
 router.patch('/:companyKey', patchOne);
