@@ -3,6 +3,7 @@ const router = express.Router();
 const { requireAdmin } = require('../middleware/auth');
 const ctl = require('../controllers/finances');
 const restart = require('../controllers/financeRestart');
+const dedupe = require('../controllers/financeDedupe');
 
 // Financial data — admin only.
 router.use(requireAdmin);
@@ -24,6 +25,16 @@ router.post('/restart/preview', restart.restartPreview);
 router.post('/restart/apply', restart.restartApply);
 router.post('/restart/revert', restart.restartRevert);
 router.get('/restart/status', restart.restartStatus);
+
+// Merge cross-source duplicate transactions the budget restart left behind (a budget
+// row + the owner's manual/receipt copy of the SAME payment, dates drifted apart).
+// Preview → confirm → apply; reversible. Merges each pair into ONE row keeping EVERY
+// link (receipt, project/order link, invoice #); never deletes a link.
+router.get('/dedupe/preview', dedupe.dedupePreview);
+router.post('/dedupe/preview', dedupe.dedupePreview);
+router.post('/dedupe/apply', dedupe.dedupeApply);
+router.post('/dedupe/revert', dedupe.dedupeRevert);
+router.get('/dedupe/status', dedupe.dedupeStatus);
 
 router.get('/transactions', ctl.list);
 router.post('/transactions', ctl.create);
