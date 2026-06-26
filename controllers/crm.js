@@ -878,7 +878,7 @@ async function getOne(req, res) {
     // → their POs, newest-first, as lean cards.
     const orderIds = orders.map((o) => o._id);
     const poDocs = orderIds.length
-      ? await PurchaseOrder.find({ orderId: { $in: orderIds } })
+      ? await PurchaseOrder.find({ orderId: { $in: orderIds }, archived: { $ne: true } })
           .sort({ date: -1, createdAt: -1 })
           .select('poNumber vendorName grandTotal orderId date')
           .lean()

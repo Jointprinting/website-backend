@@ -7,7 +7,12 @@ const mongoose = require('mongoose');
 // vendors vary in what sections they need, so the doc stores what the
 // builder shows, no hidden derivation.
 const PurchaseOrderSchema = new mongoose.Schema({
-  orderId:   { type: mongoose.Schema.Types.ObjectId, ref: 'Order', index: true, required: true },
+  // An app-built PO always belongs to an order (the project it was generated from).
+  // A PO LOADED from the owner's historical Drive PO files (the "rebuild" reconcile)
+  // may reference a job that was never entered in-app, so orderId is OPTIONAL: such a
+  // PO is vendor-only (it still shows on the printer's card + totals; the vendor↔order
+  // link comes from the ledger spend instead). All readers already guard `orderId`.
+  orderId:   { type: mongoose.Schema.Types.ObjectId, ref: 'Order', index: true, default: null },
   poNumber:  { type: String, default: '' },          // "#007" — atomic via Counter('po')
   date:      { type: Date, default: Date.now },
 

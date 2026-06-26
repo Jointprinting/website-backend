@@ -299,7 +299,7 @@ const createPosFromConfirmation = async (req, res) => {
     // Vendors that already have a PO on this order, keyed by the SAME normalized
     // vendorKey used for grouping (H3) — so a whitespace fork can't make a legit
     // second supplier look "already built" and get dropped.
-    const existing = await PurchaseOrder.find({ orderId: order._id }).select('vendorName').lean();
+    const existing = await PurchaseOrder.find({ orderId: order._id, ...NOT_ARCHIVED }).select('vendorName').lean();
     const existingKeys = new Set(existing.map(p => vendorKey(p.vendorName)).filter(Boolean));
 
     const created = [];

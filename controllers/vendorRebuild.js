@@ -196,10 +196,11 @@ async function rebuildApply(req, res) {
     };
 
     // 2) LOAD the Drive POs. Each carries its sourceFileId (idempotency key) so a
-    //    re-run that already loaded a doc skips it. PurchaseOrder.orderId is required
-    //    by the model — when a PO links to a real order we use it; otherwise the PO
-    //    is vendor-only and we attach it to the vendor via a synthetic link is not
-    //    possible (orderId required), so we skip-load it and surface it as unlinked.
+    //    re-run that already loaded a doc skips it. orderId is OPTIONAL: a PO that
+    //    links to a real in-app order carries it; one whose historical job was never
+    //    entered in-app loads vendor-only (still shows on the printer's card + totals
+    //    — the vendor↔order link comes from the ledger spend). Nothing is dropped.
+    let posLoadedUnlinked = 0;
     for (const p of plan.posToLoad) {
       try {
         // Idempotency: skip if a PO with this sourceFileId already exists (live).
@@ -207,16 +208,9 @@ async function rebuildApply(req, res) {
           const exists = await PurchaseOrder.findOne({ sourceFileId: p.sourceFileId, archived: { $ne: true } }).select('_id').lean();
           if (exists) { report.posSkipped++; continue; }
         }
-        if (!p.orderId) {
-          // No linkable order — record it as an error-free "unlinked" so the owner
-          // can attach it later; the model requires orderId, so we can't persist a
-          // standalone PO. We still count it so the report is honest.
-          report.errors.push({ stage: 'po-load', poNumber: p.poNumber, vendor: p.vendorName, message: 'no matching order to link (PO not loaded; link the order, then re-run)' });
-          continue;
-        }
         const date = p.date ? new Date(`${p.date}T00:00:00Z`) : new Date();
         const po = await PurchaseOrder.create({
-          orderId: p.orderId,
+          orderId: p.orderId || null,
           poNumber: p.poNumber,
           date,
           vendorName: p.vendorName,
@@ -228,6 +222,7 @@ async function rebuildApply(req, res) {
         });
         createdPoIds.push(po._id);
         report.posLoaded++;
+        if (!p.orderId) posLoadedUnlinked++;
         // Keep the per-vendor PO counter ahead of the loaded number so future
         // app-built POs continue the real run (the vendor floor also enforces this).
         await bumpCounterTo('po', p.poNumber, p.vendorName);
@@ -235,6 +230,7 @@ async function rebuildApply(req, res) {
         report.errors.push({ stage: 'po-load', poNumber: p.poNumber, vendor: p.vendorName, message: err.message });
       }
     }
+    report.posLoadedUnlinked = posLoadedUnlinked;
 
     // 3) SNAPSHOT then ARCHIVE the superseded in-app vendors/POs (soft). Snapshot
     //    is saved in the batch FIRST so the backup is durable before any archive.
