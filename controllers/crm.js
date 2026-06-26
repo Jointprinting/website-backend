@@ -105,6 +105,51 @@ async function promoteCompanyToCustomerOnPlacement(companyKey, sample = {}) {
   return next;
 }
 
+// Ensure a CRM Client record exists for a company that just entered QUOTING (the
+// lead→quote handoff mints an Order; this guarantees the company is also a
+// first-class CRM citizen so it shows on the order-centric board, in Companies,
+// Today, etc.). Best-effort + idempotent, mirroring promoteCompanyToCustomerOn-
+// Placement:
+//   • race-safe get-or-create by the unique companyKey ($setOnInsert seeds
+//     identity + a 'quoting' stage on a genuine insert only),
+//   • for an EXISTING record, nudge the stage UP to 'quoting' via promoteStage —
+//     which never regresses an owner-advanced stage and never touches won/lost/
+//     dormant/customer. So a brand-new company lands at 'quoting'; a lead/contacted
+//     record advances to 'quoting'; a sampling/won/customer/closed record is left
+//     exactly as the owner set it.
+// Returns the resulting stage (or null on no-op). The CALLER wraps this in
+// try/catch — an order write must never fail because of a CRM hiccup. `sample`
+// carries the order's companyName/clientName/dealValue to seed a new record.
+async function ensureCompanyForQuoting(companyKey, sample = {}) {
+  const key = (companyKey || '').trim();
+  if (!key) return null;
+  const companyName = sample.companyName || '';
+  const clientName  = sample.clientName  || '';
+  const dealValue   = Number(sample.dealValue) || 0;
+  const doc = await Client.findOneAndUpdate(
+    { companyKey: key },
+    {
+      $setOnInsert: {
+        companyKey:  key,
+        companyName,
+        clientName,
+        matchKey:    deriveMatchKey(companyName, clientName),
+        source:      'order',
+        stage:       'quoting',
+        ...(dealValue > 0 ? { dealValue } : {}),
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true },
+  );
+  if (!doc) return null;
+  const next = promoteStage(doc.stage, 'quoting');
+  if (next !== doc.stage) {
+    doc.stage = next;
+    await doc.save();
+  }
+  return next;
+}
+
 // Archived (soft-deleted) records are excluded from every WORKING surface —
 // /today, /dashboard, /pipeline, /calendar, and the default /list. They still
 // exist (and their Orders still link by companyKey); they just drop out of the
@@ -150,6 +195,260 @@ function summarizePipeline(records) {
     const stage = r && r.stage;
     if (OPEN_STAGES.includes(stage)) totalOpenValue += val;
     weightedValue += val * stageProbability(stage);
+  }
+  return {
+    totalOpenValue: Math.round(totalOpenValue * 100) / 100,
+    weightedValue:  Math.round(weightedValue * 100) / 100,
+  };
+}
+
+// ── Unified order-centric board ─────────────────────────────────────────────────
+// The pipeline board is "one client → many orders": a brand-new lead is one
+// pre-quote card sourced from its Client record; once a company is quoting+, each
+// of its Orders is its OWN card flowing across the fulfillment columns. So a
+// company with 3 live orders shows 3 cards, and a never-quoted prospect shows 1.
+//
+// COLUMNS (left → right), then a collapsed closed/parked lane:
+//   lead, contacted          ← Client cards (pre-quote stages) with NO live order
+//   quoting                  ← Order status 'quoted'
+//   approval                 ← Order status 'approved'
+//   production               ← Order status 'placed' OR 'in_production'
+//   shipped                  ← Order status 'shipped'
+//   delivered                ← Order status 'delivered'  (won; capped to recent)
+//   ── closed / parked ──
+//   lost, dormant            ← Client cards (deliberately-closed stages)
+//   cancelled                ← Order status 'cancelled'
+//
+// Lead columns reuse the existing Client CRM early stages so the lost/dormant
+// closed cards and the lead/contacted pre-quote cards still come from the one
+// Client-per-companyKey record (company dedup intact) — the multiplicity is only
+// in the order columns, and it's intentional (distinct jobs).
+const BOARD_COLUMNS = [
+  'lead', 'contacted',
+  'quoting', 'approval', 'production', 'shipped', 'delivered',
+];
+const BOARD_CLOSED_COLUMNS = ['lost', 'dormant', 'cancelled'];
+const ALL_BOARD_COLUMNS = [...BOARD_COLUMNS, ...BOARD_CLOSED_COLUMNS];
+
+// The Client pre-quote stages that seed the LEAD columns. Only a company with no
+// live order earns a lead card (else it already shows as an order card). Mid-
+// funnel Client stages (quoting/sampling) are intentionally absent — once a deal
+// is quoting it lives in the ORDER columns, sourced from its Order rows.
+const BOARD_LEAD_STAGES = ['lead', 'contacted'];
+// Client mid-funnel stages that, WITHOUT a live order, fall back to a card in the
+// QUOTING column — so a deal advanced to quoting/sampling never vanishes from the
+// board in the window before its order row exists (or if the order mint failed).
+// Once the company has a live order, its order card represents it and this
+// fallback is suppressed.
+const BOARD_QUOTING_FALLBACK_STAGES = ['quoting', 'sampling'];
+// The Client closed/parked stages that seed the closed lane (alongside cancelled
+// orders). These mirror the old SECONDARY_STAGES.
+const BOARD_CLOSED_CLIENT_STAGES = ['lost', 'dormant'];
+
+// Board columns whose value is still "open" (in play, not realized/dead). Lead
+// columns + the pre-delivery order columns. delivered is won (realized, not
+// open); lost/dormant/cancelled are dead. Keeps the header band's "open pipeline"
+// honest over the unified set.
+const BOARD_OPEN_COLUMNS = ['lead', 'contacted', 'quoting', 'approval', 'production', 'shipped'];
+
+// Close-probability per BOARD column — drives the weighted forecast over the
+// unified set. Lead columns keep the Client STAGE_PROBABILITY so a lead's
+// forecast is unchanged; the order columns climb toward realization. delivered is
+// realized (1); the closed lane carries no forecast (0). Exposed on the payload
+// so the board can label without hardcoding.
+const BOARD_PROBABILITY = {
+  lead:       0.1,
+  contacted:  0.25,
+  quoting:    0.5,
+  approval:   0.8,
+  production: 0.9,
+  shipped:    0.95,
+  delivered:  1,
+  lost:       0,
+  dormant:    0,
+  cancelled:  0,
+};
+const boardProbability = (col) => (
+  Object.prototype.hasOwnProperty.call(BOARD_PROBABILITY, col) ? BOARD_PROBABILITY[col] : 0
+);
+
+// Cap the Delivered/Won column to the most-recent N orders so it can't grow
+// unbounded as history piles up (the board is a working surface, not an archive).
+const DELIVERED_CAP = 25;
+
+// Map an Order.status → its board column. PURE + unit-tested. Returns null for an
+// unknown status so the caller can drop it rather than mis-bucket it. 'placed' and
+// 'in_production' both land in 'production' (one fulfillment column, kept lean).
+function orderStatusToColumn(status) {
+  switch (status) {
+    case 'quoted':        return 'quoting';
+    case 'approved':      return 'approval';
+    case 'placed':        return 'production';
+    case 'in_production': return 'production';
+    case 'shipped':       return 'shipped';
+    case 'delivered':     return 'delivered';
+    case 'cancelled':     return 'cancelled';
+    default:              return null;
+  }
+}
+
+// Stable per-order card key: prefer the human projectNumber, fall back to the
+// mongo _id, so React never sees a duplicate key even when one company has many
+// orders. Always prefixed 'order:' so it can't collide with a lead card's
+// companyKey.
+function orderCardKey(order) {
+  const pn = order && order.projectNumber != null ? String(order.projectNumber).trim() : '';
+  const id = order && order._id != null ? String(order._id) : '';
+  return `order:${pn || id || Math.random().toString(36).slice(2)}`;
+}
+
+// An order is "live" (occupies a fulfillment column and suppresses its company's
+// lead card) when it isn't archived and isn't cancelled. delivered still counts as
+// live for lead-suppression — the company clearly got past the lead stage.
+function isLiveOrderRow(o) {
+  if (!o || o.archived) return false;
+  return o.status !== 'cancelled';
+}
+
+// Assemble the unified board from lean Client + Order rows. PURE (no DB) so the
+// whole feed shape is unit-testable. Inputs:
+//   clients          — lean Client POJOs (companyKey, stage, dealValue, name…)
+//   orders           — lean Order POJOs (companyKey, status, totalValue, archived,
+//                      projectNumber, _id, companyName/clientName)
+//   withPlacedOrders — Set<companyKey> that have ≥1 PLACED order (isCustomer)
+//   dealValueByKey   — Map<companyKey, number> company dealValue (order $ fallback)
+//   now              — Date (delivered-cap recency anchor; reserved, cap is by count)
+//   deliveredCap     — keep only the most-recent N delivered cards (default DELIVERED_CAP)
+// Returns { groups, summary, columns } where groups is one { stage, count,
+// totalValue, clients[] } per board column (active then closed), in board order.
+function buildUnifiedBoard({ clients, orders, withPlacedOrders, dealValueByKey, deliveredCap = DELIVERED_CAP } = {}) {
+  const placed = withPlacedOrders instanceof Set ? withPlacedOrders : new Set(withPlacedOrders || []);
+  const dealBy = dealValueByKey instanceof Map ? dealValueByKey : new Map(Object.entries(dealValueByKey || {}));
+
+  // companyKeys that have a LIVE order (non-archived, non-cancelled). Their Client
+  // record never contributes a lead card — the order card(s) represent them.
+  const liveKeys = new Set();
+  for (const o of orders || []) {
+    if (isLiveOrderRow(o) && o.companyKey) liveKeys.add(o.companyKey);
+  }
+
+  // Seed every column so empty ones still render in canonical order.
+  const byCol = {};
+  for (const c of ALL_BOARD_COLUMNS) byCol[c] = { stage: c, count: 0, totalValue: 0, clients: [] };
+
+  // ── Lead + closed-CLIENT cards ────────────────────────────────────────────────
+  // Build a lead-style (Client) card; `col` is the board column it lands in.
+  const leadCard = (c, col) => ({
+    cardKey:      c.companyKey,
+    cardKind:     'lead',
+    companyKey:   c.companyKey,
+    name:         (c.companyName || c.clientName || c.companyKey),
+    dealValue:    Number(c.dealValue) || 0,
+    nextFollowUp: c.nextFollowUp || null,
+    stage:        col,
+    address:      c.address || '',
+    area:         c.area || '',
+    interestType: c.interestType || '',
+    tags:         c.tags || [],
+    leadSource:   c.leadSource || '',
+    isCustomer:   placed.has(c.companyKey),
+  });
+  for (const c of clients || []) {
+    const stage = c && c.stage;
+    if (BOARD_LEAD_STAGES.includes(stage)) {
+      // Suppress the lead card if the company already has a live order — it shows
+      // as an order card instead (no double-count, no leftover lead).
+      if (liveKeys.has(c.companyKey)) continue;
+      byCol[stage].clients.push(leadCard(c, stage)); // board column == the client stage
+    } else if (BOARD_QUOTING_FALLBACK_STAGES.includes(stage)) {
+      // A Client advanced to quoting/sampling but with NO order row yet (a freshly
+      // moved deal whose order mint is still in flight, or one whose handoff hiccuped)
+      // still shows a card in the QUOTING column so it never silently vanishes from
+      // the board. The moment a live order exists it's suppressed here and rendered
+      // as an order card instead.
+      if (liveKeys.has(c.companyKey)) continue;
+      byCol.quoting.clients.push(leadCard(c, 'quoting'));
+    } else if (BOARD_CLOSED_CLIENT_STAGES.includes(stage)) {
+      byCol[stage].clients.push(leadCard(c, stage));
+    }
+    // won/customer Client stages contribute NO lead card — those companies are
+    // represented by their Order rows in the fulfillment columns.
+  }
+
+  // ── Order cards (one per order) ───────────────────────────────────────────────
+  // Collect delivered separately so we can cap to the most recent before placing.
+  const delivered = [];
+  for (const o of orders || []) {
+    if (o && o.archived) continue;            // archived orders never hit the board
+    const col = orderStatusToColumn(o.status);
+    if (!col) continue;                        // unknown status → drop
+    const name = (o.companyName || o.clientName || o.companyKey || '');
+    // Deal value: the order's own total, falling back to the company's CRM deal
+    // value when the order has no total yet (a freshly-minted quote at $0).
+    const own = Number(o.totalValue) || 0;
+    const dealValue = own > 0 ? own : (Number(dealBy.get(o.companyKey)) || 0);
+    const card = {
+      cardKey:      orderCardKey(o),
+      cardKind:     'order',
+      _id:          o._id != null ? String(o._id) : '',
+      companyKey:   o.companyKey || '',
+      name,
+      projectNumber: o.projectNumber != null ? String(o.projectNumber) : '',
+      orderStatus:  o.status,
+      dealValue,
+      nextFollowUp: null,
+      stage:        col,             // the board column this order sits in
+      tags:         [],
+      isCustomer:   placed.has(o.companyKey),
+    };
+    if (col === 'delivered') delivered.push({ card, o });
+    else byCol[col].clients.push(card);
+  }
+  // Cap delivered to the most-recent N (by orderDate, then createdAt, then _id).
+  delivered.sort((a, b) => orderRecency(b.o) - orderRecency(a.o));
+  for (const { card } of delivered.slice(0, Math.max(0, deliveredCap))) {
+    byCol.delivered.clients.push(card);
+  }
+
+  // Tally counts + totals per column over the FINAL card set (post-cap).
+  for (const c of ALL_BOARD_COLUMNS) {
+    const g = byCol[c];
+    g.count = g.clients.length;
+    g.totalValue = Math.round(g.clients.reduce((s, k) => s + (Number(k.dealValue) || 0), 0) * 100) / 100;
+  }
+
+  const groups = ALL_BOARD_COLUMNS.map((c) => byCol[c]);
+  const summary = summarizeBoard(groups);
+  return { groups, summary, columns: { active: BOARD_COLUMNS, closed: BOARD_CLOSED_COLUMNS } };
+}
+
+// Recency score for ordering/capping delivered orders. Higher = more recent.
+function orderRecency(o) {
+  const d = o && (o.orderDate || o.updatedAt || o.createdAt);
+  const t = d ? new Date(d).getTime() : 0;
+  return Number.isNaN(t) ? 0 : t;
+}
+
+// Board summary over the assembled column groups (or a flat card list). PURE +
+// unit-tested. Mirrors summarizePipeline but board-column aware:
+//   totalOpenValue — Σ dealValue across the OPEN board columns only.
+//   weightedValue  — Σ dealValue × boardProbability across ALL columns.
+// Accepts either groups ([{ stage, clients[] }]) or a flat array of cards.
+function summarizeBoard(input) {
+  const cards = [];
+  for (const item of input || []) {
+    if (item && Array.isArray(item.clients)) {
+      for (const card of item.clients) cards.push({ stage: item.stage, dealValue: card.dealValue });
+    } else if (item) {
+      cards.push({ stage: item.stage, dealValue: item.dealValue });
+    }
+  }
+  let totalOpenValue = 0;
+  let weightedValue = 0;
+  for (const c of cards) {
+    const val = Number(c.dealValue) || 0;
+    if (BOARD_OPEN_COLUMNS.includes(c.stage)) totalOpenValue += val;
+    weightedValue += val * boardProbability(c.stage);
   }
   return {
     totalOpenValue: Math.round(totalOpenValue * 100) / 100,
@@ -541,47 +840,62 @@ async function getPipeline(req, res) {
     if (or) filter.$or = or;
     else if (tag && String(tag).trim()) filter.tags = String(tag).trim();
 
-    const docs = await Client.find(filter)
+    const clients = await Client.find(filter)
       .select('companyKey companyName clientName dealValue nextFollowUp stage address area interestType tags leadSource')
       .sort({ dealValue: -1, companyName: 1 })   // biggest deals first within each column
       .lean();
 
-    // Which companies have ≥1 PLACED order (⇒ customers)? One batched query.
-    const withOrders = await keysWithOrders(docs.map((c) => c.companyKey));
-
-    // Seed every stage so empty columns still render in canonical order.
-    const byStage = {};
-    for (const s of STAGES) byStage[s] = { stage: s, count: 0, totalValue: 0, clients: [] };
-
-    for (const c of docs) {
-      const s = byStage[c.stage] ? c.stage : 'lead'; // defensive: bucket unknowns at the top
-      const g = byStage[s];
-      g.count += 1;
-      g.totalValue += Number(c.dealValue) || 0;
-      g.clients.push({
-        companyKey:   c.companyKey,
-        name:         c.companyName || c.clientName || c.companyKey,
-        dealValue:    Number(c.dealValue) || 0,
-        nextFollowUp: c.nextFollowUp || null,
-        stage:        c.stage,
-        address:      c.address || '',
-        area:         c.area || '',
-        interestType: c.interestType || '',
-        tags:         c.tags || [],
-        leadSource:   c.leadSource || '',
-        isCustomer:   withOrders.has(c.companyKey),
-      });
+    // The unified board is ORDER-CENTRIC: lead/contacted columns come from Client
+    // records (no live order), every order column comes from Order rows. We DON'T
+    // pre-exclude archived/cancelled here — buildUnifiedBoard needs the cancelled
+    // ones for the closed lane and drops archived itself.
+    //
+    // Order SCOPE: with no Client-field filter (the common case) the board shows
+    // EVERY order — including order-only companies that have no Client row yet (a
+    // freshly-minted quote from the lead→quote handoff, or a historical import).
+    // Scoping orders to Client-derived keys would silently hide those, so when the
+    // board is unfiltered we pull all non-archived orders. When a search/tag/area/
+    // leadSource filter IS set, those are Client-field filters that an order-only
+    // company can't satisfy anyway, so we scope orders to the filtered company keys.
+    const filtered = !!(area || leadSource || (q && String(q).trim()) || (tag && tag !== 'all' && String(tag).trim()));
+    const clientKeys = clients.map((c) => c.companyKey).filter(Boolean);
+    let orders;
+    if (filtered) {
+      orders = clientKeys.length
+        ? await Order.find({ companyKey: { $in: clientKeys }, archived: { $ne: true } })
+            .select('companyKey companyName clientName projectNumber status totalValue archived orderDate createdAt updatedAt')
+            .lean()
+        : [];
+    } else {
+      orders = await Order.find({ archived: { $ne: true } })
+        .select('companyKey companyName clientName projectNumber status totalValue archived orderDate createdAt updatedAt')
+        .lean();
     }
 
-    const groups = STAGES.map((s) => {
-      const g = byStage[s];
-      return { ...g, totalValue: Math.round(g.totalValue * 100) / 100 };
+    // The full key set the board touches = filtered companies ∪ companies that own
+    // a board order. isCustomer (≥1 PLACED order) is keyed across that union.
+    const keySet = new Set(clientKeys);
+    for (const o of orders) if (o.companyKey) keySet.add(o.companyKey);
+    const withOrders = await keysWithOrders(Array.from(keySet));
+
+    // Company dealValue fallback for an order with no total yet (fresh $0 quote).
+    const dealValueByKey = new Map();
+    for (const c of clients) dealValueByKey.set(c.companyKey, Number(c.dealValue) || 0);
+
+    const { groups, summary, columns } = buildUnifiedBoard({
+      clients,
+      orders,
+      withPlacedOrders: withOrders,
+      dealValueByKey,
     });
 
     res.json({
       groups,
-      summary: summarizePipeline(docs),
-      probability: STAGE_PROBABILITY,
+      summary,
+      probability: BOARD_PROBABILITY,
+      // Board column ordering + which lane each belongs to, so the client renders
+      // the unified set without hardcoding the column list (kept in sync server-side).
+      columns,
       // The structured lead-source enum, so the board's filter dropdown can list
       // the exact filterable values without hardcoding them on the client.
       leadSources: Client.LEAD_SOURCES.filter(Boolean),
@@ -2035,11 +2349,22 @@ module.exports = {
   summarizePipeline,
   stageProbability,
   STAGE_PROBABILITY,
+  // Unified order-centric board (pure, unit-tested).
+  orderStatusToColumn,
+  buildUnifiedBoard,
+  summarizeBoard,
+  isLiveOrderRow,
+  orderCardKey,
+  BOARD_COLUMNS,
+  BOARD_CLOSED_COLUMNS,
+  BOARD_PROBABILITY,
+  DELIVERED_CAP,
   classifyHeadsUp,
   buildHeadsUp,
   HEADS_UP,
   promoteStage,
   promoteCompanyToCustomerOnPlacement,
+  ensureCompanyForQuoting,
   removeLogEntry,
   searchOr,
 };
