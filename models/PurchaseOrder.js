@@ -63,6 +63,20 @@ const PurchaseOrderSchema = new mongoose.Schema({
   grandTotal: { type: Number, default: 0 },
 
   notes: { type: String, default: '' },                // free-form extra section
+
+  // Provenance + reversibility for the "Rebuild printers from Drive" reconcile
+  // (controllers/vendorRebuild). `source` distinguishes an app-built PO ('' / 'app')
+  // from one loaded from the owner's Drive PO history ('drive-rebuild'); sourceFileId
+  // is the Drive doc id this PO was read from (idempotency key + the card's source
+  // link). rebuildBatchId stamps every PO a rebuild run touches so the whole run is
+  // revertible as a unit. Archive is SOFT (recoverable), mirroring the Vendor/CRM
+  // archive — a rebuild supersedes the old auto-created in-app POs without deleting.
+  source:        { type: String, default: '' },        // '' | 'drive-rebuild'
+  sourceFileId:  { type: String, default: '' },        // Drive doc id (rebuild POs)
+  rebuildBatchId:{ type: String, default: '', index: true },
+  archived:      { type: Boolean, default: false, index: true },
+  archivedAt:    { type: Date, default: null },
+  archivedReason:{ type: String, default: '' },        // 'superseded-by-rebuild' | 'rebuild-revert' | …
 }, { timestamps: true });
 
 module.exports = mongoose.model('PurchaseOrder', PurchaseOrderSchema);

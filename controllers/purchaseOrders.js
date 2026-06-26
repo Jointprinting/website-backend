@@ -377,7 +377,7 @@ const createPosFromConfirmation = async (req, res) => {
 const listPos = async (req, res) => {
   try {
     if (badId(req.params.id)) return res.status(404).json({ message: 'Project not found' });
-    const pos = await PurchaseOrder.find({ orderId: req.params.id }).sort({ createdAt: -1 }).lean();
+    const pos = await PurchaseOrder.find({ orderId: req.params.id, ...NOT_ARCHIVED }).sort({ createdAt: -1 }).lean();
     res.json({ pos });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -525,6 +525,7 @@ const deletePo = async (req, res) => {
 async function _vendorUsageByKey() {
   const [poAgg, txAgg] = await Promise.all([
     PurchaseOrder.aggregate([
+      { $match: { archived: { $ne: true } } },
       { $group: { _id: null, rows: { $push: { vendorName: '$vendorName', grandTotal: '$grandTotal', orderId: '$orderId' } } } },
     ]).then((r) => (r[0] && r[0].rows) || []).catch(() => []),
     Transaction.aggregate([
@@ -663,6 +664,7 @@ const poCostHistory = async (req, res) => {
     const ROW_CAP = 250;
     const pos = await PurchaseOrder.find({
       vendorName: new RegExp(`^${vendor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+      ...NOT_ARCHIVED,
     })
       .sort({ date: -1, createdAt: -1 })
       .limit(PO_CAP)
@@ -929,8 +931,8 @@ const getVendor = async (req, res) => {
     // as the precise filter so only this printer's POs count.
     const wantKey = vendorKey(vendor.name);
     const nameRe = new RegExp(`^${String(vendor.name || '').trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')}$`, 'i');
-    const candidatePos = await PurchaseOrder.find({ vendorName: nameRe })
-      .select('poNumber vendorName grandTotal orderId date createdAt')
+    const candidatePos = await PurchaseOrder.find({ vendorName: nameRe, ...NOT_ARCHIVED })
+      .select('poNumber vendorName grandTotal orderId date createdAt sourceFileId')
       .sort({ date: -1, createdAt: -1 })
       .lean();
     const vendorPos = candidatePos.filter((p) => vendorKey(p.vendorName) === wantKey);
