@@ -6,8 +6,12 @@ const mongoose = require('mongoose');
 // P&L + analytics. Populated by importing the JP Ledger CSV and, going forward,
 // auto-appended from orders (where the customer is known, so no name guessing).
 //
-// NOTE: financial data lives only in the DB (and the owner's exported CSV/Sheet)
-// — never committed to the repo.
+// NOTE: live financial data lives in the DB (and the owner's exported CSV/Sheet).
+// The ONE committed exception is data/financeLedgerSeed.json — the owner's verified
+// budget ledger, committed deliberately (like data/notionCrmSeed.json for the CRM)
+// so the "Restart finances from my budgets" flow has a reproducible, reviewable
+// source of truth to load. It is admin-gated behind the same auth as the rest of
+// the finance API. No other finance data is committed.
 
 const CATEGORIES = [
   'Customer Sales', 'Blank COGS', 'Printer COGS', 'Shipping', 'Art', 'Commission',
@@ -56,7 +60,13 @@ const TransactionSchema = new mongoose.Schema({
   // second one, and a manually-added fee (no link) is left alone.
   feeForTxn:   { type: String, default: '' },
   year:        { type: Number, index: true },                // denormalized for fast filtering
-  source:      { type: String, default: 'manual' },          // 'import' | 'order:auto' | 'manual'
+  source:      { type: String, default: 'manual' },          // 'import' | 'order:auto' | 'manual' | 'budget' | 'fee:auto'
+  // Finance-restart audit/revert handle. Every row INSERTED by a single run of the
+  // owner-triggered "restart finances from my budgets" flow is stamped with that
+  // run's batch id, so the whole restart is identifiable and reversible as a unit
+  // (revert restores the prior budget rows from the soft-deleted backup). Empty for
+  // rows the restart never created. Pairs with source:'budget'.
+  restartBatchId: { type: String, default: '', index: true },
 }, { timestamps: true });
 
 // Keep `year` in sync with `date` so reports can filter cheaply.
