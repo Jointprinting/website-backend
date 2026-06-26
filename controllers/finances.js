@@ -6,6 +6,7 @@
 
 const Transaction = require('../models/Transaction');
 const Order = require('../models/Order');
+const PurchaseOrder = require('../models/PurchaseOrder');
 const r2 = require('../services/r2');
 
 const num = (v) => Number(v) || 0;
@@ -614,6 +615,88 @@ function paymentGapsForOrders(orders, transactions) {
   };
 }
 
+// ── missing receipts: "did I forget to enter a cost receipt?" ─────────────────
+// The owner's rule: an order doesn't really start until he's paid, and once it's
+// in progress he needs to have entered its cost receipts. This flags an active
+// in-progress order missing one of the COGS receipts it's EXPECTED to have. The
+// three receipt types map to ledger COGS categories:
+//   • Printer COGS — always expected (every job has a printer).
+//   • Blank COGS   — expected only when JP SOURCED the blanks. A PO with
+//     blanksProvided===true means JP supplied the garments (bought separately, so
+//     a blanks receipt exists); false means the printer used their own blanks (no
+//     separate receipt). With no POs yet, assume JP supplies them — the ~99%
+//     default the PO seeder already uses.
+//   • Shipping     — expected only when the order actually carried freight
+//     (shippingCost > 0); a local / pickup / bundled job is never nagged.
+// All three pieces are PURE (no DB) + exported for reuse and tests.
+const RECEIPT_COGS = ['Printer COGS', 'Blank COGS', 'Shipping'];
+const RECEIPT_LABEL = { 'Printer COGS': 'printer', 'Blank COGS': 'blanks', 'Shipping': 'shipping' };
+// Production statuses that (with `paid`) mark an order "in progress" — money
+// committed, work underway, but NOT wrapped. 'delivered'/'cancelled' are done and
+// deliberately excluded so the list stays current instead of re-auditing history.
+const IN_PROGRESS_STATUSES = ['placed', 'in_production', 'shipped'];
+
+function orderInProgress(o) {
+  if (!o) return false;
+  if (o.status === 'cancelled' || o.status === 'delivered') return false;
+  return o.paid === true || IN_PROGRESS_STATUSES.includes(o.status);
+}
+
+function expectedReceiptCats(order, pos) {
+  const expected = ['Printer COGS'];
+  const list = (pos || []).filter(Boolean);
+  // JP sourced blanks ⇒ expect a blanks receipt. If any PO marks JP-supplied, or
+  // there are no POs yet (the seeder's ~99% default), expect blanks.
+  const blanksExpected = list.length ? list.some((p) => p.blanksProvided === true) : true;
+  if (blanksExpected) expected.push('Blank COGS');
+  if (num(order && order.shippingCost) > 0) expected.push('Shipping');
+  return expected;
+}
+
+function presentReceiptCats(rows) {
+  const present = new Set();
+  for (const t of (rows || [])) {
+    if (t && t.type === 'expense' && RECEIPT_COGS.includes(t.category)) present.add(t.category);
+  }
+  return present;
+}
+
+// PURE: in-progress orders missing an expected receipt. `posByKey` maps canonical
+// orderNumber → that order's (non-archived) POs, for the blanks rule. Returns one
+// row per flagged order naming the specific missing type(s), newest order # first.
+function missingReceiptsForOrders(orders, transactions, posByKey) {
+  const byKey = {};
+  for (const t of (transactions || [])) {
+    const k = normalizeOrderNumber(t && t.orderNumber);
+    if (!k) continue;
+    (byKey[k] ||= []).push(t);
+  }
+  const rows = [];
+  for (const o of (orders || [])) {
+    if (!orderInProgress(o)) continue;
+    const key = normalizeOrderNumber(o.orderNumber);
+    if (!key) continue;
+    const expected = expectedReceiptCats(o, (posByKey && posByKey[key]) || []);
+    const present = presentReceiptCats(byKey[key] || []);
+    const missing = expected.filter((c) => !present.has(c));
+    if (!missing.length) continue;
+    const client = (String(o.companyName == null ? '' : o.companyName).trim())
+      || (String(o.clientName == null ? '' : o.clientName).trim()) || '—';
+    rows.push({
+      orderNumber: key,
+      projectNumber: o.projectNumber || '',
+      client,
+      paid: !!o.paid,
+      status: o.status || '',
+      missing,                                          // ledger categories, e.g. ['Blank COGS','Shipping']
+      missingLabels: missing.map((c) => RECEIPT_LABEL[c] || c),  // friendly: ['blanks','shipping']
+      expected,
+    });
+  }
+  rows.sort((a, b) => Number(b.orderNumber) - Number(a.orderNumber));
+  return { orders: rows, count: rows.length };
+}
+
 // GET /api/finances/order-actuals?orderNumbers=21,022,#23  — the receipt-derived
 // ACTUAL cost for a set of orders, keyed by canonical order number. This is the
 // "source of truth = the receipts I upload" figure, surfaced wherever an order or
@@ -773,6 +856,45 @@ const paymentGaps = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
+// GET /api/finances/missing-receipts — active in-progress orders (paid OR in
+// production, not yet delivered/cancelled) that are missing an expected COGS
+// receipt, naming the specific missing type(s) per order. The owner's "did I
+// forget to enter a receipt?" surface, finance-side. Not year-scoped — an
+// in-progress order is current by definition.
+const missingReceipts = async (req, res) => {
+  try {
+    const orders = await Order.find({
+      status: { $nin: ['delivered', 'cancelled'] },
+      $or: [{ paid: true }, { status: { $in: IN_PROGRESS_STATUSES } }],
+      orderNumber: { $ne: '' },
+    }).select('orderNumber projectNumber companyName clientName paid status shippingCost').lean();
+    if (!orders.length) return res.json({ orders: [], count: 0 });
+
+    const keys = [...new Set(orders.map((o) => normalizeOrderNumber(o.orderNumber)).filter(Boolean))];
+    if (!keys.length) return res.json({ orders: [], count: 0 });
+    // Match the stored leading-zero variants (^0*<digits>$) like order-actuals does.
+    const orRegex = keys.map((k) => new RegExp(`^0*${k}$`));
+
+    // POs link by orderId (ObjectId), so map _id → canonical orderNumber to group
+    // them onto the same key the ledger rows use.
+    const idToKey = {};
+    for (const o of orders) idToKey[String(o._id)] = normalizeOrderNumber(o.orderNumber);
+    const [txns, pos] = await Promise.all([
+      Transaction.find({ type: 'expense', orderNumber: { $in: orRegex } })
+        .select('type category orderNumber').lean(),
+      PurchaseOrder.find({ orderId: { $in: orders.map((o) => o._id) }, archived: { $ne: true } })
+        .select('orderId blanksProvided').lean(),
+    ]);
+    const posByKey = {};
+    for (const p of pos) {
+      const k = idToKey[String(p.orderId)];
+      if (!k) continue;
+      (posByKey[k] ||= []).push(p);
+    }
+    res.json(missingReceiptsForOrders(orders, txns, posByKey));
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
 // GET /api/finances/by-month?year=  — monthly income / expense / net, for the
 // trend chart. Owner equity moves excluded (same as the P&L).
 const byMonth = async (req, res) => {
@@ -893,7 +1015,7 @@ const resyncYears = async () => {
   return fixed;
 };
 
-module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, paymentGaps, resyncYears };
+module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears };
 // Reusable, DB-free finance math for other surfaces (CRM company page, the order
 // view) + tests. All keyed off the SAME Transaction truth via these helpers.
 module.exports.summarizeCompanyFinance = summarizeCompanyFinance;
@@ -903,6 +1025,9 @@ module.exports.orderRevenueCost = orderRevenueCost;
 module.exports.orderActualCost = orderActualCost;
 module.exports.actualCostByOrder = actualCostByOrder;
 module.exports.paymentGapsForOrders = paymentGapsForOrders;
+module.exports.missingReceiptsForOrders = missingReceiptsForOrders;
+module.exports.expectedReceiptCats = expectedReceiptCats;
+module.exports.orderInProgress = orderInProgress;
 module.exports.pct = pct;
 module.exports.signed = signed;
 module.exports.incomeContribution = incomeContribution;
