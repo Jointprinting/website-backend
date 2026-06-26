@@ -179,6 +179,26 @@ async function restartApply(req, res) {
   }
 }
 
+// ── GET /api/finances/restart/status ─────────────────────────────────────────
+// Has a finance restart EVER been applied (and not since reverted)? Lets the UI
+// auto-hide the prominent "Restart from my budgets" button once the ledger is
+// rebuilt, leaving only a quiet re-run link. Reads the most-recent APPLIED batch.
+async function restartStatus(req, res) {
+  try {
+    const last = await FinanceRestartBatch.findOne({ status: 'applied' })
+      .sort({ at: -1 })
+      .select('batchId at status')
+      .lean();
+    res.json({
+      applied: !!last,
+      lastBatchId: last ? (last.batchId || '') : '',
+      at: last ? (last.at || null) : null,
+    });
+  } catch (e) {
+    res.json({ applied: false, lastBatchId: '', at: null, error: e.message });
+  }
+}
+
 // ── POST /api/finances/restart/revert ────────────────────────────────────────
 // Undo a prior apply batch by id: delete the rows that batch inserted (by
 // restartBatchId) and RESTORE the snapshotted budget rows it replaced. Requires an
@@ -244,6 +264,7 @@ module.exports = {
   restartPreview,
   restartApply,
   restartRevert,
+  restartStatus,
   // exported for tests / reuse
   loadSeed,
 };

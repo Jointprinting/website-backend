@@ -28,7 +28,7 @@ const Transaction   = require('../models/Transaction');
 const { summarizeCompanyFinance, normalizeOrderNumber } = require('./finances');
 const {
   parseCsv, rowsToObjects, rowsToObjectsWithMeta, mapTrackerRow,
-  matchKey: deriveMatchKey, normPhone, normEmail,
+  matchKey: deriveMatchKey, matchKeysFuzzyEqual, normPhone, normEmail,
   canonHeader, formatLabel, detectFormat,
 } = require('../utils/fieldTrackerImport');
 // Business-timezone day boundaries. The server runs in UTC (ahead of the owner's
@@ -1450,6 +1450,61 @@ function pickSurvivor(group, keysWithOrdersSet) {
   return best.companyKey;
 }
 
+// Group likely-duplicate Client docs — the PURE core of /duplicates (no DB), so
+// the grouping (incl. the typo-tolerance) is unit-testable.
+//
+// Two passes:
+//   1) EXACT matchKey buckets (corp-suffix/punct/apostrophe stripped) — the
+//      established grouping that catches "Acme" vs "Acme, Inc.".
+//   2) CONSERVATIVE typo coalescing — fold two distinct buckets together when
+//      their keys are a tiny spelling slip apart (matchKeysFuzzyEqual), so
+//      "Happy Leaf Dispensary" and "Happy Leaf Dispesary" (a missing 'n') become
+//      ONE group. The guard rails in matchKeysFuzzyEqual keep genuinely different
+//      companies apart, so this never invents a false merge.
+//
+// Returns an array of groups; each group is an array of DISTINCT-companyKey docs
+// with 2+ members (a singleton is not a duplicate). Order is stable-ish (first
+// appearance), which the caller re-sorts for the UI.
+function groupDuplicateDocs(docs) {
+  // 1) Exact buckets, keyed by matchKey (backfilled for legacy docs).
+  const buckets = new Map(); // matchKey -> docs[]
+  for (const d of (docs || [])) {
+    const mk = d.matchKey || deriveMatchKey(d.companyName, d.clientName);
+    if (!mk) continue;
+    const arr = buckets.get(mk) || [];
+    arr.push(d);
+    buckets.set(mk, arr);
+  }
+
+  // 2) Union-find over the DISTINCT matchKeys, joining typo-close pairs. O(k²) on
+  //    the number of distinct keys (k, not the row count) — small in practice.
+  const keys = [...buckets.keys()];
+  const parent = new Map(keys.map((k) => [k, k]));
+  const find = (k) => { let r = k; while (parent.get(r) !== r) r = parent.get(r); while (parent.get(k) !== r) { const n = parent.get(k); parent.set(k, r); k = n; } return r; };
+  const union = (a, b) => { const ra = find(a); const rb = find(b); if (ra !== rb) parent.set(ra, rb); };
+  for (let i = 0; i < keys.length; i++) {
+    for (let j = i + 1; j < keys.length; j++) {
+      if (matchKeysFuzzyEqual(keys[i], keys[j])) union(keys[i], keys[j]);
+    }
+  }
+
+  // Collect each union-find component's docs, de-duped by companyKey.
+  const byRoot = new Map(); // rootKey -> Map(companyKey -> doc)
+  for (const k of keys) {
+    const root = find(k);
+    const m = byRoot.get(root) || new Map();
+    for (const d of buckets.get(k)) if (!m.has(d.companyKey)) m.set(d.companyKey, d);
+    byRoot.set(root, m);
+  }
+
+  const out = [];
+  for (const m of byRoot.values()) {
+    const distinct = [...m.values()];
+    if (distinct.length > 1) out.push(distinct);
+  }
+  return out;
+}
+
 // GET /api/crm/duplicates — groups of likely-duplicate Clients.
 // Groups NON-archived records by their fuzzy matchKey (corp-suffix/punct/
 // apostrophe stripped). A group of 2+ distinct companyKeys is a candidate. Each
@@ -1462,23 +1517,13 @@ async function getDuplicates(req, res) {
       .select('companyKey companyName clientName matchKey stage dealValue contacts log createdAt nextFollowUp lastContact source')
       .lean();
 
-    // Backfill a matchKey on the fly for any legacy doc that never got one, so
-    // pre-existing records (created before this field) still group.
-    const groups = new Map();
-    for (const d of docs) {
-      const mk = d.matchKey || deriveMatchKey(d.companyName, d.clientName);
-      if (!mk) continue;
-      const arr = groups.get(mk) || [];
-      arr.push(d);
-      groups.set(mk, arr);
-    }
-
-    const dupGroups = [];
+    // Group by matchKey — exact first, then conservatively coalesce near-identical
+    // keys so a TYPO'd duplicate ("Happy Leaf Dispensary" vs "Happy Leaf Dispesary")
+    // surfaces too. The fuzzy step is guard-railed (see matchKeysFuzzyEqual) so two
+    // genuinely different companies never fold together. Pure + unit-tested.
+    const dupGroups = groupDuplicateDocs(docs);
     const allKeys = [];
-    for (const arr of groups.values()) {
-      const distinct = [...new Map(arr.map((d) => [d.companyKey, d])).values()];
-      if (distinct.length > 1) { dupGroups.push(distinct); distinct.forEach((d) => allKeys.push(d.companyKey)); }
-    }
+    dupGroups.forEach((arr) => arr.forEach((d) => allKeys.push(d.companyKey)));
     // Merge tooling: "has order history" (incl. a live quote) is the signal for
     // survivor preference + the UI's hasOrders hint — broader than the customer
     // flag, so a quote-only duplicate isn't treated as a blank record on merge.
@@ -1847,6 +1892,14 @@ function scoreNameMatch(typedKey, typedMatchKey, typedTokens, rec) {
   if (typedMatchKey && recMatch && recMatch === typedMatchKey) {
     return { score: 0.92, reason: 'matchKey' };
   }
+  // Typo tier: the match keys are the same name with a tiny spelling slip
+  // ("happyleafdispensary" ≈ "happyleafdispesary"). Surfaced as a strong (but
+  // sub-exact) suggestion so a misspelled duplicate gets caught at entry time.
+  // matchKeysFuzzyEqual is conservatively guard-railed, so this never proposes a
+  // genuinely different company.
+  if (typedMatchKey && recMatch && matchKeysFuzzyEqual(typedMatchKey, recMatch)) {
+    return { score: 0.88, reason: 'matchKey-typo' };
+  }
 
   const recTokens = nameTokens(rec.companyName || rec.clientName || rec.companyKey);
   if (typedTokens.length && recTokens.length) {
@@ -1967,6 +2020,7 @@ module.exports = {
   // exported for tests / reuse
   rankMatchCandidates,
   scoreNameMatch,
+  groupDuplicateDocs,
   applyMappedRow,
   applyImportToDoc,
   normalizeRowKeys,

@@ -286,6 +286,28 @@ async function reconcileApply(req, res) {
   }
 }
 
+// ── GET /api/crm/reconcile/status ────────────────────────────────────────────
+// Has a reconcile EVER been applied? Lets the UI auto-hide the prominent
+// "Load / reconcile" action once the data is in (every record a run touches is
+// stamped with reconcileBatchId), leaving only a quiet "re-run" affordance. Read
+// the most-recent stamped record so we can surface the batch id + when.
+async function reconcileStatus(req, res) {
+  try {
+    const last = await Client.findOne({ reconcileBatchId: { $nin: ['', null] } })
+      .sort({ updatedAt: -1 })
+      .select('reconcileBatchId updatedAt')
+      .lean();
+    res.json({
+      applied: !!last,
+      lastBatchId: last ? (last.reconcileBatchId || '') : '',
+      at: last ? (last.updatedAt || null) : null,
+    });
+  } catch (e) {
+    // Status is a nicety — never 500 the UI over it; just say "not applied".
+    res.json({ applied: false, lastBatchId: '', at: null, error: e.message });
+  }
+}
+
 // ── POST /api/crm/reconcile/revert ───────────────────────────────────────────
 // Undo a prior apply batch by id: un-archive everything that batch archived, and
 // archive (NOT hard-delete) the clients/orders that batch created. Records the
@@ -329,6 +351,7 @@ module.exports = {
   reconcilePreview,
   reconcileApply,
   reconcileRevert,
+  reconcileStatus,
   // exported for tests / reuse
   loadDataset,
   toMapped,
