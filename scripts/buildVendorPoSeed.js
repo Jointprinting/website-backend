@@ -21,11 +21,15 @@ const fs = require('fs');
 const path = require('path');
 const { canonicalVendorName, VENDOR_FOLDERS } = require('../services/vendorRebuild');
 
+// The verified finance ledger's COGS rows are the spend source. Defaults to the
+// committed extract (data/vendorSpendLedger.json — the printer COGS rows pulled
+// from the owner's ledger), so the seed is reproducible from committed files alone.
+// Override LEDGER_PATH to rebuild against a fresh full ledger export. OUT_BACKEND is
+// the committed seed; SCRATCH_OUT optionally writes a second copy elsewhere.
 const LEDGER_PATH = process.env.LEDGER_PATH
-  || path.join('/tmp/claude-0/-home-user/a1b0637f-6239-5ee4-93e7-212b5511988a/scratchpad', 'finance_ledger.json');
+  || path.join(__dirname, '..', 'data', 'vendorSpendLedger.json');
 const OUT_BACKEND = path.join(__dirname, '..', 'data', 'vendorPoSeed.json');
-const OUT_SCRATCH = process.env.SCRATCH_OUT
-  || path.join('/tmp/claude-0/-home-user/a1b0637f-6239-5ee4-93e7-212b5511988a/scratchpad', 'vendor_po_seed.json');
+const OUT_SCRATCH = process.env.SCRATCH_OUT || '';
 
 // ── The PO records read from the owner's Drive "POs" folder ───────────────────
 // One object per Drive document. Fields:
@@ -169,7 +173,15 @@ const VENDOR_ALIASES = {
 const numOfPo = (po) => parseInt(String(po || '0').replace(/^#/, '').replace(/[^0-9].*$/, ''), 10) || 0;
 
 function main() {
-  const ledger = JSON.parse(fs.readFileSync(LEDGER_PATH, 'utf8'));
+  const ledgerRaw = JSON.parse(fs.readFileSync(LEDGER_PATH, 'utf8'));
+  // Accept either a bare array of rows or a { rows: [...] } wrapper (the committed
+  // data/financeLedgerSeed.json uses the wrapper; the scratch ledger is a bare array).
+  const ledger = Array.isArray(ledgerRaw) ? ledgerRaw : (ledgerRaw.rows || ledgerRaw.transactions || []);
+  // A "printer/blank COGS" row, across BOTH ledger shapes: the single
+  // "Printer/Blank COGS" category OR the split "Printer COGS" / "Blank COGS"
+  // categories. Blank-only suppliers (Alphabroder/S&S/Sanmar/Alibaba) won't
+  // canonicalize to a printer folder, so they're dropped regardless.
+  const isCogsRow = (r) => /\bCOGS\b/i.test(String(r && r.category || ''));
 
   // Index COGS spend + orders by canonical vendor (the SAME canonicalizer the
   // reconcile uses), so the ledger's name variants fold onto the folder name.
@@ -186,7 +198,7 @@ function main() {
 
   const spendByVendor = new Map(); // canon → { spend, orderNumbers:Set, ledgerParties:Set }
   for (const r of ledger) {
-    if (r.category !== 'Printer/Blank COGS') continue;
+    if (!isCogsRow(r)) continue;
     const canon = canonOf(r.party);
     if (!canon) continue; // a blank supplier (Alphabroder/S&S/Sanmar/Alibaba…) — not one of the 16 printers
     if (!spendByVendor.has(canon)) spendByVendor.set(canon, { spend: 0, orderNumbers: new Set(), ledgerParties: new Set() });
@@ -261,7 +273,7 @@ function main() {
 
   const json = JSON.stringify(seed, null, 2);
   fs.writeFileSync(OUT_BACKEND, json);
-  try { fs.writeFileSync(OUT_SCRATCH, json); } catch (_) { /* scratch optional */ }
+  if (OUT_SCRATCH) { try { fs.writeFileSync(OUT_SCRATCH, json); } catch (_) { /* optional 2nd copy */ } }
 
   // Console report (the "SUMMARY of the gathered data" for sanity-checking).
   console.log(`Wrote ${OUT_BACKEND}`);

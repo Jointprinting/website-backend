@@ -1,0 +1,788 @@
+{
+  "note": "COGS rows (party=vendor, amount=spend, orderNumber) extracted from the owner's verified finance ledger \u2014 the spend source for data/vendorPoSeed.json (scripts/buildVendorPoSeed.js). Committed so the seed is reproducible without an external ledger path.",
+  "rows": [
+    {
+      "date": "2024-06-06",
+      "category": "Printer/Blank COGS",
+      "party": "Alphabroder",
+      "amount": 467.0,
+      "orderNumber": "1",
+      "isCredit": false,
+      "description": "Sales - Alphabroder (Order #000001)"
+    },
+    {
+      "date": "2024-06-12",
+      "category": "Printer/Blank COGS",
+      "party": "Apollo East",
+      "amount": 291.49,
+      "orderNumber": "1",
+      "isCredit": false,
+      "description": "Sales - Apollo East (Order #000001)"
+    },
+    {
+      "date": "2024-07-05",
+      "category": "Printer/Blank COGS",
+      "party": "Alphabroder",
+      "amount": 429.16,
+      "orderNumber": "5",
+      "isCredit": false,
+      "description": "Sales - Alphabroder (Order #000005)"
+    },
+    {
+      "date": "2024-07-18",
+      "category": "Printer/Blank COGS",
+      "party": "Apollo East",
+      "amount": 286.34,
+      "orderNumber": "5",
+      "isCredit": false,
+      "description": "Sales - Apollo East (Order #000005)"
+    },
+    {
+      "date": "2024-09-14",
+      "category": "Printer/Blank COGS",
+      "party": "Alphabroder",
+      "amount": 105.84,
+      "orderNumber": "10",
+      "isCredit": false,
+      "description": "Sales - Alphabroder (Order #000010)"
+    },
+    {
+      "date": "2024-09-17",
+      "category": "Printer/Blank COGS",
+      "party": "Apollo East",
+      "amount": 123.6,
+      "orderNumber": "10",
+      "isCredit": false,
+      "description": "Sales - Apollo East (Order #000010)"
+    },
+    {
+      "date": "2024-10-31",
+      "category": "Printer/Blank COGS",
+      "party": "Alibaba Xi'an Jiaxin Paper LTD",
+      "amount": 51.5,
+      "orderNumber": "20",
+      "isCredit": false,
+      "description": "Sales - Alibaba Xi'an Jiaxin Paper LTD (Order #000020)"
+    },
+    {
+      "date": "2024-11-01",
+      "category": "Printer/Blank COGS",
+      "party": "Alphabroder Samples",
+      "amount": 41.25,
+      "orderNumber": "13",
+      "isCredit": false,
+      "description": "Sales - Alphabroder Samples (Order #000013)"
+    },
+    {
+      "date": "2024-11-07",
+      "category": "Printer/Blank COGS",
+      "party": "Alibaba Xi'an Jiaxin Paper LTD",
+      "amount": 2098.19,
+      "orderNumber": "20",
+      "isCredit": false,
+      "description": "Sales - Alibaba Xi'an Jiaxin Paper LTD (Order #000020)"
+    },
+    {
+      "date": "2024-11-14",
+      "category": "Printer/Blank COGS",
+      "party": "Cannabis Promotions",
+      "amount": 15.3,
+      "orderNumber": "24",
+      "isCredit": false,
+      "description": "Sales - Cannabis Promotions (Sample) (Order #000024)"
+    },
+    {
+      "date": "2024-11-18",
+      "category": "Printer/Blank COGS",
+      "party": "Alibaba Xi'an Jiaxin Paper LTD",
+      "amount": 1885.49,
+      "orderNumber": "20",
+      "isCredit": false,
+      "description": "Sales - Alibaba Xi'an Jiaxin Paper LTD (Order #000020)"
+    },
+    {
+      "date": "2024-11-20",
+      "category": "Printer/Blank COGS",
+      "party": "NJ Dental 1",
+      "amount": 463.1,
+      "orderNumber": "21",
+      "isCredit": false,
+      "description": "Sales - NJ Dental 1 (Order #000021)"
+    },
+    {
+      "date": "2024-12-08",
+      "category": "Printer/Blank COGS",
+      "party": "Alphabroder Samples",
+      "amount": 31.15,
+      "orderNumber": "39",
+      "isCredit": false,
+      "description": "Sales - Alphabroder Samples (Order #000039)"
+    },
+    {
+      "date": "2024-12-08",
+      "category": "Printer/Blank COGS",
+      "party": "S&S Activewear Samples",
+      "amount": 27.65,
+      "orderNumber": "39",
+      "isCredit": false,
+      "description": "Sales - S&S Activewear Samples (Order #000039)"
+    },
+    {
+      "date": "2024-12-10",
+      "category": "Printer/Blank COGS",
+      "party": "S&S Activewear Samples",
+      "amount": 122.88,
+      "orderNumber": "43",
+      "isCredit": false,
+      "description": "Sales - S&S Activewear Samples (Order #000043)"
+    },
+    {
+      "date": "2024-12-14",
+      "category": "Printer/Blank COGS",
+      "party": "Alphabroder",
+      "amount": 639.5,
+      "orderNumber": "31",
+      "isCredit": false,
+      "description": "Sales - Alphabroder (Order #000031)"
+    },
+    {
+      "date": "2024-12-16",
+      "category": "Printer/Blank COGS",
+      "party": "S&S Activewear Samples 2",
+      "amount": 155.8,
+      "orderNumber": "43",
+      "isCredit": false,
+      "description": "Sales - S&S Activewear Samples 2 (Order #000043)"
+    },
+    {
+      "date": "2025-01-10",
+      "category": "Printer/Blank COGS",
+      "party": "Apollo East",
+      "amount": 825.55,
+      "orderNumber": "31",
+      "isCredit": false,
+      "description": "Sales - Apollo East (Order #000031)"
+    },
+    {
+      "date": "2025-01-21",
+      "category": "Printer/Blank COGS",
+      "party": "Alphabroder",
+      "amount": 505.94,
+      "orderNumber": "39",
+      "isCredit": false,
+      "description": "Sales - Alphabroder (Order #000039)"
+    },
+    {
+      "date": "2025-01-30",
+      "category": "Printer/Blank COGS",
+      "party": "Apollo East",
+      "amount": 369.65,
+      "orderNumber": "39",
+      "isCredit": false,
+      "description": "Sales - Apollo East (Order #000039)"
+    },
+    {
+      "date": "2025-02-25",
+      "category": "Printer/Blank COGS",
+      "party": "Cannabis Promotions",
+      "amount": 489.62,
+      "orderNumber": "61",
+      "isCredit": false,
+      "description": "Sales - Cannabis Promotions (Order #000061)"
+    },
+    {
+      "date": "2025-02-25",
+      "category": "Printer/Blank COGS",
+      "party": "Hospitality Mints",
+      "amount": 330.94,
+      "orderNumber": "61",
+      "isCredit": false,
+      "description": "Sales - Hospitality Mints (Order #000061)"
+    },
+    {
+      "date": "2025-02-26",
+      "category": "Printer/Blank COGS",
+      "party": "Alphabroder",
+      "amount": 104.81,
+      "orderNumber": "65",
+      "isCredit": false,
+      "description": "Sales - Alphabroder (Order #000065)"
+    },
+    {
+      "date": "2025-02-26",
+      "category": "Printer/Blank COGS",
+      "party": "S&SActivewear",
+      "amount": 256.47,
+      "orderNumber": "65",
+      "isCredit": false,
+      "description": "Sales - S&SActivewear (Order #000065)"
+    },
+    {
+      "date": "2025-02-26",
+      "category": "Printer/Blank COGS",
+      "party": "Ace Screen Printing",
+      "amount": 152.1,
+      "orderNumber": "65",
+      "isCredit": false,
+      "description": "Sales - Ace Screen Printing (Order #000065)"
+    },
+    {
+      "date": "2025-02-28",
+      "category": "Printer/Blank COGS",
+      "party": "Custom Patch Factory Sample",
+      "amount": 48.0,
+      "orderNumber": "22",
+      "isCredit": false,
+      "description": "Sales - Custom Patch Factory Sample (Order #000022)"
+    },
+    {
+      "date": "2025-03-04",
+      "category": "Printer/Blank COGS",
+      "party": "S&SActivewear Sample",
+      "amount": 33.46,
+      "orderNumber": "22",
+      "isCredit": false,
+      "description": "Sales - S&SActivewear Sample (Order #000022)"
+    },
+    {
+      "date": "2025-03-08",
+      "category": "Printer/Blank COGS",
+      "party": "Ace Screen Printing",
+      "amount": 203.2,
+      "orderNumber": "65",
+      "isCredit": false,
+      "description": "Sales - Ace Screen Printing (Order #000065)"
+    },
+    {
+      "date": "2025-03-14",
+      "category": "Printer/Blank COGS",
+      "party": "Bic",
+      "amount": 564.91,
+      "orderNumber": "22",
+      "isCredit": false,
+      "description": "Sales - Bic (Order #000022)"
+    },
+    {
+      "date": "2025-03-27",
+      "category": "Printer/Blank COGS",
+      "party": "Cannabis Promotions",
+      "amount": 325.0,
+      "orderNumber": "24",
+      "isCredit": false,
+      "description": "Sales - Cannabis Promotions (Order #000024)"
+    },
+    {
+      "date": "2025-03-28",
+      "category": "Printer/Blank COGS",
+      "party": "S&SActivewear",
+      "amount": 484.68,
+      "orderNumber": "22",
+      "isCredit": false,
+      "description": "Sales - S&SActivewear (Order #000022)"
+    },
+    {
+      "date": "2025-03-28",
+      "category": "Printer/Blank COGS",
+      "party": "Ace Screen Printing",
+      "amount": 180.95,
+      "orderNumber": "22",
+      "isCredit": false,
+      "description": "Sales - Ace Screen Printing (Order #000022) 1/2"
+    },
+    {
+      "date": "2025-04-01",
+      "category": "Printer/Blank COGS",
+      "party": "Alphabroder",
+      "amount": 3849.87,
+      "orderNumber": "30",
+      "isCredit": false,
+      "description": "Sales - Alphabroder (Order #000030)"
+    },
+    {
+      "date": "2025-04-03",
+      "category": "Printer/Blank COGS",
+      "party": "Ace Screen Printing",
+      "amount": 1650.0,
+      "orderNumber": "30",
+      "isCredit": false,
+      "description": "Sales - Ace Screen Printing (Order #000030) 1/2"
+    },
+    {
+      "date": "2025-04-10",
+      "category": "Printer/Blank COGS",
+      "party": "Ace Screen Printing",
+      "amount": 180.95,
+      "orderNumber": "22",
+      "isCredit": false,
+      "description": "Sales - Ace Screen Printing (Order #000022) 2/2"
+    },
+    {
+      "date": "2025-04-21",
+      "category": "Printer/Blank COGS",
+      "party": "Ace Screen Printing",
+      "amount": 1725.0,
+      "orderNumber": "30",
+      "isCredit": false,
+      "description": "Sales - Ace Screen Printing (Order #000030) 2/2"
+    },
+    {
+      "date": "2025-05-16",
+      "category": "Printer/Blank COGS",
+      "party": "S&S Activewear",
+      "amount": 419.94,
+      "orderNumber": "91",
+      "isCredit": false,
+      "description": "Sales - S&S Activewear (Order #000091)"
+    },
+    {
+      "date": "2025-06-03",
+      "category": "Printer/Blank COGS",
+      "party": "Heritage Screen Printing",
+      "amount": 736.45,
+      "orderNumber": "91",
+      "isCredit": false,
+      "description": "Sales - Heritage Screen Printing (Order #000091)"
+    },
+    {
+      "date": "2025-06-03",
+      "category": "Printer/Blank COGS",
+      "party": "Tekweld",
+      "amount": 310.4,
+      "orderNumber": "83",
+      "isCredit": false,
+      "description": "Sales - Tekweld (Order #000083)"
+    },
+    {
+      "date": "2025-06-03",
+      "category": "Printer/Blank COGS",
+      "party": "S&SActivewear",
+      "amount": 838.3,
+      "orderNumber": "83",
+      "isCredit": false,
+      "description": "Sales - S&SActivewear (Order #000083)"
+    },
+    {
+      "date": "2025-06-04",
+      "category": "Printer/Blank COGS",
+      "party": "Contract-DTG 1/2",
+      "amount": 603.0,
+      "orderNumber": "83",
+      "isCredit": false,
+      "description": "Sales - Contract-DTG 1/2 (Order #000083)"
+    },
+    {
+      "date": "2025-06-18",
+      "category": "Printer/Blank COGS",
+      "party": "Contract-DTG 2/2",
+      "amount": 603.0,
+      "orderNumber": "83",
+      "isCredit": false,
+      "description": "Sales - Contract-DTG 2/2 (Order #000083)"
+    },
+    {
+      "date": "2025-06-20",
+      "category": "Printer/Blank COGS",
+      "party": "ArcBest",
+      "amount": 67.94,
+      "orderNumber": "30",
+      "isCredit": false,
+      "description": "Sales - ArcBest (Order #000030)"
+    },
+    {
+      "date": "2025-07-01",
+      "category": "Printer/Blank COGS",
+      "party": "CannabisPromotions",
+      "amount": 889.54,
+      "orderNumber": "93",
+      "isCredit": false,
+      "description": "Sales - CannabisPromotions (Order #000093)"
+    },
+    {
+      "date": "2025-07-01",
+      "category": "Printer/Blank COGS",
+      "party": "S&SActivewear",
+      "amount": 425.75,
+      "orderNumber": "93",
+      "isCredit": false,
+      "description": "Sales - S&SActivewear (Order #000093)"
+    },
+    {
+      "date": "2025-07-10",
+      "category": "Printer/Blank COGS",
+      "party": "Heritage Screen Printing",
+      "amount": 850.0,
+      "orderNumber": "93",
+      "isCredit": false,
+      "description": "Sales - Heritage Screen Printing (Order #000093)"
+    },
+    {
+      "date": "2025-07-07",
+      "category": "Printer/Blank COGS",
+      "party": "S&SActivewear",
+      "amount": 37.35,
+      "orderNumber": "83",
+      "isCredit": false,
+      "description": "Sales - S&SActivewear (Order #000083)"
+    },
+    {
+      "date": "2025-07-07",
+      "category": "Printer/Blank COGS",
+      "party": "Contract-DTG",
+      "amount": 33.28,
+      "orderNumber": "83",
+      "isCredit": false,
+      "description": "Sales - Contract-DTG (Order #000083)"
+    },
+    {
+      "date": "2025-07-17",
+      "category": "Printer/Blank COGS",
+      "party": "S&SActivewear",
+      "amount": 97.24,
+      "orderNumber": "82",
+      "isCredit": false,
+      "description": "Sales - S&SActivewear (Order #000082)"
+    },
+    {
+      "date": "2025-07-17",
+      "category": "Printer/Blank COGS",
+      "party": "Sanmar",
+      "amount": 219.39,
+      "orderNumber": "82",
+      "isCredit": false,
+      "description": "Sales - Sanmar (Order #000082)"
+    },
+    {
+      "date": "2025-07-23",
+      "category": "Printer/Blank COGS",
+      "party": "Heritage Screen Printing",
+      "amount": 303.85,
+      "orderNumber": "82",
+      "isCredit": false,
+      "description": "Sales - Heritage Screen Printing (Order #000082)"
+    },
+    {
+      "date": "2025-09-18",
+      "category": "Printer/Blank COGS",
+      "party": "S&SActivewear",
+      "amount": 19.34,
+      "orderNumber": "106",
+      "isCredit": false,
+      "description": "Sales - S&SActivewear (Order #0000106)"
+    },
+    {
+      "date": "2025-09-18",
+      "category": "Printer/Blank COGS",
+      "party": "Sanmar",
+      "amount": 12.92,
+      "orderNumber": "106",
+      "isCredit": false,
+      "description": "Sales - Sanmar (Order #0000106)"
+    },
+    {
+      "date": "2025-09-24",
+      "category": "Printer/Blank COGS",
+      "party": "Alibaba",
+      "amount": 2379.07,
+      "orderNumber": "107",
+      "isCredit": false,
+      "description": "Sales - Alibaba (Order #0000107) #1"
+    },
+    {
+      "date": "2025-09-30",
+      "category": "Printer/Blank COGS",
+      "party": "Sanmar",
+      "amount": 21.31,
+      "orderNumber": "106",
+      "isCredit": false,
+      "description": "Sales - Sanmar (Order #0000106) REORDER"
+    },
+    {
+      "date": "2025-10-24",
+      "category": "Printer/Blank COGS",
+      "party": "Heritage",
+      "amount": 205.0,
+      "orderNumber": "106",
+      "isCredit": false,
+      "description": "Sales - Heritage (Order #0000106)"
+    },
+    {
+      "date": "2025-10-14",
+      "category": "Printer/Blank COGS",
+      "party": "Alibaba",
+      "amount": 2379.07,
+      "orderNumber": "107",
+      "isCredit": false,
+      "description": "Sales - Alibaba (Order #0000107) #2"
+    },
+    {
+      "date": "2025-10-05",
+      "category": "Printer/Blank COGS",
+      "party": "Tekweld",
+      "amount": 374.0,
+      "orderNumber": "108",
+      "isCredit": false,
+      "description": "Sales - Tekweld (Order #0000108)"
+    },
+    {
+      "date": "2025-11-04",
+      "category": "Printer/Blank COGS",
+      "party": "RedTupid",
+      "amount": 142.21,
+      "orderNumber": "109",
+      "isCredit": false,
+      "description": "Sales - RedTupid (Order #0000109)"
+    },
+    {
+      "date": "2025-12-09",
+      "category": "Printer/Blank COGS",
+      "party": "S&S Activewear",
+      "amount": 2069.71,
+      "orderNumber": "114",
+      "isCredit": false,
+      "description": "Sales - S&S Activewear (Order #0000114)"
+    },
+    {
+      "date": "2025-12-10",
+      "category": "Printer/Blank COGS",
+      "party": "Contract-DTG",
+      "amount": 1189.76,
+      "orderNumber": "114",
+      "isCredit": false,
+      "description": "Sales - Contract-DTG (Order #0000114)"
+    },
+    {
+      "date": "2025-12-22",
+      "category": "Printer/Blank COGS",
+      "party": "S&S Activewear",
+      "amount": 628.1,
+      "orderNumber": "120",
+      "isCredit": false,
+      "description": "Sales - S&S Activewear (Order #0000120)"
+    },
+    {
+      "date": "2025-12-27",
+      "category": "Printer/Blank COGS",
+      "party": "S&S Activewear",
+      "amount": 1467.1,
+      "orderNumber": "115",
+      "isCredit": false,
+      "description": "Sales - S&S Activewear (Order #0000115)"
+    },
+    {
+      "date": "2025-12-27",
+      "category": "Printer/Blank COGS",
+      "party": "Sanmar",
+      "amount": 148.02,
+      "orderNumber": "115",
+      "isCredit": false,
+      "description": "Sales - Sanmar (Order #0000115)"
+    },
+    {
+      "date": "2025-12-29",
+      "category": "Printer/Blank COGS",
+      "party": "Oklahoma Ink",
+      "amount": 600.0,
+      "orderNumber": "120",
+      "isCredit": false,
+      "description": "Sales - Oklahoma Ink (Order #0000120)"
+    },
+    {
+      "date": "2026-01-04",
+      "category": "Printer/Blank COGS",
+      "party": "S&S Activewear",
+      "amount": 458.72,
+      "orderNumber": "120",
+      "isCredit": false,
+      "description": "Sales - S&S Activewear (Order #0000120) REPRINT"
+    },
+    {
+      "date": "2026-01-12",
+      "category": "Printer/Blank COGS",
+      "party": "Oklahoma Ink",
+      "amount": 150.0,
+      "orderNumber": "120",
+      "isCredit": false,
+      "description": "Sales - Oklahoma Ink (Order #0000120) REPRINT"
+    },
+    {
+      "date": "2026-01-06",
+      "category": "Printer/Blank COGS",
+      "party": "Blue Frog",
+      "amount": 215.08,
+      "orderNumber": "115",
+      "isCredit": false,
+      "description": "Sales - Blue Frog (Order #0000115) #1"
+    },
+    {
+      "date": "2026-01-09",
+      "category": "Printer/Blank COGS",
+      "party": "Blue Frog",
+      "amount": 148.8,
+      "orderNumber": "115",
+      "isCredit": false,
+      "description": "Sales - Blue Frog (Order #0000115) #2"
+    },
+    {
+      "date": "2026-01-15",
+      "category": "Printer/Blank COGS",
+      "party": "Blue Frog",
+      "amount": 985.9,
+      "orderNumber": "115",
+      "isCredit": false,
+      "description": "Sales - Blue Frog (Order #0000115) #3"
+    },
+    {
+      "date": "2026-02-27",
+      "category": "Printer/Blank COGS",
+      "party": "Bic World",
+      "amount": 576.49,
+      "orderNumber": "126",
+      "isCredit": false,
+      "description": "Sales - Bic World (Order #0000126)"
+    },
+    {
+      "date": "2026-03-09",
+      "category": "Printer/Blank COGS",
+      "party": "Alibaba",
+      "amount": 2343.03,
+      "orderNumber": "129",
+      "isCredit": false,
+      "description": "Sales - Alibaba (Order #0000129) 1/2"
+    },
+    {
+      "date": "2026-03-27",
+      "category": "Printer/Blank COGS",
+      "party": "Alibaba",
+      "amount": 2343.03,
+      "orderNumber": "129",
+      "isCredit": false,
+      "description": "Sales - Alibaba (Order #0000129) 2/2"
+    },
+    {
+      "date": "2026-04-22",
+      "category": "Printer/Blank COGS",
+      "party": "S&S Activewear",
+      "amount": 17.16,
+      "orderNumber": "",
+      "isCredit": false,
+      "description": "S&S Activewear (JP Merch)"
+    },
+    {
+      "date": "2026-01-01",
+      "category": "Printer/Blank COGS",
+      "party": "Cannabis Promotions",
+      "amount": 2239.0,
+      "orderNumber": "122",
+      "isCredit": false,
+      "description": "Sales - Cannabis Promotions (Order #0000122)"
+    },
+    {
+      "date": "2026-01-01",
+      "category": "Printer/Blank COGS",
+      "party": "Full Designs",
+      "amount": 369.9,
+      "orderNumber": "122",
+      "isCredit": false,
+      "description": "Sales - Full Designs (Order #0000122)"
+    },
+    {
+      "date": "2026-05-06",
+      "category": "Printer/Blank COGS",
+      "party": "S&S Activewear",
+      "amount": 185.6,
+      "orderNumber": "131",
+      "isCredit": false,
+      "description": "Sales - S&S Activewear (Order #0000131)"
+    },
+    {
+      "date": "2026-05-12",
+      "category": "Printer/Blank COGS",
+      "party": "Heritage Screen Printing",
+      "amount": 160.0,
+      "orderNumber": "",
+      "isCredit": false,
+      "description": "Heritage Screen Printing (JP Merch)"
+    },
+    {
+      "date": "2026-05-22",
+      "category": "Printer/Blank COGS",
+      "party": "Worldwide Promotion Inc",
+      "amount": 97.9,
+      "orderNumber": "132",
+      "isCredit": false,
+      "description": "Sales - Worldwide Promotion Inc (Order #0000132)"
+    },
+    {
+      "date": "2026-05-23",
+      "category": "Printer/Blank COGS",
+      "party": "S&SActivewear",
+      "amount": 475.95,
+      "orderNumber": "132",
+      "isCredit": false,
+      "description": "Sales - S&SActivewear (Order #0000132)"
+    },
+    {
+      "date": "2026-05-28",
+      "category": "Printer/Blank COGS",
+      "party": "Heritage Screen Printing",
+      "amount": 206.6,
+      "orderNumber": "131",
+      "isCredit": false,
+      "description": "Sales - Heritage Screen Printing (Order #0000131)"
+    },
+    {
+      "date": "2026-06-12",
+      "category": "Printer/Blank COGS",
+      "party": "S&S Activewear",
+      "amount": 33.31,
+      "orderNumber": "139",
+      "isCredit": false,
+      "description": "Sales - S&S Activewear (Order #139)"
+    },
+    {
+      "date": "2026-06-12",
+      "category": "Printer/Blank COGS",
+      "party": "Cannabis Promotions",
+      "amount": 752.0,
+      "orderNumber": "139",
+      "isCredit": false,
+      "description": "Sales - Cannabis Promotions (Order #139)"
+    },
+    {
+      "date": "2026-06-17",
+      "category": "Printer/Blank COGS",
+      "party": "S&S Activewear",
+      "amount": 213.57,
+      "orderNumber": "140",
+      "isCredit": false,
+      "description": "Sales - S&S Activewear (Order #140)"
+    },
+    {
+      "date": "2026-01-01",
+      "category": "Printer/Blank COGS",
+      "party": "Heritage Screen Printing",
+      "amount": 329.5,
+      "orderNumber": "132",
+      "isCredit": false,
+      "description": "Sales - Heritage Screen Printing (Order #132)"
+    },
+    {
+      "date": "2026-01-01",
+      "category": "Printer/Blank COGS",
+      "party": "Hertage Screen Printing",
+      "amount": 60.0,
+      "orderNumber": "139",
+      "isCredit": false,
+      "description": "Sales - Hertage Screen Printing (Order #139)"
+    },
+    {
+      "date": "2026-01-01",
+      "category": "Printer/Blank COGS",
+      "party": "S&S Activewear",
+      "amount": 481.63,
+      "orderNumber": "141",
+      "isCredit": false,
+      "description": "Sales - S&S Activewear (Order #141)"
+    }
+  ]
+}
