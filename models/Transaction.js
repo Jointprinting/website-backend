@@ -43,6 +43,12 @@ const TransactionSchema = new mongoose.Schema({
   isCredit:    { type: Boolean, default: false },
   qbSynced:    { type: Boolean, default: false },
   receiptUrl:  { type: String, default: '' },                // stored invoice/receipt file (R2)
+  // The owner's INVOICE number for this sale/cost (e.g. "1052"), distinct from the
+  // app's project/order link (`orderNumber`). A manual entry the owner books often
+  // carries the invoice # he wrote on the paper, while the budget twin of the same
+  // payment carries the project/order link instead — the merge-duplicates flow keeps
+  // BOTH on the single survivor so neither identifier is lost. Free-form ('' if none).
+  invoiceNumber: { type: String, default: '' },
   // How a CLIENT PAYMENT (income/Customer Sales) was taken — drives the auto-booked
   // merchant Processing Fee expense. 'cc' (~2.99%) | 'ach' (~1%) | 'none'/'' (no fee,
   // e.g. cash/check or a fee the owner waived). Only meaningful on the payment row;
@@ -60,13 +66,24 @@ const TransactionSchema = new mongoose.Schema({
   // second one, and a manually-added fee (no link) is left alone.
   feeForTxn:   { type: String, default: '' },
   year:        { type: Number, index: true },                // denormalized for fast filtering
-  source:      { type: String, default: 'manual' },          // 'import' | 'order:auto' | 'manual' | 'budget' | 'fee:auto'
+  source:      { type: String, default: 'manual' },          // 'import' | 'order:auto' | 'manual' | 'budget' | 'fee:auto' | 'receipt' | 'merge'
   // Finance-restart audit/revert handle. Every row INSERTED by a single run of the
   // owner-triggered "restart finances from my budgets" flow is stamped with that
   // run's batch id, so the whole restart is identifiable and reversible as a unit
   // (revert restores the prior budget rows from the soft-deleted backup). Empty for
   // rows the restart never created. Pairs with source:'budget'.
   restartBatchId: { type: String, default: '', index: true },
+  // Merge-duplicate-transactions audit/revert handle. The SURVIVOR row of every
+  // merged cross-source pair is stamped with the run's batch id, so the whole merge
+  // is identifiable and reversible as a unit (revert restores the two original rows
+  // from the snapshotted backup and rolls the survivor's fields back). Empty for rows
+  // no merge ever touched.
+  dedupeBatchId: { type: String, default: '', index: true },
+  // Audit trail of the row(s) folded INTO this survivor by a merge — a plain-object
+  // snapshot of each absorbed transaction (its receipt/order/invoice/party), so the
+  // owner can always see what was combined and a revert has the originals on hand.
+  // Empty unless this row is a merge survivor.
+  mergedFrom:  { type: [mongoose.Schema.Types.Mixed], default: [] },
 }, { timestamps: true });
 
 // Keep `year` in sync with `date` so reports can filter cheaply.
