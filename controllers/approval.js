@@ -282,6 +282,7 @@ const publicGetProject = async (req, res) => {
         confirmation:         _safeConfirmation(order.confirmation),
         orderDate:            order.orderDate,
         optionsPickedAt:      pickedAtCurrent,
+        paymentMethod:        order.paymentMethod || '',
         hasConfirmation:      _hasConfContent(order.confirmation),
         approvalStatus:       currentStatus,
         approvalAt:           lastTerminal ? lastTerminal.at : null,
@@ -500,6 +501,11 @@ const publicApprove = async (req, res) => {
     const order = lookup.order;
     const by    = String((req.body && req.body.name)  || '').trim().slice(0, 120);
     const email = String((req.body && req.body.email) || '').trim().slice(0, 200) || _recipientEmail(req);
+    // Payment method the client chose on the approval page (optional). Only 'cc'
+    // or 'ach' are accepted; anything else is ignored (approval still proceeds).
+    // Recorded for the owner — it does NOT change the confirmation's stored total.
+    const payRaw = String((req.body && req.body.paymentMethod) || '').trim().toLowerCase();
+    const paymentMethod = (payRaw === 'cc' || payRaw === 'ach') ? payRaw : '';
     const now = new Date();
 
     // Initialize tracking on first approval. If admin already pre-populated
@@ -535,6 +541,10 @@ const publicApprove = async (req, res) => {
     if (confRevenue > 0) set.totalValue = confRevenue;
     if (confCogs > 0)    set.cogs = confCogs;
 
+    // Record the client's chosen payment method (informational; never alters the
+    // stored total). Only written when they actually picked one.
+    if (paymentMethod) set.paymentMethod = paymentMethod;
+
     // Atomic first-decision-wins. The filter only matches while NO approval /
     // change-request exists in the CURRENT cycle, so when two people on the
     // shared link race (one approves, one requests changes), exactly one write
@@ -546,12 +556,17 @@ const publicApprove = async (req, res) => {
 
     const approvedTotal = confRevenue > 0 ? confRevenue : (Number(order.totalValue) || 0);
     const recips = (order.approvalRecipients || []).map(r => r.email).filter(Boolean);
+    // Human label for the chosen payment method + its fee, for the owner's email.
+    const payLabel = paymentMethod === 'cc' ? 'Credit card (+2.99% fee)'
+      : paymentMethod === 'ach' ? 'ACH bank transfer (+1% fee)'
+      : '';
     notifyAdminAndLog(
       order._id,
       `[Joint Printing] Approved — ${order.companyName || order.clientName || 'Project'} (#${order.projectNumber || ''})`,
       `<p><strong>${_esc(_actorLine(by, email, order))}</strong> approved project #${order.projectNumber || ''}.</p>` +
       (order.companyName ? `<p style="color:#555">${_esc(order.companyName)}</p>` : '') +
       `<p>Total: $${approvedTotal.toFixed(2)}</p>` +
+      (payLabel ? `<p>Paying by: ${_esc(payLabel)}</p>` : '') +
       (recips.length ? `<p style="color:#888;font-size:12px">Approval link was shared with: ${recips.map(_esc).join(', ')}</p>` : '') +
       `<p>Open it in the Order Tracker to keep things moving.</p>`,
       'Client approved, but the email notification to you failed to send. Check your email settings.',

@@ -8,6 +8,7 @@ const {
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
   dashboard, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
   cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups, assignMockupNumber,
+  createOrGetProjectForCompany,
 } = require('../controllers/orders');
 const { ensureApprovalToken, sendApprovalLink, updateTracking, initTracking } = require('../controllers/approval');
 const { confirmationPdf } = require('../controllers/confirmationPdf');
@@ -23,6 +24,11 @@ const upload = multer({ storage, limits: { fileSize: 25 * 1024 * 1024 } });
 
 router.post('/seed-historical',           seedHistorical);
 router.post('/from-submission/:submissionId', createFromSubmission);
+// LEAD -> QUOTE handoff: create-or-get the working project for a CRM company that
+// just entered "quoting". Idempotent (reuses a live project), assigns the next
+// project # otherwise. STATIC path, declared above '/:id'. Admin-only via
+// router.use(requireAdmin) above.
+router.post('/for-company',               createOrGetProjectForCompany);
 router.post('/:id/approval-link',         ensureApprovalToken);
 router.post('/:id/approval-link/send',    sendApprovalLink);
 router.patch('/:id/tracking',             updateTracking);

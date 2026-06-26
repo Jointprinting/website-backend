@@ -219,6 +219,11 @@ function confirmationShareIssues(conf) {
 // "customer" means a verified placed order, never just a quote.
 const PLACED_STATUSES = ['placed', 'in_production', 'shipped', 'delivered'];
 
+// Processing-fee rates by payment method, as decimals. The single source of
+// truth for the CC 2.99% / ACH 1% the client sees on the approval page and the
+// confirmation PDF footer — never hardcode these percentages elsewhere.
+const PAYMENT_FEES = { cc: 0.0299, ach: 0.01 };
+
 const OrderSchema = new mongoose.Schema({
   projectNumber: { type: String, index: true },
   orderNumber:   { type: String, index: true },
@@ -261,6 +266,13 @@ const OrderSchema = new mongoose.Schema({
   // interactive quote stage). Cleared conceptually by a new approval cycle —
   // compare against approvalSupersededAt.
   optionsPickedAt:        { type: Date,   default: null },
+  // How the client said they'll pay, captured on the approval page so the owner
+  // knows the method (and its processing fee) at sign-off. '' = not chosen.
+  // 'cc' carries a 2.99% processing fee; 'ach' carries 1%. This is a record of
+  // the client's choice only — it does NOT mutate the confirmation's stored
+  // totals (the owner still owns those via the confirmation custom lines); the
+  // approval page shows the fee/adjusted total for transparency.
+  paymentMethod:          { type: String, enum: ['', 'cc', 'ach'], default: '' },
   approvalEvents: [{                                    // log of client interactions on the approval page
     kind:    { type: String },          // 'viewed' | 'approved' | 'requested_changes'
     message: { type: String, default: '' },
@@ -511,6 +523,7 @@ OrderSchema.pre('findOneAndUpdate', async function () {
 
 module.exports = mongoose.model('Order', OrderSchema);
 module.exports.PLACED_STATUSES = PLACED_STATUSES;
+module.exports.PAYMENT_FEES = PAYMENT_FEES;
 module.exports.deriveCompanyKey = deriveCompanyKey;
 module.exports.computeQuoteTotals = computeQuoteTotals;
 module.exports.computeConfirmationTotals = computeConfirmationTotals;
