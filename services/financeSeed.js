@@ -142,6 +142,134 @@ function canonicalParty(name) {
   return raw;
 }
 
+// ── owner corrections applied on top of the raw budget parse ──────────────────
+// These are DATA-level fixes the owner confirmed while validating the restart —
+// kept here (pure, exported) so they're auditable + unit-tested, exactly like the
+// curated discrepancy list. The builder calls them after parsing the workbooks.
+
+const round2 = (v) => Math.round(((Number(v) || 0) + Number.EPSILON) * 100) / 100;
+const r10 = (d) => String(d || '').slice(0, 10);            // ISO yyyy-mm-dd prefix
+function dayDiff(a, b) {
+  const ta = new Date(`${r10(a)}T00:00:00Z`).getTime();
+  const tb = new Date(`${r10(b)}T00:00:00Z`).getTime();
+  if (isNaN(ta) || isNaN(tb)) return Infinity;
+  return Math.abs(ta - tb) / 86400000;
+}
+
+// VOIDED orders — the client never actually ordered, so BOTH the phantom income
+// AND its phantom cost rows must leave the ledger. Mad Martian Farms order #122:
+// no QB deposit ever confirmed it (the owner's correction); voiding it removes the
+// $3,557.27 "sale" and its $2,608.90 of "cost" (Cannabis Promotions blanks + Full
+// Designs printing) so neither inflates revenue nor the cost base. Keyed by the
+// normalized budget order # so every row tagged to that order (sale + costs) drops
+// together. A short reason rides along for the audit trail.
+const VOIDED_ORDERS = [
+  { orderNumber: '122', reason: 'Mad Martian Farms #122 — client never ordered (no QB deposit confirms it); both the income and its cost are phantom.' },
+];
+
+// Drop every row whose normalized order # is in the void set. Returns the surviving
+// rows (a NEW array; never mutates the input). Pure + exported for tests.
+function applyVoids(rows, voids = VOIDED_ORDERS) {
+  const voidKeys = new Set((voids || []).map((v) => normalizeOrderNumber(v && v.orderNumber)).filter(Boolean));
+  if (!voidKeys.size) return (rows || []).slice();
+  return (rows || []).filter((r) => !voidKeys.has(normalizeOrderNumber(r && r.orderNumber)));
+}
+
+// ── QB processing fees → linked "Processing Fee" expense rows ──────────────────
+// The owner's QuickBooks Payments export lists each client DEPOSIT with the EXACT
+// merchant fee the processor took (CC ~2.99% / ACH ~1%). That fee is a real COGS-
+// class cost of making the sale, so each one becomes a 'Processing Fee' EXPENSE row
+// tied to the SAME order/client/date as the income it paid — reducing that order's
+// profit exactly like blanks/printer/shipping do (Processing Fee is in
+// Transaction.COGS_CATEGORIES).
+//
+// MATCHING (the owner's rule): match a deposit to the income row it paid by AMOUNT
+// (gross magnitude == the row's amount; a refund deposit's negative gross matches
+// the refund row's positive magnitude), then, among equal-amount candidates, the
+// NEAREST date (deposits clear a few days–weeks after the sale; many budget rows are
+// month-anchored to the 1st, so the window is generous). Assignment is GLOBAL-
+// greedy — the smallest date gaps are paired first — so two same-amount sales
+// (e.g. the two $5,600 orders) each grab their own nearest deposit deterministically,
+// and every income row is used at most once. A deposit that matches NO income row
+// (its sale came through a non-budget channel) still books its fee as a real cost,
+// just UNATTRIBUTED (no order #) — so the fee total stays complete (the owner's
+// $1,481.93) and the P&L expense is right, the fee simply isn't pinned to one order.
+//
+// The negative refund deposit is NOT turned into another refund (the refund income
+// already exists in the ledger) — only its processing fee is booked, against the
+// refund's order. Pure (plain rows + deposits in, plain fee rows out) + exported.
+function buildProcessingFeeRows(rows, deposits, opts = {}) {
+  const windowDays = opts.windowDays != null ? opts.windowDays : 35;
+  // Eligible income to attach a fee to: a client payment OR a refund (the refund
+  // deposit's fee lands on the refund row). Owner Contribution is never a deposit.
+  const income = (rows || [])
+    .map((r, idx) => ({ r, idx }))
+    .filter(({ r }) => r && r.type === 'income' && (r.category === 'Customer Sales' || r.category === 'Refund'));
+
+  // Build every (deposit, candidate-income) pair whose AMOUNTs match, with the date
+  // gap, then assign globally smallest-gap-first so the best pairings win and each
+  // income row is consumed once.
+  const pairs = [];
+  (deposits || []).forEach((dep, di) => {
+    const gross = Math.abs(round2(dep && dep.gross));
+    if (!(gross > 0) && !(round2(dep && dep.fee) > 0)) return;  // skip an empty deposit
+    income.forEach((c) => {
+      if (Math.abs(round2(c.r.amount) - gross) < 0.005) {
+        pairs.push({ di, idx: c.idx, gap: dayDiff(c.r.date, dep && dep.date) });
+      }
+    });
+  });
+  // Stable global-greedy: smallest gap first; ties fall back to deposit then income
+  // order so the result is deterministic (byte-identical seed across re-runs).
+  pairs.sort((a, b) => a.gap - b.gap || a.di - b.di || a.idx - b.idx);
+
+  const depUsed = new Set();
+  const rowUsed = new Set();
+  const matchByDep = new Map();   // di → income row idx
+  for (const p of pairs) {
+    if (depUsed.has(p.di) || rowUsed.has(p.idx)) continue;
+    if (p.gap > windowDays) continue;            // too far apart to be the same money
+    depUsed.add(p.di); rowUsed.add(p.idx); matchByDep.set(p.di, p.idx);
+  }
+
+  const feeRows = [];
+  let matched = 0;
+  let unmatched = 0;
+  (deposits || []).forEach((dep, di) => {
+    const fee = round2(dep && dep.fee);
+    if (!(fee > 0)) return;                       // no fee → nothing to book
+    const method = String((dep && dep.method) || '').toLowerCase();
+    const m = method.includes('ach') ? 'ach' : (method.includes('cc') || method.includes('card') || method.includes('credit')) ? 'cc' : '';
+    const label = m === 'ach' ? 'ACH' : 'Credit card';
+    const idx = matchByDep.has(di) ? matchByDep.get(di) : null;
+    const src = idx != null ? rows[idx] : null;
+    if (src) matched += 1; else unmatched += 1;
+    // Tie the fee to the SAME order/client/date as the income it paid. When there's
+    // no match, the fee is still a real cost — date from the deposit, no order #.
+    const orderNumber = src ? normalizeOrderNumber(src.orderNumber) : '';
+    const party = src ? (src.party || '') : '';
+    const date = src ? src.date : r10(dep && dep.date);
+    const year = Number(r10(date).slice(0, 4)) || (src ? src.year : undefined);
+    feeRows.push({
+      date,
+      dateExact: src ? !!src.dateExact : true,    // a real deposit date is exact
+      type: 'expense',
+      amount: fee,
+      category: 'Processing Fee',
+      party,
+      orderNumber,
+      description: `${label} processing fee${orderNumber ? ` — order #${orderNumber}` : ''}`,
+      recordedInQB: true,                         // it came straight from QuickBooks
+      year,
+      source: 'budget',
+      processingFee: true,                        // marks a builder-minted fee (audit)
+    });
+  });
+  feeRows._matched = matched;
+  feeRows._unmatched = unmatched;
+  return feeRows;
+}
+
 // ── category rules ───────────────────────────────────────────────────────────
 // Vendors whose COST is the BLANK garment/product (apparel & promo blanks). These
 // → 'Blank COGS'. The owner's blank suppliers: Alphabroder, S&S/Sanmar, and the
@@ -241,6 +369,10 @@ module.exports = {
   parseOrderHint,
   stripDecorations,
   normName,
+  // owner corrections (void + QB processing fees) — pure, exported for tests/reuse
+  applyVoids,
+  buildProcessingFeeRows,
+  VOIDED_ORDERS,
   // exported for tests / reuse
   PARTY_CANON,
 };

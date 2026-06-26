@@ -42,6 +42,7 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const {
   categorize, canonicalParty, normalizeOrderNumber, parseOrderHint,
+  applyVoids, buildProcessingFeeRows, VOIDED_ORDERS,
 } = require('../services/financeSeed');
 
 const ROOT = path.join(__dirname, '..');
@@ -51,6 +52,12 @@ const ROOT = path.join(__dirname, '..');
 // via the env var so no absolute machine path is committed.
 const BUDGET_DIR = process.env.FINANCE_BUDGET_DIR || path.join(ROOT, 'budgets');
 const OUT_PATH = path.join(ROOT, 'data', 'financeLedgerSeed.json');
+// The owner's QuickBooks Payments export (deposits + the exact merchant fee each
+// one cost). Like the workbooks it's staged OUTSIDE the repo (financial data is
+// never committed); point FINANCE_QB_DEPOSITS at the JSON file. Falls back to
+// ./budgets/qb_deposits.json for a manual run. Absent → no processing fees booked
+// (the builder still runs; it just won't add the fee rows).
+const QB_DEPOSITS_PATH = process.env.FINANCE_QB_DEPOSITS || path.join(BUDGET_DIR, 'qb_deposits.json');
 
 const WORKBOOKS = [
   { year: 2024, file: 'budget_2024.xlsx' },
@@ -161,11 +168,21 @@ function resolveDate(r) {
   return `${r.year}-${String(mi + 1).padStart(2, '0')}-01`;
 }
 
+// Load the QB Payments deposits (each { date, gross, fee, method }) — the source
+// for the per-order processing fees. Absent file → [] (no fees booked). Throws only
+// on a present-but-malformed file (so a typo is loud, a deliberate skip is quiet).
+function loadDeposits() {
+  if (!fs.existsSync(QB_DEPOSITS_PATH)) return [];
+  const parsed = JSON.parse(fs.readFileSync(QB_DEPOSITS_PATH, 'utf8'));
+  if (!Array.isArray(parsed)) throw new Error(`QB deposits file is not a JSON array: ${QB_DEPOSITS_PATH}`);
+  return parsed;
+}
+
 function buildSeed() {
   const rawRows = [];
   for (const wb of WORKBOOKS) rawRows.push(...parseWorkbook(wb.file, wb.year));
 
-  const rows = rawRows.map((r) => {
+  const parsed = rawRows.map((r) => {
     const isIncome = r.side === 'income';
     const { category, party } = categorize(r.desc, isIncome);
     const orderNumber = parseOrderHint(r.desc); // normalized digits, '' if none
@@ -185,10 +202,28 @@ function buildSeed() {
     };
   });
 
+  // ── OWNER CORRECTIONS (data-level, on top of the raw parse) ──────────────────
+  // 1) VOID phantom orders the client never placed (removes BOTH sides — see
+  //    services/financeSeed.js#VOIDED_ORDERS). Mad Martian #122 leaves entirely.
+  const kept = applyVoids(parsed, VOIDED_ORDERS);
+  // 2) ADD QB merchant processing fees as linked COGS, matched to the income row
+  //    each deposit paid (by amount + nearest date). Built AFTER the void so a
+  //    voided order can never receive a fee.
+  const deposits = loadDeposits();
+  const feeRows = buildProcessingFeeRows(kept, deposits);
+  const rows = kept.concat(feeRows);
+
   // Stable sort by date then description so the committed seed is deterministic
   // (a re-run produces a byte-identical file, friendly to git review).
   rows.sort((a, b) => (a.date || '').localeCompare(b.date || '') || a.description.localeCompare(b.description));
 
+  // Stash a tiny build report for the printout (how many fees matched an order).
+  rows._voided = (VOIDED_ORDERS || []).map((v) => normalizeOrderNumber(v.orderNumber));
+  rows._deposits = deposits.length;
+  rows._feeRows = feeRows.length;
+  rows._feeMatched = feeRows._matched || 0;
+  rows._feeUnmatched = feeRows._unmatched || 0;
+  rows._rawParsed = parsed;     // pre-correction rows (for the parse-integrity check)
   return rows;
 }
 
@@ -240,23 +275,35 @@ function summarize(rows) {
 function main() {
   const rows = buildSeed();
   const summary = summarize(rows);
+  // Parse integrity is proven on the PRE-correction rows: the raw workbook parse
+  // must still total the owner pre-parse ($22,413.41), proving every row's amount +
+  // side was read correctly BEFORE the owner's data corrections (void + fees) are
+  // applied. The corrections then change the cash net for documented reasons.
+  const rawParsed = rows._rawParsed || [];
+  const parseSummary = summarize(rawParsed);
   const payload = {
     generatedAt: new Date().toISOString(),
-    note: 'Built by scripts/buildFinanceSeed.js from the owner budget trackers. Net cash must reconcile to $22,413.41.',
+    note: 'Built by scripts/buildFinanceSeed.js from the owner budget trackers, with owner corrections applied: Mad Martian #122 voided (phantom — no QB deposit) and QB merchant processing fees booked as linked COGS. The raw workbook PARSE still reconciles to $22,413.41; after corrections the cash net is $19,983.11 and net profit is $13,433.42.',
     summary,
-    rows,
+    rows: rows.slice(),    // plain row array (drops the _build report props)
   };
   fs.writeFileSync(OUT_PATH, JSON.stringify(payload, null, 2) + '\n');
 
   // VERIFY printout (the cross-check the owner asked for).
   console.log('Wrote', OUT_PATH);
-  console.log('Rows:                  ', summary.rows);
-  console.log('— Integrity (cash) —');
-  console.log('  Raw cash net:        $' + summary.rawCashNet.toLocaleString(), '  (target $22,413.41 — every debit − every credit)');
+  console.log('Rows:                  ', summary.rows, `(parsed ${rawParsed.length}; voided #${(rows._voided || []).join(',')} ; +${rows._feeRows} processing-fee rows)`);
+  console.log('— Owner corrections —');
+  console.log('  Voided orders:       ', (rows._voided || []).map((n) => '#' + n).join(', '), '(client never ordered — both income + cost removed)');
+  console.log('  QB deposits:         ', rows._deposits, `→ ${rows._feeRows} fee rows (${rows._feeMatched} matched an order, ${rows._feeUnmatched} unattributed)`);
+  console.log('  Processing fees Σ:   $' + (summary.byCategory['Processing Fee'] || 0).toLocaleString(), '  (target $1,481.93)');
+  console.log('— Integrity (parse) —');
+  console.log('  Raw PARSE cash net:  $' + parseSummary.rawCashNet.toLocaleString(), '  (pre-correction — target $22,413.41)');
+  console.log('— Corrected cash —');
+  console.log('  Raw cash net:        $' + summary.rawCashNet.toLocaleString(), '  (after void + fees: every debit − every credit)');
   console.log('— P&L (finance page) —');
   console.log('  Revenue (income):    $' + summary.income.toLocaleString(), '  (Customer Sales, refunds netted contra; Owner Contribution excluded)');
   console.log('  Operating expense:   $' + summary.expense.toLocaleString(), '  (Owner Draw excluded)');
-  console.log('  NET PROFIT:          $' + summary.net.toLocaleString());
+  console.log('  NET PROFIT:          $' + summary.net.toLocaleString(), '  (target ≈ $13.4k)');
   console.log('  Owner Contribution:  $' + summary.ownerContribution.toLocaleString(), '  (equity in — NOT revenue/profit)');
   console.log('  Owner Draw:          $' + summary.ownerDraw.toLocaleString(), '  (equity out — NOT expense/profit)');
   console.log('  Refund (contra):     $' + summary.refund.toLocaleString());
@@ -268,15 +315,53 @@ function main() {
     .sort((a, b) => b[1] - a[1])
     .forEach(([k, v]) => console.log('  ' + k.padEnd(20) + ' $' + v.toLocaleString()));
 
-  // The INTEGRITY check is on raw cash net (proves the parse is complete + correct),
-  // NOT on P&L profit (which is intentionally smaller after equity/refund refinement).
-  const CASH_TARGET = 22413.41;
-  if (Math.abs(summary.rawCashNet - CASH_TARGET) > 0.01) {
-    console.error(`\n*** RAW CASH NET MISMATCH: got ${summary.rawCashNet}, expected ${CASH_TARGET} ***`);
-    process.exitCode = 1;
-  } else {
-    console.log('\nRaw cash net reconciles to the owner pre-parse ($22,413.41) ✓');
+  // Per-order P&L (top 10 by profit) — the SAME grouping the restart preview shows,
+  // so the builder printout and the in-app preview agree.
+  const { groupOrders } = require('../services/financeRestart');
+  const grouping = groupOrders(rows.slice());
+  const top = grouping.orders
+    .slice()
+    .sort((a, b) => b.profit - a.profit)
+    .slice(0, 10);
+  console.log('\nPer-order P&L (top 10 by profit):');
+  console.log('  ' + 'Client'.padEnd(26) + 'Budget#'.padEnd(10) + 'Revenue'.padStart(12) + 'Cost'.padStart(12) + 'Profit'.padStart(12));
+  top.forEach((o) => {
+    console.log('  '
+      + String(o.client || '—').slice(0, 24).padEnd(26)
+      + String((o.budgetHints || []).map((h) => '#' + h).join(',') || '—').padEnd(10)
+      + ('$' + o.revenue.toLocaleString()).padStart(12)
+      + ('$' + o.cost.toLocaleString()).padStart(12)
+      + ('$' + o.profit.toLocaleString()).padStart(12));
+  });
+  if (grouping.unassignedCost) {
+    console.log('  (unassigned COGS not pinned to one order: $' + grouping.unassignedCost.toLocaleString() + ' — counts in the P&L)');
   }
+
+  // INTEGRITY: the PARSE must reconcile to $22,413.41 (proves the read is complete).
+  // The corrected net profit is asserted separately to the owner's ≈$13.4k target.
+  const CASH_TARGET = 22413.41;
+  const NET_TARGET = 13433.42;
+  let bad = false;
+  if (Math.abs(parseSummary.rawCashNet - CASH_TARGET) > 0.01) {
+    console.error(`\n*** RAW PARSE CASH NET MISMATCH: got ${parseSummary.rawCashNet}, expected ${CASH_TARGET} ***`);
+    bad = true;
+  } else {
+    console.log('\nRaw workbook parse reconciles to the owner pre-parse ($22,413.41) ✓');
+  }
+  if (Math.abs(summary.net - NET_TARGET) > 0.01) {
+    console.error(`*** NET PROFIT MISMATCH: got ${summary.net}, expected ${NET_TARGET} ***`);
+    bad = true;
+  } else {
+    console.log(`Corrected net profit = $${summary.net.toLocaleString()} ✓ (prior $15,863.72 − $948.37 Mad-Martian − $1,481.93 fees)`);
+  }
+  const feeSum = summary.byCategory['Processing Fee'] || 0;
+  if (Math.abs(feeSum - 1481.93) > 0.01) {
+    console.error(`*** PROCESSING FEE TOTAL MISMATCH: got ${feeSum}, expected 1481.93 ***`);
+    bad = true;
+  } else {
+    console.log('Processing fees sum to $1,481.93 ✓');
+  }
+  if (bad) process.exitCode = 1;
 }
 
 if (require.main === module) main();

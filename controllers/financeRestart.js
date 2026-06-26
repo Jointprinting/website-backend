@@ -13,7 +13,8 @@
 // SAFETY (enforced here + in the pure layer):
 //   • Nothing auto-applies. apply requires { confirm: true }.
 //   • REPLACE only the budget-sourced rows (source:'budget'); PRESERVE every manual
-//     row the budget doesn't represent (dedup by date+amount+normalized order#), so
+//     row the budget doesn't represent (dedup by date+amount+direction+party/desc,
+//     NOT by the unreliable order #), so
 //     the owner's latest in-app entries survive the restart.
 //   • Reversible + recoverable: the rows being replaced are snapshotted into a
 //     FinanceRestartBatch BEFORE deletion, and every inserted row is stamped with
@@ -112,7 +113,7 @@ async function restartApply(req, res) {
     const batchId = body.batchId || `finrestart-${new Date().toISOString().slice(0, 10)}-${crypto.randomBytes(4).toString('hex')}`;
 
     // The rows we will REMOVE = the prior budget rows (replaced) PLUS the manual
-    // in-app rows that DUPLICATE a budget row (same date+amount+order#+type+category).
+    // in-app rows that DUPLICATE a budget row (same date+amount+direction+party/desc).
     // We remove the manual dup too — leaving it would double-count against the budget
     // copy in every rollup (the preview promised "won't double-count", so the apply
     // must actually honor that). BOTH sets are snapshotted into the batch so revert
