@@ -1,0 +1,16 @@
+[
+  {
+    "budgetHint": "141",
+    "kind": "budget-number-mismatch",
+    "severity": "warn",
+    "projectNumber": "138",
+    "invoiceNumber": "1052",
+    "detail": "Happy Leaf is ONE order: system project #138 (invoice #1052), value $1,537.16. The owner wrote it as budget order #141 — these are the SAME order. Reconcile the budget #141 row to project #138; do NOT create a separate #141 order. Budget order numbers are the owner's own manual sequence and are unreliable as identity."
+  },
+  {
+    "budgetHint": "91",
+    "kind": "owner-correction",
+    "severity": "info",
+    "detail": "Sauce Me A Fry has 2 completed orders (the owner's correction). The budget rows for Sauce Me A Fry may collapse some of this — confirm both orders are represented when reconciling to projects."
+  }
+]

@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { requireAdmin } = require('../middleware/auth');
 const ctl = require('../controllers/finances');
+const restart = require('../controllers/financeRestart');
 
 // Financial data — admin only.
 router.use(requireAdmin);
@@ -15,6 +16,13 @@ router.get('/order-actuals', ctl.orderActuals);
 router.get('/payment-gaps', ctl.paymentGaps);
 router.get('/export', ctl.exportCsv);
 router.post('/import', ctl.importCsv);
+
+// Restart finances from the owner's budget trackers (preview → confirm → apply;
+// reversible). Replaces the budget-sourced ledger, preserves manual entries.
+router.get('/restart/preview', restart.restartPreview);
+router.post('/restart/preview', restart.restartPreview);
+router.post('/restart/apply', restart.restartApply);
+router.post('/restart/revert', restart.restartRevert);
 
 router.get('/transactions', ctl.list);
 router.post('/transactions', ctl.create);
