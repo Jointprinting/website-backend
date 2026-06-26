@@ -31,6 +31,8 @@
 //   budget number only as a hint, and flags ambiguous/loose groupings for the
 //   owner instead of guessing.
 
+const { sameVendor, vendorTokens } = require('../utils/vendorMatch');
+
 const num = (v) => Number(v) || 0;
 const round2 = (v) => Math.round((num(v) + Number.EPSILON) * 100) / 100;
 
@@ -61,32 +63,96 @@ function incomeRevenue(t) {
   return 0;
 }
 
-// ── dedup signature for preserve-vs-replace ──────────────────────────────────
-// Two rows are "the same transaction" iff same calendar date + same amount + same
-// normalized order number + same type/category. Reducing a Date to yyyy-mm-dd uses
-// a CONSISTENT convention for both a Date object and an ISO string: an ISO string's
-// literal first 10 chars are its calendar day, and a Date is normalized to UTC and
-// sliced — but a bare "yyyy-mm-dd" Date parses as UTC midnight, so both forms yield
-// the SAME yyyy-mm-dd (no off-by-one across the string/Date boundary). type+category
-// are included so two genuinely DIFFERENT same-day, same-amount rows (e.g. a $70
-// Amtrak trip vs a $70 supplier cost) don't false-collide and wrongly drop a real
-// manual entry. This is the key the owner asked for: a manual row matching a budget
-// row on this signature is the SAME entry (don't double); no match ⇒ genuinely new.
+// ── dedup matching for preserve-vs-replace ───────────────────────────────────
+// THE KEY CORRECTION (the owner's "two lines for Happy Leaf" bug): a preserved
+// manual row is "the same transaction" as a budget row when they share the same
+// calendar DATE + AMOUNT + direction (income/expense) + the same PARTY (or, failing
+// a clean party match, an overlapping description) — NOT the same order number.
+//
+// WHY drop the order #: the owner's budget order #s are his own manual sequence and
+// are UNRELIABLE (he mis-numbered some). His in-app manual "#1052 Happy Leaf
+// $1,537.16" and the budget "Sales - Happy Leaf D $1,537.16" are the SAME sale, but
+// the old signature keyed on the order # (1052 vs 141) so they never collapsed —
+// leaving TWO Happy Leaf lines. Matching on date+amount+party instead collapses them
+// into one (canonical: project #138 / invoice #1052), and "Anthropic $5" dedups
+// against the budget "Anthropic API $5".
+//
+// WHY it still can't false-drop a genuinely-new entry: only rows that ALREADY share
+// the exact date + cent + direction are ever compared — a strong coincidence — and
+// even then a SHARED, MEANINGFUL party/description token is required to confirm. So a
+// brand-new manual "$100 charge" with no budget twin (no same-day/same-cent budget
+// row, or one with an unrelated party) is PRESERVED. A $70 Amtrak trip and a $70
+// supplier cost on the same day don't collapse (no shared party/desc token).
 function dateKey(d) {
   if (!d) return '';
   if (typeof d === 'string') return d.slice(0, 10);          // ISO calendar prefix
   const dt = new Date(d);
   return isNaN(dt.getTime()) ? '' : dt.toISOString().slice(0, 10); // Date → UTC day
 }
-function dedupSig(t) {
+
+// The COARSE bucket key two rows must share to even be candidates: calendar day +
+// amount (to the cent) + direction. Order # and category are deliberately OUT (the #
+// is unreliable; a manual row may be categorized a hair differently than the budget).
+// A dateless row gets a unique key so it can only ever match itself (always preserved).
+function coarseKey(t) {
   const dk = dateKey(t && t.date);
-  // A row with NO usable date is NOT dedupable — collapsing every dateless row to a
-  // shared key would drop distinct manual entries. Give it a unique signature so it
-  // can only ever match itself (it never will across the seed/live boundary), i.e.
-  // it is always PRESERVED. (Post-builder every budget row IS dated, so this guards
-  // only against a malformed/legacy row.)
   if (!dk) return `nodate|${Math.random()}`;
-  return `${dk}|${round2(t && t.amount)}|${normalizeOrderNumber(t && t.orderNumber)}|${t && t.type || ''}|${t && t.category || ''}`;
+  return `${dk}|${round2(t && t.amount)}|${(t && t.type) || ''}`;
+}
+
+// Tokens that carry NO identity (sale/refund boilerplate, generic order words) — so
+// two unrelated rows can't "match" purely on a shared "sales"/"order"/"fee" word.
+const STOP_TOKENS = new Set([
+  'sales', 'sale', 'order', 'orders', 'payment', 'invoice', 'refund', 'credit',
+  'fee', 'processing', 'the', 'and', 'for', 'of', 'a', 'an', 'to', 'inc', 'llc', 'co',
+]);
+
+// Meaningful tokens of a row's party + description (lowercased, punctuation-split,
+// digits and stop-words dropped). Used for the shared-token confirmation below.
+function partyDescTokens(t) {
+  const text = `${(t && t.party) || ''} ${(t && t.description) || ''}`.toLowerCase();
+  return new Set(
+    text.split(/[^a-z0-9]+/)
+      .filter((w) => w && w.length >= 3 && !/^\d+$/.test(w) && !STOP_TOKENS.has(w)),
+  );
+}
+
+// Do two rows refer to the same counterparty/thing? A strong same-vendor match wins
+// outright (reuses the codebase's conservative sameVendor — handles "Happy Leaf" ≈
+// "Happy Leaf Dispensary"); otherwise require at least one shared MEANINGFUL token
+// across party+description ("Anthropic" ⊂ "Anthropic API"; a bare-named row with no
+// party still matches via its description). Both empty ⇒ not a match (won't collapse
+// two anonymous same-amount rows).
+function samePartyOrDesc(a, b) {
+  const pa = (a && a.party) || '';
+  const pb = (b && b.party) || '';
+  if (pa && pb && sameVendor(pa, pb)) return true;
+  const ta = partyDescTokens(a);
+  const tb = partyDescTokens(b);
+  if (!ta.size || !tb.size) return false;
+  for (const tok of ta) if (tb.has(tok)) return true;
+  return false;
+}
+
+// Is this manual/live row the SAME transaction as one of the seed rows in its coarse
+// bucket? (date+amount+direction already equal by bucket; confirm party/desc.)
+function matchesAny(row, bucket) {
+  for (const seedRow of (bucket || [])) {
+    if (samePartyOrDesc(row, seedRow)) return true;
+  }
+  return false;
+}
+
+// Back-compat shim: a stringy "signature" some callers/tests still use. It no longer
+// includes the order # (the correction); it's date+amount+type plus a normalized
+// party stem, which is sufficient for the exact-twin cases. The authoritative
+// matcher is matchesAny (above), which also does the fuzzy party/desc confirmation.
+function dedupSig(t) {
+  const ck = coarseKey(t);
+  if (ck.startsWith('nodate|')) return ck;
+  const partyStem = vendorTokens((t && t.party) || (t && t.description) || '')
+    .filter((w) => !STOP_TOKENS.has(w)).slice(0, 2).join('');
+  return `${ck}|${partyStem}`;
 }
 
 // ── seed row → Transaction doc shape ─────────────────────────────────────────
@@ -351,7 +417,7 @@ function detectDiscrepancies(grouping, preserve, opts = {}) {
     if (preserve.droppedDuplicateCount) {
       out.push({
         kind: 'manual-duplicate-dropped', severity: 'info',
-        detail: `${preserve.droppedDuplicateCount} in-app row(s) duplicate a budget row (same date + amount + order #) and won't be double-counted — the budget version is kept.`,
+        detail: `${preserve.droppedDuplicateCount} in-app row(s) duplicate a budget row (same date + amount + client) and won't be double-counted — the budget version is kept.`,
       });
     }
   }
@@ -383,17 +449,35 @@ function detectDiscrepancies(grouping, preserve, opts = {}) {
 //   • droppedDuplicates — non-budget live rows that DO duplicate a seed row (the
 //                 owner is warned; the budget row wins so we don't double-count).
 // Pure: pass the already-fetched arrays in.
+//
+// Matching is the corrected DATE + AMOUNT + direction (+ party/desc) rule, NOT the
+// order #: seed rows are bucketed by their coarse key (day|amount|type); a non-
+// budget live row is a DUPLICATE iff some seed row in its bucket also matches it on
+// party/description (samePartyOrDesc). This is what finally collapses the owner's
+// manual "#1052 Happy Leaf" into the budget "Happy Leaf D" sale (one order, not two)
+// and "Anthropic $5" into "Anthropic API $5", while a genuinely-new manual row (no
+// same-day/same-cent budget twin, or one with an unrelated party) is preserved.
 function buildPreservePlan(seedRows, liveRows) {
-  const seedSigs = new Set((seedRows || []).map(dedupSig));
+  // Index seed rows by coarse key so each live row only compares against the handful
+  // sharing its exact day+amount+direction (cheap, and the only valid candidates).
+  const seedByKey = new Map();
+  for (const s of (seedRows || [])) {
+    if (!s) continue;
+    const k = coarseKey(s);
+    const arr = seedByKey.get(k) || [];
+    arr.push(s); seedByKey.set(k, arr);
+  }
   const toDelete = [];
   const toPreserve = [];
   const droppedDuplicates = [];
   for (const t of (liveRows || [])) {
     if (!t) continue;
     if (t.source === 'budget') { toDelete.push(t); continue; }   // prior restart → replace
-    // A non-budget (manual/import/order:auto/fee:auto) row:
-    if (seedSigs.has(dedupSig(t))) droppedDuplicates.push(t);     // duplicates the budget → drop (budget wins)
-    else toPreserve.push(t);                                      // genuinely new → keep
+    // A non-budget (manual/import/order:auto/fee:auto) row: dup iff a same-bucket
+    // seed row also matches on party/description (date+amount+type already equal).
+    const bucket = seedByKey.get(coarseKey(t));
+    if (bucket && matchesAny(t, bucket)) droppedDuplicates.push(t); // duplicates the budget → drop (budget wins)
+    else toPreserve.push(t);                                        // genuinely new → keep
   }
   return {
     toDeleteCount: toDelete.length,
@@ -455,6 +539,9 @@ module.exports = {
   detectDiscrepancies,
   seedRowToDoc,
   dedupSig,
+  coarseKey,
+  samePartyOrDesc,
+  matchesAny,
   dateKey,
   normalizeOrderNumber,
   incomeRevenue,
