@@ -273,6 +273,13 @@ const OrderSchema = new mongoose.Schema({
   // totals (the owner still owns those via the confirmation custom lines); the
   // approval page shows the fee/adjusted total for transparency.
   paymentMethod:          { type: String, enum: ['', 'cc', 'ach'], default: '' },
+  // Record that the client was shown — and, by approving, accepted — the brief
+  // "approval is final" notice on the confirmation page. Stores the notice
+  // VERSION string so future wording changes stay auditable; the acceptance
+  // time is the approval time. '' = approved before the notice existed, or via
+  // a legacy link that didn't carry it.
+  approvalTermsVersion:    { type: String, default: '' },
+  approvalTermsAcceptedAt: { type: Date,   default: null },
   approvalEvents: [{                                    // log of client interactions on the approval page
     kind:    { type: String },          // 'viewed' | 'approved' | 'requested_changes'
     message: { type: String, default: '' },

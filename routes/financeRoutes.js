@@ -15,6 +15,7 @@ router.get('/by-month', ctl.byMonth);
 router.get('/by-client', ctl.byClient);
 router.get('/order-actuals', ctl.orderActuals);
 router.get('/payment-gaps', ctl.paymentGaps);
+router.get('/missing-receipts', ctl.missingReceipts);
 router.get('/export', ctl.exportCsv);
 router.post('/import', ctl.importCsv);
 
