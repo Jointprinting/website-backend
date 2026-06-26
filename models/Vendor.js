@@ -45,6 +45,15 @@ const VendorSchema = new mongoose.Schema({
   // canonical order number; we keep one entry per order, refreshing `at`.
   vendorOrders: { type: [VendorOrderLinkSchema], default: [] },
 
+  // Provenance + reversibility for the "Rebuild printers from Drive" reconcile
+  // (controllers/vendorRebuild). `source` marks a printer loaded from the owner's
+  // Drive PO history ('drive-rebuild') vs one the app learned from a PO/receipt
+  // ('' / 'auto'); rebuildBatchId stamps every vendor a rebuild run touches so the
+  // run is revertible as a unit. (Archive reuses the existing `archived*` fields
+  // below — a rebuild soft-archives a superseded auto-created vendor, never deletes.)
+  source:         { type: String, default: '' },   // '' | 'auto' | 'drive-rebuild'
+  rebuildBatchId: { type: String, default: '', index: true },
+
   // Soft-delete for the dedup/merge tooling — mirrors the CRM Client archive. When
   // two records for the same printer are merged, the loser is folded into the
   // survivor (its POs/receipts/learning re-pointed) and then ARCHIVED here rather

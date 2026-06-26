@@ -11,6 +11,7 @@ const {
 } = require('../controllers/orders');
 const { ensureApprovalToken, sendApprovalLink, updateTracking, initTracking } = require('../controllers/approval');
 const { confirmationPdf } = require('../controllers/confirmationPdf');
+const vendorRebuild = require('../controllers/vendorRebuild');
 
 router.use(requireAdmin);
 
@@ -47,6 +48,15 @@ router.get('/vendors',                    poCtl.listVendors);
 router.get('/vendors/duplicates',         poCtl.vendorDuplicates);
 router.get('/vendors/search',             poCtl.searchVendors);
 router.post('/vendors/merge',             poCtl.mergeVendors);
+// Owner-triggered "Rebuild printers from Drive" reconcile (preview → confirm;
+// idempotent; reversible; archive-not-delete; preserves the Happy-Leaf in-app PO).
+// STATIC '/vendors/rebuild/*' paths — MUST stay above '/vendors/:id' so 'rebuild'
+// isn't captured as a vendor id. Admin-only (router.use(requireAdmin) above).
+router.get('/vendors/rebuild/preview',    vendorRebuild.rebuildPreview);
+router.post('/vendors/rebuild/preview',   vendorRebuild.rebuildPreview);
+router.post('/vendors/rebuild/apply',     vendorRebuild.rebuildApply);
+router.post('/vendors/rebuild/revert',    vendorRebuild.rebuildRevert);
+router.get('/vendors/rebuild/status',     vendorRebuild.rebuildStatus);
 // Vendor (printer/supplier) detail card + edits. Two-segment paths, so they don't
 // collide with '/:id'; grouped here with the other vendor routes for clarity.
 router.get('/vendors/:id',                poCtl.getVendor);

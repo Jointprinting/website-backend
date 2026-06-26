@@ -59,7 +59,10 @@ async function _seedMax(kind, scope) {
   // but controllers require both).
   if (kind === 'po') {
     const PurchaseOrder = require('../models/PurchaseOrder');
-    const pos = await PurchaseOrder.find({}).select('poNumber vendorName').lean();
+    // Exclude archived POs (e.g. ones a Drive rebuild superseded) so the per-vendor
+    // counter seeds from the LIVE run only. The owner-set floor (Vendor.nextPoStart,
+    // set by the rebuild to continue the real Drive history) still lifts it.
+    const pos = await PurchaseOrder.find({ archived: { $ne: true } }).select('poNumber vendorName').lean();
     const want = slug(scope);
     // Per-vendor: only count THIS printer's POs so each sequence is
     // independent. No scope → seed from the highest PO number overall.

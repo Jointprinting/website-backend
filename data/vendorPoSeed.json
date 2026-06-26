@@ -1,0 +1,1272 @@
+{
+  "generatedAt": "2026-06-26T17:22:45.297Z",
+  "source": "Owner's Google Drive 'POs' folder (one subfolder per printer)",
+  "folderId": "1VXfT9TD6w1hTq_nuovv_74b8jzzhusYN",
+  "vendors": [
+    {
+      "name": "Heritage Screen Printing",
+      "folderId": "1c3VAN0FSw2AyHk8TpYuC0lyjW36sqCpo",
+      "aliases": [
+        "Heritage",
+        "Hertage Screen Printing"
+      ],
+      "contactName": "Jaide Thomas",
+      "email": "",
+      "phone": "",
+      "address": "331 York Rd, Warminster, PA 18974",
+      "shipMethod": "UPS Acct # JR2257",
+      "totalSpend": 2851.4,
+      "orderNumbers": [
+        "82",
+        "91",
+        "93",
+        "106",
+        "131",
+        "132",
+        "139"
+      ],
+      "ledgerParties": [
+        "Heritage",
+        "Heritage Screen Printing",
+        "Hertage Screen Printing"
+      ],
+      "poCount": 10,
+      "nextPoStart": 9
+    },
+    {
+      "name": "Cannabis Promotions",
+      "folderId": "1KL9ARRLlxdpvM0JYLhVPofVZGN_NsLST",
+      "aliases": [
+        "CannabisPromotions"
+      ],
+      "contactName": "Mari Accioly",
+      "email": "",
+      "phone": "",
+      "address": "2460 5th Ave S Suite A, St. Petersburg, FL 33712",
+      "shipMethod": "UPS Acct # JR2257",
+      "totalSpend": 4710.46,
+      "orderNumbers": [
+        "24",
+        "61",
+        "93",
+        "122",
+        "139"
+      ],
+      "ledgerParties": [
+        "Cannabis Promotions",
+        "CannabisPromotions"
+      ],
+      "poCount": 6,
+      "nextPoStart": 7
+    },
+    {
+      "name": "Worldwide Promotion Inc",
+      "folderId": "10WkVwHyu5E8uY4qGoAZPGJ5_PVV91tle",
+      "aliases": [],
+      "contactName": "Vergil",
+      "email": "vergil@wwidepromotion.com",
+      "phone": "626-662-2744",
+      "address": "444 East Huntington Drive, Suite 306-B, Arcadia, California 91006",
+      "shipMethod": "",
+      "totalSpend": 97.9,
+      "orderNumbers": [
+        "132"
+      ],
+      "ledgerParties": [
+        "Worldwide Promotion Inc"
+      ],
+      "poCount": 1,
+      "nextPoStart": 0
+    },
+    {
+      "name": "Ace Screen Printing",
+      "folderId": "1tpm3ify0-i40Csi2MOGep4uPF7cXxVuB",
+      "aliases": [
+        "Ace"
+      ],
+      "contactName": "Adam Szyfman",
+      "email": "",
+      "phone": "",
+      "address": "54 Delsea Drive North, Glassboro, NJ 08028",
+      "shipMethod": "UPS Acct # JR2257",
+      "totalSpend": 4092.2,
+      "orderNumbers": [
+        "22",
+        "30",
+        "65"
+      ],
+      "ledgerParties": [
+        "Ace Screen Printing"
+      ],
+      "poCount": 4,
+      "nextPoStart": 6
+    },
+    {
+      "name": "East End Ink",
+      "folderId": "1xnHG7fht-k9ZIgATpvgrcdXiRsp2qn6z",
+      "aliases": [],
+      "contactName": "",
+      "email": "",
+      "phone": "",
+      "address": "",
+      "shipMethod": "",
+      "totalSpend": 0,
+      "orderNumbers": [],
+      "ledgerParties": [],
+      "poCount": 1,
+      "nextPoStart": 2
+    },
+    {
+      "name": "Full Designs",
+      "folderId": "1i7vv5tf1uN1ZHQFK6tfu10aDIOeCE272",
+      "aliases": [],
+      "contactName": "Carol",
+      "email": "",
+      "phone": "",
+      "address": "",
+      "shipMethod": "Full Designs",
+      "totalSpend": 369.9,
+      "orderNumbers": [
+        "122"
+      ],
+      "ledgerParties": [
+        "Full Designs"
+      ],
+      "poCount": 1,
+      "nextPoStart": 2
+    },
+    {
+      "name": "Contract-DTG",
+      "folderId": "1L-NNhkNFshCS_4Ep7B65v2AsN7ifsftu",
+      "aliases": [],
+      "contactName": "Savanna",
+      "email": "",
+      "phone": "",
+      "address": "217 W 11th St, Erie, PA 16501",
+      "shipMethod": "UPS Acct # JR2257",
+      "totalSpend": 1826.04,
+      "orderNumbers": [
+        "83",
+        "114"
+      ],
+      "ledgerParties": [
+        "Contract-DTG",
+        "Contract-DTG 2/2"
+      ],
+      "poCount": 3,
+      "nextPoStart": 3
+    },
+    {
+      "name": "Global Promo",
+      "folderId": "1xOOW-OM-kokDOmKYZF9mvoZeuWb0cYos",
+      "aliases": [],
+      "contactName": "Michele K. Richardson",
+      "email": "",
+      "phone": "",
+      "address": "7895 Airport Hwy. Pennsauken, NJ 08109",
+      "shipMethod": "UPS Acct # JR2257",
+      "totalSpend": 0,
+      "orderNumbers": [],
+      "ledgerParties": [],
+      "poCount": 1,
+      "nextPoStart": 0
+    },
+    {
+      "name": "BIC",
+      "folderId": "14xmC4VUidKRTQCFoSsQ2Is07U8AQePJ2",
+      "aliases": [
+        "Bic",
+        "Bic World"
+      ],
+      "contactName": "",
+      "email": "",
+      "phone": "",
+      "address": "",
+      "shipMethod": "",
+      "totalSpend": 1141.4,
+      "orderNumbers": [
+        "22",
+        "126"
+      ],
+      "ledgerParties": [
+        "Bic",
+        "Bic World"
+      ],
+      "poCount": 2,
+      "nextPoStart": 3
+    },
+    {
+      "name": "Cole Apparel",
+      "folderId": "1ApYYJ07Xn_BvQmi0_7L9N47xgl2lSZZs",
+      "aliases": [],
+      "contactName": "Reyne Manzano",
+      "email": "",
+      "phone": "",
+      "address": "1014 Griswold Ave, San Fernando, CA 91340",
+      "shipMethod": "UPS Acct # JR2257",
+      "totalSpend": 0,
+      "orderNumbers": [],
+      "ledgerParties": [],
+      "poCount": 2,
+      "nextPoStart": 2
+    },
+    {
+      "name": "BlueFrog",
+      "folderId": "1Sa5l9kWzdqWKzFiwMgWEfNbpe5MflbiF",
+      "aliases": [
+        "Blue Frog"
+      ],
+      "contactName": "Stuart Smith",
+      "email": "",
+      "phone": "",
+      "address": "717 Whitney St., San Leandro, CA 94577",
+      "shipMethod": "UPS Acct # JR2257",
+      "totalSpend": 1349.78,
+      "orderNumbers": [
+        "115"
+      ],
+      "ledgerParties": [
+        "Blue Frog"
+      ],
+      "poCount": 2,
+      "nextPoStart": 3
+    },
+    {
+      "name": "Apollo",
+      "folderId": "1y_-IFP8gz1bSCHPA67bZ-QqfUombaa6X",
+      "aliases": [
+        "Apollo East",
+        "Apollo USA",
+        "Apollo USA - East Coast"
+      ],
+      "contactName": "Michele K. Richardson",
+      "email": "",
+      "phone": "",
+      "address": "7895 Airport Hwy. Pennsauken, NJ 08109",
+      "shipMethod": "UPS Acct # JR2257",
+      "totalSpend": 1896.63,
+      "orderNumbers": [
+        "1",
+        "5",
+        "10",
+        "31",
+        "39"
+      ],
+      "ledgerParties": [
+        "Apollo East"
+      ],
+      "poCount": 4,
+      "nextPoStart": 5
+    },
+    {
+      "name": "Oklahoma Ink",
+      "folderId": "1c1HQ0VNrt28F5oerRZlRlgfdTr73cSJu",
+      "aliases": [],
+      "contactName": "Stephanie",
+      "email": "",
+      "phone": "",
+      "address": "8618 E 46th St, Tulsa, OK 74145",
+      "shipMethod": "UPS Acct # JR2257",
+      "totalSpend": 750,
+      "orderNumbers": [
+        "120"
+      ],
+      "ledgerParties": [
+        "Oklahoma Ink"
+      ],
+      "poCount": 2,
+      "nextPoStart": 2
+    },
+    {
+      "name": "RedTupid",
+      "folderId": "1rLb0gpfZaEnhcP3iv44aO4P7X_g2Q61j",
+      "aliases": [],
+      "contactName": "",
+      "email": "",
+      "phone": "",
+      "address": "",
+      "shipMethod": "",
+      "totalSpend": 142.21,
+      "orderNumbers": [
+        "109"
+      ],
+      "ledgerParties": [
+        "RedTupid"
+      ],
+      "poCount": 1,
+      "nextPoStart": 2
+    },
+    {
+      "name": "TekWeld",
+      "folderId": "1_yGGxtpuhfF_Asdmy61rl0JlknwPrCFT",
+      "aliases": [
+        "Tekweld"
+      ],
+      "contactName": "Debbie Solis",
+      "email": "",
+      "phone": "",
+      "address": "",
+      "shipMethod": "UPS Acct # JR2257",
+      "totalSpend": 684.4,
+      "orderNumbers": [
+        "83",
+        "108"
+      ],
+      "ledgerParties": [
+        "Tekweld"
+      ],
+      "poCount": 3,
+      "nextPoStart": 3
+    },
+    {
+      "name": "Stahls DFC",
+      "folderId": "1Z52QFxF_CwYj46rE9loIp_U1-NCT_vpa",
+      "aliases": [],
+      "contactName": "Brandy Cramer",
+      "email": "",
+      "phone": "",
+      "address": "1 Stahls Dr, Masontown, PA 15461",
+      "shipMethod": "UPS Acct # JR2257",
+      "totalSpend": 0,
+      "orderNumbers": [],
+      "ledgerParties": [],
+      "poCount": 1,
+      "nextPoStart": 2
+    }
+  ],
+  "purchaseOrders": [
+    {
+      "vendorName": "Heritage Screen Printing",
+      "poNumber": "#001",
+      "date": "2025-05-15",
+      "client": "Sauce Me A Fry Merch",
+      "grandTotal": 736.45,
+      "sourceFileId": "1IRURd87LskPXocOpa_V6tX0oJ63SEbDhTupnDqAXzsc",
+      "sourceTitle": "Heritage PO - #001",
+      "flags": []
+    },
+    {
+      "vendorName": "Heritage Screen Printing",
+      "poNumber": "#002",
+      "date": "2025-07-01",
+      "client": "The CannaBoss Lady Merch",
+      "grandTotal": 875.5,
+      "sourceFileId": "1uWwQsG8R0D37GD3eWH2EJZYVPqTHjvmn2GNdkwF8M0s",
+      "sourceTitle": "Heritage PO - #002",
+      "flags": []
+    },
+    {
+      "vendorName": "Heritage Screen Printing",
+      "poNumber": "#003",
+      "date": "2025-07-09",
+      "client": "OS NYC Merch",
+      "grandTotal": 324.45,
+      "sourceFileId": "16CzdmizqnyjVEpVGZSOQBL9N4AFB1xzEvLXqzorhs80",
+      "sourceTitle": "Heritage PO - #003",
+      "flags": []
+    },
+    {
+      "vendorName": "Heritage Screen Printing",
+      "poNumber": "#004",
+      "date": "2026-04-21",
+      "client": "Joint Printing Merch (pickup)",
+      "grandTotal": 80,
+      "sourceFileId": "1F6stTm0KcVHe7IcCMEqUplVhqCqhF3lPkAXCu36sWD4",
+      "sourceTitle": "Heritage PO - #004",
+      "flags": [
+        "no-grand-total-line"
+      ]
+    },
+    {
+      "vendorName": "Heritage Screen Printing",
+      "poNumber": "#0004",
+      "date": "2025-09-19",
+      "client": "Human AF Merch",
+      "grandTotal": 255.85,
+      "sourceFileId": "1uDZSQHgtE-9kqTnu63IfhWhpJaPiTDsPzlfwBOjYS9k",
+      "sourceTitle": "Heritage PO - Human AF",
+      "flags": [
+        "dup-po-number"
+      ]
+    },
+    {
+      "vendorName": "Heritage Screen Printing",
+      "poNumber": "#005",
+      "date": "2026-05-04",
+      "client": "Sauce Me A Fry Merch",
+      "grandTotal": 177.6,
+      "sourceFileId": "1rCx-Zy0YAFkJaKnZoCUHDpXeJzRwpJ27Y2Tm5-Jn63o",
+      "sourceTitle": "Heritage PO - #005",
+      "flags": []
+    },
+    {
+      "vendorName": "Heritage Screen Printing",
+      "poNumber": "#0005",
+      "date": null,
+      "client": "M4JI Merch",
+      "grandTotal": 307.5,
+      "sourceFileId": "166Ikw1h6qWB19M6gH1f_KnXlxpr1mml8S9dOapvHfJY",
+      "sourceTitle": "Heritage PO - M4JI",
+      "flags": [
+        "dup-po-number",
+        "no-date"
+      ]
+    },
+    {
+      "vendorName": "Heritage Screen Printing",
+      "poNumber": "#006",
+      "date": "2026-05-22",
+      "client": "Bleu Leaf Dispensary Merch",
+      "grandTotal": 349.5,
+      "sourceFileId": "14ttFsszzCjwjhyU7F_3cwpkC2OF1Mb60hYcatksrUi4",
+      "sourceTitle": "Heritage PO - #006",
+      "flags": []
+    },
+    {
+      "vendorName": "Heritage Screen Printing",
+      "poNumber": "#007",
+      "date": "2026-06-12",
+      "client": "Plantabis Merch",
+      "grandTotal": 60,
+      "sourceFileId": "1awqqXDQ2zIotD9xnRSLCTZpLHx81jYHbvGY977odMqU",
+      "sourceTitle": "Heritage PO - #007",
+      "flags": []
+    },
+    {
+      "vendorName": "Heritage Screen Printing",
+      "poNumber": "#008",
+      "date": "2026-06-17",
+      "client": "Coastline Dispensary Merch",
+      "grandTotal": 189.92,
+      "sourceFileId": "1XqwUtnoJkQTi09mpe1fpaO3elrskdPr95O1UJ-QmoLU",
+      "sourceTitle": "Heritage PO - #008",
+      "flags": []
+    },
+    {
+      "vendorName": "Cannabis Promotions",
+      "poNumber": "#001",
+      "date": "2025-02-25",
+      "client": "The CannaBoss Lady Merch",
+      "grandTotal": 489.62,
+      "sourceFileId": "1awO99n0wj-2ZOO8AAfHIfUplWTk8OzS2et8eG_oQMSc",
+      "sourceTitle": "Cannabis Promotions PO - #001",
+      "flags": []
+    },
+    {
+      "vendorName": "Cannabis Promotions",
+      "poNumber": "#002",
+      "date": "2025-03-27",
+      "client": "Earl & Tom's Dispensary Merch",
+      "grandTotal": 347.93,
+      "sourceFileId": "1PjIEMMWVK1wjjc2Ur7neKVVDuDJiVVLdFGDQOYp4XWc",
+      "sourceTitle": "Cannabis Promotions PO - #002",
+      "flags": []
+    },
+    {
+      "vendorName": "Cannabis Promotions",
+      "poNumber": "#003",
+      "date": "2025-07-01",
+      "client": "The CannaBoss Lady Merch",
+      "grandTotal": 834.62,
+      "sourceFileId": "1qnw5TlR1eFyVtjoQJEg1iXwoQHkeNMPBZfH5qEYH0_g",
+      "sourceTitle": "Cannabis Promotions PO - #003",
+      "flags": []
+    },
+    {
+      "vendorName": "Cannabis Promotions",
+      "poNumber": "#004",
+      "date": null,
+      "client": "Mad Martian Farms Merch",
+      "grandTotal": 2239,
+      "sourceFileId": "17PO-OdDwmmkw0goc5AV3xLPwBrwXfqwbtB9KpnQWckA",
+      "sourceTitle": "Cannabis Promotions PO - #004",
+      "flags": [
+        "no-date"
+      ]
+    },
+    {
+      "vendorName": "Cannabis Promotions",
+      "poNumber": "#005",
+      "date": "2026-03-20",
+      "client": "Swan Rose Holdings Merch",
+      "grandTotal": null,
+      "sourceFileId": "1M-dGL56XVHYd5Fgj3uKcTvFOjZwewvgMhJHodvGLZls",
+      "sourceTitle": "Cannabis Promotions x Joint Printing PO #005",
+      "flags": [
+        "no-total"
+      ]
+    },
+    {
+      "vendorName": "Cannabis Promotions",
+      "poNumber": "#006",
+      "date": "2026-06-12",
+      "client": "Plantabis Merch",
+      "grandTotal": 752,
+      "sourceFileId": "1MCN6f_ESFhldyC_9sdz0RIW5YmG08hrUfiuxmjjzaoQ",
+      "sourceTitle": "Cannabis Promotions x Joint Printing PO #006",
+      "flags": []
+    },
+    {
+      "vendorName": "Worldwide Promotion Inc",
+      "poNumber": "PWKVG2605231",
+      "date": "2026-05-23",
+      "client": "Bleu Leaf Dispensary",
+      "grandTotal": 94.5,
+      "sourceFileId": "1saDf_Xq9pSvx9DZ1Ex37wUJAYrvHL2Z7",
+      "sourceTitle": "PWKVG2605231.pdf",
+      "flags": [
+        "vendor-invoice-format"
+      ]
+    },
+    {
+      "vendorName": "Ace Screen Printing",
+      "poNumber": "#0001",
+      "date": "2025-02-26",
+      "client": "Point in Time Studios Merch",
+      "grandTotal": 240,
+      "sourceFileId": "1omzRwE9tudW1shCEYrORL2sU3qEsOOelwd1363l-zoc",
+      "sourceTitle": "Ace PO - Point in Time Studios",
+      "flags": []
+    },
+    {
+      "vendorName": "Ace Screen Printing",
+      "poNumber": "#0002",
+      "date": "2025-03-26",
+      "client": "Shaggy's Baggy Merch",
+      "grandTotal": 258.3,
+      "sourceFileId": "1jrnLnakuaabcAHNS-3YGaUc_MpqGgEZEetpH0hO1vIA",
+      "sourceTitle": "Ace PO - Shaggy's Baggy",
+      "flags": []
+    },
+    {
+      "vendorName": "Ace Screen Printing",
+      "poNumber": "#003",
+      "date": "2025-04-01",
+      "client": "Green Gold Dispensary Merch",
+      "grandTotal": 3358,
+      "sourceFileId": "1hNwDeb_KUEBlUGG_vgOqEICfomtnckNuAXRCVWeKRVc",
+      "sourceTitle": "Ace PO - Green Gold",
+      "flags": [
+        "total-not-labeled-grand"
+      ]
+    },
+    {
+      "vendorName": "Ace Screen Printing",
+      "poNumber": "#0005",
+      "date": "2025-06-09",
+      "client": "Journee's Racing Merch",
+      "grandTotal": 872.41,
+      "sourceFileId": "1TnV6ZcHRYVP4tnO8c9gOgQH8-dL5TjTxWIVJoyzUXls",
+      "sourceTitle": "Ace PO - Journees Racing",
+      "flags": []
+    },
+    {
+      "vendorName": "East End Ink",
+      "poNumber": "#001",
+      "date": "2025-03-12",
+      "client": "Shaggy's Baggy Merch",
+      "grandTotal": 585.81,
+      "sourceFileId": "1wIR_B6mhc4gCapwuW1GhdVAT73-2SU2fEbXxqiDVlEE",
+      "sourceTitle": "East End Ink PO #001",
+      "flags": [
+        "body-names-different-printer:Bic World"
+      ]
+    },
+    {
+      "vendorName": "Full Designs",
+      "poNumber": "#001",
+      "date": null,
+      "client": "Mad Martian Farms Merch",
+      "grandTotal": 369.9,
+      "sourceFileId": "1NayJ9tAnaeqCe-6XtqU0n5fR9r6F5EdJd0eWgBVyPaE",
+      "sourceTitle": "Full Designs PO - #001",
+      "flags": [
+        "no-date"
+      ]
+    },
+    {
+      "vendorName": "Contract-DTG",
+      "poNumber": "#0001",
+      "date": "2025-06-02",
+      "client": "The CannaBoss Lady Merch",
+      "grandTotal": 1196,
+      "sourceFileId": "1LAXRN8IDusKm1L8hY_Oyg8tQ6dcBdI5EhOjXcjfNZrE",
+      "sourceTitle": "Contract-DTG PO - #1",
+      "flags": []
+    },
+    {
+      "vendorName": "Contract-DTG",
+      "poNumber": "#0001 Reprint",
+      "date": "2025-07-03",
+      "client": "The CannaBoss Lady Merch",
+      "grandTotal": 33.28,
+      "sourceFileId": "1zjW_O5xhFm4JX2cEbnaMo8QgDellE0ADy1jauwVRkUw",
+      "sourceTitle": "Contract-DTG PO - #1 Reprint",
+      "flags": [
+        "reprint"
+      ]
+    },
+    {
+      "vendorName": "Contract-DTG",
+      "poNumber": "#0002",
+      "date": "2025-12-08",
+      "client": "The CannaBoss Lady Merch",
+      "grandTotal": 1189.76,
+      "sourceFileId": "1UYwP7QDjO8v5GbxvZA_IFSFnEU878Dn8lX-t15P7bpE",
+      "sourceTitle": "Contract-DTG PO - #2",
+      "flags": []
+    },
+    {
+      "vendorName": "Global Promo",
+      "poNumber": "#0000",
+      "date": "2025-04-04",
+      "client": "Tempe History Museum Merch",
+      "grandTotal": 3090,
+      "sourceFileId": "1e56yg4zlUpfxatXLTBIFCKh6JMA3_6aDD3ytagx4zV0",
+      "sourceTitle": "Global Promo PO - Template",
+      "flags": [
+        "template-titled-but-has-real-data"
+      ]
+    },
+    {
+      "vendorName": "BIC",
+      "poNumber": "#001",
+      "date": "2025-03-12",
+      "client": "Shaggy's Baggy Merch",
+      "grandTotal": 585.81,
+      "sourceFileId": "1Wpz5LgdwodnPzwraTkcj20FzHiY4Uo-DwNzafp-s-Z0",
+      "sourceTitle": "Bic World PO - #001",
+      "flags": []
+    },
+    {
+      "vendorName": "BIC",
+      "poNumber": "#002",
+      "date": "2026-02-25",
+      "client": "Shaggy's Baggy Merch",
+      "grandTotal": 576.49,
+      "sourceFileId": "1cZ50SwfLfqvqM5nSORy5bAJkoNpM9ZwfGad33eZ1xZQ",
+      "sourceTitle": "BIC PO - #002",
+      "flags": []
+    },
+    {
+      "vendorName": "Cole Apparel",
+      "poNumber": "#0001",
+      "date": "2025-02-26",
+      "client": "Lean Gang Merch",
+      "grandTotal": 1197.5,
+      "sourceFileId": "1cU1kqHuUMHhgPRhClwpZEI7Eu1aLiqh-4d3bEjCq-MM",
+      "sourceTitle": "Cole Apparel PO - Lean Gang #2",
+      "flags": [
+        "dup-po-number"
+      ]
+    },
+    {
+      "vendorName": "Cole Apparel",
+      "poNumber": "#0001",
+      "date": "2025-02-27",
+      "client": "Lean Gang Merch",
+      "grandTotal": 342.5,
+      "sourceFileId": "1JJbmQvf75p0BkKc__uP2YqgSO2sZ3p_OwTprR9i0Dds",
+      "sourceTitle": "Cole Apparel PO - Lean Gang #1",
+      "flags": [
+        "dup-po-number"
+      ]
+    },
+    {
+      "vendorName": "BlueFrog",
+      "poNumber": "#001",
+      "date": "2025-02-07",
+      "client": "Point in Time Studios Merch",
+      "grandTotal": null,
+      "sourceFileId": "11H3VgXirrRf5lUVgwcCp1b8E-XS1qRRb6c77t5SyAGU",
+      "sourceTitle": "BlueFrog PO #001",
+      "flags": [
+        "no-total",
+        "placeholder-amounts"
+      ]
+    },
+    {
+      "vendorName": "BlueFrog",
+      "poNumber": "#002",
+      "date": "2025-12-12",
+      "client": "Good Company Merch",
+      "grandTotal": 1001.16,
+      "sourceFileId": "1X6Ds5dhCs-uboAIIhVeC1YWEsP07O6KOpBq50piuIYQ",
+      "sourceTitle": "BlueFrog PO #002",
+      "flags": []
+    },
+    {
+      "vendorName": "Apollo",
+      "poNumber": "#0001",
+      "date": "2024-09-17",
+      "client": "Jotkoff Financial Services Merch",
+      "grandTotal": 123.6,
+      "sourceFileId": "1zy9KMa8tJ28DeD-sCNUg4GR1sInh-4o9ZmMWn4u-T-I",
+      "sourceTitle": "Apollo PO - #0001",
+      "flags": []
+    },
+    {
+      "vendorName": "Apollo",
+      "poNumber": "#0002",
+      "date": "2024-09-17",
+      "client": "Almadelic Merch",
+      "grandTotal": 252.35,
+      "sourceFileId": "1k1cw1toBKUeSG--SryI2_Dog4gF7bbkhSxpD0B0XKc0",
+      "sourceTitle": "Apollo PO - #0002",
+      "flags": []
+    },
+    {
+      "vendorName": "Apollo",
+      "poNumber": "#0003",
+      "date": "2024-12-13",
+      "client": "Cannapi Merch",
+      "grandTotal": 815.29,
+      "sourceFileId": "1b5TW-F1dhnvDb07v8KfHhf9iiSxxSY0LeAXoE_p8UH8",
+      "sourceTitle": "Apollo PO - #0003",
+      "flags": []
+    },
+    {
+      "vendorName": "Apollo",
+      "poNumber": "#0004",
+      "date": "2025-01-19",
+      "client": "OS NYC Merch",
+      "grandTotal": 369.65,
+      "sourceFileId": "1EHnYDq6VXY5SFOfQsljROK4hU2290iWci_fdk-utX0g",
+      "sourceTitle": "Apollo PO - #0004",
+      "flags": []
+    },
+    {
+      "vendorName": "Oklahoma Ink",
+      "poNumber": "#001A",
+      "date": "2025-12-16",
+      "client": "Duckie's Revenge Arcade Merch",
+      "grandTotal": 277.5,
+      "sourceFileId": "1cmqV1UIpRmrX7wEPSd59diOctaCHsql31pjQeGNCBLY",
+      "sourceTitle": "Oklahoma Ink PO - #001A",
+      "flags": [
+        "total-not-labeled-grand"
+      ]
+    },
+    {
+      "vendorName": "Oklahoma Ink",
+      "poNumber": "#001B",
+      "date": "2025-12-16",
+      "client": "Duckie's Revenge Arcade Merch",
+      "grandTotal": 230,
+      "sourceFileId": "1QmMHrKYL829vOIhvcvHyprIBOU_tEHu2HUgKU8bWDfE",
+      "sourceTitle": "Oklahoma Ink PO - #001B",
+      "flags": [
+        "total-not-labeled-grand"
+      ]
+    },
+    {
+      "vendorName": "RedTupid",
+      "poNumber": "#001",
+      "date": "2025-10-31",
+      "client": "Vantage Real Estate Merch",
+      "grandTotal": 137.4,
+      "sourceFileId": "1OpXSUr8opgLkP4MsQkG7VI1ZSF_J9i34-xeoEoqvDJk",
+      "sourceTitle": "RedTupid PO - #001",
+      "flags": []
+    },
+    {
+      "vendorName": "TekWeld",
+      "poNumber": "#0001",
+      "date": "2024-11-18",
+      "client": "NJ Dental 1 Merch",
+      "grandTotal": 630,
+      "sourceFileId": "1pvr_HC3VebPU1h0MkCaWGo5LP3h7H4qY1j-v2biKbf8",
+      "sourceTitle": "Tekweld PO - NJ Dental 1",
+      "flags": [
+        "total-not-labeled-grand"
+      ]
+    },
+    {
+      "vendorName": "TekWeld",
+      "poNumber": "#0002",
+      "date": "2025-06-02",
+      "client": "The Cannaboss Lady Merch",
+      "grandTotal": 302.4,
+      "sourceFileId": "10hyCZ0UdsvM4WJ0z7JBAKHjMzDJhJX6sS8YAA0UHCFU",
+      "sourceTitle": "Tekweld PO - The Cannaboss Lady",
+      "flags": [
+        "dup-po-number"
+      ]
+    },
+    {
+      "vendorName": "TekWeld",
+      "poNumber": "#0002",
+      "date": "2025-10-02",
+      "client": "NJ Dental 1 Merch",
+      "grandTotal": 389.21,
+      "sourceFileId": "15AVIgBa-nyPe_hTU-BjNld8wBCxtX_rSOvvpYW6t8Kc",
+      "sourceTitle": "Tekweld PO - NJ Dental 1 REPRINT",
+      "flags": [
+        "dup-po-number",
+        "reprint",
+        "total-not-labeled-grand"
+      ]
+    },
+    {
+      "vendorName": "Stahls DFC",
+      "poNumber": "#001",
+      "date": "2025-02-07",
+      "client": "BodyArmor State Games Merch",
+      "grandTotal": 5457.22,
+      "sourceFileId": "1mw3TrTW1RRp0BZwgIuBo9cXknezF9jBee6Zko6Lzjdg",
+      "sourceTitle": "Stahls DFC - PO #1",
+      "flags": []
+    }
+  ],
+  "skippedDocs": [
+    {
+      "vendorName": "Heritage Screen Printing",
+      "poNumber": "#0000",
+      "sourceFileId": "1ROeLM7ABroeslf6wvajxI_-VG2p5DMkhzYAGRa0rWrY",
+      "sourceTitle": "Heritage PO - Template",
+      "reason": "template",
+      "flags": [
+        "template"
+      ]
+    },
+    {
+      "vendorName": "Ace Screen Printing",
+      "poNumber": "#0000",
+      "sourceFileId": "1i-k8GR2V14n6osdcg_T_XkCtgLW36QK3D1IPz_5sYes",
+      "sourceTitle": "Ace PO - Template",
+      "reason": "template",
+      "flags": [
+        "template"
+      ]
+    },
+    {
+      "vendorName": "Contract-DTG",
+      "poNumber": "#0000",
+      "sourceFileId": "18t5nCq82GNLokylP1xpk1EmAaIROeGk-yqrcFwjXELc",
+      "sourceTitle": "Contract-DTG PO - Template",
+      "reason": "template",
+      "flags": [
+        "template"
+      ]
+    },
+    {
+      "vendorName": "Cole Apparel",
+      "poNumber": "#0000",
+      "sourceFileId": "1_p3DJWlJLfN-sHztY0r1mhAtf18pULWWGD2HZCUdhF4",
+      "sourceTitle": "Cole Apparel PO - Template",
+      "reason": "template",
+      "flags": [
+        "template"
+      ]
+    },
+    {
+      "vendorName": "BlueFrog",
+      "poNumber": "#0000",
+      "sourceFileId": "1pOfdlW_nQIBIiHwZOdzdpEgkI7b5GwAWgGkZKGUXqs8",
+      "sourceTitle": "BlueFrog PO - Template",
+      "reason": "template",
+      "flags": [
+        "template"
+      ]
+    },
+    {
+      "vendorName": "BlueFrog",
+      "poNumber": "002A",
+      "sourceFileId": "1yYRhQXSAb8FGcBj5N5IxtT-DRuZNSK9v",
+      "sourceTitle": "S&S Order Approval 339931 (002A)",
+      "reason": "not-a-po:blank-supplier-order-ack",
+      "flags": [
+        "not-a-po:blank-supplier-order-ack"
+      ]
+    },
+    {
+      "vendorName": "BlueFrog",
+      "poNumber": "002B",
+      "sourceFileId": "15Ov7M_zS3uzs82lqeswkRcgqkbwxwEK-",
+      "sourceTitle": "S&S Order Approval 339937 (002B)",
+      "reason": "not-a-po:blank-supplier-order-ack",
+      "flags": [
+        "not-a-po:blank-supplier-order-ack"
+      ]
+    },
+    {
+      "vendorName": "BlueFrog",
+      "poNumber": "002C",
+      "sourceFileId": "1wAUeO8bi-Zo2QxaoLeeIJe-pIYf-2nIz",
+      "sourceTitle": "S&S Order Approval 339948 (002C)",
+      "reason": "not-a-po:blank-supplier-order-ack",
+      "flags": [
+        "not-a-po:blank-supplier-order-ack"
+      ]
+    },
+    {
+      "vendorName": "Apollo",
+      "poNumber": "#0000",
+      "sourceFileId": "1_u5pi4XqLGWhyjiyiXOi7QIbitBGjbjht8NPo6aKm5E",
+      "sourceTitle": "Apollo PO - Template",
+      "reason": "template",
+      "flags": [
+        "template"
+      ]
+    },
+    {
+      "vendorName": "Oklahoma Ink",
+      "poNumber": "#000",
+      "sourceFileId": "1cd-VMm0zwUnKuDmNg_LnrGQeeh7LfLm2jqI7v2bcwMU",
+      "sourceTitle": "Oklahoma Ink PO - Template",
+      "reason": "template",
+      "flags": [
+        "template"
+      ]
+    },
+    {
+      "vendorName": "Stahls DFC",
+      "poNumber": "#0000",
+      "sourceFileId": "1B1f_XvNUCGT2p0Z_kS6-IEmKwdyLyNB_flphuPG-IDc",
+      "sourceTitle": "Stahls DFC - PO",
+      "reason": "template",
+      "flags": [
+        "template"
+      ]
+    }
+  ],
+  "flaggedDocs": [
+    {
+      "vendorName": "Heritage Screen Printing",
+      "poNumber": "#004",
+      "date": "2026-04-21",
+      "client": "Joint Printing Merch (pickup)",
+      "grandTotal": 80,
+      "sourceFileId": "1F6stTm0KcVHe7IcCMEqUplVhqCqhF3lPkAXCu36sWD4",
+      "sourceTitle": "Heritage PO - #004",
+      "flags": [
+        "no-grand-total-line"
+      ]
+    },
+    {
+      "vendorName": "Heritage Screen Printing",
+      "poNumber": "#0004",
+      "date": "2025-09-19",
+      "client": "Human AF Merch",
+      "grandTotal": 255.85,
+      "sourceFileId": "1uDZSQHgtE-9kqTnu63IfhWhpJaPiTDsPzlfwBOjYS9k",
+      "sourceTitle": "Heritage PO - Human AF",
+      "flags": [
+        "dup-po-number"
+      ]
+    },
+    {
+      "vendorName": "Heritage Screen Printing",
+      "poNumber": "#0005",
+      "date": null,
+      "client": "M4JI Merch",
+      "grandTotal": 307.5,
+      "sourceFileId": "166Ikw1h6qWB19M6gH1f_KnXlxpr1mml8S9dOapvHfJY",
+      "sourceTitle": "Heritage PO - M4JI",
+      "flags": [
+        "dup-po-number",
+        "no-date"
+      ]
+    },
+    {
+      "vendorName": "Cannabis Promotions",
+      "poNumber": "#004",
+      "date": null,
+      "client": "Mad Martian Farms Merch",
+      "grandTotal": 2239,
+      "sourceFileId": "17PO-OdDwmmkw0goc5AV3xLPwBrwXfqwbtB9KpnQWckA",
+      "sourceTitle": "Cannabis Promotions PO - #004",
+      "flags": [
+        "no-date"
+      ]
+    },
+    {
+      "vendorName": "Cannabis Promotions",
+      "poNumber": "#005",
+      "date": "2026-03-20",
+      "client": "Swan Rose Holdings Merch",
+      "grandTotal": null,
+      "sourceFileId": "1M-dGL56XVHYd5Fgj3uKcTvFOjZwewvgMhJHodvGLZls",
+      "sourceTitle": "Cannabis Promotions x Joint Printing PO #005",
+      "flags": [
+        "no-total"
+      ]
+    },
+    {
+      "vendorName": "Worldwide Promotion Inc",
+      "poNumber": "PWKVG2605231",
+      "date": "2026-05-23",
+      "client": "Bleu Leaf Dispensary",
+      "grandTotal": 94.5,
+      "sourceFileId": "1saDf_Xq9pSvx9DZ1Ex37wUJAYrvHL2Z7",
+      "sourceTitle": "PWKVG2605231.pdf",
+      "flags": [
+        "vendor-invoice-format"
+      ]
+    },
+    {
+      "vendorName": "Ace Screen Printing",
+      "poNumber": "#003",
+      "date": "2025-04-01",
+      "client": "Green Gold Dispensary Merch",
+      "grandTotal": 3358,
+      "sourceFileId": "1hNwDeb_KUEBlUGG_vgOqEICfomtnckNuAXRCVWeKRVc",
+      "sourceTitle": "Ace PO - Green Gold",
+      "flags": [
+        "total-not-labeled-grand"
+      ]
+    },
+    {
+      "vendorName": "East End Ink",
+      "poNumber": "#001",
+      "date": "2025-03-12",
+      "client": "Shaggy's Baggy Merch",
+      "grandTotal": 585.81,
+      "sourceFileId": "1wIR_B6mhc4gCapwuW1GhdVAT73-2SU2fEbXxqiDVlEE",
+      "sourceTitle": "East End Ink PO #001",
+      "flags": [
+        "body-names-different-printer:Bic World"
+      ]
+    },
+    {
+      "vendorName": "Full Designs",
+      "poNumber": "#001",
+      "date": null,
+      "client": "Mad Martian Farms Merch",
+      "grandTotal": 369.9,
+      "sourceFileId": "1NayJ9tAnaeqCe-6XtqU0n5fR9r6F5EdJd0eWgBVyPaE",
+      "sourceTitle": "Full Designs PO - #001",
+      "flags": [
+        "no-date"
+      ]
+    },
+    {
+      "vendorName": "Contract-DTG",
+      "poNumber": "#0001 Reprint",
+      "date": "2025-07-03",
+      "client": "The CannaBoss Lady Merch",
+      "grandTotal": 33.28,
+      "sourceFileId": "1zjW_O5xhFm4JX2cEbnaMo8QgDellE0ADy1jauwVRkUw",
+      "sourceTitle": "Contract-DTG PO - #1 Reprint",
+      "flags": [
+        "reprint"
+      ]
+    },
+    {
+      "vendorName": "Global Promo",
+      "poNumber": "#0000",
+      "date": "2025-04-04",
+      "client": "Tempe History Museum Merch",
+      "grandTotal": 3090,
+      "sourceFileId": "1e56yg4zlUpfxatXLTBIFCKh6JMA3_6aDD3ytagx4zV0",
+      "sourceTitle": "Global Promo PO - Template",
+      "flags": [
+        "template-titled-but-has-real-data"
+      ]
+    },
+    {
+      "vendorName": "Cole Apparel",
+      "poNumber": "#0001",
+      "date": "2025-02-26",
+      "client": "Lean Gang Merch",
+      "grandTotal": 1197.5,
+      "sourceFileId": "1cU1kqHuUMHhgPRhClwpZEI7Eu1aLiqh-4d3bEjCq-MM",
+      "sourceTitle": "Cole Apparel PO - Lean Gang #2",
+      "flags": [
+        "dup-po-number"
+      ]
+    },
+    {
+      "vendorName": "Cole Apparel",
+      "poNumber": "#0001",
+      "date": "2025-02-27",
+      "client": "Lean Gang Merch",
+      "grandTotal": 342.5,
+      "sourceFileId": "1JJbmQvf75p0BkKc__uP2YqgSO2sZ3p_OwTprR9i0Dds",
+      "sourceTitle": "Cole Apparel PO - Lean Gang #1",
+      "flags": [
+        "dup-po-number"
+      ]
+    },
+    {
+      "vendorName": "BlueFrog",
+      "poNumber": "#001",
+      "date": "2025-02-07",
+      "client": "Point in Time Studios Merch",
+      "grandTotal": null,
+      "sourceFileId": "11H3VgXirrRf5lUVgwcCp1b8E-XS1qRRb6c77t5SyAGU",
+      "sourceTitle": "BlueFrog PO #001",
+      "flags": [
+        "no-total",
+        "placeholder-amounts"
+      ]
+    },
+    {
+      "vendorName": "Oklahoma Ink",
+      "poNumber": "#001A",
+      "date": "2025-12-16",
+      "client": "Duckie's Revenge Arcade Merch",
+      "grandTotal": 277.5,
+      "sourceFileId": "1cmqV1UIpRmrX7wEPSd59diOctaCHsql31pjQeGNCBLY",
+      "sourceTitle": "Oklahoma Ink PO - #001A",
+      "flags": [
+        "total-not-labeled-grand"
+      ]
+    },
+    {
+      "vendorName": "Oklahoma Ink",
+      "poNumber": "#001B",
+      "date": "2025-12-16",
+      "client": "Duckie's Revenge Arcade Merch",
+      "grandTotal": 230,
+      "sourceFileId": "1QmMHrKYL829vOIhvcvHyprIBOU_tEHu2HUgKU8bWDfE",
+      "sourceTitle": "Oklahoma Ink PO - #001B",
+      "flags": [
+        "total-not-labeled-grand"
+      ]
+    },
+    {
+      "vendorName": "TekWeld",
+      "poNumber": "#0001",
+      "date": "2024-11-18",
+      "client": "NJ Dental 1 Merch",
+      "grandTotal": 630,
+      "sourceFileId": "1pvr_HC3VebPU1h0MkCaWGo5LP3h7H4qY1j-v2biKbf8",
+      "sourceTitle": "Tekweld PO - NJ Dental 1",
+      "flags": [
+        "total-not-labeled-grand"
+      ]
+    },
+    {
+      "vendorName": "TekWeld",
+      "poNumber": "#0002",
+      "date": "2025-06-02",
+      "client": "The Cannaboss Lady Merch",
+      "grandTotal": 302.4,
+      "sourceFileId": "10hyCZ0UdsvM4WJ0z7JBAKHjMzDJhJX6sS8YAA0UHCFU",
+      "sourceTitle": "Tekweld PO - The Cannaboss Lady",
+      "flags": [
+        "dup-po-number"
+      ]
+    },
+    {
+      "vendorName": "TekWeld",
+      "poNumber": "#0002",
+      "date": "2025-10-02",
+      "client": "NJ Dental 1 Merch",
+      "grandTotal": 389.21,
+      "sourceFileId": "15AVIgBa-nyPe_hTU-BjNld8wBCxtX_rSOvvpYW6t8Kc",
+      "sourceTitle": "Tekweld PO - NJ Dental 1 REPRINT",
+      "flags": [
+        "dup-po-number",
+        "reprint",
+        "total-not-labeled-grand"
+      ]
+    }
+  ],
+  "summary": {
+    "vendors": 16,
+    "purchaseOrders": 44,
+    "skippedDocs": 11,
+    "flaggedDocs": 19,
+    "totalDriveSpend": 19912.32,
+    "perVendor": [
+      {
+        "name": "Heritage Screen Printing",
+        "poCount": 10,
+        "totalSpend": 2851.4,
+        "orders": 7
+      },
+      {
+        "name": "Cannabis Promotions",
+        "poCount": 6,
+        "totalSpend": 4710.46,
+        "orders": 5
+      },
+      {
+        "name": "Worldwide Promotion Inc",
+        "poCount": 1,
+        "totalSpend": 97.9,
+        "orders": 1
+      },
+      {
+        "name": "Ace Screen Printing",
+        "poCount": 4,
+        "totalSpend": 4092.2,
+        "orders": 3
+      },
+      {
+        "name": "East End Ink",
+        "poCount": 1,
+        "totalSpend": 0,
+        "orders": 0
+      },
+      {
+        "name": "Full Designs",
+        "poCount": 1,
+        "totalSpend": 369.9,
+        "orders": 1
+      },
+      {
+        "name": "Contract-DTG",
+        "poCount": 3,
+        "totalSpend": 1826.04,
+        "orders": 2
+      },
+      {
+        "name": "Global Promo",
+        "poCount": 1,
+        "totalSpend": 0,
+        "orders": 0
+      },
+      {
+        "name": "BIC",
+        "poCount": 2,
+        "totalSpend": 1141.4,
+        "orders": 2
+      },
+      {
+        "name": "Cole Apparel",
+        "poCount": 2,
+        "totalSpend": 0,
+        "orders": 0
+      },
+      {
+        "name": "BlueFrog",
+        "poCount": 2,
+        "totalSpend": 1349.78,
+        "orders": 1
+      },
+      {
+        "name": "Apollo",
+        "poCount": 4,
+        "totalSpend": 1896.63,
+        "orders": 5
+      },
+      {
+        "name": "Oklahoma Ink",
+        "poCount": 2,
+        "totalSpend": 750,
+        "orders": 1
+      },
+      {
+        "name": "RedTupid",
+        "poCount": 1,
+        "totalSpend": 142.21,
+        "orders": 1
+      },
+      {
+        "name": "TekWeld",
+        "poCount": 3,
+        "totalSpend": 684.4,
+        "orders": 2
+      },
+      {
+        "name": "Stahls DFC",
+        "poCount": 1,
+        "totalSpend": 0,
+        "orders": 0
+      }
+    ]
+  }
+}
