@@ -506,6 +506,10 @@ const publicApprove = async (req, res) => {
     // Recorded for the owner — it does NOT change the confirmation's stored total.
     const payRaw = String((req.body && req.body.paymentMethod) || '').trim().toLowerCase();
     const paymentMethod = (payRaw === 'cc' || payRaw === 'ach') ? payRaw : '';
+    // Version string of the "approval is final" notice the client saw on the
+    // confirmation page (sent by the client app at approval). Stored so the
+    // owner has a record the terms were presented. Capped + sanitized.
+    const termsVersion = String((req.body && req.body.termsVersion) || '').trim().slice(0, 40);
     const now = new Date();
 
     // Initialize tracking on first approval. If admin already pre-populated
@@ -544,6 +548,10 @@ const publicApprove = async (req, res) => {
     // Record the client's chosen payment method (informational; never alters the
     // stored total). Only written when they actually picked one.
     if (paymentMethod) set.paymentMethod = paymentMethod;
+
+    // Record that the "approval is final" notice was presented + accepted at
+    // sign-off (the confirmation page always shows it before this action).
+    if (termsVersion) { set.approvalTermsVersion = termsVersion; set.approvalTermsAcceptedAt = now; }
 
     // Atomic first-decision-wins. The filter only matches while NO approval /
     // change-request exists in the CURRENT cycle, so when two people on the
