@@ -888,6 +888,99 @@ const createFromSubmission = async (req, res) => {
   }
 };
 
+// A project counts as LIVE (reusable) for a company when it's neither archived
+// nor in a terminal state -- i.e. still somewhere in the active lifecycle the
+// owner would keep quoting/mocking against. 'delivered' is the won/completed end
+// state and 'cancelled' is dead; both mean "start a fresh project for new work",
+// so they're excluded. Pure (no DB) so the create-or-get idempotency is unit-
+// testable directly from a list of order POJOs. Among live candidates we keep the
+// one earliest in the lifecycle (lowest status rank), tie-broken by most-recent,
+// so a re-entry lands on the project the owner is actually working -- not a random
+// sibling. Returns the chosen order, or null when there's nothing live to reuse.
+const PROJECT_LIFECYCLE_RANK = {
+  quoted: 0, approved: 1, placed: 2, in_production: 3, shipped: 4, delivered: 5, cancelled: 6,
+};
+const LIVE_TERMINAL_STATUSES = ['delivered', 'cancelled'];
+function isLiveProject(o) {
+  if (!o) return false;
+  if (o.archived === true) return false;
+  return !LIVE_TERMINAL_STATUSES.includes(o.status);
+}
+function pickLiveProjectForCompany(orders) {
+  const live = (Array.isArray(orders) ? orders : []).filter(isLiveProject);
+  if (live.length === 0) return null;
+  return live.slice().sort((a, b) => {
+    const ar = PROJECT_LIFECYCLE_RANK[a.status] != null ? PROJECT_LIFECYCLE_RANK[a.status] : 0;
+    const br = PROJECT_LIFECYCLE_RANK[b.status] != null ? PROJECT_LIFECYCLE_RANK[b.status] : 0;
+    if (ar !== br) return ar - br;                       // earliest lifecycle first
+    return new Date(b.createdAt || 0) - new Date(a.createdAt || 0); // then newest
+  })[0];
+}
+
+// POST /api/orders/for-company -- create-or-get the working project for a CRM
+// company entering the "quoting" stage. This is the LEAD -> QUOTE -> ORDERS
+// handoff: a deal only gets a project # once the owner moves it to quoting.
+// IDEMPOTENT -- if a live (non-delivered/non-cancelled, non-archived) project
+// already exists for the company it's returned as-is (never a second project #);
+// otherwise a fresh project is created with the next project # via the SAME
+// nextNumber('project') sequence + companyKey linkage the rest of the app uses.
+// Best-effort by contract: the CRM stage write that triggers this must never fail
+// because the order create hiccups, so the caller (frontend) treats any failure
+// as a soft miss. Body: { companyKey?, companyName?, clientName?, dealValue?,
+// contactName?, contactEmail?, contactPhone? }. companyKey is honored when sent;
+// otherwise derived from the names exactly like Order.companyKey, so the link
+// matches everywhere.
+const createOrGetProjectForCompany = async (req, res) => {
+  try {
+    const body = req.body || {};
+    const companyName = (body.companyName || '').toString().trim();
+    const clientName  = (body.clientName  || '').toString().trim();
+    const key = (body.companyKey || '').toString().trim() || deriveCompanyKey(companyName, clientName);
+    if (!key) return res.status(400).json({ message: 'companyKey (or a company/client name) is required' });
+
+    // Reuse an existing live project for this company -> idempotent re-entry. We
+    // read the company's orders by the canonical companyKey (the same key Orders
+    // store) and pick the one to work, WITHOUT minting a new number.
+    const existingOrders = await Order.find({ companyKey: key }).lean();
+    const reuse = pickLiveProjectForCompany(existingOrders);
+    if (reuse) return res.json({ order: reuse, created: false });
+
+    // Nothing live -> create the project. Mirrors createFromSubmission: next
+    // project # from the shared sequence, status starts at 'quoted', carry the
+    // deal's contact + value so the order page opens pre-seeded. companyKey is
+    // recomputed by the model's pre-save hook from the names, so we pass names.
+    const dealValue = Number(body.dealValue) || 0;
+    const contactBits = [
+      body.contactName  && `Contact: ${body.contactName}`,
+      body.contactEmail && `Email: ${body.contactEmail}`,
+      body.contactPhone && `Phone: ${body.contactPhone}`,
+      dealValue > 0     && `Estimated deal value: $${dealValue.toLocaleString('en-US')}`,
+    ].filter(Boolean).join('\n');
+
+    const projectNumber = await nextNumber('project');
+    const order = await Order.create({
+      projectNumber,
+      companyName,
+      clientName: clientName || body.contactName || '',
+      status:     'quoted',
+      // Seed the quote total from the deal value so the project isn't $0 before a
+      // quote is built; it's overwritten the moment a real quote/confirmation is
+      // saved (computeQuoteTotals / computeConfirmationTotals own totalValue then).
+      totalValue: dealValue,
+      notes:      contactBits,
+      importedFrom: 'crm-quoting',
+      activity: [{
+        kind: 'created', actor: 'admin',
+        message: `Project #${projectNumber} created from CRM (moved to quoting)`,
+        at: new Date(),
+      }],
+    });
+    return res.status(201).json({ order: order.toObject(), created: true });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 // GET /api/orders/mockup-health — diagnostic report: which project mockup #s
 // are backed by a Studio library item, which aren't, and which library items
 // don't belong to any project. Used by the Order Tracker "Mockup health"
@@ -1232,6 +1325,7 @@ module.exports = {
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
   dashboard, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
   cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups, assignMockupNumber,
+  createOrGetProjectForCompany,
   // exported for tests / reuse
-  isPlacedStatus, bumpCustomerOnPlacement,
+  isPlacedStatus, bumpCustomerOnPlacement, pickLiveProjectForCompany, isLiveProject,
 };
