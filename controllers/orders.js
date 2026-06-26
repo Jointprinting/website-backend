@@ -10,7 +10,7 @@ const { getDefaultsFor } = require('./clients');
 // REUSE the CRM's customer-promotion (which itself reuses promoteStage) so a
 // placed order bumps the company to 'customer' without ever regressing a
 // won/lost/dormant record. Order writes never depend on this succeeding.
-const { promoteCompanyToCustomerOnPlacement } = require('./crm');
+const { promoteCompanyToCustomerOnPlacement, ensureCompanyForQuoting } = require('./crm');
 const { nextNumber, bumpCounterTo } = require('../utils/sequence');
 const r2 = require('../services/r2');
 
@@ -937,6 +937,17 @@ const createOrGetProjectForCompany = async (req, res) => {
     const clientName  = (body.clientName  || '').toString().trim();
     const key = (body.companyKey || '').toString().trim() || deriveCompanyKey(companyName, clientName);
     if (!key) return res.status(400).json({ message: 'companyKey (or a company/client name) is required' });
+
+    // Ensure the company is also a first-class CRM record at the 'quoting' stage,
+    // so the order-centric pipeline board (and Companies / Today) shows it the
+    // moment it's quoting — not just once some other path creates a Client row.
+    // Best-effort + idempotent + UP-only (never regresses an owner-advanced or
+    // closed stage); a CRM hiccup must never block minting the project.
+    try {
+      await ensureCompanyForQuoting(key, { companyName, clientName, dealValue: Number(body.dealValue) || 0 });
+    } catch (e) {
+      console.warn('[orders] ensureCompanyForQuoting skipped:', e.message);
+    }
 
     // Reuse an existing live project for this company -> idempotent re-entry. We
     // read the company's orders by the canonical companyKey (the same key Orders
