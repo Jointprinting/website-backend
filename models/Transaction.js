@@ -6,8 +6,12 @@ const mongoose = require('mongoose');
 // P&L + analytics. Populated by importing the JP Ledger CSV and, going forward,
 // auto-appended from orders (where the customer is known, so no name guessing).
 //
-// NOTE: financial data lives only in the DB (and the owner's exported CSV/Sheet)
-// — never committed to the repo.
+// NOTE: live financial data lives in the DB (and the owner's exported CSV/Sheet).
+// The ONE committed exception is data/financeLedgerSeed.json — the owner's verified
+// budget ledger, committed deliberately (like data/notionCrmSeed.json for the CRM)
+// so the "Restart finances from my budgets" flow has a reproducible, reviewable
+// source of truth to load. It is admin-gated behind the same auth as the rest of
+// the finance API. No other finance data is committed.
 
 const CATEGORIES = [
   'Customer Sales', 'Blank COGS', 'Printer COGS', 'Shipping', 'Art', 'Commission',

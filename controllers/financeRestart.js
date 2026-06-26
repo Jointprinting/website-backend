@@ -60,17 +60,6 @@ async function loadCurrentState() {
   return { transactions };
 }
 
-function buildPlan(opts = {}) {
-  const seed = loadSeed();
-  return {
-    seed,
-    plan: null,
-    cogsCategories: Transaction.COGS_CATEGORIES,
-    knownDiscrepancies: loadKnownDiscrepancies(),
-    ...opts,
-  };
-}
-
 // ── GET/POST /api/finances/restart/preview ───────────────────────────────────
 async function restartPreview(req, res) {
   try {
@@ -122,51 +111,65 @@ async function restartApply(req, res) {
 
     const batchId = body.batchId || `finrestart-${new Date().toISOString().slice(0, 10)}-${crypto.randomBytes(4).toString('hex')}`;
 
-    // 1) SNAPSHOT the budget rows we're about to replace (full backup → reversible).
-    //    Re-read the actual docs (with _id) so the snapshot can be restored verbatim.
-    const toDeleteIds = (plan.preserve.toDelete || []).map((t) => t._id).filter(Boolean);
-    let replacedRows = [];
-    if (toDeleteIds.length) {
-      replacedRows = await Transaction.find({ _id: { $in: toDeleteIds } }).lean();
-    }
+    // The rows we will REMOVE = the prior budget rows (replaced) PLUS the manual
+    // in-app rows that DUPLICATE a budget row (same date+amount+order#+type+category).
+    // We remove the manual dup too — leaving it would double-count against the budget
+    // copy in every rollup (the preview promised "won't double-count", so the apply
+    // must actually honor that). BOTH sets are snapshotted into the batch so revert
+    // restores them. A manual row that is NOT a budget duplicate is never touched.
+    const toDeleteIds = [
+      ...(plan.preserve.toDelete || []).map((t) => t._id),
+      ...(plan.preserve.droppedDuplicates || []).map((t) => t._id),
+    ].filter(Boolean);
 
-    // 2) Persist the batch record (status applied) BEFORE the destructive step, so
-    //    a crash mid-apply still leaves the backup recoverable.
+    // 1) BUILD + VALIDATE + INSERT the seed rows FIRST (non-destructive). Every doc
+    //    is validated against the model before any insert; on a validation failure
+    //    this throws BEFORE we delete anything, so the existing ledger is untouched
+    //    and the apply is safe to retry. Rows are stamped source:'budget' + batchId.
+    const docs = seed.rows.map((r) => seedRowToDoc(r, batchId));
+    // Pre-validate the whole batch so a single bad row can't leave a half-inserted
+    // ledger (insertMany {ordered:false} would otherwise commit the good ones then
+    // throw). If any row is invalid we abort here, before inserting OR deleting.
+    for (const d of docs) {
+      const err = new Transaction(d).validateSync();
+      if (err) throw new Error(`Seed row failed validation (${err.message}). Aborting before any change — re-run scripts/buildFinanceSeed.js.`);
+    }
+    const inserted = await Transaction.insertMany(docs, { ordered: true });
+
+    // 2) SNAPSHOT the rows we're about to remove (full backup → reversible), then
+    //    persist the batch record so the backup is durable before the delete.
+    let removedRows = [];
+    if (toDeleteIds.length) {
+      removedRows = await Transaction.find({ _id: { $in: toDeleteIds } }).lean();
+    }
     await FinanceRestartBatch.create({
       batchId,
       status: 'applied',
-      inserted: plan.preserve.toInsertCount,
-      replaced: replacedRows.length,
+      inserted: inserted.length,
+      replaced: (plan.preserve.toDelete || []).length,
       preserved: plan.preserve.preservedCount,
       droppedDuplicates: plan.preserve.droppedDuplicateCount,
       totals: plan.totals,
-      replacedRows,
+      replacedRows: removedRows,         // prior budget rows + removed manual dups
       note: 'Restart finances from owner budget trackers.',
     });
 
-    // 3) DELETE the prior budget rows (replaced). Manual rows are never matched here
-    //    (we only delete by the exact ids the plan flagged as source:'budget').
-    let deleted = 0;
+    // 3) DELETE the prior budget rows + the manual duplicates, by exact _id only.
+    //    (A genuinely new manual row is never in this id set, so it is preserved.)
+    let removed = 0;
     if (toDeleteIds.length) {
       const r = await Transaction.deleteMany({ _id: { $in: toDeleteIds } });
-      deleted = r.deletedCount != null ? r.deletedCount : (r.n || 0);
+      removed = r.deletedCount != null ? r.deletedCount : (r.n || 0);
     }
-
-    // 4) INSERT the seed rows (the verified ledger), stamped with source 'budget' +
-    //    the batch id. Manual rows that duplicate a budget row were already excluded
-    //    from "preserve" (the budget version wins) — but they LIVE in the DB still;
-    //    we don't touch them here (dropping them is the owner's call, surfaced as a
-    //    discrepancy). The budget insert is the canonical copy going forward.
-    const docs = seed.rows.map((r) => seedRowToDoc(r, batchId));
-    const inserted = await Transaction.insertMany(docs, { ordered: false });
 
     res.json({
       applied: true,
       batchId,
       inserted: inserted.length,
-      replaced: deleted,
+      replaced: (plan.preserve.toDelete || []).length,
+      removedManualDuplicates: plan.preserve.droppedDuplicateCount,
+      removedTotal: removed,
       preserved: plan.preserve.preservedCount,
-      droppedDuplicates: plan.preserve.droppedDuplicateCount,
       totals: plan.totals,
       summary: plan.summary,
       discrepancies: plan.discrepancies,
@@ -192,6 +195,21 @@ async function restartRevert(req, res) {
     if (!batch) return res.status(404).json({ message: `No finance restart batch found for id "${batchId}".` });
     if (batch.status === 'reverted') {
       return res.json({ reverted: true, batchId, alreadyReverted: true, note: 'This batch was already reverted.' });
+    }
+
+    // Guard against a STALE revert: if a NEWER applied batch exists, this batch's
+    // budget rows were already replaced by that newer run, and restoring this batch's
+    // snapshot would stack a second budget copy on top of the newer one (duplicates).
+    // Revert is an "undo the last restart" action — refuse to undo an older one out of
+    // order and point the owner at the latest batch instead.
+    const newer = await FinanceRestartBatch.findOne({
+      status: 'applied', at: { $gt: batch.at }, batchId: { $ne: batchId },
+    }).sort({ at: -1 }).lean();
+    if (newer) {
+      return res.status(409).json({
+        message: `A newer restart (batch ${newer.batchId}) was applied after this one. Revert that one first — undoing an older restart out of order would duplicate rows.`,
+        latestBatchId: newer.batchId,
+      });
     }
 
     // 1) Remove the rows this batch inserted.
@@ -228,5 +246,4 @@ module.exports = {
   restartRevert,
   // exported for tests / reuse
   loadSeed,
-  buildPlan,
 };

@@ -45,6 +45,30 @@ test('committed seed: raw cash net == $22,413.41 (the integrity cross-check)', (
   assert.ok(s.net < s.rawCashNet, 'P&L profit is below cash net (equity excluded)');
 });
 
+test('committed seed: EVERY row is dated + validates against the Transaction model', () => {
+  // Regression for the critical bug: 280/330 budget rows are undated in the source;
+  // the builder must anchor them to their sheet-month so date (required) is set and
+  // the year filter places them. An undated doc → required-date validation failure →
+  // apply would gut the ledger. This pins that all rows insert cleanly.
+  const seedPath = path.join(__dirname, '..', '..', 'data', 'financeLedgerSeed.json');
+  if (!fs.existsSync(seedPath)) { console.warn('seed not built; skipping'); return; }
+  const Transaction = require('../../models/Transaction');
+  const seed = JSON.parse(fs.readFileSync(seedPath, 'utf8'));
+  let failures = 0;
+  const byYear = {};
+  for (const r of seed.rows) {
+    const doc = seedRowToDoc(r, 'b');
+    assert.ok(doc.date instanceof Date && !isNaN(doc.date.getTime()), `row has a valid date: ${r.description}`);
+    const err = new Transaction(doc).validateSync();
+    if (err) failures += 1;
+    byYear[doc.year] = (byYear[doc.year] || 0) + 1;
+  }
+  assert.equal(failures, 0, 'no seed row may fail model validation');
+  // The year filter must have real rows in EACH year (2026 must show its orders).
+  assert.ok((byYear[2024] || 0) > 0 && (byYear[2025] || 0) > 0 && (byYear[2026] || 0) > 0,
+    'every year has rows so the year filter shows each year');
+});
+
 // ── summarizeRows: P&L refinements ───────────────────────────────────────────
 test('summarizeRows: Owner Contribution is equity IN (not revenue/profit)', () => {
   const s = summarizeRows([
@@ -149,22 +173,36 @@ test('buildPreservePlan: prior budget rows are replaced; new manual rows are kep
 });
 
 test('buildPreservePlan: a manual row that DUPLICATES a budget row is dropped (no double-count)', () => {
-  // Same date + amount + normalized order # as the seed row → it's the SAME entry.
+  // Same date + amount + normalized order # + type + category as the seed row → SAME entry.
   const seedRows = [inc(1000, { date: '2025-06-05', orderNumber: '5' })];
   const live = [
-    { _id: 'm1', source: 'manual', date: new Date('2025-06-05T12:00:00Z'), amount: 1000, orderNumber: '0005' }, // dup (leading-zero variant)
+    { _id: 'm1', source: 'manual', date: new Date('2025-06-05T12:00:00Z'), amount: 1000, orderNumber: '0005', type: 'income', category: 'Customer Sales' }, // dup (leading-zero variant)
   ];
   const p = buildPreservePlan(seedRows, live);
   assert.equal(p.droppedDuplicateCount, 1, 'the manual duplicate is dropped');
   assert.equal(p.preservedCount, 0);
 });
 
-test('dedupSig: same date+amount+normalized order# collide regardless of zero-padding/Date vs string', () => {
-  const a = dedupSig({ date: '2025-06-05', amount: 1000, orderNumber: '5' });
-  const b = dedupSig({ date: new Date('2025-06-05T12:00:00Z'), amount: 1000, orderNumber: '0005' });
+test('dedupSig: same date+amount+order#+type+category collide regardless of zero-padding/Date vs string', () => {
+  const a = dedupSig({ date: '2025-06-05', amount: 1000, orderNumber: '5', type: 'income', category: 'Customer Sales' });
+  const b = dedupSig({ date: new Date('2025-06-05T12:00:00Z'), amount: 1000, orderNumber: '0005', type: 'income', category: 'Customer Sales' });
   assert.equal(a, b);
-  const c = dedupSig({ date: '2025-06-05', amount: 1000.01, orderNumber: '5' });
+  const c = dedupSig({ date: '2025-06-05', amount: 1000.01, orderNumber: '5', type: 'income', category: 'Customer Sales' });
   assert.notEqual(a, c, 'a cent difference is a different row');
+});
+
+test('dedupSig: distinct same-day same-amount rows of different category do NOT collide (no false-drop)', () => {
+  // Two real $70 expenses on the same day in different categories must NOT be treated
+  // as the same transaction — else a legit manual row gets wrongly dropped.
+  const travel = dedupSig({ date: '2025-06-26', amount: 70, orderNumber: '', type: 'expense', category: 'Travel/Field' });
+  const cogs   = dedupSig({ date: '2025-06-26', amount: 70, orderNumber: '', type: 'expense', category: 'Blank COGS' });
+  assert.notEqual(travel, cogs);
+});
+
+test('dedupSig: a row with no usable date is never dedupable (always preserved)', () => {
+  const a = dedupSig({ date: '', amount: 70, orderNumber: '', type: 'expense', category: 'Other' });
+  const b = dedupSig({ date: '', amount: 70, orderNumber: '', type: 'expense', category: 'Other' });
+  assert.notEqual(a, b, 'two undated rows get unique signatures (never collapse together)');
 });
 
 // ── seedRowToDoc ─────────────────────────────────────────────────────────────

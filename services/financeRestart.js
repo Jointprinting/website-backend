@@ -63,18 +63,30 @@ function incomeRevenue(t) {
 
 // ── dedup signature for preserve-vs-replace ──────────────────────────────────
 // Two rows are "the same transaction" iff same calendar date + same amount + same
-// normalized order number. Date is reduced to yyyy-mm-dd (UTC) so a Date object
-// and an ISO string compare equal. Amount is rounded to cents. This is the key the
-// owner asked for: a manual row that matches a budget row on these three is the
-// SAME entry (don't double); a manual row that matches none is genuinely new.
+// normalized order number + same type/category. Reducing a Date to yyyy-mm-dd uses
+// a CONSISTENT convention for both a Date object and an ISO string: an ISO string's
+// literal first 10 chars are its calendar day, and a Date is normalized to UTC and
+// sliced — but a bare "yyyy-mm-dd" Date parses as UTC midnight, so both forms yield
+// the SAME yyyy-mm-dd (no off-by-one across the string/Date boundary). type+category
+// are included so two genuinely DIFFERENT same-day, same-amount rows (e.g. a $70
+// Amtrak trip vs a $70 supplier cost) don't false-collide and wrongly drop a real
+// manual entry. This is the key the owner asked for: a manual row matching a budget
+// row on this signature is the SAME entry (don't double); no match ⇒ genuinely new.
 function dateKey(d) {
   if (!d) return '';
-  if (typeof d === 'string') return d.slice(0, 10);
+  if (typeof d === 'string') return d.slice(0, 10);          // ISO calendar prefix
   const dt = new Date(d);
-  return isNaN(dt.getTime()) ? '' : dt.toISOString().slice(0, 10);
+  return isNaN(dt.getTime()) ? '' : dt.toISOString().slice(0, 10); // Date → UTC day
 }
 function dedupSig(t) {
-  return `${dateKey(t && t.date)}|${round2(t && t.amount)}|${normalizeOrderNumber(t && t.orderNumber)}`;
+  const dk = dateKey(t && t.date);
+  // A row with NO usable date is NOT dedupable — collapsing every dateless row to a
+  // shared key would drop distinct manual entries. Give it a unique signature so it
+  // can only ever match itself (it never will across the seed/live boundary), i.e.
+  // it is always PRESERVED. (Post-builder every budget row IS dated, so this guards
+  // only against a malformed/legacy row.)
+  if (!dk) return `nodate|${Math.random()}`;
+  return `${dk}|${round2(t && t.amount)}|${normalizeOrderNumber(t && t.orderNumber)}|${t && t.type || ''}|${t && t.category || ''}`;
 }
 
 // ── seed row → Transaction doc shape ─────────────────────────────────────────
@@ -83,8 +95,15 @@ function dedupSig(t) {
 // `source` is forced to 'budget' so a restart can find+replace exactly its own
 // rows and never a manual one. `qbSynced` carries the owner's "Recorded in QB?".
 function seedRowToDoc(r, batchId) {
+  // Every seed row carries a real ISO date (the builder anchors an undated row to
+  // the 1st of its sheet's month), so date is ALWAYS set — Transaction.date is
+  // required, and the finance UI filters by the date's year. Fall back defensively
+  // to the row's `year` if a hand-edited seed ever lacked a date.
+  const iso = (r.date && /^\d{4}-\d{2}-\d{2}$/.test(r.date))
+    ? r.date
+    : `${r.year || new Date().getUTCFullYear()}-01-01`;
   return {
-    date: r.date ? new Date(`${r.date}T12:00:00Z`) : null, // UTC noon — calendar-day stable
+    date: new Date(`${iso}T12:00:00Z`),         // UTC noon — calendar-day stable
     type: r.type === 'income' ? 'income' : 'expense',
     category: r.category || 'Other',
     orderNumber: normalizeOrderNumber(r.orderNumber),
@@ -93,7 +112,7 @@ function seedRowToDoc(r, batchId) {
     amount: Math.abs(round2(r.amount)),
     isCredit: false,
     qbSynced: !!r.recordedInQB,
-    year: r.date ? Number(r.date.slice(0, 4)) : undefined,
+    year: Number(iso.slice(0, 4)),
     source: 'budget',
     restartBatchId: batchId || '',
   };

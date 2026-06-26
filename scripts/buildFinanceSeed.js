@@ -141,6 +141,26 @@ function qbTrue(qb) {
   return /^y(es)?$/i.test(String(qb || '').trim());
 }
 
+// Sheet name → 0-based month index (the workbooks' sheets are full month names).
+const MONTH_INDEX = {
+  january: 0, february: 1, march: 2, april: 3, may: 4, june: 5,
+  july: 6, august: 7, september: 8, october: 9, november: 10, december: 11,
+};
+
+// Resolve a row's date. MANY budget rows are undated — the owner appends late
+// entries (e.g. the rows below a month's "Total") with no date cell. Those MUST
+// still get a real calendar date, because (a) Transaction.date is required and
+// (b) the whole finance UI filters by YEAR via the date — an undated row would be
+// invisible in every year's P&L/trend. We anchor an undated row to the FIRST of
+// its sheet's month (the owner filed it under that month), keeping it in the right
+// year+month bucket. Dated rows keep their exact date. Returns an ISO yyyy-mm-dd.
+function resolveDate(r) {
+  if (r.date && /^\d{4}-\d{2}-\d{2}$/.test(r.date)) return r.date;
+  const mi = MONTH_INDEX[String(r.month || '').trim().toLowerCase()];
+  if (mi == null) return `${r.year}-01-01`;     // unknown sheet → year start (last resort)
+  return `${r.year}-${String(mi + 1).padStart(2, '0')}-01`;
+}
+
 function buildSeed() {
   const rawRows = [];
   for (const wb of WORKBOOKS) rawRows.push(...parseWorkbook(wb.file, wb.year));
@@ -149,8 +169,10 @@ function buildSeed() {
     const isIncome = r.side === 'income';
     const { category, party } = categorize(r.desc, isIncome);
     const orderNumber = parseOrderHint(r.desc); // normalized digits, '' if none
+    const date = resolveDate(r);                // exact date, or 1st-of-sheet-month for undated
     return {
-      date: r.date,                              // ISO yyyy-mm-dd ('' if undated)
+      date,                                      // ISO yyyy-mm-dd (always set — never blank)
+      dateExact: !!(r.date && /^\d{4}-\d{2}-\d{2}$/.test(r.date)), // false ⇒ month-anchored fallback
       type: isIncome ? 'income' : 'expense',
       amount: Number(r.sum),                     // positive magnitude
       category,
@@ -158,7 +180,7 @@ function buildSeed() {
       orderNumber,                               // HINT only (owner's manual #, normalized)
       description: r.desc,
       recordedInQB: qbTrue(r.qb),
-      year: r.year,
+      year: Number(date.slice(0, 4)),
       source: 'budget',
     };
   });
