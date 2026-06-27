@@ -27,6 +27,20 @@ const VendorSchema = new mongoose.Schema({
   shipMethod:  { type: String, default: '' },   // default "UPS Acct # ..." note
   accountNumber: { type: String, default: '' }, // our account # with this vendor
   notes:       { type: String, default: '' },
+
+  // ── Printer-network / geo-routing foundation ────────────────────────────────
+  // Optional, owner-filled. The seeds of the nationwide "route each job to the
+  // best printer NEAREST the client" engine: a structured location (the freeform
+  // `address` above stays the human label), what this shop can actually produce,
+  // its typical turnaround, and an owner quality score. NOTHING routes off these
+  // yet — the routing + nexus logic waits on the owner's network/nexus strategy.
+  city:  { type: String, default: '' },
+  state: { type: String, default: '' },            // USPS code, e.g. "PA" — geo proximity
+  zip:   { type: String, default: '' },
+  capabilities:  { type: [String], default: [] },  // 'screen print','embroidery','DTG','promo','signage','blanks',…
+  leadTimeDays:  { type: Number, default: 0 },     // typical turnaround in business days (0 = unset)
+  qualityRating: { type: Number, default: 0 },     // owner score 1–5 (0 = unrated)
+
   // Typical mode for this vendor. Defaults TRUE because Joint Printing supplies
   // the blanks ~99% of the time — so an unset/new vendor seeds POs with blanks
   // provided (blank cost excluded from the supplier PO). The PO seeders read this
