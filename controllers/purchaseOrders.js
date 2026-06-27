@@ -1082,7 +1082,9 @@ function aggregateVendorCard({ vendor, vendorPos, txns, connectedOrders, orderBy
 // (#1). Setting a higher start floors future auto-numbering AND immediately bumps
 // the atomic counter up to it, so the next PO can't collide with the owner's real
 // run. Never lowers an already-issued sequence below what's been used.
-const VENDOR_PATCHABLE = ['name', 'contactName', 'email', 'phone', 'address', 'shipMethod', 'accountNumber', 'notes', 'blanksProvided'];
+const VENDOR_PATCHABLE = ['name', 'contactName', 'email', 'phone', 'address', 'shipMethod', 'accountNumber', 'notes', 'blanksProvided',
+  // Printer-network / geo-routing foundation (owner-filled; nothing routes off them yet).
+  'city', 'state', 'zip', 'capabilities', 'leadTimeDays', 'qualityRating'];
 const updateVendor = async (req, res) => {
   try {
     if (badId(req.params.id)) return res.status(404).json({ message: 'Vendor not found' });
