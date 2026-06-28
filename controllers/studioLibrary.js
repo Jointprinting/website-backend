@@ -38,7 +38,7 @@ async function listItems(req, res) {
     // `data` (the BACK composite, an R2 URL post-migration) rides along so
     // the confirmation builder can offer + preview the back side; without it
     // the "Show back" toggle could never appear.
-    if (summary) q.select('store name thumbnail data client savedAt remoteId pageState.mockupNum');
+    if (summary) q.select('store name thumbnail data client savedAt remoteId pageState.mockupNum pageState.projectNumber');
     const items = await q.lean();
     if (summary) {
       // Keep the summary payload light: R2-hosted backs ship as URLs, but a
