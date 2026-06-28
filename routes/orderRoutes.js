@@ -6,7 +6,7 @@ const poCtl = require('../controllers/purchaseOrders');
 const {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
-  dashboard, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
+  dashboard, attention, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
   cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups, assignMockupNumber,
   createOrGetProjectForCompany,
 } = require('../controllers/orders');
@@ -39,6 +39,7 @@ router.post('/cleanup-delete',            cleanupDelete);
 router.post('/merge-company',             mergeCompany);
 router.post('/mockups/auto-link',         autoLinkMockups);
 router.get('/dashboard',                  dashboard);
+router.get('/attention',                  attention);
 router.get('/analytics',                  analytics);
 router.get('/clients-summary',            clientsSummary);
 router.get('/mockup-health',              mockupHealth);
