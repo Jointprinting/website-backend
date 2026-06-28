@@ -33,6 +33,12 @@ const {
   reconcileRevert,
   reconcileStatus,
 } = require('../controllers/crmReconcile');
+const {
+  cleanupPreview,
+  cleanupApply,
+  cleanupRevert,
+  cleanupStatus,
+} = require('../controllers/dataCleanup');
 
 router.use(requireAdmin);
 
@@ -61,6 +67,15 @@ router.post('/reconcile/preview', reconcilePreview);
 router.post('/reconcile/apply',   reconcileApply);
 router.post('/reconcile/revert',  reconcileRevert);
 router.get('/reconcile/status',   reconcileStatus);
+
+// ── Owner-run "Fix data" cleanup (preview → confirm; reversible). Surfaces only
+// genuine issues (orphaned orders, contact-polluted names, mis-keyed receipts).
+// Fixed paths, declared BEFORE the dynamic /:companyKey so they aren't swallowed.
+router.get('/data-cleanup/preview',  cleanupPreview);
+router.post('/data-cleanup/preview', cleanupPreview);
+router.post('/data-cleanup/apply',   cleanupApply);
+router.post('/data-cleanup/revert',  cleanupRevert);
+router.get('/data-cleanup/status',   cleanupStatus);
 
 router.get('/:companyKey',   getOne);
 router.patch('/:companyKey', patchOne);
