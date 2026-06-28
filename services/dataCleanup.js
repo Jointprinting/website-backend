@@ -33,6 +33,13 @@ const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').tr
 // COGS categories that represent a real COST receipt — mirrors Transaction.COGS_CATEGORIES.
 const COST_CATEGORIES = new Set(['Blank COGS', 'Printer COGS', 'Shipping', 'Art', 'Commission', 'Processing Fee']);
 
+// A "mis-keyed receipt" only makes sense for a row the owner HAND-ENTERED. The bulk
+// budget-import / restart rows (source 'budget'/'import') and system-generated rows
+// ('order:auto'/'fee:auto'/'merge') sit on his historical manual order #s by design and
+// are NEVER worth chasing — "ignore them; only future ones matter." Mirrors
+// services/financeDedupe.js MANUAL_SOURCES; a missing source defaults to a hand entry.
+const MANUAL_RECEIPT_SOURCES = new Set(['manual', 'receipt', '']);
+
 // 1) Orders with a real company/contact name but no companyKey → derive the key so
 //    they link to their client (and the client counts as a real customer).
 function detectOrphanOrders(orders) {
@@ -89,6 +96,10 @@ function detectMisKeyedReceipts(transactions, orderKeys) {
   const out = [];
   for (const t of (transactions || [])) {
     if (!t || t.type !== 'expense' || !COST_CATEGORIES.has(t.category)) continue;
+    // Skip the historical budget-import / system rows — only a hand-entered receipt can
+    // be "mis-keyed" worth fixing. (A missing source is a legacy hand entry → kept.)
+    const src = t.source == null ? 'manual' : String(t.source);
+    if (!MANUAL_RECEIPT_SOURCES.has(src)) continue;
     const k = normalizeOrderNumber(t.orderNumber);
     if (!k || keys.has(k)) continue;
     out.push({
