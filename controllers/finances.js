@@ -782,7 +782,7 @@ const byOrder = async (req, res) => {
       // and a "21" row are the same order — not two split buckets on the drill-in.
       const key = normalizeOrderNumber(t.orderNumber);
       if (!key) return;
-      const o = (map[key] ||= { orderNumber: key, client: '', revenue: 0, cost: 0, saleDate: null, firstDate: null });
+      const o = (map[key] ||= { orderNumber: key, client: '', hasSale: false, revenue: 0, cost: 0, saleDate: null, firstDate: null });
       const d = t.date && !isNaN(new Date(t.date).getTime()) ? new Date(t.date) : null;
       if (d && (!o.firstDate || d < o.firstDate)) o.firstDate = d;
       if (t.type === 'income') {
@@ -791,6 +791,7 @@ const byOrder = async (req, res) => {
         // refunded order and the top-line finally reconcile. Other income → 0.
         o.revenue += orderRevenueContribution(t);
         if (t.category === 'Customer Sales') {
+          o.hasSale = true;                                              // a real sale → a real order
           if (!o.client) o.client = t.party;
           if (d && (!o.saleDate || d < o.saleDate)) o.saleDate = d;      // anchor = when it sold
         }
@@ -798,18 +799,24 @@ const byOrder = async (req, res) => {
         o.cost += signed(t);      // a COGS credit = supplier credit → nets cost down
       }
     });
-    let orders = Object.values(map).map((o) => {
-      const anchor = o.saleDate || o.firstDate;
-      const profit = round2(o.revenue - o.cost);
-      return {
-        orderNumber: o.orderNumber, client: o.client,
-        companyKey: ckByOrder[o.orderNumber] || '',   // '' = not linkable (no/ambiguous order)
-        year: anchor ? new Date(anchor).getUTCFullYear() : null,
-        revenue: round2(o.revenue), cost: round2(o.cost), profit,
-        margin: pct(profit, o.revenue),
-      };
-    });
-    orders = orders.filter((o) => realOrderKeys.has(o.orderNumber) && (o.revenue !== 0 || o.cost !== 0));  // real orders only — drop $0/$0 ghosts AND orphans whose order# matches no order (mis-keyed receipts)
+    let orders = Object.values(map)
+      // A REAL order has a sale (Customer Sales) OR a matching Order doc. A cost-only
+      // bucket with neither is a mis-keyed receipt (a typo'd #) — drop it; its cost
+      // still counts in the headline and the row stays in Transactions to re-point.
+      // (The owner's legit orders are often budget-#'d with no Order doc, so we must
+      // NOT require an Order doc — only that a real sale exists.)
+      .filter((o) => (o.revenue !== 0 || o.cost !== 0) && (o.hasSale || realOrderKeys.has(o.orderNumber)))
+      .map((o) => {
+        const anchor = o.saleDate || o.firstDate;
+        const profit = round2(o.revenue - o.cost);
+        return {
+          orderNumber: o.orderNumber, client: o.client,
+          companyKey: ckByOrder[o.orderNumber] || '',   // '' = not linkable (no/ambiguous order)
+          year: anchor ? new Date(anchor).getUTCFullYear() : null,
+          revenue: round2(o.revenue), cost: round2(o.cost), profit,
+          margin: pct(profit, o.revenue),
+        };
+      });
     if (year) orders = orders.filter((o) => o.year === year);  // by the year it SOLD, not by cost dates
     orders.sort((a, b) => Number(b.orderNumber) - Number(a.orderNumber));
     res.json({ orders });
@@ -948,6 +955,9 @@ const byClient = async (req, res) => {
     const orderDocs = await Order.find({ orderNumber: { $ne: '' } })
       .select('orderNumber companyKey').lean();
     const ckByOrder = companyKeyByOrderNumber(orderDocs);
+    // Same real-order set byOrder uses, so the two views stay consistent: a cost-only
+    // bucket with no sale AND no Order doc is a mis-keyed receipt, not a client.
+    const realOrderKeys = new Set(orderDocs.map((o) => normalizeOrderNumber(o.orderNumber)).filter(Boolean));
     const cogs = new Set(Transaction.COGS_CATEGORIES);
     const orders = {};
     rows.forEach((t) => {
@@ -955,12 +965,13 @@ const byClient = async (req, res) => {
       // number roll into a single order before we attribute it to a client.
       const key = normalizeOrderNumber(t.orderNumber);
       if (!key) return;
-      const o = (orders[key] ||= { client: '', companyKey: ckByOrder[key] || '', revenue: 0, cost: 0, saleDate: null, firstDate: null });
+      const o = (orders[key] ||= { key, client: '', companyKey: ckByOrder[key] || '', hasSale: false, revenue: 0, cost: 0, saleDate: null, firstDate: null });
       const d = t.date && !isNaN(new Date(t.date).getTime()) ? new Date(t.date) : null;
       if (d && (!o.firstDate || d < o.firstDate)) o.firstDate = d;
       if (t.type === 'income') {
         o.revenue += orderRevenueContribution(t);   // Customer Sales + Refund contra (headline-consistent)
         if (t.category === 'Customer Sales') {
+          o.hasSale = true;
           if (!o.client) o.client = t.party;
           if (d && (!o.saleDate || d < o.saleDate)) o.saleDate = d;
         }
@@ -972,6 +983,7 @@ const byClient = async (req, res) => {
       const oy = anchor ? new Date(anchor).getUTCFullYear() : null;
       if (year && oy !== year) return;
       if (o.revenue === 0 && o.cost === 0) return;             // skip $0/$0 ghosts (order# on a non-COGS line)
+      if (!o.hasSale && !realOrderKeys.has(o.key)) return;     // drop cost-only orphans (mis-keyed receipts) — matches byOrder
       const name = (String(o.client == null ? '' : o.client).trim()) || '—';
       const c = (byC[name] ||= { client: name, companyKey: '', revenue: 0, cost: 0, orders: 0 });
       if (!c.companyKey && o.companyKey) c.companyKey = o.companyKey;   // first real key wins (deep-link target)
