@@ -12,6 +12,7 @@ const { getDefaultsFor } = require('./clients');
 // won/lost/dormant record. Order writes never depend on this succeeding.
 const { promoteCompanyToCustomerOnPlacement, ensureCompanyForQuoting } = require('./crm');
 const { nextNumber, bumpCounterTo } = require('../utils/sequence');
+const { etToday, etDayKey } = require('../utils/time');
 const r2 = require('../services/r2');
 
 // True when an order status counts as a REAL placed order (a customer signal).
@@ -491,6 +492,62 @@ const dashboard = async (req, res) => {
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
+};
+
+// GET /api/orders/attention — the hub command-center "what needs attention" feed:
+// OPEN orders aged past the owner's turnaround. He places an order and expects
+// 2–3 weeks; flag "running long" at 2 weeks and "possibly late" at 3. The clock
+// starts the day it's PLACED, so age is anchored to the status_changed→placed
+// event when present, then orderDate, then createdAt — measured in whole ET
+// CALENDAR days (etDayKey of the placement vs etToday) so a late-evening placement
+// is never off by one. 'approved' is excluded: turnaround starts at placement, not
+// quote approval.
+const ATTENTION_OPEN_STATUSES = ['placed', 'in_production', 'shipped'];
+const orderPlacedAt = (o) => {
+  const ev = (Array.isArray(o.activity) ? o.activity : [])
+    .filter((e) => e && e.kind === 'status_changed' && e.meta && e.meta.to === 'placed')
+    .sort((a, b) => new Date(a.at || 0) - new Date(b.at || 0))[0];
+  return (ev && ev.at) || o.orderDate || o.createdAt || null;
+};
+const etAgeDays = (placedAt, now = new Date()) => {
+  const pk = etDayKey(placedAt);
+  if (!pk) return null;
+  const today = Date.parse(`${etToday(now)}T00:00:00Z`);
+  const placed = Date.parse(`${pk}T00:00:00Z`);
+  if (Number.isNaN(today) || Number.isNaN(placed)) return null;
+  return Math.round((today - placed) / 86400000);
+};
+const attention = async (req, res) => {
+  try {
+    const open = await Order.find({ status: { $in: ATTENTION_OPEN_STATUSES }, archived: { $ne: true } })
+      .select('projectNumber orderNumber companyName clientName status orderDate createdAt activity totalValue')
+      .lean();
+    const orders = [];
+    for (const o of open) {
+      const placedAt = orderPlacedAt(o);
+      const ageDays = etAgeDays(placedAt);
+      if (ageDays == null) continue;
+      const flag = ageDays >= 21 ? 'possibly_late' : ageDays >= 14 ? 'running_long' : null;
+      if (!flag) continue;
+      orders.push({
+        _id: String(o._id),
+        projectNumber: o.projectNumber || '',
+        orderNumber: o.orderNumber || '',
+        companyName: o.companyName || '',
+        clientName: o.clientName || '',
+        status: o.status,
+        ageDays, placedAt, flag,
+      });
+    }
+    orders.sort((a, b) => b.ageDays - a.ageDays);   // oldest (most at-risk) first
+    res.json({
+      orders,
+      counts: {
+        possibly_late: orders.filter((o) => o.flag === 'possibly_late').length,
+        running_long: orders.filter((o) => o.flag === 'running_long').length,
+      },
+    });
+  } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
 // POST /api/orders/:id/files — upload a design file (multer applied in route)
@@ -1334,9 +1391,10 @@ const assignMockupNumber = async (req, res) => {
 module.exports = {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
-  dashboard, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
+  dashboard, attention, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
   cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups, assignMockupNumber,
   createOrGetProjectForCompany,
   // exported for tests / reuse
   isPlacedStatus, bumpCustomerOnPlacement, pickLiveProjectForCompany, isLiveProject,
+  orderPlacedAt, etAgeDays,
 };
