@@ -768,6 +768,13 @@ const byOrder = async (req, res) => {
     const orderDocs = await Order.find({ orderNumber: { $ne: '' } })
       .select('orderNumber companyKey').lean();
     const ckByOrder = companyKeyByOrderNumber(orderDocs);
+    // The set of REAL order numbers (canonical). A transaction whose orderNumber
+    // matches none of these is an ORPHAN — almost always a mis-keyed receipt (e.g.
+    // a blanks receipt booked under a typo'd #). We drop those phantom rows from
+    // the per-order P&L so a bad number can't masquerade as its own order. The cost
+    // still counts in the headline totals, and the row stays in Transactions where
+    // it can be re-pointed to the right order.
+    const realOrderKeys = new Set(orderDocs.map((o) => normalizeOrderNumber(o.orderNumber)).filter(Boolean));
     const cogs = new Set(Transaction.COGS_CATEGORIES);
     const map = {};
     rows.forEach((t) => {
@@ -802,7 +809,7 @@ const byOrder = async (req, res) => {
         margin: pct(profit, o.revenue),
       };
     });
-    orders = orders.filter((o) => o.revenue !== 0 || o.cost !== 0);  // real orders only (drop $0/$0 ghosts — an order# stuck on a software/overhead line)
+    orders = orders.filter((o) => realOrderKeys.has(o.orderNumber) && (o.revenue !== 0 || o.cost !== 0));  // real orders only — drop $0/$0 ghosts AND orphans whose order# matches no order (mis-keyed receipts)
     if (year) orders = orders.filter((o) => o.year === year);  // by the year it SOLD, not by cost dates
     orders.sort((a, b) => Number(b.orderNumber) - Number(a.orderNumber));
     res.json({ orders });
