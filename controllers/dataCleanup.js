@@ -77,13 +77,20 @@ async function cleanupApply(req, res) {
     if (body.confirm !== true && body.confirm !== 'true') {
       return res.status(400).json({ message: 'Refusing to apply without an explicit { confirm: true }. Run the preview first.' });
     }
-    const { orphans, polluted } = await buildPlan();
+    const { orders, orphans, polluted } = await buildPlan();
     const orphanWant = Array.isArray(body.orphanIds) ? new Set(body.orphanIds.map(String)) : null;
     const nameWant = Array.isArray(body.clientIds) ? new Set(body.clientIds.map(String)) : null;
     const receiptFixes = Array.isArray(body.receipts) ? body.receipts : [];
+    const orderKeys = new Set(orders.map((o) => normalizeOrderNumber(o.orderNumber)).filter(Boolean));
 
     const batchId = `datacleanup-${new Date().toISOString().slice(0, 10)}-${crypto.randomBytes(4).toString('hex')}`;
+
+    // Build the BEFORE snapshot + the list of writes in a reads-only first pass.
+    // Nothing is mutated yet — the batch backup is persisted BEFORE any write (below),
+    // so a failure partway through the writes is still fully revertible.
     const snap = { orders: [], clients: [], transactions: [] };
+    const writes = { orders: [], clients: [], transactions: [] };   // [{ id, set }]
+    const skipped = [];
 
     // 1) Orphan orders → derive + set companyKey.
     const orphansToFix = orphanWant ? orphans.filter((o) => orphanWant.has(o.orderId)) : orphans;
@@ -91,7 +98,7 @@ async function cleanupApply(req, res) {
       const cur = await Order.findById(o.orderId).select('companyKey').lean();
       if (!cur) continue;
       snap.orders.push({ id: o.orderId, before: { companyKey: cur.companyKey || '' } });
-      await Order.updateOne({ _id: o.orderId }, { $set: { companyKey: o.derivedKey } });
+      writes.orders.push({ id: o.orderId, set: { companyKey: o.derivedKey } });
     }
 
     // 2) Contact-polluted names → split the company/contact on the client AND on its
@@ -101,31 +108,42 @@ async function cleanupApply(req, res) {
       const cur = await Client.findById(c.clientId).select('companyName clientName companyKey').lean();
       if (!cur) continue;
       snap.clients.push({ id: c.clientId, before: { companyName: cur.companyName || '', clientName: cur.clientName || '' } });
-      await Client.updateOne({ _id: c.clientId }, { $set: { companyName: c.cleanCompany, clientName: c.contact } });
+      writes.clients.push({ id: c.clientId, set: { companyName: c.cleanCompany, clientName: c.contact } });
       if (cur.companyKey) {
         const ords = await Order.find({ companyKey: cur.companyKey }).select('companyName clientName').lean();
         for (const od of ords) {
           snap.orders.push({ id: String(od._id), before: { companyName: od.companyName || '', clientName: od.clientName || '' } });
-          await Order.updateOne({ _id: od._id }, { $set: { companyName: c.cleanCompany, clientName: c.contact } });
+          writes.orders.push({ id: String(od._id), set: { companyName: c.cleanCompany, clientName: c.contact } });
         }
       }
     }
 
-    // 3) Mis-keyed receipts → re-point to the owner-chosen order #.
+    // 3) Mis-keyed receipts → re-point to the owner-chosen order #. Guard the target:
+    //    only re-point to an order # that actually EXISTS, so a typo can't recreate the
+    //    same mis-keyed problem.
     for (const r of receiptFixes) {
       const target = normalizeOrderNumber(r && r.orderNumber);
       if (!r || !r.txnId || !target) continue;
+      if (!orderKeys.has(target)) { skipped.push({ txnId: String(r.txnId), orderNumber: r.orderNumber, reason: 'no matching order' }); continue; }
       const cur = await Transaction.findById(r.txnId).select('orderNumber').lean();
       if (!cur) continue;
       snap.transactions.push({ id: String(r.txnId), before: { orderNumber: cur.orderNumber || '' } });
-      await Transaction.updateOne({ _id: r.txnId }, { $set: { orderNumber: target } });
+      writes.transactions.push({ id: String(r.txnId), set: { orderNumber: target } });
     }
 
+    // Persist the backup FIRST (durable), then mutate. If a write throws midway, the
+    // batch already holds every BEFORE value so revert restores the lot. (Mirrors
+    // controllers/financeDedupe — backup before any change.)
     await DataCleanupBatch.create({
       batchId, status: 'applied', ...snap,
       counts: { orders: snap.orders.length, clients: snap.clients.length, transactions: snap.transactions.length },
     });
-    res.json({ applied: true, batchId, fixed: { orders: snap.orders.length, names: snap.clients.length, receipts: snap.transactions.length } });
+
+    for (const w of writes.orders) await Order.updateOne({ _id: w.id }, { $set: w.set });
+    for (const w of writes.clients) await Client.updateOne({ _id: w.id }, { $set: w.set });
+    for (const w of writes.transactions) await Transaction.updateOne({ _id: w.id }, { $set: w.set });
+
+    res.json({ applied: true, batchId, fixed: { orders: writes.orders.length, names: writes.clients.length, receipts: writes.transactions.length }, skipped });
   } catch (e) { res.status(500).json({ message: e.message }); }
 }
 
