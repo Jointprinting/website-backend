@@ -22,6 +22,7 @@ const Transaction = require('../models/Transaction');
 const DataCleanupBatch = require('../models/DataCleanupBatch');
 const {
   normalizeOrderNumber, detectOrphanOrders, detectPollutedClients, detectMisKeyedReceipts,
+  detectDuplicateSales,
 } = require('../services/dataCleanup');
 
 // Only flag a mis-keyed receipt that was ENTERED recently. The owner's historical
@@ -34,11 +35,16 @@ const MISKEYED_RECENT_DAYS = 45;
 // Load the live data the detections diff against (lean; writes target rows by _id).
 async function buildPlan() {
   const cutoff = new Date(Date.now() - MISKEYED_RECENT_DAYS * 24 * 60 * 60 * 1000);
-  const [orders, clients, txns] = await Promise.all([
+  const [orders, clients, txns, incomeRows] = await Promise.all([
     Order.find({}).select('orderNumber companyKey companyName clientName').lean(),
     Client.find({ archived: { $ne: true } }).select('companyKey companyName clientName archived').lean(),
     Transaction.find({ type: 'expense', orderNumber: { $ne: '' }, createdAt: { $gte: cutoff } })
       .select('orderNumber party amount category date type').lean(),
+    // Duplicate-sale detection looks across ALL Customer-Sales income (a doubled sale
+    // can be old) — bounded (one row per payment) so loading the lot is cheap. isCredit
+    // is selected so the detector can exclude refund credits.
+    Transaction.find({ type: 'income', category: 'Customer Sales', orderNumber: { $ne: '' } })
+      .select('orderNumber party amount category date type isCredit').lean(),
   ]);
   const orderKeys = new Set(orders.map((o) => normalizeOrderNumber(o.orderNumber)).filter(Boolean));
   return {
@@ -46,13 +52,14 @@ async function buildPlan() {
     orphans: detectOrphanOrders(orders),
     polluted: detectPollutedClients(clients),
     misKeyed: detectMisKeyedReceipts(txns, orderKeys),
+    dupeSales: detectDuplicateSales(incomeRows, orderKeys),
   };
 }
 
 // ── GET/POST /preview ─────────────────────────────────────────────────────────
 async function cleanupPreview(req, res) {
   try {
-    const { orphans, polluted, misKeyed, orders } = await buildPlan();
+    const { orphans, polluted, misKeyed, dupeSales, orders } = await buildPlan();
     // The real orders the owner can re-point a mis-keyed receipt to (newest first).
     const orderOptions = orders
       .filter((o) => String(o.orderNumber || '').trim())
@@ -61,8 +68,9 @@ async function cleanupPreview(req, res) {
     res.json({
       dryRun: true,
       counts: { orphans: orphans.length, polluted: polluted.length, misKeyed: misKeyed.length,
-        total: orphans.length + polluted.length + misKeyed.length },
-      orphans, polluted, misKeyed, orderOptions,
+        dupeSales: dupeSales.length,
+        total: orphans.length + polluted.length + misKeyed.length + dupeSales.length },
+      orphans, polluted, misKeyed, dupeSales, orderOptions,
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
 }
@@ -77,10 +85,14 @@ async function cleanupApply(req, res) {
     if (body.confirm !== true && body.confirm !== 'true') {
       return res.status(400).json({ message: 'Refusing to apply without an explicit { confirm: true }. Run the preview first.' });
     }
-    const { orders, orphans, polluted } = await buildPlan();
+    const { orders, orphans, polluted, dupeSales } = await buildPlan();
     const orphanWant = Array.isArray(body.orphanIds) ? new Set(body.orphanIds.map(String)) : null;
     const nameWant = Array.isArray(body.clientIds) ? new Set(body.clientIds.map(String)) : null;
     const receiptFixes = Array.isArray(body.receipts) ? body.receipts : [];
+    // Removing a revenue row is destructive, so only the CURRENTLY-detected dupes are
+    // eligible — an id the live plan no longer flags is ignored. Omitting dupeSaleIds
+    // applies ALL detected dupes (the "Fix all" button), like orphans/names above.
+    const dupeWant = Array.isArray(body.dupeSaleIds) ? new Set(body.dupeSaleIds.map(String)) : null;
     const orderKeys = new Set(orders.map((o) => normalizeOrderNumber(o.orderNumber)).filter(Boolean));
 
     const batchId = `datacleanup-${new Date().toISOString().slice(0, 10)}-${crypto.randomBytes(4).toString('hex')}`;
@@ -88,7 +100,7 @@ async function cleanupApply(req, res) {
     // Build the BEFORE snapshot + the list of writes in a reads-only first pass.
     // Nothing is mutated yet — the batch backup is persisted BEFORE any write (below),
     // so a failure partway through the writes is still fully revertible.
-    const snap = { orders: [], clients: [], transactions: [] };
+    const snap = { orders: [], clients: [], transactions: [], removedTransactions: [] };
     const writes = { orders: [], clients: [], transactions: [] };   // [{ id, set }]
     const skipped = [];
 
@@ -131,19 +143,40 @@ async function cleanupApply(req, res) {
       writes.transactions.push({ id: String(r.txnId), set: { orderNumber: target } });
     }
 
+    // 4) Duplicate sales → ARCHIVE the redundant revenue row. ONLY the exact rows the
+    //    live plan flagged (and the caller confirmed) are removed — never an unconfirmed
+    //    "sibling" swept by a shared order # (the owner's manual budget #s are reused, so
+    //    a number-based sweep could delete unrelated rows). Any stray cost/fee left on
+    //    the spurious order # surfaces separately in "Receipts on an order # that doesn't
+    //    exist" for its own re-point. Nothing is hard-lost: the FULL row is snapshotted
+    //    into the batch and a revert re-inserts it at its original _id (mirrors
+    //    controllers/financeDedupe's snapshot→delete→re-insert).
+    const dupesToFix = dupeWant ? dupeSales.filter((d) => dupeWant.has(d.txnId)) : dupeSales;
+    const removeIds = new Set(dupesToFix.map((d) => String(d.txnId)));
+    if (removeIds.size) {
+      const full = await Transaction.find({ _id: { $in: [...removeIds] } }).lean();
+      for (const r of full) snap.removedTransactions.push(r);   // full row → re-insertable on revert
+    }
+
     // Persist the backup FIRST (durable), then mutate. If a write throws midway, the
     // batch already holds every BEFORE value so revert restores the lot. (Mirrors
     // controllers/financeDedupe — backup before any change.)
     await DataCleanupBatch.create({
       batchId, status: 'applied', ...snap,
-      counts: { orders: snap.orders.length, clients: snap.clients.length, transactions: snap.transactions.length },
+      counts: { orders: snap.orders.length, clients: snap.clients.length,
+        transactions: snap.transactions.length, removedTransactions: snap.removedTransactions.length },
     });
 
     for (const w of writes.orders) await Order.updateOne({ _id: w.id }, { $set: w.set });
     for (const w of writes.clients) await Client.updateOne({ _id: w.id }, { $set: w.set });
     for (const w of writes.transactions) await Transaction.updateOne({ _id: w.id }, { $set: w.set });
+    let removed = 0;
+    for (const r of snap.removedTransactions) {
+      const del = await Transaction.deleteOne({ _id: r._id });
+      removed += (del.deletedCount != null ? del.deletedCount : (del.n || 0));
+    }
 
-    res.json({ applied: true, batchId, fixed: { orders: writes.orders.length, names: writes.clients.length, receipts: writes.transactions.length }, skipped });
+    res.json({ applied: true, batchId, fixed: { orders: writes.orders.length, names: writes.clients.length, receipts: writes.transactions.length, dupeSales: dupesToFix.length, removedRows: removed }, skipped });
   } catch (e) { res.status(500).json({ message: e.message }); }
 }
 
@@ -159,14 +192,40 @@ async function cleanupRevert(req, res) {
     if (!batch) return res.status(404).json({ message: `No data-cleanup batch found for "${body.batchId}".` });
     if (batch.status === 'reverted') return res.json({ reverted: true, batchId: body.batchId, alreadyReverted: true });
 
+    // A batch that ARCHIVED rows (duplicate sales) must be reverted in order: re-inserting
+    // an archived duplicate after a NEWER batch was applied could resurrect a double-count
+    // that the newer run already accounted for. Refuse an out-of-order revert and point at
+    // the latest batch (mirrors controllers/financeDedupe.dedupeRevert's newer-batch guard).
+    if (Array.isArray(batch.removedTransactions) && batch.removedTransactions.length) {
+      const newer = await DataCleanupBatch.findOne({
+        status: 'applied', at: { $gt: batch.at }, batchId: { $ne: batch.batchId },
+      }).sort({ at: -1 }).lean();
+      if (newer) {
+        return res.status(409).json({
+          message: `A newer cleanup (batch ${newer.batchId}) was applied after this one. Revert that one first — undoing an older archival out of order could resurrect a duplicate.`,
+          latestBatchId: newer.batchId,
+        });
+      }
+    }
+
     let restored = 0;
     for (const s of (batch.orders || [])) { if (s && s.id) { await Order.updateOne({ _id: s.id }, { $set: s.before || {} }); restored += 1; } }
     for (const s of (batch.clients || [])) { if (s && s.id) { await Client.updateOne({ _id: s.id }, { $set: s.before || {} }); restored += 1; } }
     for (const s of (batch.transactions || [])) { if (s && s.id) { await Transaction.updateOne({ _id: s.id }, { $set: s.before || {} }); restored += 1; } }
+    // Re-insert any rows the apply ARCHIVED (duplicate sales + their orphan siblings),
+    // each at its ORIGINAL _id via an upsert so a retried revert can't stack a copy
+    // (mirrors controllers/financeDedupe.dedupeRevert).
+    let reinserted = 0;
+    for (const r of (batch.removedTransactions || [])) {
+      if (!r || r._id == null) continue;
+      const { __v, _id, ...rest } = r;
+      await Transaction.updateOne({ _id }, { $set: rest }, { upsert: true });
+      reinserted += 1;
+    }
 
     batch.status = 'reverted';
     await batch.save();
-    res.json({ reverted: true, batchId: body.batchId, restored });
+    res.json({ reverted: true, batchId: body.batchId, restored, reinserted });
   } catch (e) { res.status(500).json({ message: e.message }); }
 }
 
@@ -174,10 +233,11 @@ async function cleanupRevert(req, res) {
 // How many issues remain — the UI shows the "Fix data" entry only when total > 0.
 async function cleanupStatus(req, res) {
   try {
-    const { orphans, polluted, misKeyed } = await buildPlan();
+    const { orphans, polluted, misKeyed, dupeSales } = await buildPlan();
     res.json({
-      total: orphans.length + polluted.length + misKeyed.length,
+      total: orphans.length + polluted.length + misKeyed.length + dupeSales.length,
       orphans: orphans.length, polluted: polluted.length, misKeyed: misKeyed.length,
+      dupeSales: dupeSales.length,
     });
   } catch (e) { res.json({ total: 0, error: e.message }); }
 }

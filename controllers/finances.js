@@ -943,6 +943,11 @@ const byClient = async (req, res) => {
   try {
     const year = req.query.year ? Number(req.query.year) : null;
     const rows = await Transaction.find({ orderNumber: { $ne: '' } }).lean();
+    // CRM bridge: same authoritative order#→companyKey map byOrder uses, so each
+    // client row can deep-link the name straight to its CRM card ('' = not linkable).
+    const orderDocs = await Order.find({ orderNumber: { $ne: '' } })
+      .select('orderNumber companyKey').lean();
+    const ckByOrder = companyKeyByOrderNumber(orderDocs);
     const cogs = new Set(Transaction.COGS_CATEGORIES);
     const orders = {};
     rows.forEach((t) => {
@@ -950,7 +955,7 @@ const byClient = async (req, res) => {
       // number roll into a single order before we attribute it to a client.
       const key = normalizeOrderNumber(t.orderNumber);
       if (!key) return;
-      const o = (orders[key] ||= { client: '', revenue: 0, cost: 0, saleDate: null, firstDate: null });
+      const o = (orders[key] ||= { client: '', companyKey: ckByOrder[key] || '', revenue: 0, cost: 0, saleDate: null, firstDate: null });
       const d = t.date && !isNaN(new Date(t.date).getTime()) ? new Date(t.date) : null;
       if (d && (!o.firstDate || d < o.firstDate)) o.firstDate = d;
       if (t.type === 'income') {
@@ -968,12 +973,13 @@ const byClient = async (req, res) => {
       if (year && oy !== year) return;
       if (o.revenue === 0 && o.cost === 0) return;             // skip $0/$0 ghosts (order# on a non-COGS line)
       const name = (String(o.client == null ? '' : o.client).trim()) || '—';
-      const c = (byC[name] ||= { client: name, revenue: 0, cost: 0, orders: 0 });
+      const c = (byC[name] ||= { client: name, companyKey: '', revenue: 0, cost: 0, orders: 0 });
+      if (!c.companyKey && o.companyKey) c.companyKey = o.companyKey;   // first real key wins (deep-link target)
       c.revenue += o.revenue; c.cost += o.cost; c.orders += 1;
     });
     const clients = Object.values(byC).map((c) => {
       const profit = round2(c.revenue - c.cost);
-      return { client: c.client, orders: c.orders, revenue: round2(c.revenue), cost: round2(c.cost), profit, margin: pct(profit, c.revenue) };
+      return { client: c.client, companyKey: c.companyKey || '', orders: c.orders, revenue: round2(c.revenue), cost: round2(c.cost), profit, margin: pct(profit, c.revenue) };
     }).sort((a, b) => b.profit - a.profit);
     res.json({ clients });
   } catch (e) { res.status(500).json({ message: e.message }); }
