@@ -175,6 +175,69 @@ Captured directly from Nate; treat as the spec for these areas.
   - North star for the budget-#/identity mess: **"make the smartest possible ecosystem."**
 - **Fix-data:** the historical budget-import unlinked receipts (133 of them) are **not worth chasing** — only **future hand-entered** mis-keys matter. (Detector now ignores budget/import/system-sourced rows.)
 
+## Owner decisions — round 2 (payments, quoting, vendors, leads, identity, hub)
+
+- **Payments on approval:** NO auto-charge. On approval, record the client's chosen
+  method and tell them an **invoice email is coming shortly** — the owner builds the
+  invoice in **QuickBooks** and sends it himself. (Shipped: the approval page now shows
+  that notice.)
+- **Payment method:** ask **per sale** — do NOT build a per-client default.
+- **Receipts:** the owner attaches them **one at a time as he gets them** — do NOT build
+  a receipts inbox/queue.
+- **Sizes & pricing:** the size breakdown is entered **only at confirmation** (not at
+  quote). Blank pricing is **averaged across all sizes** → **one price per item**; there
+  is no per-size upcharge (e.g. no separate 2XL price).
+- **Printer pricing matrix:** there are too many matrices to systematize — the owner
+  **keeps quoting manually for now**. Leave matrix integration as a **future project**.
+- **Printer routing = GEOGRAPHY, not product** (the owner's explicit strategy): pick the
+  printer **closest to the client but NOT in the client's state**, to avoid creating a
+  **sales-tax nexus** in the client's state. The aim is to minimize combined **print +
+  shipping** cost. Do NOT auto-build routing/nexus logic yet — record the strategy; he
+  picks manually today.
+- **Field Map → dispensaries only:** remove campgrounds, parks, and coffee shops (and the
+  multi-day sleep/route/GO-mode planning that depends on them). He wants a **better
+  visit-logging** system that lives in the **CRM**: he starts a **project #** when a road
+  deal reaches **quote** stage, then marks it **won/completed** when done. (Plan ready —
+  see below.)
+- **Company identity:** the canonical company is exactly its real name (e.g. "Happy Leaf
+  Dispensary", nothing else). BUT a contact sometimes orders for a **different** company —
+  so support an **order-level company name** (used as that order's title, linked to the
+  ordering person). 99% of the time it's the same company; the override is for the
+  occasional "ordering for another company" case.
+- **Whole-client view:** show **total spend-with-us** and **total profit** per client.
+- **Hub:** surface **to-dos** + **missing items** + **overdue orders**. Standard order
+  turnaround is **2–3 weeks** → warn at **2 weeks** ("running long") and **3 weeks**
+  ("possibly late").
+- **Company card:** the contact/client info is **backup reference, not the headline** —
+  tuck it (shipped: slimmed the header to name + stage, moved phone/email/address into the
+  sidebar). Alternate names (akas): add tastefully once there's data to populate them.
+- **Mockup studio:** **rebuild the Lookbook maker entirely** — genius, every aspect
+  beautiful. (Plan ready — see below.)
+
+## Big builds — plans on file
+
+**Field Map (RoadTripTab) → dispensaries-only + CRM visit logging.** Remove the
+coffee/parks/campgrounds layers, their backend search endpoints, and the entangled
+sleep-stop / multi-day route planner + live GO-mode nav (all depend on the removed
+layers). Keep dispensary search + the density heatmap. Then add: quick visit-outcome
+capture on a pin (interested / not-now / notes + visited date), a pin→CRM `companyKey`
+link, and a one-click **"Promote to CRM"** that finds-or-creates the company and starts a
+quote-stage deal — so a road prospect flows straight into the pipeline. The
+`RoadTripLead` model already has the needed fields (`companyKey`, `visitedAt`,
+`visitOutcome`).
+
+**Lookbook maker rebuild.** Today the mockup studio (`public/jpstudio/index.html`, a
+4.5k-line vanilla-JS app) builds mockups and exports a lookbook PDF that **dead-ends on
+the owner's device** — the client never sees it. Rebuild it so a **Lookbook is a
+first-class, persisted, shareable artifact**: a `Lookbook` model (per project: ordered
+mockups, layout, styling, status, share token), a React builder (search/pick mockups,
+drag-reorder, live style, save draft, share link, export), and a **beautiful
+client-facing gallery** wired into the approval flow (the lookbook becomes what the client
+reviews). Open design questions for the owner before the full build: does the client
+approve the whole lookbook vs per item; can they request changes/versions; the aesthetic
+direction (minimal vs bold vs branded); and whether a lookbook is tied to one project or
+standalone.
+
 ## Hard guardrails (carried from the handoff — do not violate)
 
 - **The sandbox cannot write the production DB.** Any change to LIVE data ships as an in-app
