@@ -8,12 +8,7 @@
 const express = require('express');
 const router = express.Router();
 
-const {
-  searchDispensaries,
-  searchCoffee,
-  searchNpsParks,
-  searchCampgrounds,
-} = require('../controllers/placeSearch');
+const { searchDispensaries } = require('../controllers/placeSearch');
 
 const {
   listLeads, createLead, updateLead, deleteLead,
@@ -30,11 +25,8 @@ const { requireAdmin } = require('../middleware/auth');
 // All endpoints admin-only.
 router.use(requireAdmin);
 
-// ── Place search proxies ────────────────────────────────────────────────────
+// ── Place search proxy (dispensaries only) ──────────────────────────────────
 router.get('/search/dispensaries', searchDispensaries);
-router.get('/search/coffee',       searchCoffee);
-router.get('/search/parks',        searchNpsParks);
-router.get('/search/campgrounds',  searchCampgrounds);
 
 // ── Leads ──────────────────────────────────────────────────────────────────
 router.get('/leads',        listLeads);
