@@ -24,12 +24,21 @@ const {
   normalizeOrderNumber, detectOrphanOrders, detectPollutedClients, detectMisKeyedReceipts,
 } = require('../services/dataCleanup');
 
+// Only flag a mis-keyed receipt that was ENTERED recently. The owner's historical
+// unlinked rows (budget-imported under his unreliable manual order #s) are expected
+// to never match an order and aren't worth chasing — "ignore them; only future ones
+// matter." A genuinely mis-keyed NEW receipt has a recent createdAt, so it still gets
+// caught (and an active order missing its receipt is also surfaced by Needs-receipts).
+const MISKEYED_RECENT_DAYS = 45;
+
 // Load the live data the detections diff against (lean; writes target rows by _id).
 async function buildPlan() {
+  const cutoff = new Date(Date.now() - MISKEYED_RECENT_DAYS * 24 * 60 * 60 * 1000);
   const [orders, clients, txns] = await Promise.all([
     Order.find({}).select('orderNumber companyKey companyName clientName').lean(),
     Client.find({ archived: { $ne: true } }).select('companyKey companyName clientName archived').lean(),
-    Transaction.find({ type: 'expense', orderNumber: { $ne: '' } }).select('orderNumber party amount category date type').lean(),
+    Transaction.find({ type: 'expense', orderNumber: { $ne: '' }, createdAt: { $gte: cutoff } })
+      .select('orderNumber party amount category date type').lean(),
   ]);
   const orderKeys = new Set(orders.map((o) => normalizeOrderNumber(o.orderNumber)).filter(Boolean));
   return {
