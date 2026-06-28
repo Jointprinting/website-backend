@@ -39,7 +39,7 @@ async function buildPlan() {
     Order.find({}).select('orderNumber companyKey companyName clientName').lean(),
     Client.find({ archived: { $ne: true } }).select('companyKey companyName clientName archived').lean(),
     Transaction.find({ type: 'expense', orderNumber: { $ne: '' }, createdAt: { $gte: cutoff } })
-      .select('orderNumber party amount category date type').lean(),
+      .select('orderNumber party amount category date type source').lean(),
     // Duplicate-sale detection looks across ALL Customer-Sales income (a doubled sale
     // can be old) — bounded (one row per payment) so loading the lot is cheap. isCredit
     // is selected so the detector can exclude refund credits.

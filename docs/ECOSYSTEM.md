@@ -152,6 +152,29 @@ instead of deep-linking. (Full per-surface notes available from the surface-walk
 
 ---
 
+## Owner decisions — round 1 (CRM + identity)
+
+Captured directly from Nate; treat as the spec for these areas.
+
+- **Interaction:** true **drag rubber-band / marquee select** is wanted across lists (his words: "would be sweet").
+- **Calendar reschedule:** **click-hold-drag a chip to any exact date** (Notion-style) — *not* "push to next week" presets. Land it on whatever date he wants (next week, two months out). Marquee-select yes; **range-select not needed**. Calendar is for **moving existing** follow-ups (not creating).
+- **Overdue pileup:** one action to **push all overdue to the next business day**.
+- **Follow-ups** live at the **company level** (not per-project). Keep the dialog that **sets the next follow-up in the same step**.
+- **Companies bulk:** the common batch is **change follow-up date** or **delete**; stage changes happen **inside the card**.
+- **Company card:** client/contact info should **not be the first thing shown** — it's backup reference to pull when needed; de-emphasize it. **Editing client fields happens only on the client card.** Show a company's **alternate names (akas)** on the card. There is **no "default printer/markup"** concept — don't build defaults.
+- **Note delete:** brief (**~5s**) undo.
+- **Pipeline:** deals move **one at a time** (multi-select drag is not a priority). **Inline-edit** deal value + follow-up date (double-click).
+- **Deal value** is an estimate; when **real revenue lands, the card/order value should match the revenue**.
+- **Customer status is permanent** — once a customer, always a customer (even if they go cold). **Lock the stage so it can't regress** to lead. No "became a customer" timeline event needed (it's just their first order).
+- **Numbers / identity:**
+  - Printer receipts often carry the **printer's own order number** — the **receipt scanner must be smart** about that and not mistake it for the project #.
+  - The **invoice #** continues the sequence from QuickBooks; low priority but nice to track.
+  - The client should **only ever see the mockup # and the project #**.
+  - A **duplicate order number** should **warn + offer to merge**.
+  - Old sibling-invoice orders (1023, 1041): don't dwell — store as best.
+  - North star for the budget-#/identity mess: **"make the smartest possible ecosystem."**
+- **Fix-data:** the historical budget-import unlinked receipts (133 of them) are **not worth chasing** — only **future hand-entered** mis-keys matter. (Detector now ignores budget/import/system-sourced rows.)
+
 ## Hard guardrails (carried from the handoff — do not violate)
 
 - **The sandbox cannot write the production DB.** Any change to LIVE data ships as an in-app

@@ -72,6 +72,18 @@ test('detectMisKeyedReceipts: flags expense COGS whose order # matches no order'
   assert.equal(r[0].party, 'S&S Activewear');
 });
 
+test('detectMisKeyedReceipts: budget-import / system rows are never flagged (only hand entries)', () => {
+  const orderKeys = new Set(['1050']);
+  const r = detectMisKeyedReceipts([
+    { _id: 'b', type: 'expense', category: 'Blank COGS', orderNumber: '1', party: 'Alphabroder', amount: 467, source: 'budget' },  // historical import → ignore
+    { _id: 'i', type: 'expense', category: 'Shipping', orderNumber: '10', party: 'UPS', amount: 27.4, source: 'import' },           // CSV import → ignore
+    { _id: 'a', type: 'expense', category: 'Processing Fee', orderNumber: '106', party: 'JFS', amount: 6.53, source: 'fee:auto' },  // system row → ignore
+    { _id: 'm', type: 'expense', category: 'Printer COGS', orderNumber: '88231', party: 'Apollo East', amount: 291.49, source: 'manual' }, // hand-entered → flag
+  ], orderKeys);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].txnId, 'm');
+});
+
 test('detectMisKeyedReceipts: leading-zero variants still match a real order', () => {
   const r = detectMisKeyedReceipts(
     [{ _id: 't', type: 'expense', category: 'Blank COGS', orderNumber: '0001050', amount: 10 }],
