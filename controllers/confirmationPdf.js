@@ -7,40 +7,16 @@
 // to the running subtotal in order.
 
 const PDFDocument = require('pdfkit');
-const axios = require('axios');
 const path = require('path');
 const Order = require('../models/Order');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
+const { resolveImageBuffer } = require('../utils/pdfImage');
 
 // The green "JP" logo box, embedded at the top of every confirmation PDF.
 const JP_LOGO_PATH = path.join(__dirname, '..', 'assets', 'jp-logo.png');
 
 const money = (n) =>
   '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-// data:image/png;base64,... → Buffer (pdfkit only reads PNG/JPEG)
-function dataUrlToBuffer(dataUrl) {
-  if (!dataUrl || typeof dataUrl !== 'string') return null;
-  const m = dataUrl.match(/^data:image\/(png|jpe?g);base64,(.+)$/i);
-  if (!m) return null;
-  try { return Buffer.from(m[2], 'base64'); } catch (_) { return null; }
-}
-
-// Resolve an image value (base64 data URL OR an http(s) URL — e.g. an R2 link)
-// to a Buffer pdfkit can embed. Images moved to R2 are stored as URLs, so the
-// PDF fetches them; legacy base64 still works. Returns null on any failure so a
-// single bad image never aborts the whole PDF.
-async function resolveImageBuffer(value) {
-  if (!value || typeof value !== 'string') return null;
-  if (value.startsWith('data:')) return dataUrlToBuffer(value);
-  if (/^https?:\/\//i.test(value)) {
-    try {
-      const r = await axios.get(value, { responseType: 'arraybuffer', timeout: 15000 });
-      return Buffer.from(r.data);
-    } catch (_) { return null; }
-  }
-  return null;
-}
 
 const C = { green: '#1a3d2b', ink: '#111111', muted: '#666666', line: '#d9d9d2', band: '#f1f1ec' };
 
