@@ -13,8 +13,10 @@ const assert = require('node:assert/strict');
 
 const {
   deriveCompanyKey, normalizeOrderNumber, splitPollutedName,
-  detectOrphanOrders, detectPollutedClients, detectMisKeyedReceipts,
+  detectOrphanOrders, detectPollutedClients, detectMisKeyedReceipts, detectDuplicateSales,
 } = require('../dataCleanup');
+
+const income = (o) => ({ type: 'income', category: 'Customer Sales', ...o });
 
 // ── orphaned orders ──────────────────────────────────────────────────────────
 test('detectOrphanOrders: flags named orders with no companyKey, derives the key', () => {
@@ -75,6 +77,111 @@ test('detectMisKeyedReceipts: leading-zero variants still match a real order', (
     [{ _id: 't', type: 'expense', category: 'Blank COGS', orderNumber: '0001050', amount: 10 }],
     new Set(['1050']),
   );
+  assert.equal(r.length, 0);
+});
+
+// ── duplicate sales (the Happy-Leaf class) ───────────────────────────────────
+test('detectDuplicateSales: flags the contact-polluted twin of a real sale, keeps the real one', () => {
+  // #1050 is the real order; the same $1,537.16 sale was re-entered under the
+  // contact-polluted name + the owner's manual budget order # (which is NOT a real order).
+  const orderKeys = new Set(['1050']);
+  const r = detectDuplicateSales([
+    income({ _id: 'real', orderNumber: '1050', party: 'Happy Leaf Dispensary', amount: 1537.16, date: '2025-03-01' }),
+    income({ _id: 'dup', orderNumber: '88231', party: 'Nathan Vigil, Happy Leaf Dispensary', amount: 1537.16, date: '2025-03-10' }),
+  ], orderKeys);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].txnId, 'dup');               // the polluted/orphan row is the duplicate
+  assert.equal(r[0].keeper.txnId, 'real');       // anchored to the real #1050 sale
+  assert.equal(r[0].orphanOrder, true);          // its order # matches no real order
+  assert.equal(r[0].companyKey, 'happyleafdispensary');
+});
+
+test('detectDuplicateSales: a polluted twin on its OWN real order # is NOT a duplicate', () => {
+  // The owner HABITUALLY books sales as "Contact, Company", so a polluted name on a
+  // real, distinct order # is a genuine second sale (a name to clean, not a dup) — it
+  // must NEVER be archived. Both rows here are real orders → flag nothing.
+  const r = detectDuplicateSales([
+    income({ _id: 'real', orderNumber: '1050', party: 'Happy Leaf Dispensary', amount: 1537.16, date: '2025-03-01' }),
+    income({ _id: 'other', orderNumber: '1051', party: 'Nathan Vigil, Happy Leaf Dispensary', amount: 1537.16, date: '2025-03-02' }),
+  ], new Set(['1050', '1051']));
+  assert.equal(r.length, 0);
+});
+
+test('detectDuplicateSales: a refund credit is never treated as a duplicate sale', () => {
+  // A Customer-Sales credit is a refund (nets revenue DOWN). Archiving it would INFLATE
+  // revenue — so it is excluded even when amount + company + orphan order # all line up.
+  const r = detectDuplicateSales([
+    income({ _id: 'real', orderNumber: '1050', party: 'Happy Leaf Dispensary', amount: 600, date: '2025-03-01' }),
+    income({ _id: 'refund', orderNumber: '88231', party: 'Nathan Vigil, Happy Leaf Dispensary', amount: 600, date: '2025-03-05', isCredit: true }),
+  ], new Set(['1050']));
+  assert.equal(r.length, 0);
+});
+
+test('detectDuplicateSales: a BARE-name genuine sale on an orphan/budget # is NOT a duplicate', () => {
+  // An orphan order # is the owner's NORMAL state for a manually-booked sale (his budget
+  // #s match no Order). A second genuine $600 Happy Leaf sale booked under a budget #,
+  // weeks after a real $600 Happy Leaf order, must NOT be archived just because the
+  // amount + company + window coincide — the party is bare (no contact pollution), so it
+  // lacks the re-entry signature. (Guards the N1 false-positive class.)
+  const r = detectDuplicateSales([
+    income({ _id: 'real', orderNumber: '1050', party: 'Happy Leaf Dispensary', amount: 600, date: '2025-03-01' }),
+    income({ _id: 'genuine2', orderNumber: '88231', party: 'Happy Leaf Dispensary', amount: 600, date: '2025-03-20' }),
+  ], new Set(['1050']));
+  assert.equal(r.length, 0);
+});
+
+test('detectDuplicateSales: a mis-keyed (typo) order # on a bare-name sale is NOT archived', () => {
+  // A genuine sale whose order # was fat-fingered to a non-existent number is a re-point
+  // case (mis-keyed), NOT a duplicate to delete — bare party → never flagged.
+  const r = detectDuplicateSales([
+    income({ _id: 'real', orderNumber: '1051', party: 'Happy Leaf Dispensary', amount: 800, date: '2025-03-01' }),
+    income({ _id: 'typo', orderNumber: '152', party: 'Happy Leaf Dispensary', amount: 800, date: '2025-03-05' }),
+  ], new Set(['1051']));
+  assert.equal(r.length, 0);
+});
+
+test('detectDuplicateSales: two genuine same-priced orders for one client are NOT flagged', () => {
+  // Same company, same amount, but BOTH are real + clean (no orphan, no pollution) →
+  // neither is "spurious" → never flagged (the owner really did sell two of these).
+  const r = detectDuplicateSales([
+    income({ _id: 'a', orderNumber: '1050', party: 'Happy Leaf Dispensary', amount: 1537.16, date: '2025-03-01' }),
+    income({ _id: 'b', orderNumber: '1051', party: 'Happy Leaf Dispensary', amount: 1537.16, date: '2025-03-02' }),
+  ], new Set(['1050', '1051']));
+  assert.equal(r.length, 0);
+});
+
+test('detectDuplicateSales: different companies at the same price never collide', () => {
+  const r = detectDuplicateSales([
+    income({ _id: 'a', orderNumber: '1050', party: 'Happy Leaf Dispensary', amount: 500, date: '2025-03-01' }),
+    income({ _id: 'b', orderNumber: '77777', party: 'Bleu Leaf Dispensary', amount: 500, date: '2025-03-02' }),
+  ], new Set(['1050']));
+  assert.equal(r.length, 0);
+});
+
+test('detectDuplicateSales: needs a REAL-order keeper to anchor — two orphans are left alone', () => {
+  // Neither row matches a real order, so there is no trustworthy keeper → flag nothing
+  // (we never guess which of two unanchored rows is the "real" one).
+  const r = detectDuplicateSales([
+    income({ _id: 'a', orderNumber: '90001', party: 'Happy Leaf Dispensary', amount: 500, date: '2025-03-01' }),
+    income({ _id: 'b', orderNumber: '90002', party: 'Nathan Vigil, Happy Leaf Dispensary', amount: 500, date: '2025-03-02' }),
+  ], new Set(['1050']));
+  assert.equal(r.length, 0);
+});
+
+test('detectDuplicateSales: a far-apart same-priced sale is not treated as a duplicate', () => {
+  const r = detectDuplicateSales([
+    income({ _id: 'real', orderNumber: '1050', party: 'Happy Leaf Dispensary', amount: 800, date: '2025-01-01' }),
+    income({ _id: 'dup', orderNumber: '88231', party: 'Nathan Vigil, Happy Leaf Dispensary', amount: 800, date: '2025-09-01' }),
+  ], new Set(['1050']));
+  assert.equal(r.length, 0);
+});
+
+test('detectDuplicateSales: ignores non-Customer-Sales income and expenses', () => {
+  const r = detectDuplicateSales([
+    income({ _id: 'real', orderNumber: '1050', party: 'Happy Leaf Dispensary', amount: 200, date: '2025-03-01' }),
+    { _id: 'refund', type: 'income', category: 'Refund', orderNumber: '88231', party: 'Nathan Vigil, Happy Leaf Dispensary', amount: 200, date: '2025-03-02' },
+    { _id: 'exp', type: 'expense', category: 'Printer COGS', orderNumber: '88231', party: 'Happy Leaf Dispensary', amount: 200, date: '2025-03-02' },
+  ], new Set(['1050']));
   assert.equal(r.length, 0);
 });
 

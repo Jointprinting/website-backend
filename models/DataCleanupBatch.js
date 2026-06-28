@@ -12,6 +12,10 @@ const DataCleanupBatchSchema = new mongoose.Schema({
   orders:       { type: [mongoose.Schema.Types.Mixed], default: [] },   // before: { companyKey?, companyName?, clientName? }
   clients:      { type: [mongoose.Schema.Types.Mixed], default: [] },   // before: { companyName, clientName }
   transactions: { type: [mongoose.Schema.Types.Mixed], default: [] },   // before: { orderNumber }
+  // Rows ARCHIVED by a duplicate-sale fix: the FULL original document of each removed
+  // transaction (the duplicate revenue row + any orphan-order siblings), so a revert
+  // re-inserts each at its original _id. Empty unless the run removed a duplicate sale.
+  removedTransactions: { type: [mongoose.Schema.Types.Mixed], default: [] },
   counts:  { type: mongoose.Schema.Types.Mixed, default: {} },
 });
 
