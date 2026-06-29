@@ -640,11 +640,11 @@ const RECEIPT_LABEL = { 'Printer COGS': 'printer', 'Blank COGS': 'blanks', 'Ship
 // committed, work underway, but NOT wrapped. 'delivered'/'cancelled' are done and
 // deliberately excluded so the list stays current instead of re-auditing history.
 const IN_PROGRESS_STATUSES = ['placed', 'in_production', 'shipped'];
-// "Awaiting a receipt" applies from placement THROUGH delivery — a delivered
-// order can still be missing its printer/blank receipt, and you need it for the
-// books regardless of whether the goods arrived. (Distinct from IN_PROGRESS,
-// which is about open work and excludes delivered.)
-const RECEIPT_RELEVANT_STATUSES = ['placed', 'in_production', 'shipped', 'delivered'];
+// "Missing a receipt" only chases ONGOING work — an order that's paid or in
+// production but not yet delivered/cancelled. Delivered = the job's done; we
+// deliberately do NOT re-audit finished history (the owner doesn't want to
+// back-fill receipts for old completed orders — just collect them going forward).
+// So the receipt gate is exactly `orderInProgress`.
 
 function orderInProgress(o) {
   if (!o) return false;
@@ -687,10 +687,9 @@ function missingReceiptsForOrders(orders, transactions, posByKey) {
   }
   const rows = [];
   for (const o of (orders || [])) {
-    // Flag from placement through delivery (NOT cancelled / pre-placement). A
-    // delivered order that never got its receipt logged still owes one.
-    if (o.status === 'cancelled') continue;
-    if (!(o.paid === true || RECEIPT_RELEVANT_STATUSES.includes(o.status))) continue;
+    // Only ONGOING orders (paid or in production, not delivered/cancelled). Old,
+    // delivered/finished orders are never flagged — we don't re-audit history.
+    if (!orderInProgress(o)) continue;
     const key = normalizeOrderNumber(o.orderNumber);
     if (!key) continue;
     const expected = expectedReceiptCats(o, (posByKey && posByKey[key]) || []);
@@ -897,11 +896,11 @@ const paymentGaps = async (req, res) => {
 const missingReceipts = async (req, res) => {
   try {
     const orders = await Order.find({
-      // Placement THROUGH delivery — a delivered order can still be missing its
-      // receipt (you need the proof for the books). Only cancelled / pre-placement
-      // are excluded. Mirrors missingReceiptsForOrders' own gate.
-      status: { $ne: 'cancelled' },
-      $or: [{ paid: true }, { status: { $in: RECEIPT_RELEVANT_STATUSES } }],
+      // ONGOING work only — paid or in production, and NOT delivered/cancelled.
+      // Delivered/finished orders are never re-audited (we don't chase receipts on
+      // old completed jobs). Mirrors orderInProgress / missingReceiptsForOrders' gate.
+      status: { $nin: ['cancelled', 'delivered'] },
+      $or: [{ paid: true }, { status: { $in: IN_PROGRESS_STATUSES } }],
       orderNumber: { $ne: '' },
     }).select('orderNumber projectNumber companyName clientName paid status shippingCost').lean();
     if (!orders.length) return res.json({ orders: [], count: 0 });

@@ -92,14 +92,13 @@ test('shipping cost on the order but no shipping receipt → flags shipping', ()
   assert.deepEqual(r.orders[0].missing, ['Shipping']);
 });
 
-test('cancelled / unpaid-quote orders are never flagged; a delivered order still owes its receipt', () => {
+test('cancelled / unpaid-quote / delivered orders are never flagged — only ongoing work', () => {
   const r = missingReceiptsForOrders([
-    order({ orderNumber: '50', status: 'delivered', paid: true }),  // delivered but no receipt logged → STILL flagged
+    order({ orderNumber: '50', status: 'delivered', paid: true }),  // delivered = job done → not re-audited
     order({ orderNumber: '51', status: 'cancelled', paid: true }),  // cancelled → never
     order({ orderNumber: '52', status: 'quoted', paid: false }),    // pre-placement, unpaid → never
   ], [], {});
-  assert.equal(r.count, 1);
-  assert.equal(r.orders[0].orderNumber, '50');
+  assert.equal(r.count, 0);
 });
 
 test('a cost logged WITHOUT a receipt file is still missing (the proof, not just the number)', () => {
