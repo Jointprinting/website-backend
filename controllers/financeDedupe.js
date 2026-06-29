@@ -110,7 +110,7 @@ async function dedupeApply(req, res) {
       removed: removeIds.length,
       originalRows,
       survivorBefore,
-      note: 'Merge cross-source duplicate transactions (budget restart row + manual/receipt row).',
+      note: 'Merge duplicate transactions (cross-source drift pairs + exact same-source copies).',
     });
 
     // 2) For each pair: UPDATE the survivor with the unioned fields (stamped with the
