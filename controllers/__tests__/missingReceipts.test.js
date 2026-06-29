@@ -120,3 +120,15 @@ test('newest order number first', () => {
   ], [], {});
   assert.deepEqual(r.orders.map((o) => o.orderNumber), ['23', '12', '7']);
 });
+
+test('duplicate order records (and leading-zero variants) are flagged ONCE', () => {
+  // The Orders collection sometimes holds the same order # twice; an order must
+  // never appear twice in the missing-receipts list.
+  const r = missingReceiptsForOrders([
+    order({ orderNumber: '40', paid: true }),
+    order({ orderNumber: '0000040', paid: true }),   // leading-zero variant of the same order
+    order({ orderNumber: '40', paid: true }),         // exact duplicate
+  ], [], {});
+  assert.equal(r.count, 1);
+  assert.equal(r.orders[0].orderNumber, '40');
+});

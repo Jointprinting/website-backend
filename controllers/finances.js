@@ -565,25 +565,16 @@ function paymentGapsForOrders(orders, transactions) {
     if (!k) continue;                       // a row with no order# can't be linked
     (byKey[k] ||= []).push(t);
   }
-  // Collapse duplicate order records (the same order # imported/entered more than
-  // once) so a single invoice is never counted as "owed" twice — and drop
-  // cancelled orders (no sale → nothing owed). Of duplicates, keep a paid copy if
-  // there is one, else the largest-billed.
-  const dedup = new Map();
-  for (const o of (orders || [])) {
-    if (!o || o.status === 'cancelled') continue;
-    const k = normalizeOrderNumber(o.orderNumber);
-    if (!k) continue;                       // an order with no number can't be matched
-    const prev = dedup.get(k);
-    if (!prev || (!prev.paid && o.paid) || (num(o.totalValue) > num(prev.totalValue))) dedup.set(k, o);
-  }
+  // One canonical record per order # (drop cancelled first — no sale, nothing
+  // owed), so a duplicate order doc never counts an invoice as "owed" twice.
+  const uniqOrders = dedupeOrdersByNumber((orders || []).filter((o) => o && o.status !== 'cancelled'));
 
   const rows = [];
   let costWithoutPayment = 0;
   let costWithoutPaymentCount = 0;
   let billedNotCollected = 0;
 
-  for (const o of dedup.values()) {
+  for (const o of uniqOrders) {
     const key = normalizeOrderNumber(o.orderNumber);
     const linked = byKey[key] || [];
     let collected = 0;
@@ -663,6 +654,31 @@ function orderInProgress(o) {
   return o.paid === true || IN_PROGRESS_STATUSES.includes(o.status);
 }
 
+// Source-of-truth dedup. The Orders collection sometimes holds the SAME order #
+// more than once (an import/entry dupe, or a leading-zero variant) — which made
+// finance views that iterate order DOCS count or flag an order twice. Whenever we
+// walk order docs we collapse to ONE canonical record per order number: prefer an
+// in-progress copy, then a paid one, then the largest-billed. (byOrder/byClient
+// don't need this — they key on the canonical number already.)
+function _moreCanonicalOrder(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  const ai = orderInProgress(a), bi = orderInProgress(b);
+  if (ai !== bi) return ai ? a : b;
+  if (!!a.paid !== !!b.paid) return a.paid ? a : b;
+  return num(b.totalValue) > num(a.totalValue) ? b : a;
+}
+function dedupeOrdersByNumber(orders) {
+  const m = new Map();
+  for (const o of (orders || [])) {
+    if (!o) continue;
+    const k = normalizeOrderNumber(o.orderNumber);
+    if (!k) continue;
+    m.set(k, _moreCanonicalOrder(m.get(k), o));
+  }
+  return [...m.values()];
+}
+
 function expectedReceiptCats(order, pos) {
   const expected = ['Printer COGS'];
   const list = (pos || []).filter(Boolean);
@@ -697,7 +713,8 @@ function missingReceiptsForOrders(orders, transactions, posByKey) {
     (byKey[k] ||= []).push(t);
   }
   const rows = [];
-  for (const o of (orders || [])) {
+  // One canonical record per order # so a duplicate order doc isn't flagged twice.
+  for (const o of dedupeOrdersByNumber(orders)) {
     // Only ONGOING orders (paid or in production, not delivered/cancelled). Old,
     // delivered/finished orders are never flagged — we don't re-audit history.
     if (!orderInProgress(o)) continue;
