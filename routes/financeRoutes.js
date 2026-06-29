@@ -4,6 +4,7 @@ const { requireAdmin } = require('../middleware/auth');
 const ctl = require('../controllers/finances');
 const restart = require('../controllers/financeRestart');
 const dedupe = require('../controllers/financeDedupe');
+const orderReconcile = require('../controllers/orderReconcile');
 
 // Financial data — admin only.
 router.use(requireAdmin);
@@ -36,6 +37,15 @@ router.post('/dedupe/preview', dedupe.dedupePreview);
 router.post('/dedupe/apply', dedupe.dedupeApply);
 router.post('/dedupe/revert', dedupe.dedupeRevert);
 router.get('/dedupe/status', dedupe.dedupeStatus);
+
+// Reconcile ONE order's scattered numbers (e.g. Happy Leaf written as #141/#1050/#1052)
+// down to a single canonical # (#138). Preview → confirm → apply; reversible. Auto-hides
+// in the UI once nothing is left to fold (the preview comes back empty).
+router.get('/order-reconcile/preview', orderReconcile.preview);
+router.post('/order-reconcile/preview', orderReconcile.preview);
+router.post('/order-reconcile/apply', orderReconcile.apply);
+router.post('/order-reconcile/revert', orderReconcile.revert);
+router.get('/order-reconcile/status', orderReconcile.status);
 
 router.get('/transactions', ctl.list);
 router.post('/transactions', ctl.create);
