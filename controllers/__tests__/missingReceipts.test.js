@@ -17,8 +17,10 @@ const assert = require('node:assert/strict');
 
 const { missingReceiptsForOrders, expectedReceiptCats, orderInProgress } = require('../finances');
 
-// Factories. Amounts/category drive presence; only type+category+orderNumber matter.
-const expense = (category, over = {}) => ({ type: 'expense', category, orderNumber: '1', ...over });
+// Factories. A cost row counts as a PRESENT receipt only when it carries a
+// receiptUrl (the proof), so the factory attaches one by default; pass
+// `{ receiptUrl: '' }` to model a logged-but-unreceipted cost.
+const expense = (category, over = {}) => ({ type: 'expense', category, orderNumber: '1', receiptUrl: 'r.pdf', ...over });
 const order = (over = {}) => ({ orderNumber: '1', status: 'in_production', paid: false, shippingCost: 0, companyName: 'Acme', ...over });
 const po = (over = {}) => ({ blanksProvided: true, ...over });
 
@@ -90,13 +92,25 @@ test('shipping cost on the order but no shipping receipt → flags shipping', ()
   assert.deepEqual(r.orders[0].missing, ['Shipping']);
 });
 
-test('delivered / cancelled / unpaid-quote orders are never flagged', () => {
+test('cancelled / unpaid-quote orders are never flagged; a delivered order still owes its receipt', () => {
   const r = missingReceiptsForOrders([
-    order({ orderNumber: '50', status: 'delivered', paid: true }),
-    order({ orderNumber: '51', status: 'cancelled', paid: true }),
-    order({ orderNumber: '52', status: 'quoted', paid: false }),
+    order({ orderNumber: '50', status: 'delivered', paid: true }),  // delivered but no receipt logged → STILL flagged
+    order({ orderNumber: '51', status: 'cancelled', paid: true }),  // cancelled → never
+    order({ orderNumber: '52', status: 'quoted', paid: false }),    // pre-placement, unpaid → never
   ], [], {});
-  assert.equal(r.count, 0);
+  assert.equal(r.count, 1);
+  assert.equal(r.orders[0].orderNumber, '50');
+});
+
+test('a cost logged WITHOUT a receipt file is still missing (the proof, not just the number)', () => {
+  const r = missingReceiptsForOrders(
+    [order({ orderNumber: '44', paid: true })],
+    [expense('Printer COGS', { orderNumber: '44', receiptUrl: '' }),   // cost logged, no receipt attached
+     expense('Blank COGS',   { orderNumber: '44' })],                  // blanks receipted (factory default)
+    {},
+  );
+  assert.equal(r.count, 1);
+  assert.deepEqual(r.orders[0].missing, ['Printer COGS']);
 });
 
 test('newest order number first', () => {
