@@ -884,8 +884,14 @@ const byOrder = async (req, res) => {
 const paymentGaps = async (req, res) => {
   try {
     const year = req.query.year ? Number(req.query.year) : null;
-    const orders = await Order.find({ orderNumber: { $ne: '' } })
+    const allOrders = await Order.find({ orderNumber: { $ne: '' } })
       .select('orderNumber companyName clientName totalValue paid status').lean();
+    // ONGOING orders only. "Money owed" is a nudge to COLLECT on work in flight — a
+    // deposit/balance on an order that's paid or in production but not yet delivered/
+    // cancelled. Old, finished (delivered) and dead (cancelled) orders are deliberately
+    // dropped: the owner doesn't want to re-chase historical balances, only current
+    // ones. Mirrors the missing-receipts "in progress" gate exactly (orderInProgress).
+    const orders = allOrders.filter(orderInProgress);
     const txns = await Transaction.find({ orderNumber: { $ne: '' } })
       .select('type category amount isCredit orderNumber date').lean();
 
