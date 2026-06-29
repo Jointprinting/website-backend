@@ -10,23 +10,14 @@ const { getGfs } = require('../gridfs');
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Pricing — "Starting at $X"
+//
+//  Lives in utils/pricing.js so the grid card and the detail page share ONE
+//  formula and can never disagree. `startingAt(blankCost, category)` derives the
+//  teaser from the real S&S blank cost; `applyBlankCost(row, cost)` overlays a
+//  known cost onto a style row. See that file for the policy + how to tune it.
 // ─────────────────────────────────────────────────────────────────────────────
-const BLANK_MARKUP = 1.6;
-
-const CATEGORY_MIN_PRICE = {
-  'T-Shirts':    7,  'Long Sleeve': 9,  'Tanks':       7,
-  'Polos':       14, 'Hoodies':     16, 'Zip-Ups':     20,
-  'Crewnecks':   14, 'Jackets':     30, 'Pants':       14,
-  'Shorts':      11, 'Hats':        8,
-};
-
-function startingAt(basePrice, category) {
-  const floor = CATEGORY_MIN_PRICE[category] != null ? CATEGORY_MIN_PRICE[category] : 8;
-  const computed = (typeof basePrice === 'number' && basePrice > 0)
-    ? Math.round(basePrice * BLANK_MARKUP)
-    : 0;
-  return Math.max(floor, computed);
-}
+const { startingAt, applyBlankCost } = require('../utils/pricing');
+const { diversifyByCategory } = require('../utils/catalogOrder');
 
 function defaultSizeRange(title, category, type) {
   const t = (title || '').toLowerCase();
@@ -451,6 +442,99 @@ exports.importFromJson = async (req, res) => {
 const _ssCache = new Map();
 const SS_CACHE_TTL = 4 * 60 * 60 * 1000;
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Real per-style blank-cost cache (powers real "Starting at $X" on the grid)
+//
+//  The /styles/ endpoint that feeds the grid carries NO pricing — only the
+//  per-style /products/?styleid=N call returns SKU piecePrice. Without this,
+//  every grid card fell back to the flat per-category estimate (every tee $7,
+//  every polo $14). We cache the lowest piecePrice per styleID and overlay it
+//  onto exactly the rows we return, so cards show a real cost-derived price —
+//  the same number the detail page already computes. TTL matches the /styles/
+//  brand cache; the cache is shared with the detail page (resolveSSEnrichment
+//  seeds it) and warmed in the background on boot + nightly.
+// ─────────────────────────────────────────────────────────────────────────────
+const _ssPriceCache = new Map();          // styleID -> { price: number|null, expiresAt }
+const SS_PRICE_TTL = SS_CACHE_TTL;
+
+// Lowest real S&S blank cost for a styleID, cached. Returns null (cached) when
+// S&S has no price / the call fails, so callers gracefully keep the estimate.
+async function fetchStyleBlankCost(styleID) {
+  if (styleID == null) return null;
+  const cached = _ssPriceCache.get(styleID);
+  if (cached && cached.expiresAt > Date.now()) return cached.price;
+  let price = null;
+  try {
+    const skus = await fetchSSProducts(null, styleID);   // /products/?styleid=N (proven path)
+    price = summarizeSsStyle(skus).minPrice;
+  } catch (e) {
+    price = null;   // graceful — caller falls back to the category estimate
+  }
+  _ssPriceCache.set(styleID, { price, expiresAt: Date.now() + SS_PRICE_TTL });
+  return price;
+}
+
+// Detail-page hook: seed the cache from a summary we already fetched, so
+// opening a product also warms its grid card price.
+function seedStyleBlankCost(styleID, price) {
+  if (styleID == null || typeof price !== 'number' || !(price > 0)) return;
+  _ssPriceCache.set(styleID, { price, expiresAt: Date.now() + SS_PRICE_TTL });
+}
+
+// Bounded-concurrency map — keeps the S&S fan-out polite. No external deps.
+async function mapWithConcurrency(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const workers = Array.from(
+    { length: Math.max(1, Math.min(limit, items.length || 1)) },
+    async () => {
+      while (next < items.length) {
+        const i = next++;
+        out[i] = await fn(items[i], i);
+      }
+    }
+  );
+  await Promise.all(workers);
+  return out;
+}
+
+// Overlay real cost-derived prices onto a list of style rows (mutates each row's
+// priceFrom/basePrice when a real cost is known; otherwise the row keeps its
+// category estimate). Bounded by an overall timeout so a cold/slow S&S never
+// holds the grid response hostage — any fetch that misses the window still
+// populates the cache for the next request. On a warm cache this is ~free.
+async function enrichWithRealPrices(styles, { timeoutMs = 4000, concurrency = 8 } = {}) {
+  const targets = (styles || []).filter((s) => s && s.styleID != null);
+  if (targets.length === 0) return styles;
+  const work = mapWithConcurrency(targets, concurrency, async (s) => {
+    // Never reject: a single style's pricing failure must not fail the batch
+    // (and must not surface as an unhandled rejection if the timeout wins).
+    try { applyBlankCost(s, await fetchStyleBlankCost(s.styleID)); } catch (_) {}
+    return s;
+  });
+  let timer;
+  const guard = new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs); });
+  try { await Promise.race([work, guard]); }
+  finally { clearTimeout(timer); }
+  return styles;
+}
+
+// Background warm: price every featured-catalog style so real visitors hit a
+// hot cache and the grid overlay adds ~zero latency. Fire-and-forget.
+async function warmSSPrices() {
+  try {
+    const all = await fetchAllSSBrands();
+    const ids = [...new Set(all.styles.map((s) => s.styleID).filter((x) => x != null))];
+    await mapWithConcurrency(ids, 6, (id) => fetchStyleBlankCost(id));
+    console.log(`[SS] price cache warm done — ${ids.length} styles priced.`);
+  } catch (e) {
+    console.warn('[SS] price cache warm failed:', e.message);
+  }
+}
+
+exports._enrichWithRealPrices = enrichWithRealPrices;
+exports._seedStyleBlankCost = seedStyleBlankCost;
+
 const SS_POPULAR_BRANDS = [
   'Bella + Canvas', 'Gildan', 'Port & Company', 'Port Authority',
   'Sport-Tek', 'Next Level', 'Alternative Apparel', 'Hanes',
@@ -719,7 +803,11 @@ exports.warmSSCache = () => {
   if (!SS_ACCOUNT || !SS_API_KEY) return;
   console.log('[SS] Starting background /styles/ cache warm…');
   fetchAllSSBrands()
-    .then((d) => console.log(`[SS] /styles/ cache warm done — ${d.total} styles.`))
+    .then((d) => {
+      console.log(`[SS] /styles/ cache warm done — ${d.total} styles.`);
+      // Then warm real blank costs so grid cards show cost-derived prices.
+      return warmSSPrices();
+    })
     .catch((e) => console.warn('[SS] /styles/ cache warm failed:', e.message));
 };
 
@@ -829,6 +917,15 @@ exports.browseSS = async (req, res) => {
       }
     }
 
+    // Unfiltered "library" view: round-robin across garment categories so the
+    // first page a visitor sees spans types (and price points) instead of a
+    // wall of near-identically-priced popular tees. Filtered/searched views
+    // keep their natural popularity order. Returns a new array — the cached
+    // allStyles order is left untouched.
+    if (!search && !category && !type) {
+      styles = diversifyByCategory(styles);
+    }
+
     const total = styles.length;
     const p = Math.max(1, parseInt(page, 10));
     const l = Math.min(48, Math.max(1, parseInt(limit, 10)));
@@ -864,6 +961,17 @@ exports.browseSS = async (req, res) => {
       }).filter(Boolean);
     }
 
+    // Overlay real S&S blank-cost-derived prices onto exactly what we return
+    // (the visible page + the featured marquee) so cards show a real per-style
+    // "Starting at $X" instead of the flat per-category estimate. One call so a
+    // cold cache stays within a single timeout budget; cheap on a warm cache;
+    // defensive so a pricing hiccup never breaks the catalog.
+    try {
+      await enrichWithRealPrices([...pageSlice, ...featured]);
+    } catch (e) {
+      console.warn('browseSS price enrich failed (showing estimates):', e.message);
+    }
+
     return res.json({
       products: pageSlice, total, page: p,
       totalPages: Math.ceil(total / l),
@@ -877,9 +985,9 @@ exports.browseSS = async (req, res) => {
 };
 
 // Detail handler — Mongo override first (admin-curated), then /styles/
-// brand-cache lookup. NO sync attempt on /products/ since that endpoint
-// returns 404 for our account. Returns dataQuality:'styles-only' so the
-// frontend can show a 'live colors come at quote time' note.
+// brand-cache lookup enriched with /products/?styleid=N (colors, sizes, real
+// blank cost). Falls back to dataQuality:'styles-only' if the per-style fetch
+// turns up nothing, so the frontend can note 'live colors come at quote time'.
 // Resolve a style code -> { match, summary } from S&S. Cached for 10 min
 // per (styleCode, brand) pair so we don't accidentally serve a Hanes
 // "500" for a Gildan "G500" lookup.
@@ -894,6 +1002,8 @@ async function resolveSSEnrichment(styleName, brandHint = null) {
       const skus = await fetchSSProducts(null, match.styleID);
       const summary = summarizeSsStyle(skus);
       data = { match, summary };
+      // Opening a product also warms its grid card price (shared cache).
+      seedStyleBlankCost(match.styleID, summary.minPrice);
     }
   } catch (e) {
     console.warn(`[SS] enrichment failed for "${styleName}" (${brandHint || 'no brand'}):`, e.message);
@@ -1153,12 +1263,14 @@ exports.syncFromSS = async (req, res) => {
   }
 };
 
-// Non-HTTP core shared by the nightly cron (services/ssAutoSync) and the
-// admin endpoint below. /products/ doesn't work for our account; nothing to
-// refresh per-SKU — just clear and re-warm the /styles/ brand caches.
+// Non-HTTP core shared by the nightly cron (services/ssAutoSync) and the admin
+// endpoint below. Clears and re-warms the /styles/ brand caches AND the real
+// per-style blank-cost cache (/products/?styleid=N) so grid prices stay current.
 exports._refreshAllSSProducts = async () => {
   _ssCache.clear();
+  _ssPriceCache.clear();
   const data = await fetchAllSSBrands();
+  await warmSSPrices();
   return { updated: data.total, total: data.total, failed: [] };
 };
 
