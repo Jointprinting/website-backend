@@ -15,7 +15,8 @@ const mongoose = require('mongoose');
 
 const CATEGORIES = [
   'Customer Sales', 'Blank COGS', 'Printer COGS', 'Shipping', 'Art', 'Commission',
-  'Processing Fee', 'Software', 'Owner Draw', 'Owner Contribution', 'Sales Tax', 'Refund', 'Other',
+  'Processing Fee', 'Software', 'Marketing', 'Accounting', 'Travel/Field',
+  'Owner Draw', 'Owner Contribution', 'Sales Tax', 'Refund', 'Other',
 ];
 // COGS categories that net against an order's revenue for per-order margin.
 // 'Processing Fee' is the merchant fee a payment processor takes out of a client

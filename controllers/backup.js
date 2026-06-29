@@ -1,7 +1,9 @@
 // Backup / restore — full-site snapshots so the user can keep weekly
 // archives on a hard drive and recover from a wipe. Everything that
 // matters goes into a single ZIP: per-collection JSON files plus the
-// uploads directory plus the receipt images pulled out of Cloudflare R2.
+// uploads directory plus EVERY image stored in Cloudflare R2 — receipts
+// AND the studio composites (mockup/blank/logo thumbnails + data, version
+// thumbnails) — so even a total R2 loss can't take the only copy.
 //
 // EVERY collection is captured. Rather than a hand-maintained list (which
 // silently dropped Vendor / PurchaseOrder / Counter when those models were
@@ -169,23 +171,18 @@ function upsertOps(docs) {
 
 // ── Archive assembly ─────────────────────────────────────────────────────────
 
-// Every R2 URL referenced by the finance ledger or a receipt record. These are
-// the receipt/invoice images — they live in Cloudflare R2, not in MongoDB, so
-// the JSON dumps alone would leave them out of the backup. We pull the actual
-// bytes into the archive so a Cloudflare/R2 outage can't take the only copy.
-// Resolved by model name so it keeps working even though the model list is now
-// dynamic. Missing models (e.g. in a unit test) are simply skipped.
-async function collectReceiptUrls() {
-  const urls = new Set();
-  const add = async (modelName, field) => {
-    if (!mongoose.modelNames().includes(modelName)) return;
-    const Model = mongoose.model(modelName);
-    const rows = await Model.find({ [field]: { $nin: ['', null] } }, field).lean();
-    for (const r of rows) if (r2.isR2Url(r[field])) urls.add(r[field]);
-  };
-  await add('Transaction', 'receiptUrl');
-  await add('Receipt', 'fileUrl');
-  return [...urls];
+// Deep-walk a (lean) document collecting EVERY Cloudflare R2 URL it references in any
+// string field — at any depth, including inside a Mixed `pageState`. The image bytes
+// live in R2, not Mongo, so the JSON dumps alone would leave them out of the backup;
+// this pulls the actual bytes into the archive so a total R2 loss can't take the only
+// copy. Field-agnostic ON PURPOSE: it catches receiptUrl/fileUrl on the ledger AND the
+// studio composites (StudioLibraryItem + StudioMockupVersion `thumbnail`/`data`) — and
+// any R2-backed field added in the future — with no code change here. Mirrors
+// getBackupModels()'s "derive it, don't hand-maintain a list" philosophy.
+function addR2UrlsFromValue(val, urls) {
+  if (typeof val === 'string') { if (r2.isR2Url(val)) urls.add(val); return; }
+  if (Array.isArray(val)) { for (const v of val) addR2UrlsFromValue(v, urls); return; }
+  if (val && typeof val === 'object') { for (const k of Object.keys(val)) addR2UrlsFromValue(val[k], urls); }
 }
 
 // Append the full backup payload (manifest + per-collection JSON + uploaded
@@ -197,12 +194,17 @@ async function appendBackupContents(archive) {
   const counts = {};
   let totalDocs = 0, fileCount = 0, r2Count = 0, r2Missing = 0;
 
-  // Per-collection JSON dumps (counts gathered first so the manifest can record them)
+  // Per-collection JSON dumps (counts gathered first so the manifest can record them).
+  // While we already hold each collection's docs, deep-scan them for R2 image URLs — no
+  // second pass over the database.
   const dumps = [];
+  const r2Urls = new Set();
+  const wantR2 = r2.isR2Configured();
   for (const { name, Model } of models) {
     const docs = await Model.find({}).lean();
     counts[name] = docs.length;
     totalDocs += docs.length;
+    if (wantR2) for (const d of docs) addR2UrlsFromValue(d, r2Urls);
     dumps.push({ name, json: JSON.stringify(docs, null, 2) });
   }
 
@@ -221,11 +223,11 @@ async function appendBackupContents(archive) {
     }
   }
 
-  // Receipt/invoice images out of R2, keyed by their object key so a restore
-  // can re-upload to the exact same key (preserving every stored URL).
-  if (r2.isR2Configured()) {
-    const urls = await collectReceiptUrls();
-    for (const url of urls) {
+  // Every R2 image (receipts AND studio composites), keyed by its object key so a
+  // restore can re-upload to the exact same key (preserving every stored URL). Gathered
+  // above during the dump pass.
+  if (wantR2) {
+    for (const url of r2Urls) {
       const key = r2.keyFromUrl(url);
       if (!key) continue;
       const buf = await r2.getBufferByUrl(url);
