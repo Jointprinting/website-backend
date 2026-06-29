@@ -419,6 +419,11 @@ const summary = async (req, res) => {
 // here and the CRM company-finance scoping (controllers/crm.js), which all route
 // their keys through this. Exported for that reuse.
 const normalizeOrderNumber = (v) => String(v == null ? '' : v).replace(/[^0-9]/g, '').replace(/^0+/, '');
+// Canonical company key (lowercased alphanumerics) — the SAME convention the CRM
+// keys companies by. Lets a finance row deep-link to its CRM card by client name
+// even when no Order doc resolved a key, so every client is clickable, not just
+// the ones with a linked order.
+const deriveCompanyKey = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 
 // Pure per-company finance rollup — the SAME revenue/COGS/profit/margin
 // definitions byOrder/byClient use, reusable from outside the finance routes
@@ -635,6 +640,11 @@ const RECEIPT_LABEL = { 'Printer COGS': 'printer', 'Blank COGS': 'blanks', 'Ship
 // committed, work underway, but NOT wrapped. 'delivered'/'cancelled' are done and
 // deliberately excluded so the list stays current instead of re-auditing history.
 const IN_PROGRESS_STATUSES = ['placed', 'in_production', 'shipped'];
+// "Awaiting a receipt" applies from placement THROUGH delivery — a delivered
+// order can still be missing its printer/blank receipt, and you need it for the
+// books regardless of whether the goods arrived. (Distinct from IN_PROGRESS,
+// which is about open work and excludes delivered.)
+const RECEIPT_RELEVANT_STATUSES = ['placed', 'in_production', 'shipped', 'delivered'];
 
 function orderInProgress(o) {
   if (!o) return false;
@@ -656,7 +666,11 @@ function expectedReceiptCats(order, pos) {
 function presentReceiptCats(rows) {
   const present = new Set();
   for (const t of (rows || [])) {
-    if (t && t.type === 'expense' && RECEIPT_COGS.includes(t.category)) present.add(t.category);
+    // A category is "receipt-backed" only when a cost row in it carries a stored
+    // receipt FILE (receiptUrl) — the proof. A logged cost with no receipt
+    // attached is precisely what "awaiting a receipt" means, so it does NOT count
+    // as present (this is the same receipt-file test receiptCount uses).
+    if (t && t.type === 'expense' && RECEIPT_COGS.includes(t.category) && t.receiptUrl) present.add(t.category);
   }
   return present;
 }
@@ -673,7 +687,10 @@ function missingReceiptsForOrders(orders, transactions, posByKey) {
   }
   const rows = [];
   for (const o of (orders || [])) {
-    if (!orderInProgress(o)) continue;
+    // Flag from placement through delivery (NOT cancelled / pre-placement). A
+    // delivered order that never got its receipt logged still owes one.
+    if (o.status === 'cancelled') continue;
+    if (!(o.paid === true || RECEIPT_RELEVANT_STATUSES.includes(o.status))) continue;
     const key = normalizeOrderNumber(o.orderNumber);
     if (!key) continue;
     const expected = expectedReceiptCats(o, (posByKey && posByKey[key]) || []);
@@ -811,7 +828,9 @@ const byOrder = async (req, res) => {
         const profit = round2(o.revenue - o.cost);
         return {
           orderNumber: o.orderNumber, client: o.client,
-          companyKey: ckByOrder[o.orderNumber] || '',   // '' = not linkable (no/ambiguous order)
+          // Prefer the order-resolved key; fall back to the client name so every
+          // row links to its CRM card, not just the ones with a linked Order doc.
+          companyKey: ckByOrder[o.orderNumber] || deriveCompanyKey(o.client),
           year: anchor ? new Date(anchor).getUTCFullYear() : null,
           revenue: round2(o.revenue), cost: round2(o.cost), profit,
           margin: pct(profit, o.revenue),
@@ -878,8 +897,11 @@ const paymentGaps = async (req, res) => {
 const missingReceipts = async (req, res) => {
   try {
     const orders = await Order.find({
-      status: { $nin: ['delivered', 'cancelled'] },
-      $or: [{ paid: true }, { status: { $in: IN_PROGRESS_STATUSES } }],
+      // Placement THROUGH delivery — a delivered order can still be missing its
+      // receipt (you need the proof for the books). Only cancelled / pre-placement
+      // are excluded. Mirrors missingReceiptsForOrders' own gate.
+      status: { $ne: 'cancelled' },
+      $or: [{ paid: true }, { status: { $in: RECEIPT_RELEVANT_STATUSES } }],
       orderNumber: { $ne: '' },
     }).select('orderNumber projectNumber companyName clientName paid status shippingCost').lean();
     if (!orders.length) return res.json({ orders: [], count: 0 });
@@ -895,7 +917,7 @@ const missingReceipts = async (req, res) => {
     for (const o of orders) idToKey[String(o._id)] = normalizeOrderNumber(o.orderNumber);
     const [txns, pos] = await Promise.all([
       Transaction.find({ type: 'expense', orderNumber: { $in: orRegex } })
-        .select('type category orderNumber').lean(),
+        .select('type category orderNumber receiptUrl').lean(),
       PurchaseOrder.find({ orderId: { $in: orders.map((o) => o._id) }, archived: { $ne: true } })
         .select('orderId blanksProvided').lean(),
     ]);
@@ -991,7 +1013,7 @@ const byClient = async (req, res) => {
     });
     const clients = Object.values(byC).map((c) => {
       const profit = round2(c.revenue - c.cost);
-      return { client: c.client, companyKey: c.companyKey || '', orders: c.orders, revenue: round2(c.revenue), cost: round2(c.cost), profit, margin: pct(profit, c.revenue) };
+      return { client: c.client, companyKey: c.companyKey || deriveCompanyKey(c.client), orders: c.orders, revenue: round2(c.revenue), cost: round2(c.cost), profit, margin: pct(profit, c.revenue) };
     }).sort((a, b) => b.profit - a.profit);
     res.json({ clients });
   } catch (e) { res.status(500).json({ message: e.message }); }

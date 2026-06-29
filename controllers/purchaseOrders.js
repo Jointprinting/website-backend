@@ -947,7 +947,12 @@ const getVendor = async (req, res) => {
 
     // Map order ids on POs → their order numbers, so a PO contributes its order to
     // this vendor's "orders they printed". One query for all the linked orders.
-    const orderIds = [...new Set(vendorPos.map((p) => String(p.orderId)).filter(Boolean))];
+    // Keep only real ObjectIds: a PO with orderId null/''/a stray string must NOT
+    // reach Order.find — String(null) is the truthy "null", which slips past a
+    // plain filter(Boolean) and 500s the whole vendor card with a cast error.
+    const orderIds = [...new Set(
+      vendorPos.map((p) => p.orderId).filter((id) => id && mongoose.isValidObjectId(id)).map(String),
+    )];
     const ordersById = orderIds.length
       ? await Order.find({ _id: { $in: orderIds } })
           .select('orderNumber projectNumber companyName clientName totalValue paid orderDate status')
