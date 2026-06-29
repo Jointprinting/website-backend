@@ -455,7 +455,7 @@ const SS_CACHE_TTL = 4 * 60 * 60 * 1000;
 //  seeds it) and warmed in the background on boot + nightly.
 // ─────────────────────────────────────────────────────────────────────────────
 const _ssPriceCache = new Map();          // styleID -> { price: number|null, expiresAt }
-const SS_PRICE_TTL = SS_CACHE_TTL;
+const SS_PRICE_TTL = 24 * 60 * 60 * 1000; // prices are stable intraday; nightly cron re-warms
 
 // Lowest real S&S blank cost for a styleID, cached. Returns null (cached) when
 // S&S has no price / the call fails, so callers gracefully keep the estimate.
@@ -500,10 +500,13 @@ async function mapWithConcurrency(items, limit, fn) {
 
 // Overlay real cost-derived prices onto a list of style rows (mutates each row's
 // priceFrom/basePrice when a real cost is known; otherwise the row keeps its
-// category estimate). Bounded by an overall timeout so a cold/slow S&S never
-// holds the grid response hostage — any fetch that misses the window still
-// populates the cache for the next request. On a warm cache this is ~free.
-async function enrichWithRealPrices(styles, { timeoutMs = 4000, concurrency = 8 } = {}) {
+// category estimate). This runs on the ≤24-item visible page, so the budget is
+// sized to actually FINISH pricing them — that's what keeps a grid card's price
+// identical to its detail page (both call /products/?styleid=N → same number).
+// On a warm cache it's ~free; the overall timeout is only a safety cap so a
+// hung S&S can't block the response forever (stragglers keep the estimate and
+// still populate the cache for next time).
+async function enrichWithRealPrices(styles, { timeoutMs = 10000, concurrency = 12 } = {}) {
   const targets = (styles || []).filter((s) => s && s.styleID != null);
   if (targets.length === 0) return styles;
   const work = mapWithConcurrency(targets, concurrency, async (s) => {
@@ -519,14 +522,18 @@ async function enrichWithRealPrices(styles, { timeoutMs = 4000, concurrency = 8 
   return styles;
 }
 
-// Background warm: price every featured-catalog style so real visitors hit a
-// hot cache and the grid overlay adds ~zero latency. Fire-and-forget.
+// Background warm: pre-price only the unfiltered LANDING page (what most
+// visitors hit first) so it's instant. S&S's /styles/?brand= filter is ignored
+// and returns the whole ~5k-style catalog, so pricing all of it up front is
+// infeasible and would hammer S&S — every other page prices its visible items
+// on demand (enrichWithRealPrices) and caches them. Fire-and-forget.
 async function warmSSPrices() {
   try {
     const all = await fetchAllSSBrands();
-    const ids = [...new Set(all.styles.map((s) => s.styleID).filter((x) => x != null))];
-    await mapWithConcurrency(ids, 6, (id) => fetchStyleBlankCost(id));
-    console.log(`[SS] price cache warm done — ${ids.length} styles priced.`);
+    const landing = diversifyByCategory(all.styles).slice(0, 60);
+    const ids = [...new Set(landing.map((s) => s.styleID).filter((x) => x != null))];
+    await mapWithConcurrency(ids, 8, (id) => fetchStyleBlankCost(id));
+    console.log(`[SS] price cache warm done — landing page (${ids.length} styles).`);
   } catch (e) {
     console.warn('[SS] price cache warm failed:', e.message);
   }
