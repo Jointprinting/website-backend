@@ -17,6 +17,7 @@ const { getGfs } = require('../gridfs');
 //  known cost onto a style row. See that file for the policy + how to tune it.
 // ─────────────────────────────────────────────────────────────────────────────
 const { startingAt, applyBlankCost } = require('../utils/pricing');
+const { diversifyByCategory } = require('../utils/catalogOrder');
 
 function defaultSizeRange(title, category, type) {
   const t = (title || '').toLowerCase();
@@ -914,6 +915,15 @@ exports.browseSS = async (req, res) => {
         styles = globalMatches;
         relaxedFilter = { ignored: { category: category || null, type: type || null }, search };
       }
+    }
+
+    // Unfiltered "library" view: round-robin across garment categories so the
+    // first page a visitor sees spans types (and price points) instead of a
+    // wall of near-identically-priced popular tees. Filtered/searched views
+    // keep their natural popularity order. Returns a new array — the cached
+    // allStyles order is left untouched.
+    if (!search && !category && !type) {
+      styles = diversifyByCategory(styles);
     }
 
     const total = styles.length;
