@@ -424,6 +424,20 @@ test('REFUND PARITY: paymentGaps "collected" nets the refund down too', () => {
   assert.equal(row.outstanding, 150);                  // billed 1000 − collected 850
 });
 
+test('DEDUPE + cancelled: a duplicate order # is counted once; cancelled never owed', () => {
+  // The same invoice present twice (an import/entry dupe) must not be "owed" twice,
+  // and a cancelled order is never owed. This is the inflated-"money owed" bug.
+  const orders = [
+    order({ orderNumber: '1021', totalValue: 8321.39, paid: false }),
+    order({ orderNumber: '1021', totalValue: 8321.39, paid: false }),  // exact duplicate record
+    order({ orderNumber: '99',   totalValue: 500,     paid: false, status: 'cancelled' }),
+  ];
+  const out = paymentGapsForOrders(orders, []);
+  assert.equal(out.orders.filter((r) => r.orderNumber === '1021').length, 1, 'duplicate order # appears once');
+  assert.equal(out.orders.find((r) => r.orderNumber === '99'), undefined, 'cancelled order never owed');
+  assert.equal(out.totals.billedNotCollected, 8321.39);  // counted once, not 16,642.78
+});
+
 // ════════════════════════════════════════════════════════════════════════════
 // PHASE 2b — processing fee (CC 2.99% / ACH 1% / none), auto-booked on the order
 // ════════════════════════════════════════════════════════════════════════════

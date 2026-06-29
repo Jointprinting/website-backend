@@ -565,15 +565,26 @@ function paymentGapsForOrders(orders, transactions) {
     if (!k) continue;                       // a row with no order# can't be linked
     (byKey[k] ||= []).push(t);
   }
+  // Collapse duplicate order records (the same order # imported/entered more than
+  // once) so a single invoice is never counted as "owed" twice — and drop
+  // cancelled orders (no sale → nothing owed). Of duplicates, keep a paid copy if
+  // there is one, else the largest-billed.
+  const dedup = new Map();
+  for (const o of (orders || [])) {
+    if (!o || o.status === 'cancelled') continue;
+    const k = normalizeOrderNumber(o.orderNumber);
+    if (!k) continue;                       // an order with no number can't be matched
+    const prev = dedup.get(k);
+    if (!prev || (!prev.paid && o.paid) || (num(o.totalValue) > num(prev.totalValue))) dedup.set(k, o);
+  }
+
   const rows = [];
   let costWithoutPayment = 0;
   let costWithoutPaymentCount = 0;
   let billedNotCollected = 0;
 
-  for (const o of (orders || [])) {
-    if (!o) continue;
+  for (const o of dedup.values()) {
     const key = normalizeOrderNumber(o.orderNumber);
-    if (!key) continue;                     // an order with no number can't be matched
     const linked = byKey[key] || [];
     let collected = 0;
     for (const t of linked) {
@@ -857,7 +868,7 @@ const paymentGaps = async (req, res) => {
   try {
     const year = req.query.year ? Number(req.query.year) : null;
     const orders = await Order.find({ orderNumber: { $ne: '' } })
-      .select('orderNumber companyName clientName totalValue paid').lean();
+      .select('orderNumber companyName clientName totalValue paid status').lean();
     const txns = await Transaction.find({ orderNumber: { $ne: '' } })
       .select('type category amount isCredit orderNumber date').lean();
 
