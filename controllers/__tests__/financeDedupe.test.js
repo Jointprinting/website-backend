@@ -396,3 +396,44 @@ test('REVERSIBLE: a survivor with a PRE-EXISTING mergedFrom + feeRateOverride is
   assert.deepEqual(restored.mergedFrom, priorAudit, 'revert restores the original audit exactly');
   assert.equal(restored.feeRateOverride, 0.025, 'revert restores the fee rate');
 });
+
+// ── EXACT same-source duplicates (a CSV imported twice / a double-entry) ──────
+// The new second pass. Safety hinges on an EXACT identity match (same DAY + amount +
+// direction + category + order # + party + description), so real recurring charges
+// (which land on different days) are never collapsed.
+
+test('EXACT DUP: two identical same-source rows → one pair (amount counts once)', () => {
+  const a = manual({ _id: 'a', date: '2026-03-10', type: 'income', category: 'Customer Sales', amount: 4852.89, party: 'The CannaBoss Lady', description: 'Invoice #1036', orderNumber: '1036' });
+  const b = manual({ _id: 'b', date: '2026-03-10', type: 'income', category: 'Customer Sales', amount: 4852.89, party: 'The CannaBoss Lady', description: 'Invoice #1036', orderNumber: '1036' });
+  const plan = buildDedupePlan([a, b], {});
+  assert.equal(plan.summary.exactDuplicatePairs, 1);
+  assert.equal(plan.pairCount, 1);
+  assert.equal(plan.pairs[0].exact, true);
+});
+
+test('EXACT DUP: recurring-charge protection — same vendor/amount on DIFFERENT days is NOT merged', () => {
+  const jan = manual({ date: '2026-01-15', category: 'Software', amount: 20, party: 'OpenAI', description: 'API' });
+  const feb = manual({ date: '2026-02-15', category: 'Software', amount: 20, party: 'OpenAI', description: 'API' });
+  assert.equal(buildDedupePlan([jan, feb], {}).pairCount, 0);
+});
+
+test('EXACT DUP: receipt copy + identical no-receipt copy → merged, receipt survives', () => {
+  const withR  = receipt({ _id: 'r', date: '2026-03-10', type: 'expense', category: 'Printer COGS', amount: 800, party: 'AcmePrint', description: 'job', orderNumber: '1050', receiptUrl: 'r2/p.pdf' });
+  const without = manual({ _id: 'n', date: '2026-03-10', type: 'expense', category: 'Printer COGS', amount: 800, party: 'AcmePrint', description: 'job', orderNumber: '1050' });
+  const plan = buildDedupePlan([withR, without], {});
+  assert.equal(plan.pairCount, 1);
+  assert.equal(plan.pairs[0].budget._id, 'r', 'the receipt-bearing copy survives');
+  assert.equal(plan.pairs[0].merged.keepsReceipt, true);
+});
+
+test('EXACT DUP: a different order # means distinct payments — never merged', () => {
+  const a = manual({ date: '2026-03-10', type: 'income', category: 'Customer Sales', amount: 500, party: 'Acme', description: 'pmt', orderNumber: '1001' });
+  const b = manual({ date: '2026-03-10', type: 'income', category: 'Customer Sales', amount: 500, party: 'Acme', description: 'pmt', orderNumber: '1002' });
+  assert.equal(buildDedupePlan([a, b], {}).pairCount, 0);
+});
+
+test('EXACT DUP: { exact:false } disables the pass (cross-source only)', () => {
+  const a = manual({ date: '2026-03-10', amount: 100, party: 'X', description: 'd' });
+  const b = manual({ date: '2026-03-10', amount: 100, party: 'X', description: 'd' });
+  assert.equal(buildDedupePlan([a, b], { exact: false }).pairCount, 0);
+});

@@ -407,16 +407,82 @@ function findDuplicatePairs(transactions, opts = {}) {
   return pairs;
 }
 
+// ── exact same-source duplicates (a CSV imported twice, a double-entry) ───────
+// The cross-source detector above deliberately won't touch two SAME-source rows, so
+// it can't protect a real recurring charge from collapsing. But it also misses the
+// other common dupe: the EXACT same payment recorded twice (a ledger CSV imported
+// twice, or a row entered + imported). Those are safe to collapse precisely because
+// we demand an EXACT identity match — same calendar DAY, amount, direction, category,
+// order #, party, AND description. Two genuinely-separate recurring charges land on
+// DIFFERENT days, so they never share this signature and are never merged. Links
+// (receipt / invoice) are deliberately NOT part of the signature — two copies that
+// differ only by an attached receipt are still the same payment, and the merge unions
+// the links. A `merge` survivor is excluded (already deduped), as is any row already
+// claimed by the cross-source pass.
+function exactDupKey(t) {
+  if (!t) return null;
+  const amt = round2(t.amount);
+  if (!Number.isFinite(amt) || amt === 0) return null;
+  const dk = dateKey(t.date);
+  if (!dk) return null;                                    // dateless → can't confirm "same day"
+  const norm = (s) => String(s == null ? '' : s).trim().replace(/\s+/g, ' ').toLowerCase();
+  return [
+    dk, amt.toFixed(2), String(t.type || ''), t.isCredit ? 'cr' : 'db',
+    norm(t.category), normalizeOrderNumber(t.orderNumber), norm(t.party), norm(t.description),
+  ].join('§');
+}
+function findExactDuplicates(transactions, usedIds) {
+  const used = usedIds instanceof Set ? usedIds : new Set();
+  const idOf = (t) => String((t && t._id) != null ? t._id : '');
+  const rows = (Array.isArray(transactions) ? transactions : [])
+    .filter((t) => t && t.source !== 'merge' && !used.has(idOf(t)));
+  const groups = new Map();
+  for (const t of rows) {
+    const k = exactDupKey(t);
+    if (!k) continue;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(t);
+  }
+  const pairs = [];
+  for (const list of groups.values()) {
+    if (list.length < 2) continue;
+    // Survivor = the copy carrying the most links (receipt/order/invoice); the rest
+    // fold into it. Tiebreak on id so the choice is deterministic across runs.
+    list.sort((a, b) => (linkScore(b) - linkScore(a)) || idOf(a).localeCompare(idOf(b)));
+    const survivor = list[0];
+    for (let i = 1; i < list.length; i++) {
+      const folded = list[i];
+      pairs.push({
+        key: `${idOf(survivor)}|${idOf(folded)}`,
+        budget: survivor,        // survivor slot (apply survives pair.budget) — links union onto it
+        manual: folded,          // folded + removed
+        daysApart: 0,
+        exact: true,
+        merged: mergedPreview(survivor, folded),
+      });
+    }
+  }
+  return pairs;
+}
+
 // ── the PLAN the preview returns and the apply consumes ──────────────────────
 // Each pair becomes a "group" (the budget row + the manual row side by side, plus the
 // merged result) the UI renders. We also surface a count of how many receipts / order
 // links / invoice #s the merge will PRESERVE (the owner's reassurance that nothing is
 // lost). Pure: pass the already-fetched live rows in.
 function buildDedupePlan(transactions, opts = {}) {
-  const pairs = findDuplicatePairs(transactions, opts);
+  // Cross-source drift pairs first; then EXACT same-source duplicates on whatever
+  // rows the cross pass didn't already claim (so no row is handled twice). Both
+  // kinds become the same pair shape, so the preview/apply/revert flow is identical.
+  const crossPairs = findDuplicatePairs(transactions, opts);
+  const used = new Set();
+  for (const p of crossPairs) { used.add(String(p.budget._id)); used.add(String(p.manual._id)); }
+  const exactPairs = (opts.exact === false) ? [] : findExactDuplicates(transactions, used);
+  const pairs = [...crossPairs, ...exactPairs];
   const groups = pairs.map((p) => ({
     key: p.key,
     daysApart: p.daysApart,
+    exact: !!p.exact,                 // lets the UI label an exact dup vs a drifted one
     budget: previewRow(p.budget),
     manual: previewRow(p.manual),
     merged: p.merged,
@@ -429,6 +495,8 @@ function buildDedupePlan(transactions, opts = {}) {
     groups,
     summary: {
       duplicatePairs: pairs.length,
+      crossSourcePairs: crossPairs.length,
+      exactDuplicatePairs: exactPairs.length,
       receiptsPreserved,
       orderLinksPreserved,
       invoicesPreserved,
@@ -440,6 +508,8 @@ function buildDedupePlan(transactions, opts = {}) {
 
 module.exports = {
   findDuplicatePairs,
+  findExactDuplicates,
+  exactDupKey,
   buildDedupePlan,
   mergeTransactions,
   mergedPreview,
