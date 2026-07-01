@@ -94,6 +94,10 @@ const ClientSchema = new mongoose.Schema({
   akas:         { type: [String], default: [] },
   tags:         { type: [String], default: [], index: true }, // freeform labels for grouping/filtering ("vip", "promos-only", "wholesale", ...)
   lostReason:   { type: String, default: '' },              // why a deal was marked lost (captured when stage → 'lost')
+  // Hard email opt-out (CAN-SPAM). Set by the public outreach unsubscribe route
+  // (or the owner); the outreach engine refuses to email a company with this
+  // set, no matter what campaign it's enrolled in. Never cleared automatically.
+  doNotEmail:   { type: Boolean, default: false, index: true },
 
   // Soft-delete. NOTHING in the CRM is ever hard-deleted — archive a record and
   // it drops out of every working surface (today/dashboard/pipeline/calendar/
