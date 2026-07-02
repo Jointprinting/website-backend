@@ -238,10 +238,23 @@ async function getCandidates(req, res) {
     // Never offer a real customer (by order reality) as a cold-outreach candidate,
     // even if their stored stage is still 'lead'/'contacted' — client protection.
     const customerKeys = await keysWithPlacedOrders(clients.map((c) => c.companyKey));
+    // Every email address we've EVER queued/sent to — so the same inbox is never
+    // shown as a fresh lead (a shop listed twice, or a shared chain inbox).
+    const usedEmails = new Set(
+      (await OutreachEnrollment.find({}).select('toEmail').lean())
+        .map((e) => String(e.toEmail || '').toLowerCase()).filter(Boolean),
+    );
 
-    const rows = clients
-      .map((c) => ({ ...c, outreachEmail: pickEmail(c) }))
-      .filter((c) => c.outreachEmail && !enrolledKeys.has(c.companyKey) && !customerKeys.has(c.companyKey));
+    const rows = [];
+    const seenEmail = new Set();
+    for (const c of clients) {
+      const outreachEmail = pickEmail(c);
+      if (!outreachEmail || enrolledKeys.has(c.companyKey) || customerKeys.has(c.companyKey)) continue;
+      const e = outreachEmail.toLowerCase();
+      if (usedEmails.has(e) || seenEmail.has(e)) continue; // de-dupe by email
+      seenEmail.add(e);
+      rows.push({ ...c, outreachEmail });
+    }
     res.json({ candidates: rows });
   } catch (e) {
     res.status(400).json({ message: e.message });
@@ -261,22 +274,29 @@ async function enrollCompanies(req, res) {
       .map((k) => String(k || '').trim()).filter(Boolean))];
     if (!keys.length) return res.status(400).json({ message: 'companyKeys required' });
 
-    const [clients, existing, customerKeys] = await Promise.all([
+    const [clients, existing, customerKeys, allEnrollments] = await Promise.all([
       Client.find({ companyKey: { $in: keys } }).lean(),
       OutreachEnrollment.find({ campaignId: campaign._id, companyKey: { $in: keys } })
         .select('companyKey').lean(),
       keysWithPlacedOrders(keys),
+      OutreachEnrollment.find({}).select('toEmail').lean(),
     ]);
     const clientByKey = new Map(clients.map((c) => [c.companyKey, c]));
     const enrolledSet = new Set(existing.map((e) => e.companyKey));
+    // Every inbox already queued anywhere — plus the emails we accept in THIS
+    // batch — so the same address is never cold-emailed twice.
+    const usedEmails = new Set(allEnrollments.map((e) => String(e.toEmail || '').toLowerCase()).filter(Boolean));
 
     const eligible = [];
     const skipped = [];
     for (const key of keys) {
       const client = clientByKey.get(key) || null;
       const reason = enrollBlockReason(client, enrolledSet.has(key), customerKeys.has(key));
-      if (reason) skipped.push({ companyKey: key, reason });
-      else eligible.push(client);
+      if (reason) { skipped.push({ companyKey: key, reason }); continue; }
+      const email = String(pickEmail(client) || '').toLowerCase();
+      if (email && usedEmails.has(email)) { skipped.push({ companyKey: key, reason: 'duplicate-email' }); continue; }
+      if (email) usedEmails.add(email);
+      eligible.push(client);
     }
 
     if (!dryRun && eligible.length) {

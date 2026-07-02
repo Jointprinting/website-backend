@@ -13,6 +13,7 @@ const assert = require('node:assert/strict');
 const {
   buildOverpassQuery, osmAddress, normalizeWebsite, parseOverpassElements, isRegion,
   nextRegionAfter, decideFrontier, NATIONAL_ROLLOUT, isQualityLead, isClosedPoi, hasCannabisTag,
+  isBigChain, markChains,
 } = require('../dispensaryFinder');
 const {
   sanitizeEmail, extractEmails, pickBestEmail, findContactLink, hostOf,
@@ -122,6 +123,40 @@ test('buildOverpassQuery widens by name but only to "dispensary"', () => {
   const q = buildOverpassQuery([38.85, -75.6, 41.36, -73.88]);
   assert.match(q, /name"~"dispensary",i/);      // widened net
   assert.doesNotMatch(q, /marijuana/);          // deliberately NOT the noisy terms
+});
+
+// ── Big-chain / MSO detection ─────────────────────────────────────────────────
+test('isBigChain: known MSOs + brand:wikidata are chains, independents are not', () => {
+  assert.equal(isBigChain({ 'brand:wikidata': 'Q123' }, 'Some Shop'), true); // OSM-recognized brand
+  assert.equal(isBigChain({ brand: 'Curaleaf' }, 'Curaleaf Bellmawr'), true);
+  assert.equal(isBigChain({}, 'Trulieve Dispensary'), true);
+  assert.equal(isBigChain({}, 'Sunnyside Cannabis'), true);
+  assert.equal(isBigChain({}, 'RISE Dispensary Paterson'), true);
+  // A genuine independent — not a chain.
+  assert.equal(isBigChain({}, 'Green Leaf Dispensary'), false);
+  assert.equal(isBigChain({ brand: '' }, 'Nate’s Corner Dispensary'), false);
+});
+
+test('markChains: a brand repeating across the batch is flagged even if unknown', () => {
+  const marked = markChains([
+    { name: 'ZZ Cannabis A', brand: 'ZZ Cannabis' },
+    { name: 'ZZ Cannabis B', brand: 'ZZ Cannabis' },
+    { name: 'ZZ Cannabis C', brand: 'ZZ Cannabis' },   // 3× → regional chain
+    { name: 'Solo Shop', brand: '' },
+  ]);
+  assert.equal(marked.filter((c) => c.chain).length, 3);
+  assert.equal(marked.find((c) => c.name === 'Solo Shop').chain, false);
+});
+
+test('parseOverpassElements flags big chains on the candidates', () => {
+  const rows = parseOverpassElements({
+    elements: [
+      { type: 'node', id: 1, tags: { name: 'Curaleaf Edgewater', shop: 'cannabis', brand: 'Curaleaf' } },
+      { type: 'node', id: 2, tags: { name: 'Green Leaf', shop: 'cannabis' } },
+    ],
+  });
+  assert.equal(rows.find((r) => r.name === 'Curaleaf Edgewater').chain, true);
+  assert.equal(rows.find((r) => r.name === 'Green Leaf').chain, false);
 });
 
 // ── Email sanitizing ─────────────────────────────────────────────────────────

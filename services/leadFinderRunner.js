@@ -99,10 +99,20 @@ async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich } 
   const regionId = isRegion(region) ? region : DEFAULT_REGION;
   const disc = await discoverRegion(regionId, { maxEnrich });
 
-  // Only import candidates that carry an email — an un-emailable lead can't be
-  // cold-contacted, so it would just clutter the CRM. (They're still counted in
-  // `found` so the owner sees total coverage.)
-  const importable = disc.candidates.filter((c) => c.email);
+  // Skip big chains / MSOs (emailing a store is pointless — corporate handles
+  // merch). Disable with LEAD_FINDER_SKIP_CHAINS=off. Also dedupe by EMAIL within
+  // the batch so one shared inbox (a chain, or a shop listed twice) is never
+  // emailed twice.
+  const skipChains = process.env.LEAD_FINDER_SKIP_CHAINS !== 'off';
+  const skippedChains = skipChains ? disc.candidates.filter((c) => c.email && c.chain).length : 0;
+  const seenEmail = new Set();
+  const importable = disc.candidates.filter((c) => {
+    if (!c.email) return false;
+    if (skipChains && c.chain) return false;
+    if (seenEmail.has(c.email)) return false; // same inbox already queued this run
+    seenEmail.add(c.email);
+    return true;
+  });
   const rows = importable.map((c) => ({
     companyName: c.name,
     email: c.email,
@@ -115,7 +125,7 @@ async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich } 
     return {
       dryRun: true, region: regionId, label: disc.label,
       found: disc.found, withEmail: disc.withEmail, enriched: disc.enriched,
-      verified: disc.verified, willImport: rows.length,
+      verified: disc.verified, skippedChains, willImport: rows.length,
     };
   }
 
@@ -144,7 +154,7 @@ async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich } 
   const result = {
     region: regionId, label: disc.label,
     found: disc.found, withEmail: disc.withEmail, enriched: disc.enriched,
-    verified: disc.verified, created, updated, skipped,
+    verified: disc.verified, skippedChains, created, updated, skipped,
   };
   await LeadFinderRun.create({ ...result, dryRun: false }).catch(() => {});
   return result;

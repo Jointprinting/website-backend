@@ -148,6 +148,38 @@ function isQualityLead(tags = {}, name = '') {
   return /dispensary/i.test(name) && !NON_CANNABIS_NAME.test(name);
 }
 
+// The big multi-state chains (MSOs) + notable multi-location retail brands.
+// Emailing an individual store is pointless — corporate handles merch — so we
+// skip them and focus on independents. Distinctive tokens only, to avoid false
+// hits (and we only ever test dispensary candidates, so "cookies" = the brand).
+const KNOWN_CHAINS = /\b(curaleaf|trulieve|cresco|sunnyside|rise dispensar[a-z]*|green thumb|verano|zen leaf|ascend|columbia care|cannabist|beyond ?hello|terrascend|apothecarium|the botanist|ethos|theory wellness|revolutionary clinics|garden remedies|planet 13|jushi|nature'?s medicines|cookies)\b/i;
+
+// A big chain / MSO location? OSM's `brand:wikidata` marks recognized brands
+// outright; otherwise match the known-chain name list against the brand + name.
+// Pure + unit-tested.
+function isBigChain(tags = {}, name = '') {
+  if (tags['brand:wikidata']) return true;
+  return KNOWN_CHAINS.test(`${tags.brand || ''} ${name}`);
+}
+
+const normBrandKey = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+// Mark chains: a candidate is a chain if isBigChain, OR its OSM `brand` repeats
+// ≥ `threshold` times across the batch (catches regional chains not on the known
+// list). Pure + unit-tested. Mutates each candidate's `.chain` flag.
+function markChains(candidates, { threshold = 3 } = {}) {
+  const brandCount = new Map();
+  for (const c of candidates) {
+    const bk = normBrandKey(c.brand);
+    if (bk) brandCount.set(bk, (brandCount.get(bk) || 0) + 1);
+  }
+  return candidates.map((c) => {
+    const bk = normBrandKey(c.brand);
+    const repeated = !!bk && (brandCount.get(bk) || 0) >= threshold;
+    return { ...c, chain: !!c.chain || repeated };
+  });
+}
+
 // Assemble the OSM address tags into the single "123 Main St, City ST 07102"
 // string the CRM stores (and that services/outreachEngine.cityFromAddress can
 // parse a city out of). Missing pieces are simply omitted. Pure.
@@ -199,9 +231,12 @@ function parseOverpassElements(json) {
       // OSM sometimes carries the email outright — a free hit, no scrape needed.
       email: String(tags.email || tags['contact:email'] || '').trim().toLowerCase(),
       osmId: el.type && el.id != null ? `${el.type}/${el.id}` : '',
+      brand: String(tags.brand || '').trim(),
+      chain: isBigChain(tags, name), // big MSO / recognized chain → skipped at import
     });
   }
-  return out;
+  // Second pass: flag regional chains whose brand simply repeats a lot in the batch.
+  return markChains(out);
 }
 
 // Discover dispensaries in a region (network). Tries each Overpass endpoint in
@@ -246,6 +281,8 @@ module.exports = {
   isQualityLead,
   isClosedPoi,
   hasCannabisTag,
+  isBigChain,
+  markChains,
   nextRegionAfter,
   decideFrontier,
 };

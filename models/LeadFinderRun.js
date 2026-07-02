@@ -11,6 +11,7 @@ const LeadFinderRunSchema = new mongoose.Schema({
   withEmail:{ type: Number, default: 0 },   // had an email (from OSM or scrape)
   enriched: { type: Number, default: 0 },   // emails obtained by website scrape
   verified: { type: Number, default: 0 },   // emails that passed the MX/deliverability check
+  skippedChains: { type: Number, default: 0 }, // big-chain / MSO locations skipped
   created:  { type: Number, default: 0 },   // new CRM leads
   updated:  { type: Number, default: 0 },   // existing CRM records touched
   skipped:  { type: Number, default: 0 },   // no email / suppressed / no company
