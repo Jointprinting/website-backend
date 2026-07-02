@@ -9,7 +9,11 @@ const jwt = require('jsonwebtoken');
 const AdminUser = require('../models/AdminUser');
 
 const JWT_SECRET = process.env.JWT_SECRET;
-const TOKEN_TTL = process.env.STUDIO_TOKEN_TTL || '30d';
+// Studio session lifetime. Shortened from 30d → 7d to limit the blast radius of a
+// leaked token (there is still no per-token revocation — see the multi-user auth
+// follow-up). Override with STUDIO_TOKEN_TTL (any `jsonwebtoken` expiresIn string,
+// e.g. '12h', '7d'). A logged-in owner is simply re-prompted weekly.
+const TOKEN_TTL = process.env.STUDIO_TOKEN_TTL || '7d';
 const MAX_FAILED = 5;
 const LOCKOUT_MINUTES = 15;
 
