@@ -36,7 +36,7 @@ const sendEmail = require('../utils/sendEmail');
 const { promoteStage } = require('../controllers/crm');
 const { BUSINESS_TZ, etStartOfToday } = require('../utils/time');
 
-const DAILY_CAP_MAX  = parseInt(process.env.OUTREACH_DAILY_CAP || '40', 10);
+const DAILY_CAP_MAX  = parseInt(process.env.OUTREACH_DAILY_CAP || '150', 10);
 const BATCH_PER_TICK = parseInt(process.env.OUTREACH_BATCH_PER_TICK || '5', 10);
 // Physical postal address for the CAN-SPAM footer — set the real one in env.
 const POSTAL_ADDRESS = process.env.OUTREACH_POSTAL_ADDRESS || 'Joint Printing · New Jersey, USA';
@@ -52,13 +52,18 @@ const smtpConfigured  = () => !!(process.env.SMTP_HOST && process.env.SMTP_USER)
 // ── Pure helpers (unit-tested in services/__tests__/outreach.test.js) ─────────
 
 // Warm-up ramp: the allowed sends/day, given how many days ago the first-ever
-// send happened. Week 1 → 10/day, then +10 per week, capped at `maxCap`.
-// No first send yet (null) → week-one pace.
+// send happened. DOUBLES each week — 10 → 20 → 40 → 80 → 160 … — capped at
+// `maxCap` (OUTREACH_DAILY_CAP). Starting low and doubling is the reputation-safe
+// way to scale hard: a brand-new sending domain that opens at 150/day gets
+// flagged, but one that climbs 10→20→40→80 over a month arrives at volume with a
+// clean reputation. Raise OUTREACH_DAILY_CAP as high as your SMTP plan's daily
+// limit allows; the ramp will climb to it and hold. No first send yet → week-one.
 function rampCap(daysSinceFirstSend, maxCap = DAILY_CAP_MAX) {
   const days = Number.isFinite(daysSinceFirstSend) && daysSinceFirstSend >= 0
     ? daysSinceFirstSend : 0;
   const week = Math.floor(days / 7);
-  return Math.min((week + 1) * 10, maxCap);
+  const geometric = 10 * Math.pow(2, week); // 10, 20, 40, 80, 160, 320, …
+  return Math.min(geometric, maxCap);
 }
 
 // Send window: Mon–Fri, 9:00–16:59 in the business timezone. Emails that land

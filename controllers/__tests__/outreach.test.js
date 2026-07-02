@@ -51,16 +51,18 @@ test('summarizeEnrollments: empty/missing input yields zeroes', () => {
 // ── Enroll eligibility ───────────────────────────────────────────────────────
 test('enrollBlockReason: every gate fires with its own reason', () => {
   const lead = { stage: 'lead', email: 'x@y.com' };
-  assert.equal(enrollBlockReason(null, false), 'not-found');
-  assert.equal(enrollBlockReason(lead, true), 'already-enrolled');
-  assert.equal(enrollBlockReason({ ...lead, archived: true }, false), 'archived');
-  assert.equal(enrollBlockReason({ ...lead, doNotEmail: true }, false), 'do-not-email');
-  assert.equal(enrollBlockReason({ ...lead, stage: 'lost' }, false), 'closed-stage');
-  assert.equal(enrollBlockReason({ ...lead, stage: 'customer' }, false), 'became-customer');
-  assert.equal(enrollBlockReason({ stage: 'lead' }, false), 'no-email');
-  assert.equal(enrollBlockReason(lead, false), '');
+  assert.equal(enrollBlockReason(null, false, false), 'not-found');
+  assert.equal(enrollBlockReason(lead, true, false), 'already-enrolled');
+  // Order-reality customer is blocked even at an early stored stage (client protection).
+  assert.equal(enrollBlockReason(lead, false, true), 'is-customer');
+  assert.equal(enrollBlockReason({ ...lead, archived: true }, false, false), 'archived');
+  assert.equal(enrollBlockReason({ ...lead, doNotEmail: true }, false, false), 'do-not-email');
+  assert.equal(enrollBlockReason({ ...lead, stage: 'lost' }, false, false), 'closed-stage');
+  assert.equal(enrollBlockReason({ ...lead, stage: 'customer' }, false, false), 'became-customer');
+  assert.equal(enrollBlockReason({ stage: 'lead' }, false, false), 'no-email');
+  assert.equal(enrollBlockReason(lead, false, false), '');
   // Contact-level email is enough.
-  assert.equal(enrollBlockReason({ stage: 'lead', contacts: [{ email: 'c@d.com' }] }, false), '');
+  assert.equal(enrollBlockReason({ stage: 'lead', contacts: [{ email: 'c@d.com' }] }, false, false), '');
 });
 
 // ── Step sanitizing (the campaign editor's server-side guardrails) ───────────

@@ -24,23 +24,27 @@ const {
   pickEmail,
 } = require('../outreachEngine');
 
-// ── Warm-up ramp ─────────────────────────────────────────────────────────────
-test('rampCap climbs 10/week and tops out at the max cap', () => {
-  assert.equal(rampCap(0, 40), 10);   // day 1 — week one
-  assert.equal(rampCap(6, 40), 10);   // still week one
-  assert.equal(rampCap(7, 40), 20);   // week two
-  assert.equal(rampCap(13, 40), 20);
-  assert.equal(rampCap(14, 40), 30);  // week three
-  assert.equal(rampCap(21, 40), 40);  // week four = max
-  assert.equal(rampCap(70, 40), 40);  // never exceeds max
+// ── Warm-up ramp (doubles weekly) ────────────────────────────────────────────
+test('rampCap doubles each week and tops out at the max cap', () => {
+  assert.equal(rampCap(0, 500), 10);    // week one
+  assert.equal(rampCap(6, 500), 10);    // still week one
+  assert.equal(rampCap(7, 500), 20);    // week two — doubled
+  assert.equal(rampCap(13, 500), 20);
+  assert.equal(rampCap(14, 500), 40);   // week three
+  assert.equal(rampCap(21, 500), 80);   // week four
+  assert.equal(rampCap(28, 500), 160);  // week five
+  assert.equal(rampCap(35, 500), 320);  // week six
+  assert.equal(rampCap(42, 500), 500);  // week seven — 640 clamped to cap
+  assert.equal(rampCap(365, 500), 500); // never exceeds max
 });
 
-test('rampCap: no first send yet (or garbage) → week-one pace; low max wins', () => {
-  assert.equal(rampCap(null, 40), 10);
-  assert.equal(rampCap(undefined, 40), 10);
-  assert.equal(rampCap(-3, 40), 10);
-  assert.equal(rampCap(NaN, 40), 10);
-  assert.equal(rampCap(21, 25), 25);  // owner-configured lower ceiling
+test('rampCap: no first send yet (or garbage) → week-one pace; cap wins early', () => {
+  assert.equal(rampCap(null, 500), 10);
+  assert.equal(rampCap(undefined, 500), 10);
+  assert.equal(rampCap(-3, 500), 10);
+  assert.equal(rampCap(NaN, 500), 10);
+  assert.equal(rampCap(21, 50), 50);   // week-four geometric (80) clamped to a 50 cap
+  assert.equal(rampCap(0, 5), 5);      // cap below the 10 floor still wins
 });
 
 // ── Send window (business timezone, DST-proof) ───────────────────────────────

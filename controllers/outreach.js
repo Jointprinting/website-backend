@@ -12,7 +12,24 @@
 const OutreachCampaign = require('../models/OutreachCampaign');
 const OutreachEnrollment = require('../models/OutreachEnrollment');
 const Client = require('../models/Client');
+const Order = require('../models/Order');
+const { PLACED_STATUSES } = require('../models/Order');
 const { promoteStage } = require('./crm');
+
+// The tag stamped on every company the moment it's enrolled in a campaign, so a
+// reply (which also gets 'warm') is unmistakably traceable to the cold merge —
+// and so the owner can filter "everyone I've cold-emailed" in the CRM at a glance.
+const COLD_TAG = 'cold-email';
+
+// Companies that are real CUSTOMERS by order reality (≥1 PLACED order) — the
+// authoritative "these are my clients, never spam them" signal, independent of
+// the stored stage. Returns the subset of `keys` that have a placed order.
+async function keysWithPlacedOrders(keys) {
+  if (!keys.length) return new Set();
+  const rows = await Order.find({ companyKey: { $in: keys }, status: { $in: PLACED_STATUSES } })
+    .select('companyKey').lean();
+  return new Set(rows.map((r) => r.companyKey));
+}
 const { engineStatus, runOutreachTick, newToken, pickEmail, sendBlockReason } = require('../services/outreachEngine');
 const { etToday } = require('../utils/time');
 
@@ -172,12 +189,16 @@ async function getCampaign(req, res) {
 
 // ── Enrollment ────────────────────────────────────────────────────────────────
 
-// Eligibility for cold outreach, given a live Client + the set of keys already
-// enrolled in this campaign. Returns '' when eligible, else the skip reason.
-function enrollBlockReason(client, alreadyEnrolled) {
+// Eligibility for cold outreach, given a live Client + whether it's already
+// enrolled + whether it's a customer by order reality. Returns '' when eligible,
+// else the skip reason. The order-reality check is what keeps a client who's
+// still stored at an early stage (e.g. a repeat buyer never bumped to 'customer')
+// out of the cold list — the owner's #1 ask: "don't spam my clients."
+function enrollBlockReason(client, alreadyEnrolled, isCustomerByOrder) {
   if (!client) return 'not-found';
   if (alreadyEnrolled) return 'already-enrolled';
-  const live = sendBlockReason(client); // archived / do-not-email / closed / customer
+  if (isCustomerByOrder) return 'is-customer';
+  const live = sendBlockReason(client); // archived / do-not-email / closed / customer-stage
   if (live) return live;
   if (!pickEmail(client)) return 'no-email';
   return '';
@@ -204,10 +225,13 @@ async function getCandidates(req, res) {
     const enrolledKeys = campaignId
       ? new Set((await OutreachEnrollment.find({ campaignId }).select('companyKey').lean()).map((e) => e.companyKey))
       : new Set();
+    // Never offer a real customer (by order reality) as a cold-outreach candidate,
+    // even if their stored stage is still 'lead'/'contacted' — client protection.
+    const customerKeys = await keysWithPlacedOrders(clients.map((c) => c.companyKey));
 
     const rows = clients
       .map((c) => ({ ...c, outreachEmail: pickEmail(c) }))
-      .filter((c) => c.outreachEmail && !enrolledKeys.has(c.companyKey));
+      .filter((c) => c.outreachEmail && !enrolledKeys.has(c.companyKey) && !customerKeys.has(c.companyKey));
     res.json({ candidates: rows });
   } catch (e) {
     res.status(400).json({ message: e.message });
@@ -227,10 +251,11 @@ async function enrollCompanies(req, res) {
       .map((k) => String(k || '').trim()).filter(Boolean))];
     if (!keys.length) return res.status(400).json({ message: 'companyKeys required' });
 
-    const [clients, existing] = await Promise.all([
+    const [clients, existing, customerKeys] = await Promise.all([
       Client.find({ companyKey: { $in: keys } }).lean(),
       OutreachEnrollment.find({ campaignId: campaign._id, companyKey: { $in: keys } })
         .select('companyKey').lean(),
+      keysWithPlacedOrders(keys),
     ]);
     const clientByKey = new Map(clients.map((c) => [c.companyKey, c]));
     const enrolledSet = new Set(existing.map((e) => e.companyKey));
@@ -239,7 +264,7 @@ async function enrollCompanies(req, res) {
     const skipped = [];
     for (const key of keys) {
       const client = clientByKey.get(key) || null;
-      const reason = enrollBlockReason(client, enrolledSet.has(key));
+      const reason = enrollBlockReason(client, enrolledSet.has(key), customerKeys.has(key));
       if (reason) skipped.push({ companyKey: key, reason });
       else eligible.push(client);
     }
@@ -263,6 +288,11 @@ async function enrollCompanies(req, res) {
         // other row still inserted (ordered:false). Anything else is real.
         if (err.code !== 11000 && !(err.writeErrors || []).every((w) => w.code === 11000)) throw err;
       }
+      // Stamp the traceability tag on every enrolled company (idempotent).
+      await Client.updateMany(
+        { companyKey: { $in: eligible.map((c) => c.companyKey) } },
+        { $addToSet: { tags: COLD_TAG } },
+      );
     }
 
     res.json({
