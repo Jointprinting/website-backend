@@ -106,6 +106,15 @@ db.once('open', () => {
       .catch((e) => console.warn('[finances] year resync failed:', e.message));
   }, 3_000);
 
+  // Idempotent: link legacy ledger rows to their project + vendor (fills blanks
+  // only — including receipts the owner booked under a PROJECT # instead of the
+  // invoice #, which otherwise read as "no receipts linked" on the order).
+  setTimeout(() => {
+    require('./controllers/finances').backfillTransactionLinks()
+      .then((r) => { if (r.projFilled || r.vendorFilled) console.log(`[finances] linked ${r.projFilled} row(s) to projects, ${r.vendorFilled} to vendors.`); })
+      .catch((e) => console.warn('[finances] transaction-link backfill failed:', e.message));
+  }, 5_000);
+
   // Idempotent: give legacy studio-library docs a remoteId so the studio's
   // sync can dedupe them (empty ones re-imported as new rows on every load).
   setTimeout(() => {
