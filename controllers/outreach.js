@@ -31,6 +31,8 @@ async function keysWithPlacedOrders(keys) {
   return new Set(rows.map((r) => r.companyKey));
 }
 const { engineStatus, runOutreachTick, newToken, pickEmail, sendBlockReason } = require('../services/outreachEngine');
+const { runFinder, finderStatus } = require('../services/leadFinderRunner');
+const { REGIONS, isRegion } = require('../services/dispensaryFinder');
 const { etToday } = require('../utils/time');
 
 const NOT_ARCHIVED = { archived: { $ne: true } };
@@ -401,6 +403,37 @@ async function runTickNow(req, res) {
   }
 }
 
+// ── Lead finder (free dispensary discovery) ───────────────────────────────────
+
+// GET /api/outreach/find-leads/status — regions + last sweep per region + the
+// suggested next region to expand into.
+async function getFinderStatus(req, res) {
+  try {
+    res.json(await finderStatus());
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+// POST /api/outreach/find-leads { region?, dryRun?, maxEnrich? }
+// Runs (or previews) a free OSM sweep for a region → scrapes missing emails →
+// imports emailable dispensaries as Cold Outreach leads. Bounded + $0.
+async function findLeads(req, res) {
+  try {
+    const body = req.body || {};
+    const region = isRegion(body.region) ? body.region : undefined;
+    if (body.region && !region) {
+      return res.status(400).json({ message: `unknown region "${body.region}"`, regions: Object.keys(REGIONS) });
+    }
+    const dryRun = body.dryRun === true || body.dryRun === 'true';
+    const maxEnrich = Number.isFinite(Number(body.maxEnrich)) ? Number(body.maxEnrich) : undefined;
+    const result = await runFinder({ region, dryRun, maxEnrich });
+    res.json(result);
+  } catch (e) {
+    res.status(502).json({ message: `Lead finder failed: ${e.message}` });
+  }
+}
+
 // ── Public routes (no auth — token-keyed) ─────────────────────────────────────
 
 // 1×1 transparent PNG for the open pixel.
@@ -481,6 +514,8 @@ module.exports = {
   runTickNow,
   trackOpen,
   unsubscribe,
+  getFinderStatus,
+  findLeads,
   // exported for tests
   summarizeEnrollments,
   enrollBlockReason,

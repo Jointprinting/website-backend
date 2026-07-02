@@ -24,6 +24,8 @@ const {
   runTickNow,
   trackOpen,
   unsubscribe,
+  getFinderStatus,
+  findLeads,
 } = require('../controllers/outreach');
 
 // ── Public (token-keyed, embedded in the emails themselves) ──
@@ -38,6 +40,10 @@ router.get('/overview',   getOverview);
 router.get('/candidates', getCandidates);
 router.get('/queue',      getQueue);
 router.post('/run-tick',  runTickNow);
+
+// Free dispensary lead finder (OSM discovery → website email scrape → import).
+router.get('/find-leads/status', getFinderStatus);
+router.post('/find-leads',       findLeads);
 
 router.post('/campaigns',            createCampaign);
 router.get('/campaigns/:id',         getCampaign);
