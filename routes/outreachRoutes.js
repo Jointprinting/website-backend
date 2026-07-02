@@ -26,6 +26,8 @@ const {
   unsubscribe,
   getFinderStatus,
   findLeads,
+  setAutoAdvance,
+  runAutoNow,
 } = require('../controllers/outreach');
 
 // ── Public (token-keyed, embedded in the emails themselves) ──
@@ -42,8 +44,10 @@ router.get('/queue',      getQueue);
 router.post('/run-tick',  runTickNow);
 
 // Free dispensary lead finder (OSM discovery → website email scrape → import).
-router.get('/find-leads/status', getFinderStatus);
-router.post('/find-leads',       findLeads);
+router.get('/find-leads/status',   getFinderStatus);
+router.post('/find-leads',         findLeads);
+router.post('/find-leads/auto',    setAutoAdvance);  // toggle auto-pilot / jump frontier
+router.post('/find-leads/auto/run', runAutoNow);     // run one frontier tick now
 
 router.post('/campaigns',            createCampaign);
 router.get('/campaigns/:id',         getCampaign);
