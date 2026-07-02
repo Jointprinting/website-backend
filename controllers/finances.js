@@ -311,6 +311,14 @@ async function enrichTransactionLinks(body, { isExpense }) {
         .select('projectNumber').lean();
       const projs = [...new Set(matches.map((o) => String(o.projectNumber || '')).filter(Boolean))];
       out.projectNumber = projs.length === 1 ? projs[0] : '';
+      if (!projs.length && !matches.length) {
+        // The typed number matches NO invoice. The owner often writes the
+        // PROJECT # on a receipt (project #140 vs invoice #1049) — if the number
+        // IS some order's project #, link it as such. Only fires when no invoice
+        // matched, so a real invoice number can never be shadowed.
+        const byProj = await Order.exists({ projectNumber: { $in: [key, Number(key)] } });
+        if (byProj) out.projectNumber = key;
+      }
     }
   }
   if (out.vendorId === '') out.vendorId = null;
@@ -812,12 +820,43 @@ const orderActuals = async (req, res) => {
     const raw = String((req.query && req.query.orderNumbers) || '');
     const keys = [...new Set(raw.split(',').map(normalizeOrderNumber).filter(Boolean))];
     if (!keys.length) return res.json({ actuals: {} });
-    // Pull only this set's rows. We over-match on the stored leading-zero variants
-    // by anchoring ^0*<digits>$ per key, then group canonically.
+    // Pull this set's rows two ways and fold them into ONE bucket per invoice:
+    //   1) rows whose orderNumber matches (leading-zero-safe, ^0*<digits>$);
+    //   2) rows HARD-LINKED by projectNumber to the order behind a requested
+    //      invoice — the owner often books a receipt under the PROJECT # (e.g.
+    //      project #140, invoice #1049), and those rows must still count as the
+    //      order's actual cost. The invoice→project pairing comes from the Order
+    //      docs themselves (ambiguous pairings are skipped, never guessed).
+    // Each row lands in exactly one bucket: a direct order-number match wins, so
+    // a row carrying both identifiers can never be counted twice.
     const orRegex = keys.map((k) => new RegExp(`^0*${k}$`));
-    const rows = await Transaction.find({ type: 'expense', orderNumber: { $in: orRegex } })
-      .select('type category amount isCredit orderNumber receiptUrl').lean();
-    res.json({ actuals: actualCostByOrder(rows) });
+    const orderDocs = await Order.find({ orderNumber: { $in: orRegex } })
+      .select('orderNumber projectNumber').lean();
+    const projByKey = {};
+    orderDocs.forEach((o) => {
+      const k = normalizeOrderNumber(o.orderNumber);
+      const pn = String(o.projectNumber || '').trim();
+      if (!k || !pn) return;
+      if (!(k in projByKey)) projByKey[k] = pn;
+      else if (projByKey[k] !== pn) projByKey[k] = null;   // collision → don't guess
+    });
+    const keyByProj = {};
+    Object.entries(projByKey).forEach(([k, pn]) => { if (pn) keyByProj[pn] = k; });
+    const projList = Object.keys(keyByProj);
+    const rows = await Transaction.find({
+      type: 'expense',
+      $or: [
+        { orderNumber: { $in: orRegex } },
+        ...(projList.length ? [{ projectNumber: { $in: projList } }] : []),
+      ],
+    }).select('type category amount isCredit orderNumber projectNumber receiptUrl').lean();
+    const remapped = rows.map((t) => {
+      const rk = normalizeOrderNumber(t.orderNumber);
+      if (keys.includes(rk)) return t;                              // direct match
+      const via = keyByProj[String(t.projectNumber || '').trim()];
+      return via ? { ...t, orderNumber: via } : null;               // fold project-linked rows under the invoice
+    }).filter(Boolean);
+    res.json({ actuals: actualCostByOrder(remapped) });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
@@ -1178,30 +1217,64 @@ const byClient = async (req, res) => {
 };
 
 // GET /api/finances/export?year=  — CSV download of the ledger.
+// PURE ledger→CSV builder (no DB) — exported + unit-tested. The accountant
+// handoff: ISO dates, two-decimal amounts, an explicit Money In/Out column, a
+// Credit/Refund flag, every reference number (order / project / invoice), the
+// payment method behind card/ACH fees, and the stored receipt link as audit
+// evidence for each cost. Rows sort oldest-first by the caller.
+//
+// Conventions (deliberate):
+//   • Amount stays SIGNED (a credit/return is negative) and the header names
+//     keep the tokens the /import matcher looks for (date/type/category/order/
+//     customer|vendor/description/amount/qb), so a round-trip re-import still
+//     re-flags credits and lands every column — the extra columns are ignored.
+//   • Money In/Out is direction in CASH terms: income is In, an income credit
+//     (customer refund) is Out; expense is Out, an expense credit (supplier
+//     refund) is In. This is the column the accountant reconciles against the
+//     bank feed.
+//   • A missing/invalid date must NOT crash the export — that row gets a blank
+//     date cell and the file stays downloadable no matter how dirty the data is.
+function buildLedgerCsv(txns) {
+  const header = [
+    'Date', 'Type', 'Category', 'Customer/Vendor', 'Description',
+    'Amount', 'Money In/Out', 'Credit/Refund',
+    'Order #', 'Project #', 'Invoice #', 'Payment Method', 'Receipt Link', 'QB Synced',
+  ];
+  const methodLabel = { cc: 'Credit card', ach: 'ACH' };
+  const lines = [header.join(',')];
+  (Array.isArray(txns) ? txns : []).forEach((t) => {
+    if (!t) return;                                   // skip a null row rather than throw
+    const d = t.date ? new Date(t.date) : null;
+    const dateCell = d && !isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : '';
+    const inflow = (t.type === 'income') !== !!t.isCredit;   // a credit flips direction
+    lines.push([
+      dateCell,
+      t.type === 'income' ? 'Income' : 'Expense',
+      t.category,
+      t.party,
+      t.description,
+      round2(signed(t)).toFixed(2),                   // fixed two decimals, credits negative
+      inflow ? 'In' : 'Out',
+      t.isCredit ? 'Yes' : '',
+      t.orderNumber,
+      t.projectNumber || '',
+      t.invoiceNumber || '',
+      t.paymentMethod ? (methodLabel[t.paymentMethod] || t.paymentMethod) : '',
+      t.receiptUrl || '',
+      t.qbSynced ? 'Yes' : 'No',
+    ].map(csvCell).join(','));
+  });
+  return lines.join('\n');
+}
+
 const exportCsv = async (req, res) => {
   try {
     const q = yearDateMatch(req.query.year);
-    const txns = await Transaction.find(q).sort({ date: 1 }).lean();
-    const header = ['Date', 'Type', 'Category', 'Order #', 'Customer/Vendor', 'Description', 'Amount', 'QB Synced'];
-    const lines = [header.join(',')];
-    txns.forEach((t) => {
-      if (!t) return;                                   // skip a null row rather than throw
-      // A missing/invalid date must NOT crash the whole export — .toISOString()
-      // throws on an Invalid Date. Emit a blank date cell for that one row and keep
-      // going (the export stays downloadable no matter how dirty the data is).
-      const d = t.date ? new Date(t.date) : null;
-      const dateCell = d && !isNaN(d.getTime()) ? d.toISOString().slice(0, 10) : '';
-      lines.push([
-        dateCell,
-        t.type === 'income' ? 'Income' : 'Expense',
-        t.category, t.orderNumber, t.party, t.description,
-        // Credits export as a negative amount so a re-import re-flags them.
-        round2(signed(t)), t.qbSynced ? 'Yes' : 'No',
-      ].map(csvCell).join(','));
-    });
-    res.setHeader('Content-Type', 'text/csv');
+    const txns = await Transaction.find(q).sort({ date: 1, createdAt: 1 }).lean();
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="JP-Ledger-${req.query.year || 'all'}.csv"`);
-    res.send(lines.join('\n'));
+    // BOM so Excel opens it as UTF-8 without mangling special characters.
+    res.send(`﻿${buildLedgerCsv(txns)}`);
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
@@ -1220,7 +1293,62 @@ const resyncYears = async () => {
   return fixed;
 };
 
-module.exports = { importCsv, list, create, update, remove, summary, byOrder, byProject, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears, config };
+// Idempotent backfill of the ecosystem links on Transaction (projectNumber +
+// vendorId) for rows written before the links existed. FILLS BLANKS ONLY — a
+// row that already carries either link is never touched, so re-running (every
+// boot, like resyncYears) is a cheap no-op once the ledger is linked. Rules
+// mirror the live create/update path exactly:
+//   • projectNumber ← the Order matching the row's canonical order # (the same
+//     collision-safe map by-order joins on); when the number matches NO invoice
+//     but IS some order's project # (the owner wrote the project # on the
+//     receipt), link it as that project.
+//   • vendorId ← EXPENSE party resolved with the PO builder's ambiguity-safe
+//     resolver (never guesses when more than one vendor matches).
+const backfillTransactionLinks = async () => {
+  const orderDocs = await Order.find({ orderNumber: { $ne: '' } })
+    .select('orderNumber projectNumber').lean();
+  const projByOrder = projectNumberByOrderNumber(orderDocs);
+  const realOrderKeys = new Set(orderDocs.map((o) => normalizeOrderNumber(o.orderNumber)).filter(Boolean));
+  const projectKeys = new Set(orderDocs.map((o) => String(o.projectNumber || '').trim()).filter(Boolean));
+  const vendors = await Vendor.find({ archived: { $ne: true } }).select('name').lean();
+
+  const rows = await Transaction.find({
+    $or: [{ projectNumber: { $in: ['', null] } }, { vendorId: null }],
+  }).select('type party orderNumber projectNumber vendorId').lean();
+
+  let projFilled = 0;
+  let vendorFilled = 0;
+  const vendorCache = new Map();   // party (lowercased) → vendorId|null, one resolve per name
+
+  for (const t of rows) {
+    const set = {};
+    if (!String(t.projectNumber || '').trim()) {
+      const key = normalizeOrderNumber(t.orderNumber);
+      if (key) {
+        if (projByOrder[key]) set.projectNumber = projByOrder[key];
+        else if (!realOrderKeys.has(key) && projectKeys.has(key)) set.projectNumber = key;   // booked under the project #
+      }
+    }
+    if (t.type === 'expense' && !t.vendorId && String(t.party || '').trim()) {
+      const cacheKey = String(t.party).trim().toLowerCase();
+      if (!vendorCache.has(cacheKey)) {
+        const hit = resolveVendorFromList(t.party, vendors);
+        vendorCache.set(cacheKey, hit ? hit._id : null);
+      }
+      const vid = vendorCache.get(cacheKey);
+      if (vid) set.vendorId = vid;
+    }
+    if (Object.keys(set).length === 0) continue;
+    if (set.projectNumber) projFilled += 1;
+    if (set.vendorId) vendorFilled += 1;
+    // eslint-disable-next-line no-await-in-loop
+    await Transaction.updateOne({ _id: t._id }, { $set: set });
+  }
+  return { projFilled, vendorFilled, scanned: rows.length };
+};
+
+module.exports = { importCsv, list, create, update, remove, summary, byOrder, byProject, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears, backfillTransactionLinks, config };
+module.exports.buildLedgerCsv = buildLedgerCsv;
 // Reusable, DB-free finance math for other surfaces (CRM company page, the order
 // view) + tests. All keyed off the SAME Transaction truth via these helpers.
 module.exports.summarizeCompanyFinance = summarizeCompanyFinance;
