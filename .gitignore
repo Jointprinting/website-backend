@@ -131,3 +131,5 @@ dist
 .claude/*
 !.claude/skills/
 !.claude/commands/
+!.claude/hooks/
+!.claude/settings.json
