@@ -69,6 +69,18 @@ test('sanitizeContacts: at most ONE ★ primary — first starred wins', () => {
   assert.deepEqual(out.map((c) => c.isPrimary), [false, true, false]);
 });
 
+test('sanitizeContacts: a starred BLANK row cannot steal the star from a real contact', () => {
+  // Regression: star assigned before blank-filtering let an empty just-added row
+  // consume the one primary and then get dropped — persisting NO primary and
+  // silently un-starring the real main contact.
+  const out = sanitizeContacts([
+    { name: 'A', isPrimary: false },
+    { name: '', role: '', phone: '', email: '', isPrimary: true }, // blank + starred → dropped
+    { name: 'B', isPrimary: true },
+  ]);
+  assert.deepEqual(out.map((c) => [c.name, c.isPrimary]), [['A', false], ['B', true]]);
+});
+
 test('sanitizeContacts: non-array input → empty list', () => {
   assert.deepEqual(sanitizeContacts(undefined), []);
   assert.deepEqual(sanitizeContacts('nope'), []);

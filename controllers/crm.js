@@ -1238,17 +1238,22 @@ const PATCHABLE = [
 // Normalize a PATCHed contacts array: known fields only, strings trimmed, rows
 // that are entirely blank dropped, and AT MOST ONE ★ primary (first starred one
 // wins — the UI stars one at a time, this just makes the invariant unbreakable).
-// Pure + exported for tests.
+// Blanks are dropped BEFORE the star is assigned, so a starred-but-empty row
+// can never consume the one primary and then vanish (which would silently
+// un-star the real main contact). Pure + exported for tests.
 function sanitizeContacts(raw) {
   let sawPrimary = false;
   return (Array.isArray(raw) ? raw : [])
     .map((c) => {
       const s = (v) => String(v == null ? '' : v).trim();
-      const out = { name: s(c && c.name), role: s(c && c.role), phone: s(c && c.phone), email: s(c && c.email), isPrimary: false };
-      if (c && c.isPrimary && !sawPrimary) { out.isPrimary = true; sawPrimary = true; }
-      return out;
+      return { name: s(c && c.name), role: s(c && c.role), phone: s(c && c.phone), email: s(c && c.email), isPrimary: !!(c && c.isPrimary) };
     })
-    .filter((c) => c.name || c.role || c.phone || c.email);
+    .filter((c) => c.name || c.role || c.phone || c.email)
+    .map((c) => {
+      const keep = c.isPrimary && !sawPrimary;
+      if (keep) sawPrimary = true;
+      return { ...c, isPrimary: keep };
+    });
 }
 
 // PATCH /api/crm/:companyKey — upsert/update CRM fields.
