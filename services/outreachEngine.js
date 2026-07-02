@@ -118,13 +118,19 @@ function cityFromAddress(address) {
 // The merge context for one company — the vocabulary campaign templates write
 // against. MIRRORED (as a comment list) in the frontend's outreach/_outreach.js
 // MERGE_FIELDS; keep in sync.
+//
+// `greeting` is the smart opener: "Hey Sam," when we have a first name, plain
+// "Hey," when we don't (scraped shops rarely carry a person) — never a stilted
+// "Hey there," and never a broken "Hey ,". Templates open with {{greeting}}.
 function buildMergeContext(client = {}) {
   const contacts = Array.isArray(client.contacts) ? client.contacts : [];
   const personName = String(client.clientName || (contacts[0] && contacts[0].name) || '').trim();
+  const firstName = personName.split(/\s+/)[0] || '';
   return {
     companyName: String(client.companyName || client.clientName || '').trim(),
     clientName:  personName,
-    firstName:   personName.split(/\s+/)[0] || '',
+    firstName,
+    greeting:    firstName ? `Hey ${firstName},` : 'Hey,',
     city:        cityFromAddress(client.address || client.area),
   };
 }

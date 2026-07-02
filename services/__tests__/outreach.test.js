@@ -102,6 +102,15 @@ test('buildMergeContext derives firstName and falls back through contacts', () =
   assert.equal(empty.companyName, '');
 });
 
+test('greeting: "Hey Sam," with a name, plain "Hey," without — never "Hey ,"', () => {
+  assert.equal(buildMergeContext({ clientName: 'Sam Rivera' }).greeting, 'Hey Sam,');
+  assert.equal(buildMergeContext({ contacts: [{ name: 'Bob Ray' }] }).greeting, 'Hey Bob,');
+  assert.equal(buildMergeContext({ companyName: 'Green Leaf' }).greeting, 'Hey,');
+  assert.equal(buildMergeContext({}).greeting, 'Hey,');
+  // Rendered through a template, the no-name case is clean.
+  assert.equal(renderTemplate('{{greeting}} quick question…', buildMergeContext({})), 'Hey, quick question…');
+});
+
 test('cityFromAddress handles the common address shapes', () => {
   assert.equal(cityFromAddress('123 Main St, Newark NJ 07102'), 'Newark');
   assert.equal(cityFromAddress('123 Main St, Newark, NJ 07102'), 'Newark');
