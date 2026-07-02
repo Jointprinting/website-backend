@@ -7,6 +7,7 @@ const multer = require('multer');
 const fs = require('fs');
 const mongoose = require('mongoose');
 const rateLimit = require('express-rate-limit');
+const jwt = require('jsonwebtoken');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -188,6 +189,31 @@ const generalApiLimiter = rateLimit({
 
 app.use('/api', generalApiLimiter);
 
+// A validly-signed studio token means the caller is the owner (Studio tooling),
+// so per-IP public throttles shouldn't apply to them. Bad/absent token → treated
+// as anonymous and rate-limited normally. Can't be spoofed with a fake token
+// (verify would throw). Used by the S&S proxy limiter below.
+function hasValidStudioToken(req) {
+  const m = (req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
+  if (!m || !process.env.JWT_SECRET) return false;
+  try { jwt.verify(m[1], process.env.JWT_SECRET); return true; } catch (_) { return false; }
+}
+
+// Tighter throttle for the paid S&S catalog proxy (/api/products/ss/*). These
+// endpoints hit our metered upstream, so anonymous scraping is a real cost.
+// 50/min/IP is well above real browsing — a Products page load is 1–2 calls
+// (one /ss/browse + an optional batched /ss/images), debounced — while capping
+// abuse below the general 120/min. Authenticated Studio (the owner's warm/refresh
+// runs) is exempted so admin tooling is never throttled.
+const ssProxyLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 50,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: hasValidStudioToken,
+  message: { message: 'Too many catalog requests. Please slow down and try again shortly.' },
+});
+
 app.get('/healthz', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
 // ── Routes ──
@@ -212,6 +238,7 @@ const receiptRoutes        = require('./routes/receiptRoutes');
 const crmRoutes            = require('./routes/crmRoutes');
 const outreachRoutes       = require('./routes/outreachRoutes');
 
+app.use('/api/products/ss', ssProxyLimiter);
 app.use('/api/products', productRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/submissions', submissionRoutes);

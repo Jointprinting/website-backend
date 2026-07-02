@@ -1,0 +1,28 @@
+name: CI
+
+# Run the node --test suites on every PR and on pushes to main. Keeps auth,
+# money, order-numbering, CRM and the rest green before anything merges.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Pinned to 22 rather than .nvmrc's 20: the date suite formats via
+          # Intl/ICU, and midnight renders "24:00" on Node 20's ICU but "00:00"
+          # on Node >=22 (what the tests expect / dev runs). See time.test.js.
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+        env:
+          # The suites mock the DB; this is only so jwt sign/verify in the auth
+          # tests have a secret. Not a real credential.
+          JWT_SECRET: test-secret-ci
