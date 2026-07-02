@@ -15,13 +15,18 @@ const sendEmail = async (options) => {
     });
 
     const mailOptions = {
-        // Use EMAIL_FROM for the sender address
-        from: process.env.EMAIL_FROM,
+        // Sender defaults to EMAIL_FROM; callers may override (the outreach
+        // engine sends from a dedicated OUTREACH_EMAIL_FROM identity so cold
+        // volume never rides the main transactional address).
+        from: options.from || process.env.EMAIL_FROM,
         to: options.to,
         subject: options.subject,
         html: options.text || options.html, // Support both text and html options
-        attachments: options.attachments || [] 
+        attachments: options.attachments || []
     };
+    if (options.replyTo) mailOptions.replyTo = options.replyTo;
+    if (options.headers) mailOptions.headers = options.headers;   // e.g. List-Unsubscribe
+    if (options.textAlt) mailOptions.text = options.textAlt;      // plain-text alternative part
 
     // FIX 2: Replace the Promise wrapper with direct async/await call (cleaner)
     try {

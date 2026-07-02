@@ -17,6 +17,8 @@
 
 const Client = require('../models/Client');
 const Order  = require('../models/Order');
+const OutreachCampaign = require('../models/OutreachCampaign');
+const OutreachEnrollment = require('../models/OutreachEnrollment');
 // REUSE canonical key normalization + the single source of truth for which order
 // statuses count as a REAL placed order (a customer). Never re-list these here.
 const { deriveCompanyKey, PLACED_STATUSES } = require('../models/Order');
@@ -1221,7 +1223,35 @@ async function getOne(req, res) {
     // the list above; only this flag keys off placed.)
     const isCustomer = orders.some((o) => PLACED_STATUSES.includes(o.status));
 
-    res.json({ client: { ...client, isCustomer }, orders, pos, finance, isCustomer });
+    // ── Outreach enrollments ────────────────────────────────────────────────────
+    // Any cold-email sequences this company is (or was) in, joined with the
+    // campaign name — the detail card shows a compact status line and the
+    // timeline already carries the per-send log touches.
+    const enrDocs = await OutreachEnrollment.find({ companyKey: key })
+      .sort({ updatedAt: -1 })
+      .select('campaignId status stepIndex sends openCount lastOpenedAt repliedAt nextSendAt')
+      .lean();
+    let outreach = [];
+    if (enrDocs.length) {
+      const campaignDocs = await OutreachCampaign.find({ _id: { $in: enrDocs.map((e) => e.campaignId) } })
+        .select('name steps').lean();
+      const cById = new Map(campaignDocs.map((c) => [String(c._id), c]));
+      outreach = enrDocs.map((e) => {
+        const c = cById.get(String(e.campaignId));
+        return {
+          enrollmentId: e._id,
+          campaignName: c ? c.name : '',
+          status: e.status,
+          sent: (e.sends || []).length,
+          stepCount: c ? (c.steps || []).length : 0,
+          openCount: e.openCount || 0,
+          repliedAt: e.repliedAt || null,
+          nextSendAt: e.nextSendAt || null,
+        };
+      });
+    }
+
+    res.json({ client: { ...client, isCustomer }, orders, pos, finance, isCustomer, outreach });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -1232,7 +1262,7 @@ const PATCHABLE = [
   'companyName', 'clientName', 'email', 'phone', 'paymentTerms',
   'defaultPrinter', 'defaultSupplier', 'defaultMarkup', 'notes',
   'stage', 'nextFollowUp', 'lastContact', 'address', 'area', 'interestType',
-  'dealValue', 'contacts', 'source', 'tags', 'lostReason',
+  'dealValue', 'contacts', 'source', 'tags', 'lostReason', 'doNotEmail',
 ];
 
 // PATCH /api/crm/:companyKey — upsert/update CRM fields.

@@ -89,6 +89,11 @@ db.once('open', () => {
 
   require('./services/jpwScheduler').startJpwScheduler();
 
+  // Cold-outreach sender: paced, capped, business-hours-only email sequences
+  // for CRM leads. Holds (never sends) until OUTREACH_EMAIL_FROM is set — cold
+  // volume must never ride the main transactional identity.
+  require('./services/outreachEngine').startOutreachEngine();
+
   // Weekly push of the full backup (incl. R2 receipt images) to Google Drive.
   // No-op until the admin connects Drive — safe to start unconditionally.
   require('./services/gdriveBackup').startGoogleDriveBackup();
@@ -167,6 +172,7 @@ const gdriveRoutes         = require('./routes/gdriveRoutes');
 const financeRoutes        = require('./routes/financeRoutes');
 const receiptRoutes        = require('./routes/receiptRoutes');
 const crmRoutes            = require('./routes/crmRoutes');
+const outreachRoutes       = require('./routes/outreachRoutes');
 
 app.use('/api/products', productRoutes);
 app.use('/api/auth', authRoutes);
@@ -182,6 +188,7 @@ app.use('/api/clients', express.json(), clientRoutes);
 // CRM import can carry the whole field tracker as JSON rows or raw CSV text, so
 // allow a larger body than the global 1mb default.
 app.use('/api/crm', express.json({ limit: '8mb' }), crmRoutes);
+app.use('/api/outreach', express.json(), outreachRoutes);
 app.use('/api/public', express.json(), publicApprovalRoutes);
 app.use('/api/admin/backup', backupRoutes);
 app.use('/api/jpw', express.json({ limit: '20mb' }), jpwRoutes);
