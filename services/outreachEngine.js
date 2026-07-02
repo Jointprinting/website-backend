@@ -258,7 +258,10 @@ async function sendOne(enr, campaign, now = new Date()) {
   }
 
   const ctx = buildMergeContext(client);
-  const subject = renderTemplate(step.subject, ctx).trim() || `Quick question for ${ctx.companyName || 'you'}`;
+  // Merge values come from client records — collapse any stray newlines so a
+  // weird companyName can never smuggle extra SMTP headers via the subject.
+  const subject = (renderTemplate(step.subject, ctx).replace(/[\r\n]+/g, ' ').trim())
+    || `Quick question for ${ctx.companyName || 'you'}`;
   const bodyText = renderTemplate(step.body, ctx);
   const { html, text } = composeMessage({ bodyText, token: enr.token });
 
