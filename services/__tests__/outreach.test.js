@@ -22,6 +22,7 @@ const {
   sendBlockReason,
   bodyToHtml,
   pickEmail,
+  isPermanentSmtpError,
 } = require('../outreachEngine');
 
 // ── Warm-up ramp (doubles weekly) ────────────────────────────────────────────
@@ -147,4 +148,22 @@ test('pickEmail prefers the company email, falls back to the first contact with 
   assert.equal(pickEmail({ email: ' ', contacts: [{ email: '' }, { email: 'c@x.com' }] }), 'c@x.com');
   assert.equal(pickEmail({ contacts: [] }), '');
   assert.equal(pickEmail({}), '');
+});
+
+// ── Permanent vs temporary SMTP failure ──────────────────────────────────────
+test('isPermanentSmtpError: 5xx / bad-mailbox = permanent (suppress)', () => {
+  assert.equal(isPermanentSmtpError({ responseCode: 550, message: 'No such user' }), true);
+  assert.equal(isPermanentSmtpError({ responseCode: 553, message: 'mailbox unavailable' }), true);
+  assert.equal(isPermanentSmtpError({ message: '5.1.1 recipient rejected' }), true);
+  assert.equal(isPermanentSmtpError({ message: 'User unknown in virtual mailbox table' }), true);
+  assert.equal(isPermanentSmtpError({ message: 'Recipient address rejected: does not exist' }), true);
+});
+
+test('isPermanentSmtpError: temporary / unknown = NOT permanent (retry)', () => {
+  assert.equal(isPermanentSmtpError({ responseCode: 451, message: 'greylisted, try later' }), false);
+  assert.equal(isPermanentSmtpError({ responseCode: 421, message: 'service unavailable' }), false);
+  assert.equal(isPermanentSmtpError({ code: 'ETIMEDOUT', message: 'connection timed out' }), false);
+  assert.equal(isPermanentSmtpError({ message: 'socket hang up' }), false);
+  assert.equal(isPermanentSmtpError(null), false);
+  assert.equal(isPermanentSmtpError({}), false);
 });

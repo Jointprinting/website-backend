@@ -29,12 +29,15 @@ const {
   setAutoAdvance,
   runAutoNow,
   getAnalytics,
+  bounceWebhook,
 } = require('../controllers/outreach');
 
 // ── Public (token-keyed, embedded in the emails themselves) ──
 router.get('/t/:token/open.png', trackOpen);
 router.get('/u/:token', unsubscribe);
 router.post('/u/:token', unsubscribe);   // one-click List-Unsubscribe (RFC 8058)
+// Provider bounce/complaint webhook — self-guarded by OUTREACH_BOUNCE_SECRET.
+router.post('/bounce', bounceWebhook);
 
 // ── Admin ──
 router.use(requireAdmin);

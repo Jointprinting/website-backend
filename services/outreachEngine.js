@@ -190,6 +190,19 @@ function pickEmail(client = {}) {
 
 const newToken = () => crypto.randomBytes(16).toString('hex');
 
+// Is an SMTP send error PERMANENT (the address is bad) vs. temporary (greylist,
+// timeout, rate limit)? A permanent failure should suppress the address; a
+// temporary one should be retried. Reads the SMTP response code and the message
+// text (nodemailer surfaces both). Pure + unit-tested.
+function isPermanentSmtpError(err) {
+  if (!err) return false;
+  const code = Number(err.responseCode != null ? err.responseCode : err.code);
+  if (Number.isFinite(code) && code >= 500 && code < 600) return true;
+  const msg = String(err.message || err.response || '').toLowerCase();
+  if (/\b5\.\d\.\d\b/.test(msg)) return true; // enhanced status code 5.x.x
+  return /(no such (user|recipient|mailbox|address)|user unknown|mailbox (unavailable|not found|does not exist)|recipient (address )?rejected|address rejected|does not exist|invalid recipient|account (is )?(disabled|closed)|relay access denied)/.test(msg);
+}
+
 // ── Engine ───────────────────────────────────────────────────────────────────
 
 async function countSentSince(since) {
@@ -327,6 +340,25 @@ async function sendOne(enr, campaign, now = new Date()) {
   } catch (err) {
     enr.sendAttempts = (enr.sendAttempts || 0) + 1;
     enr.lastError = String(err.message || err).slice(0, 500);
+    // A PERMANENT rejection (5xx / "no such user") means the address is dead —
+    // retrying just burns the daily cap and dents reputation. Stop this
+    // enrollment AND flag the company doNotEmail so no OTHER campaign wastes a
+    // send on it either. (Temporary 4xx errors fall through to the retry path.)
+    if (isPermanentSmtpError(err)) {
+      enr.status = 'failed';
+      enr.stopReason = 'invalid-address';
+      enr.nextSendAt = null;
+      await enr.save();
+      await Client.updateOne(
+        { companyKey: enr.companyKey, doNotEmail: { $ne: true } },
+        {
+          $set: { doNotEmail: true },
+          $push: { log: { at: now, text: 'Email address rejected (bounced) — suppressed from outreach', kind: 'email', dedupKey: `outreach-bounce:${enr._id}` } },
+        },
+      ).catch(() => {});
+      console.warn(`[outreach] permanent bounce for ${enr.companyKey} (${to}) — suppressed`);
+      return 'skipped';
+    }
     if (enr.sendAttempts >= 3) {
       enr.status = 'failed';
       enr.stopReason = 'smtp-error';
@@ -412,5 +444,6 @@ module.exports = {
   composeMessage,
   sendBlockReason,
   bodyToHtml,
+  isPermanentSmtpError,
   DAILY_CAP_MAX,
 };
