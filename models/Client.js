@@ -23,7 +23,7 @@ const INTEREST_TYPES = ['', 'promos', 'apparel', 'both'];
 // raw "Source" text is normalized into one of these values. Indexed so the CRM
 // list/pipeline can filter by it cheaply.
 const LEAD_SOURCES = ['', 'Website', 'Referral', 'Event', 'Social Media',
-  'Cold Outreach', 'Partnership', 'Advertising', 'Organic Search'];
+  'Cold Outreach', 'Partnership', 'Advertising', 'Organic Search', 'Field Visit'];
 
 // One person at the company. Several may share a single CRM record.
 // `isPrimary` is the ★ main contact: at most ONE per record (the PATCH sanitizer

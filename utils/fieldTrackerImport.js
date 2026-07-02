@@ -340,7 +340,7 @@ function interestIsNo(raw) {
 // invent an origin we don't actually know. Order matters only for readability; the
 // matchers are independent substrings.
 const LEAD_SOURCES = ['', 'Website', 'Referral', 'Event', 'Social Media',
-  'Cold Outreach', 'Partnership', 'Advertising', 'Organic Search'];
+  'Cold Outreach', 'Partnership', 'Advertising', 'Organic Search', 'Field Visit'];
 
 // Substring rules (most-specific first) mapping a raw Source cell → an enum value.
 // Kept deliberately conservative: only confident hits map; everything else → ''

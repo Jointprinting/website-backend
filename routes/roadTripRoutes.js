@@ -16,19 +16,41 @@ const {
 } = require('../controllers/roadTripLead');
 
 const {
-  densityArea, corridorLeads, corridorScan,
-  listDensityCache, clearDensityCacheEntry,
-} = require('../controllers/roadTripRoute');
+  listDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain,
+} = require('../controllers/dispensary');
+
+const {
+  getCurrent, addStop, removeStop, patchStop, optimize, patchRun, completeRun,
+} = require('../controllers/fieldRun');
 
 const { requireAdmin } = require('../middleware/auth');
 
 // All endpoints admin-only.
 router.use(requireAdmin);
 
-// ── Place search proxy (dispensaries only) ──────────────────────────────────
+// ── Nationwide dispensary database ──────────────────────────────────────────
+router.get   ('/dispensaries',              listDispensaries);
+router.get   ('/dispensaries/coverage',     coverage);
+router.post  ('/dispensaries/ingest/:state', ingest);
+router.post  ('/dispensaries/enrich',       enrich);
+router.post  ('/dispensaries/geocode',      geocode);
+router.post  ('/dispensaries/sweep',        sweep);
+router.post  ('/dispensaries/rechain',      rechain);
+router.post  ('/dispensaries/:id/hide',     hide);
+
+// ── Today's Run ──────────────────────────────────────────────────────────────
+router.get   ('/run',               getCurrent);
+router.patch ('/run',               patchRun);
+router.post  ('/run/stops',         addStop);
+router.delete('/run/stops/:stopId', removeStop);
+router.patch ('/run/stops/:stopId', patchStop);
+router.post  ('/run/optimize',      optimize);
+router.post  ('/run/complete',      completeRun);
+
+// ── Live place search (legacy fallback — the map now reads the DB) ──────────
 router.get('/search/dispensaries', searchDispensaries);
 
-// ── Leads ──────────────────────────────────────────────────────────────────
+// ── Leads (custom pins: friends / printers / waypoints) ─────────────────────
 router.get('/leads',        listLeads);
 router.post('/leads',       createLead);
 router.put('/leads/:id',    updateLead);
@@ -38,12 +60,5 @@ router.delete('/leads/:id', deleteLead);
 router.get('/denylist',            listDenylist);
 router.post('/denylist',           addDenylist);
 router.delete('/denylist/:placeId', removeDenylist);
-
-// ── Density + corridor (GO TONIGHT) ────────────────────────────────────────
-router.post  ('/density/area',             densityArea);
-router.post  ('/corridor/leads',           corridorLeads);
-router.post  ('/corridor/scan',            corridorScan);
-router.get   ('/density/cache',            listDensityCache);
-router.delete('/density/cache/:cellKey',   clearDensityCacheEntry);
 
 module.exports = router;
