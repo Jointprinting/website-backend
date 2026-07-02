@@ -28,6 +28,7 @@ const {
   findLeads,
   setAutoAdvance,
   runAutoNow,
+  getAnalytics,
 } = require('../controllers/outreach');
 
 // ── Public (token-keyed, embedded in the emails themselves) ──
@@ -39,6 +40,7 @@ router.post('/u/:token', unsubscribe);   // one-click List-Unsubscribe (RFC 8058
 router.use(requireAdmin);
 
 router.get('/overview',   getOverview);
+router.get('/analytics',  getAnalytics);
 router.get('/candidates', getCandidates);
 router.get('/queue',      getQueue);
 router.post('/run-tick',  runTickNow);
