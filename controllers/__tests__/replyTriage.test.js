@@ -1,0 +1,160 @@
+// controllers/__tests__/replyTriage.test.js
+//
+// Gmail Reply Triage V1 — the classifier + matcher (services/replyTriage.js). Both
+// are pure, so they're tested here without a DB or network, the way the rest of the
+// suite works. These pin: (a) each of the nine categories fires on realistic buyer
+// language, (b) precedence — kill-signals (self/auto/unsubscribe/not-interested)
+// beat positive intent, and (c) a reply matches an existing lead by email first,
+// subject as a fallback, and stays UNMATCHED (never dropped) when uncertain.
+//
+//   node --test controllers/__tests__/replyTriage.test.js
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+
+const {
+  CATEGORIES,
+  STATUSES,
+  classifyReply,
+  matchReply,
+  suggestedActionFor,
+  isValidStatus,
+  isValidCategory,
+  normSubject,
+} = require('../../services/replyTriage');
+
+const cat = (fields) => classifyReply(fields).category;
+
+// ── Enums ───────────────────────────────────────────────────────────────────────
+test('enums expose the nine categories and the triage statuses', () => {
+  assert.equal(CATEGORIES.length, 9);
+  assert.ok(CATEGORIES.includes('hot_lead'));
+  assert.ok(CATEGORIES.includes('bounce_auto_ignore'));
+  assert.deepEqual(STATUSES, ['new', 'handled', 'follow_up', 'mockup_requested', 'quote_requested', 'not_interested', 'do_not_contact', 'ignored']);
+  assert.ok(isValidStatus('do_not_contact'));
+  assert.ok(!isValidStatus('nope'));
+  assert.ok(isValidCategory('asked_pricing'));
+  assert.ok(!isValidCategory('whatever'));
+});
+
+// ── Each category fires on realistic language ────────────────────────────────────
+test('asked_pricing: buyer asks about cost / quote', () => {
+  assert.equal(cat({ subject: 'Re: dispensary merch', snippet: 'What would pricing look like for 100 hoodies?' }), 'asked_pricing');
+  assert.equal(cat({ snippet: 'Can you send a quote?' }), 'asked_pricing');
+  assert.equal(cat({ snippet: "What's the cost per shirt at 250 units?" }), 'asked_pricing');
+});
+
+test('asked_mockups: buyer asks for a mockup / proof / design', () => {
+  assert.equal(cat({ snippet: 'Could you put together a mockup with our logo?' }), 'asked_mockups');
+  assert.equal(cat({ snippet: 'Send over a proof and we can go from there.' }), 'asked_mockups');
+});
+
+test('hot_lead: strong buying intent without a price/mockup ask', () => {
+  assert.equal(cat({ snippet: "Yes, interested! Let's set up a call this week." }), 'hot_lead');
+  assert.equal(cat({ snippet: 'We are ready to order shirts for our grand opening.' }), 'hot_lead');
+  assert.equal(cat({ snippet: 'Give me a call, we want to move forward.' }), 'hot_lead');
+});
+
+test('follow_up_later: interested but not now', () => {
+  assert.equal(cat({ snippet: 'Circle back next quarter — swamped right now.' }), 'follow_up_later');
+  assert.equal(cat({ snippet: 'Reach back after the holidays please.' }), 'follow_up_later');
+});
+
+test('not_interested: a clear no', () => {
+  assert.equal(cat({ snippet: "Not interested, thanks." }), 'not_interested');
+  assert.equal(cat({ snippet: 'We already have a merch vendor.' }), 'not_interested');
+  assert.equal(cat({ snippet: "We're all set for now." }), 'not_interested');
+});
+
+test('wrong_person: reply points elsewhere', () => {
+  assert.equal(cat({ snippet: "You'll want to talk to our marketing manager instead." }), 'wrong_person');
+  assert.equal(cat({ snippet: 'Please reach out to Dana, she handles purchasing.' }), 'wrong_person');
+  assert.equal(cat({ snippet: "I'm no longer with the company." }), 'wrong_person');
+});
+
+test('unsubscribe: opt-out language', () => {
+  assert.equal(cat({ snippet: 'Please unsubscribe me from this list.' }), 'unsubscribe');
+  assert.equal(cat({ snippet: 'Take me off your emails.' }), 'unsubscribe');
+  assert.equal(cat({ snippet: 'Do not contact me again.' }), 'unsubscribe');
+});
+
+test('bounce_auto_ignore: machine mail by sender or subject', () => {
+  assert.equal(cat({ fromEmail: 'mailer-daemon@googlemail.com', subject: 'Delivery Status Notification (Failure)' }), 'bounce_auto_ignore');
+  assert.equal(cat({ fromEmail: 'sam@shop.com', subject: 'Automatic reply: Out of office' }), 'bounce_auto_ignore');
+  assert.equal(cat({ fromEmail: 'no-reply@news.example.com', subject: 'This week at Example' }), 'bounce_auto_ignore');
+});
+
+test('needs_response: a genuine human reply with no clear signal', () => {
+  assert.equal(cat({ subject: 'Re: hello', snippet: 'Thanks for reaching out, tell me more about what you do.' }), 'needs_response');
+});
+
+// ── Precedence: kill-signals beat positive intent ───────────────────────────────
+test('unsubscribe wins even when the message also mentions price', () => {
+  assert.equal(cat({ snippet: 'Unsubscribe me. (Also your pricing seemed high.)' }), 'unsubscribe');
+});
+
+test('not_interested wins over a stray "interested" phrasing', () => {
+  assert.equal(cat({ snippet: 'Not interested — we already have a vendor.' }), 'not_interested');
+});
+
+test('own outbound mail is flagged self + ignore, never a real reply', () => {
+  const r = classifyReply({ fromEmail: 'nate@jointprinting.com', snippet: 'Following up on my last note.' });
+  assert.equal(r.self, true);
+  assert.equal(r.ignore, true);
+  assert.equal(r.category, 'bounce_auto_ignore');
+});
+
+// ── suggestedActionFor ──────────────────────────────────────────────────────────
+test('suggestedActionFor returns a distinct hint per category, with a safe default', () => {
+  assert.match(suggestedActionFor('asked_pricing'), /quote/i);
+  assert.match(suggestedActionFor('asked_mockups'), /mockup/i);
+  assert.match(suggestedActionFor('unsubscribe'), /do-not-email|do not email/i);
+  assert.equal(suggestedActionFor('garbage'), suggestedActionFor('needs_response'));
+});
+
+// ── normSubject ─────────────────────────────────────────────────────────────────
+test('normSubject strips Re:/Fwd: chains and lowercases', () => {
+  assert.equal(normSubject('Re: Fwd: Custom Hoodies'), 'custom hoodies');
+  assert.equal(normSubject('RE: RE: Quote'), 'quote');
+  assert.equal(normSubject(''), '');
+});
+
+// ── matchReply ──────────────────────────────────────────────────────────────────
+const ENR = [{ _id: 'e1', toEmail: 'Buyer@GreenLeaf.com', companyKey: 'greenleaf', companyName: 'Green Leaf', sends: [{ subject: 'Custom merch for Green Leaf' }] }];
+const CLIENTS = [{ companyKey: 'highland', companyName: 'Highland Dispensary', email: 'orders@highland.com', contacts: [{ email: 'jess@highland.com' }] }];
+
+test('matchReply: matches an enrollment by sender email (case-insensitive)', () => {
+  const m = matchReply('buyer@greenleaf.com', 'Re: anything', { enrollments: ENR, clients: CLIENTS });
+  assert.deepEqual(
+    { matched: m.matched, by: m.matchBy, key: m.companyKey, enr: m.enrollmentId },
+    { matched: true, by: 'email', key: 'greenleaf', enr: 'e1' },
+  );
+});
+
+test('matchReply: matches a client by a contact email when no enrollment matches', () => {
+  const m = matchReply('jess@highland.com', 'Re: hi', { enrollments: ENR, clients: CLIENTS });
+  assert.equal(m.matched, true);
+  assert.equal(m.matchBy, 'email');
+  assert.equal(m.companyKey, 'highland');
+  assert.equal(m.enrollmentId, ''); // client match carries no enrollment
+});
+
+test('matchReply: falls back to subject when the email is unknown', () => {
+  const m = matchReply('someoneelse@gmail.com', 'Re: Custom merch for Green Leaf',
+    { enrollments: ENR.map((e) => ({ ...e, subjects: e.sends.map((s) => s.subject) })), clients: CLIENTS });
+  assert.equal(m.matched, true);
+  assert.equal(m.matchBy, 'subject');
+  assert.equal(m.companyKey, 'greenleaf');
+});
+
+test('matchReply: stays unmatched when nothing lines up (never throws, never guesses)', () => {
+  const m = matchReply('stranger@nowhere.com', 'Re: random', { enrollments: ENR, clients: CLIENTS });
+  assert.equal(m.matched, false);
+  assert.equal(m.matchBy, 'none');
+  assert.equal(m.companyKey, '');
+});
+
+test('matchReply: no email and no subject → unmatched', () => {
+  const m = matchReply('', '', { enrollments: ENR, clients: CLIENTS });
+  assert.equal(m.matched, false);
+});

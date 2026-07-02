@@ -237,6 +237,7 @@ const financeRoutes        = require('./routes/financeRoutes');
 const receiptRoutes        = require('./routes/receiptRoutes');
 const crmRoutes            = require('./routes/crmRoutes');
 const outreachRoutes       = require('./routes/outreachRoutes');
+const triageRoutes         = require('./routes/triageRoutes');
 
 app.use('/api/products/ss', ssProxyLimiter);
 app.use('/api/products', productRoutes);
@@ -254,6 +255,8 @@ app.use('/api/clients', express.json(), clientRoutes);
 // allow a larger body than the global 1mb default.
 app.use('/api/crm', express.json({ limit: '8mb' }), crmRoutes);
 app.use('/api/outreach', express.json(), outreachRoutes);
+// Reply Triage: pasted/imported buyer replies — snippets only, small bodies.
+app.use('/api/triage', express.json({ limit: '2mb' }), triageRoutes);
 app.use('/api/public', express.json(), publicApprovalRoutes);
 app.use('/api/admin/backup', backupRoutes);
 app.use('/api/jpw', express.json({ limit: '20mb' }), jpwRoutes);
