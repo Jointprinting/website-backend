@@ -19,6 +19,9 @@ const { enrichWebsite } = require('./emailEnricher');
 const { verifyDomainsMx, partitionDeliverable, emailDomain } = require('./emailVerify');
 const LeadFinderRun = require('../models/LeadFinderRun');
 const Client = require('../models/Client');
+const Order = require('../models/Order');
+const OutreachEnrollment = require('../models/OutreachEnrollment');
+const { PLACED_STATUSES } = require('../models/Order');
 const { buildMappedRows, applyMappedRow } = require('../controllers/crm');
 
 const DEFAULT_MAX_ENRICH = parseInt(process.env.LEAD_FINDER_MAX_ENRICH || '80', 10);
@@ -147,12 +150,38 @@ async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich } 
   return result;
 }
 
+// How many COLD leads are sitting ready to enroll right now — the finder's
+// "queue depth". A lead counts if it's never been personally contacted
+// (lastContact null), has an email, isn't opted out/archived, isn't a customer
+// by order reality, and isn't already enrolled in a campaign. The auto-pilot
+// refills whenever this drops below the watermark, so supply tracks sending.
+async function countAvailableColdLeads() {
+  const clients = await Client.find({
+    archived: { $ne: true }, doNotEmail: { $ne: true }, lastContact: null,
+  }).select('companyKey email contacts').lean();
+  const cold = clients.filter((c) =>
+    (c.email && String(c.email).trim()) ||
+    (Array.isArray(c.contacts) && c.contacts.some((x) => x && x.email && String(x.email).trim())));
+  if (!cold.length) return 0;
+  const keys = cold.map((c) => c.companyKey);
+  const [enrolledRows, placedRows] = await Promise.all([
+    OutreachEnrollment.find({ companyKey: { $in: keys } }).select('companyKey').lean(),
+    Order.find({ companyKey: { $in: keys }, status: { $in: PLACED_STATUSES } }).select('companyKey').lean(),
+  ]);
+  const excluded = new Set([
+    ...enrolledRows.map((e) => e.companyKey),
+    ...placedRows.map((o) => o.companyKey),
+  ]);
+  return cold.filter((c) => !excluded.has(c.companyKey)).length;
+}
+
 // Status for the Studio: the auto-pilot frontier + recent runs + per-region
 // last-swept, in national-rollout order (so the UI can show the frontier line).
 async function finderStatus() {
-  const [runs, state] = await Promise.all([
+  const [runs, state, available] = await Promise.all([
     LeadFinderRun.find({ dryRun: false }).sort({ createdAt: -1 }).limit(10).lean(),
     LeadFinderState.findOne({ key: 'frontier' }).lean(),
+    countAvailableColdLeads(),
   ]);
   const lastByRegion = {};
   for (const r of runs) if (!lastByRegion[r.region]) lastByRegion[r.region] = r;
@@ -162,6 +191,7 @@ async function finderStatus() {
       activeRegion,
       activeLabel: REGIONS[activeRegion] ? REGIONS[activeRegion].label : activeRegion,
       autoAdvance: !!(state && state.autoAdvance),
+      availableColdLeads: available,
       dryStreak: (state && state.dryStreak) || 0,
       lastRunAt: state ? state.lastRunAt : null,
       lastResult: state ? state.lastResult : '',
@@ -173,4 +203,4 @@ async function finderStatus() {
   };
 }
 
-module.exports = { runFinder, discoverRegion, finderStatus, pool };
+module.exports = { runFinder, discoverRegion, finderStatus, countAvailableColdLeads, pool };

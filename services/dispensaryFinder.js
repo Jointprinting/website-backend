@@ -94,20 +94,58 @@ function decideFrontier({ region, created, dryStreak = 0, rollout = NATIONAL_ROL
   return { region, dryStreak: streak, advanced: false };
 }
 
-// One Overpass QL query for every cannabis retailer in a bbox. We match the
-// tag combos OSM actually uses for dispensaries, on nodes AND ways (buildings),
-// and ask for `center` so a way returns a lat/lon too. Pure + testable.
+// One Overpass QL query for cannabis retailers in a bbox. Two nets:
+//   1. TAG-based — the canonical dispensary tags OSM uses (shop=cannabis, etc.).
+//      High precision; trusted outright.
+//   2. NAME-based — shops literally named "…Dispensary". A widening net for
+//      mistagged/untagged shops, but DELIBERATELY narrow: only the word
+//      "dispensary" (a strong dispensary signal), not "cannabis"/"marijuana"
+//      (which pull cafes, doctors, lawyers, museums). Everything from net 2 is
+//      quality-gated in parseOverpassElements (closed-out + non-cannabis
+//      "dispensary" like pharmacy/veterinary are dropped) so coverage grows
+//      WITHOUT dragging in junk leads.
+// Nodes AND ways (buildings); `out center` gives a way a lat/lon too. Pure + tested.
 function buildOverpassQuery(bbox) {
   const b = bbox.join(',');
-  return `[out:json][timeout:80];
+  return `[out:json][timeout:90];
 (
   node["shop"="cannabis"](${b});
   way["shop"="cannabis"](${b});
   node["office"="cannabis"](${b});
   way["office"="cannabis"](${b});
   node["shop"="weed"](${b});
+  node["name"~"dispensary",i](${b});
+  way["name"~"dispensary",i](${b});
 );
 out center tags;`;
+}
+
+// The canonical "this IS a cannabis retailer" tag set — trusted outright.
+function hasCannabisTag(tags = {}) {
+  return tags.shop === 'cannabis' || tags.shop === 'weed' || tags.office === 'cannabis';
+}
+
+// A closed/dead POI — OSM marks these with lifecycle-prefixed keys (disused:shop,
+// was:name, abandoned:…) or an explicit closed status. Never email a closed shop.
+function isClosedPoi(tags = {}) {
+  if (Object.keys(tags).some((k) => /^(disused|was|abandoned|demolished|removed|razed):/i.test(k))) return true;
+  if (/^(disused|abandoned|vacant|closed)$/i.test(String(tags.shop || ''))) return true;
+  return String(tags['business_status'] || '').toLowerCase() === 'closed';
+}
+
+// Names that say "dispensary" but AREN'T a cannabis dispensary — pharmacies,
+// vets, hospitals, and the head/smoke/vape-shop crowd. These are the junk the
+// wider name-net would otherwise drag in.
+const NON_CANNABIS_NAME = /pharmac|veterinar|hospit|\bmedical\b|\bclinic\b|optical|dental|smoke ?shop|vape|head ?shop|\bglass\b|hydroponic|tobacc|\bpet\b/i;
+
+// Is this element a GOOD dispensary lead? Trusted cannabis tag → yes. Otherwise
+// (name-only hit) it must literally be a "…dispensary" and NOT a pharmacy/vet/
+// smoke-shop. Closed POIs are always out. Pure + unit-tested — this is the
+// quality gate that keeps the widened net from wasting the owner's sends.
+function isQualityLead(tags = {}, name = '') {
+  if (isClosedPoi(tags)) return false;
+  if (hasCannabisTag(tags)) return true;
+  return /dispensary/i.test(name) && !NON_CANNABIS_NAME.test(name);
 }
 
 // Assemble the OSM address tags into the single "123 Main St, City ST 07102"
@@ -146,6 +184,9 @@ function parseOverpassElements(json) {
     const tags = el.tags || {};
     const name = String(tags.name || tags['official_name'] || tags['brand'] || '').trim();
     if (!name) continue;
+    // Quality gate: trusted cannabis tag, or a genuine (non-pharmacy) "dispensary"
+    // by name, and never a closed POI. Keeps the widened net junk-free.
+    if (!isQualityLead(tags, name)) continue;
     const address = osmAddress(tags);
     const key = `${name.toLowerCase()}|${address.toLowerCase()}`;
     if (seen.has(key)) continue;
@@ -202,6 +243,9 @@ module.exports = {
   osmAddress,
   normalizeWebsite,
   parseOverpassElements,
+  isQualityLead,
+  isClosedPoi,
+  hasCannabisTag,
   nextRegionAfter,
   decideFrontier,
 };

@@ -12,7 +12,7 @@ const assert = require('node:assert/strict');
 
 const {
   buildOverpassQuery, osmAddress, normalizeWebsite, parseOverpassElements, isRegion,
-  nextRegionAfter, decideFrontier, NATIONAL_ROLLOUT,
+  nextRegionAfter, decideFrontier, NATIONAL_ROLLOUT, isQualityLead, isClosedPoi, hasCannabisTag,
 } = require('../dispensaryFinder');
 const {
   sanitizeEmail, extractEmails, pickBestEmail, findContactLink, hostOf,
@@ -56,10 +56,10 @@ test('normalizeWebsite forces a fetchable URL or drops it', () => {
 test('parseOverpassElements keeps named shops, grabs OSM emails, dedupes', () => {
   const rows = parseOverpassElements({
     elements: [
-      { type: 'node', id: 1, tags: { name: 'Green Leaf', 'addr:city': 'Trenton', 'addr:state': 'NJ', 'contact:email': 'INFO@greenleaf.com', website: 'greenleaf.com', phone: '609-555-0142' } },
-      { type: 'way', id: 2, tags: { name: 'The Botanist', 'addr:housenumber': '5', 'addr:street': 'Main St', 'addr:city': 'Egg Harbor Township', 'addr:state': 'NJ' } },
-      { type: 'node', id: 3, tags: { /* no name */ 'addr:city': 'Camden' } },        // dropped
-      { type: 'node', id: 4, tags: { name: 'Green Leaf', 'addr:city': 'Trenton', 'addr:state': 'NJ' } }, // dup name+addr → dropped
+      { type: 'node', id: 1, tags: { name: 'Green Leaf', shop: 'cannabis', 'addr:city': 'Trenton', 'addr:state': 'NJ', 'contact:email': 'INFO@greenleaf.com', website: 'greenleaf.com', phone: '609-555-0142' } },
+      { type: 'way', id: 2, tags: { name: 'The Botanist', shop: 'cannabis', 'addr:housenumber': '5', 'addr:street': 'Main St', 'addr:city': 'Egg Harbor Township', 'addr:state': 'NJ' } },
+      { type: 'node', id: 3, tags: { /* no name */ shop: 'cannabis', 'addr:city': 'Camden' } },        // dropped (no name)
+      { type: 'node', id: 4, tags: { name: 'Green Leaf', shop: 'cannabis', 'addr:city': 'Trenton', 'addr:state': 'NJ' } }, // dup name+addr → dropped
     ],
   });
   assert.equal(rows.length, 2);
@@ -76,6 +76,52 @@ test('parseOverpassElements handles empty / malformed input', () => {
   assert.deepEqual(parseOverpassElements({}), []);
   assert.deepEqual(parseOverpassElements(null), []);
   assert.deepEqual(parseOverpassElements({ elements: 'nope' }), []);
+});
+
+// ── Quality gate — keep the widened net junk-free ─────────────────────────────
+test('isQualityLead: trusts cannabis tags, filters junk names, drops closed', () => {
+  // Trusted cannabis tags — always in.
+  assert.equal(isQualityLead({ shop: 'cannabis' }, 'Green Leaf'), true);
+  assert.equal(isQualityLead({ office: 'cannabis' }, 'Rise'), true);
+  assert.equal(isQualityLead({ shop: 'weed' }, 'The Botanist'), true);
+  // Name-only "dispensary" with no cannabis tag — in, IF it's really cannabis.
+  assert.equal(isQualityLead({ shop: 'yes' }, 'Garden State Dispensary'), true);
+  assert.equal(isQualityLead({}, 'Curaleaf Dispensary'), true);
+  // Non-cannabis "dispensary" — OUT (pharmacy, vet, etc.).
+  assert.equal(isQualityLead({}, 'CVS Pharmacy Dispensary'), false);
+  assert.equal(isQualityLead({}, 'Animal Hospital Veterinary Dispensary'), false);
+  assert.equal(isQualityLead({}, 'Downtown Smoke Shop Dispensary'), false);
+  assert.equal(isQualityLead({}, 'Vape & Dispensary'), false);
+  // Name doesn't say dispensary and no cannabis tag — OUT.
+  assert.equal(isQualityLead({ shop: 'convenience' }, 'Joe’s Corner Store'), false);
+});
+
+test('isClosedPoi: lifecycle-prefixed / status-closed POIs are excluded', () => {
+  assert.equal(isClosedPoi({ 'disused:shop': 'cannabis' }), true);
+  assert.equal(isClosedPoi({ 'was:name': 'Old Dispensary' }), true);
+  assert.equal(isClosedPoi({ shop: 'vacant' }), true);
+  assert.equal(isClosedPoi({ business_status: 'CLOSED' }), true);
+  assert.equal(isClosedPoi({ shop: 'cannabis' }), false);
+  // A closed cannabis shop is a quality FAIL even with the trusted tag.
+  assert.equal(isQualityLead({ 'disused:shop': 'cannabis', shop: 'cannabis' }, 'Gone Green'), false);
+});
+
+test('parseOverpassElements applies the quality gate', () => {
+  const rows = parseOverpassElements({
+    elements: [
+      { type: 'node', id: 1, tags: { name: 'Green Leaf', shop: 'cannabis', 'addr:city': 'Trenton', 'addr:state': 'NJ' } },
+      { type: 'node', id: 2, tags: { name: 'Rite Aid Pharmacy Dispensary', 'addr:city': 'Camden' } }, // junk → dropped
+      { type: 'node', id: 3, tags: { name: 'Old Weed Co', 'disused:shop': 'cannabis' } },              // closed → dropped
+      { type: 'node', id: 4, tags: { name: 'Garden State Dispensary', 'addr:state': 'NJ' } },           // real → kept
+    ],
+  });
+  assert.deepEqual(rows.map((r) => r.name).sort(), ['Garden State Dispensary', 'Green Leaf']);
+});
+
+test('buildOverpassQuery widens by name but only to "dispensary"', () => {
+  const q = buildOverpassQuery([38.85, -75.6, 41.36, -73.88]);
+  assert.match(q, /name"~"dispensary",i/);      // widened net
+  assert.doesNotMatch(q, /marijuana/);          // deliberately NOT the noisy terms
 });
 
 // ── Email sanitizing ─────────────────────────────────────────────────────────
