@@ -3,18 +3,19 @@
 > What the business *is*, commercially — who pays, what's sold, how money is made, and
 > which tools/integrations run it. Companion to `docs/ECOSYSTEM.md` (the canonical order
 > flow + owner decisions); this doc doesn't repeat that spine, it sits around it.
-> Compiled from a full-code scan of both repos (July 2026). Items the code cannot answer
-> are collected under **Open questions** at the bottom — answers from Nate get folded in
-> here as they arrive.
+> Compiled from a full-code scan of both repos (July 2026), plus the owner's direct
+> answers under **Owner answers** at the bottom — update that section as facts change.
 
 ---
 
 ## The business at a glance
 
 - **Joint Printing LLC** — custom merch / screen-printing / embroidery / promo-products
-  studio. Owner-operated by **Nate** (nate@jointprinting.com, (856) 899-7642), based in
-  New Jersey, fully remote. Positioning: *"We're your merch department, not just a
-  printer."*
+  studio. Owner-operated by **Nate** (nate@jointprinting.com — the only email identity
+  that exists; (856) 899-7642), based in New Jersey, fully remote. Positioning: *"We're
+  your merch department, not just a printer."*
+- **Full-time business.** Roughly **$75k revenue to date**; **12-month target: $150k**
+  (owner, July 2026).
 - **Broker/decorator model, no in-house printing.** Blanks sourced from wholesale
   suppliers (**SanMar**, **S&S Activewear**); decoration outsourced to a network of
   **~16 printers/vendors** (rebuilt from the owner's Google Drive PO history); JP owns
@@ -24,7 +25,8 @@
   gyms, nonprofits, retail. Customer base skews small cannabis brands.
 - **Second business in the same codebase: JP Webworks (JPW)** — web-design/marketing
   lead-gen for South Jersey service businesses (Lead Recon, Cold Call Tree, "Spider"
-  Google Sheet). **Paused/on hold** — kept functional, visually demoted in the hub.
+  Google Sheet). **Paused** — owner: it returns only as a **side project for simple
+  website creation, nothing more**. Treat the JPW tooling as legacy; don't invest in it.
 
 ## How money is made
 
@@ -50,6 +52,9 @@
 - **Per-order margin:** signed `Client Sales` revenue − COGS categories
   (`Blank COGS, Printer COGS, Shipping, Art, Commission, Processing Fee`). Owner
   Draw/Contribution are equity, excluded from P&L profit.
+- **Margin reality (owner, July 2026):** there is **no hard floor** — he has taken
+  **$0-profit orders purely to land a client**; a typical order nets around **$200
+  profit**. The +40% default markup is a starting point, not a rule.
 - **Scale reference:** the verified 2024–2026 budget-tracker import ties out to
   **net cash $22,413.41 across 330 ledger rows** (`scripts/buildFinanceSeed.js`);
   marketing claims "30,000+ units delivered".
@@ -78,9 +83,15 @@ Acquisition channels, all feeding the CRM (`companyKey` spine):
    flips auto-pilot on. Scrapes dispensary websites for missing emails.
 6. **In-person sweeps — Field Map** (`RoadTripTab`): nationwide dispensary pins,
    Today's Run, one-tap capture into the CRM.
-7. **Site intelligence:** Apollo.io visitor tracking + Microsoft Clarity on every
-   public page. (⚠ currently contradicts the Privacy page's "no third-party
-   trackers" claim — see Known issues.)
+7. **Site intelligence:** Microsoft Clarity on every public page (disclosed in the
+   Privacy policy). Apollo.io was removed July 2026 — the owner never used it.
+
+**What actually works (owner, July 2026):** deals are won by **road visits and cold
+email**; **most revenue comes from dispensaries**; the binding constraint is **quality
+lead volume** (not quoting time, cash, printer capacity, or hours). Reorders are "not a
+lot but a good amount" of revenue. Nothing meaningful lives off-app besides QuickBooks
+invoicing, which doesn't hurt. Seasonality (4/20, holidays, USA-250th) is handled with
+marketing pushes, not tooling.
 
 **CRM stages** (post-July-2026: "sampling" retired, boot-migrated to quoting):
 `lead → contacted → quoting → won / customer`, closed: `lost, dormant`. Close
@@ -156,45 +167,36 @@ depth** (no multi-select/marquee, calendar drag) — details in `docs/ECOSYSTEM.
 
 Additional findings worth a pass:
 
-- **Privacy page contradicts reality**: claims "no third-party advertising trackers"
-  while Apollo.io + Clarity load on every page (`src/screens/Privacy.js` vs
-  `public/index.html`). Compliance + trust fix.
-- **Email identity split**: marketing pages say `nate@`, legal pages say `hello@`.
-- **Orphaned `/customize` form** (legacy mockup request, divergent validation) still
-  routable next to the modern `/contact` + quote-tray flow.
-- **PWA manifest is CRA boilerplate** ("React App"); `package.json` still `nate-website`.
-- **Dead components**: `ProductCTA` (email capture that does nothing), unused
-  `ProductCategories`.
 - **Stock photography** on About/heroes (Unsplash/Midjourney) — partially replaced with
   owner uploads (#277); the rest awaits real product shots.
 - **Modeled-but-unbuilt** (deliberate, plans on file): printer pricing matrix, geo/nexus
   routing, mockup-round history, closeout/QA step, Lookbook rebuild.
 
+Resolved July 2026: privacy page now discloses Clarity; Apollo tracker removed
+(unused); `/customize` redirects to `/contact`; legal pages use `nate@`; PWA manifest
+branded; dead marketing components deleted.
+
 ---
 
-## Open questions for Nate (answers get folded in here)
+## Owner answers — July 2026 (the facts code can't reveal)
 
-*The code can't answer these; they shape what to build next and how to advise.*
+Captured from Nate; treat as ground truth until he updates them.
 
-1. **Goals & scale.** Is JP full-time? Rough current revenue run-rate, and the target
-   for the next 12 months? Is JP Webworks coming back, or should the code treat it as
-   legacy?
-2. **Real margins.** Default markup is +40% — what do jobs *actually* land at by line
-   (apparel vs promos vs specialty), and what's the floor you'll flex to for a good
-   logo/client?
-3. **Customer mix.** Roughly what share of revenue is dispensaries vs everyone else?
-   Who are the top ~5 clients, and are any of them a concentration risk?
-4. **Winning channel.** Of referral / cold email / road visits / website / Calendly —
-   which actually closes deals today, and where do you *want* growth to come from?
-5. **The bottleneck.** What caps you right now: lead volume, quoting/mockup time, cash
-   for blanks, printer capacity, or your own hours?
-6. **Reorders.** How much of revenue is repeat business? Is anyone working reorders
-   proactively (artwork is "kept on file" — is there a reorder nudge you'd want)?
-7. **Off-app work.** What still lives outside the ecosystem — QuickBooks invoicing,
-   PO emails, spreadsheets, DMs? Which of those hurts most?
-8. **Seasonality.** What moons drive the calendar (4/20, holiday drops, the USA-250th
-   promo push)? Should tooling (outreach timing, catalog rotation) key off them?
-9. **Email identities.** Is `hello@jointprinting.com` real/monitored, or should legal
-   pages say `nate@`? And which domain/identity is the cold-outreach sender using?
-10. **Privacy page.** OK to rewrite the tracking section to disclose Clarity + Apollo
-    (or would you rather drop Apollo)?
+1. **Goals & scale:** full-time; ~**$75k revenue to date**, **$150k** 12-month target.
+   JP Webworks returns only as a side project doing simple website creation — nothing
+   more; treat its tooling as legacy.
+2. **Margins:** apparel and promos both; **no floor** — has done **$0-profit orders to
+   win a client**; typical order nets **~$200**.
+3. **Customer mix:** most revenue is **dispensaries**.
+4. **Winning channels:** **road visits + cold email** close deals.
+5. **Bottleneck:** **quality lead volume** — not time, cash, or capacity.
+6. **Reorders:** "not a lot but a good amount."
+7. **Off-app work:** nothing painful (QuickBooks invoicing is fine as-is).
+8. **Seasonality:** real (4/20, holidays, USA-250th) but handled by making new
+   marketing, not by tooling.
+9. **Email:** `nate@jointprinting.com` is the only address that exists.
+10. **Tracking:** keep Clarity, Apollo removed (never used).
+
+**Implication for future work:** the highest-leverage direction is anything that
+increases *quality* dispensary lead flow into road-visit and cold-email motions (and
+conversion of them) — not internal-ops automation, which the owner says doesn't hurt.
