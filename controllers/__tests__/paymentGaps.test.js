@@ -7,7 +7,7 @@
 //   node --test controllers/__tests__/paymentGaps.test.js
 //
 // Per order it lines up billed (Order.totalValue) vs collected (Σ signed income/
-// 'Customer Sales') vs cost (Σ signed COGS = orderActualCost), flags
+// 'Client Sales') vs cost (Σ signed COGS = orderActualCost), flags
 // cost-without-payment and outstanding, and totals them. It must REUSE the same
 // signed()/normalizeOrderNumber()/orderActualCost() rules as the P&L — these tests
 // keep it from drifting.
@@ -18,7 +18,7 @@ const assert = require('node:assert/strict');
 const { paymentGapsForOrders, orderActualCost } = require('../finances');
 
 // Ledger-row + order factories (amount always positive; isCredit flips direction).
-const sale   = (amount, over = {}) => ({ type: 'income',  category: 'Customer Sales', amount, ...over });
+const sale   = (amount, over = {}) => ({ type: 'income',  category: 'Client Sales', amount, ...over });
 const blank  = (amount, over = {}) => ({ type: 'expense', category: 'Blank COGS',     amount, ...over });
 const printc = (amount, over = {}) => ({ type: 'expense', category: 'Printer COGS',   amount, ...over });
 const order  = (over = {}) => ({ orderNumber: '1', totalValue: 0, paid: false, companyName: '', clientName: '', ...over });

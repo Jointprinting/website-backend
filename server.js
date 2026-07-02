@@ -119,6 +119,22 @@ db.once('open', () => {
       .catch((e) => console.warn('[crm] retired-stage migration failed:', e.message));
   }, 4_500);
 
+  // Idempotent: legacy approval links (minted before expiry existed) get a
+  // 30-day fuse so no client-facing pricing page stays public forever.
+  setTimeout(() => {
+    require('./controllers/approval').expireLegacyApprovalTokens()
+      .then((n) => { if (n) console.log(`[approval] set an expiry on ${n} legacy approval link(s).`); })
+      .catch((e) => console.warn('[approval] legacy-token expiry backfill failed:', e.message));
+  }, 5_500);
+
+  // Idempotent: rename the income category "Customer Sales" → "Client Sales"
+  // on stored transactions + receipt extractions (owner's vocabulary change).
+  setTimeout(() => {
+    require('./controllers/finances').migrateRenamedCategories()
+      .then((n) => { if (n) console.log(`[finances] renamed the sales category on ${n} row(s).`); })
+      .catch((e) => console.warn('[finances] category rename migration failed:', e.message));
+  }, 4_000);
+
   // Idempotent: link legacy ledger rows to their project + vendor (fills blanks
   // only — including receipts the owner booked under a PROJECT # instead of the
   // invoice #, which otherwise read as "no receipts linked" on the order).

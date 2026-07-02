@@ -179,7 +179,7 @@ function detectDuplicateSales(incomeRows, orderKeys, opts = {}) {
   const ann = (incomeRows || [])
     // Real, positive Customer-Sales revenue only — a refund credit (isCredit) is contra
     // revenue and must NEVER be treated as, or archived as, a duplicate sale.
-    .filter((t) => t && t.type === 'income' && t.category === 'Customer Sales' && !t.isCredit)
+    .filter((t) => t && t.type === 'income' && t.category === 'Client Sales' && !t.isCredit)
     .map((r) => {
       const ok = normalizeOrderNumber(r.orderNumber);
       const cks = partyCompanyKeys(r.party);

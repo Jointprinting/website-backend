@@ -53,13 +53,13 @@ function incomeContribution(category, signedTotal) {
 // What ONE income row contributes to a SPECIFIC order's / client's revenue — the
 // single rule that makes per-order/per-client revenue reconcile to the headline
 // P&L, fixing the "numbers feel wrong" bug. The headline already nets a customer
-// refund DOWN (incomeContribution: a 'Refund' row → −|amount|; a 'Customer Sales'
+// refund DOWN (incomeContribution: a 'Refund' row → −|amount|; a 'Client Sales'
 // credit → −amount). But byOrder/byClient/summarizeCompanyFinance/paymentGaps used
-// to count revenue as STRICTLY income·'Customer Sales', so a refund booked under the
+// to count revenue as STRICTLY income·'Client Sales', so a refund booked under the
 // 'Refund' category lowered the top-line yet left the refunded order at full profit
 // — they never reconciled. Now an order's revenue counts BOTH consistent forms of a
 // refund as contra-revenue, IDENTICAL to the headline:
-//   • 'Customer Sales'           → signed(t)            (a Customer-Sales CREDIT nets down)
+//   • 'Client Sales'           → signed(t)            (a Customer-Sales CREDIT nets down)
 //   • 'Refund'                   → −|signed(t)|         (always reduces, never inflates —
 //                                                        same as incomeContribution)
 //   • anything else (Other / Owner Contribution / a stray income line) → 0
@@ -69,7 +69,7 @@ function incomeContribution(category, signedTotal) {
 // Pure + exported so the contra-revenue rule is unit-testable and reused everywhere.
 function orderRevenueContribution(t) {
   if (!t || t.type !== 'income') return 0;
-  if (t.category === 'Customer Sales') return signed(t);
+  if (t.category === 'Client Sales') return signed(t);
   if (t.category === 'Refund') return -Math.abs(signed(t)) + 0;   // + 0 normalizes -0 to 0
   return 0;
 }
@@ -95,11 +95,11 @@ function processingFeeRate(method, override) {
 }
 
 // The fee AMOUNT a processor takes out of a payment = round2(amount × rate). Only a
-// real client payment (income · Customer Sales, NOT a credit/refund) is charged a
+// real client payment (income · Client Sales, NOT a credit/refund) is charged a
 // fee — a refund or a non-sale income row returns 0. Pure + exported for tests.
 function computeProcessingFee(paymentTxn, method, override) {
   const t = paymentTxn || {};
-  if (t.type !== 'income' || t.category !== 'Customer Sales' || t.isCredit) return 0;
+  if (t.type !== 'income' || t.category !== 'Client Sales' || t.isCredit) return 0;
   const amt = Math.abs(num(t.amount));
   if (!amt) return 0;
   const rate = processingFeeRate(method, override);
@@ -197,14 +197,14 @@ const csvCell = (v) => {
 
 // Income-looking categories — used to recover a CSV row's DIRECTION when the Type
 // column is blank/unrecognized (a QuickBooks-style export often omits it). Lower-cased.
-const INCOME_CATS = new Set(['customer sales', 'refund', 'owner contribution']);
+const INCOME_CATS = new Set(['client sales', 'customer sales', 'refund', 'owner contribution']);
 
 // Decide income vs expense for an imported row. An explicit Type cell ("Income"/
 // "Expense") always wins; otherwise INFER from the category so a typeless refund or
 // sale row (negative or positive) isn't silently dropped into 'expense' (the bug a
 // QuickBooks refund import would otherwise hit). Default 'expense' only for genuinely
 // ambiguous rows — most ledger lines are costs. `isCredit` is decided separately from
-// the amount sign, so a NEGATIVE 'Customer Sales'/'Refund' row → income + credit =
+// the amount sign, so a NEGATIVE 'Client Sales'/'Refund' row → income + credit =
 // a customer refund that correctly nets revenue down. Pure + exported for tests.
 function inferRowType(typeCell, category) {
   const tc = String(typeCell || '');
@@ -235,7 +235,10 @@ const importCsv = async (req, res) => {
       const rawAmount = num(c[ix.amount]);
       const amount = Math.abs(rawAmount);
       if (isNaN(date.getTime()) || !amount) continue;   // skip undated / zero-amount rows
-      const category = String(c[ix.category] || 'Other').trim() || 'Other';
+      let category = String(c[ix.category] || 'Other').trim() || 'Other';
+      // Legacy exports say "Customer Sales" — normalize to the renamed category
+      // so a round-trip re-import can't resurrect the old name.
+      if (/^customer sales$/i.test(category)) category = 'Client Sales';
       docs.push({
         date,
         type: inferRowType(c[ix.type], category),       // explicit Type wins; else infer from category
@@ -497,7 +500,7 @@ const deriveCompanyKey = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]
 // (the CRM company page). No DB: callers pass the already-fetched POJOs.
 //   • orders       — this company's Orders (need orderNumber, totalValue, paid)
 //   • transactions — ledger rows to consider (the company's, by order number)
-// Revenue = signed sum of income/'Customer Sales'; COGS = signed sum of
+// Revenue = signed sum of income/'Client Sales'; COGS = signed sum of
 // expense rows in COGS_CATEGORIES; profit = revenue − COGS; margin = profit /
 // revenue %. `signed` lets credits/returns net down, identical to the ledger.
 //
@@ -512,7 +515,7 @@ function summarizeCompanyFinance(orders, transactions) {
   let cogs = 0;                 // ACTUAL cost — from the receipts/expense ledger
   let receiptCount = 0;         // COGS rows that carry a stored receipt file
   for (const t of (transactions || [])) {
-    if (t && t.type === 'income') revenue += orderRevenueContribution(t);   // Customer Sales + Refund contra (headline-consistent)
+    if (t && t.type === 'income') revenue += orderRevenueContribution(t);   // Client Sales + Refund contra (headline-consistent)
     else if (t && t.type === 'expense' && cogsCats.has(t.category)) {
       cogs += signed(t);
       if (t.receiptUrl) receiptCount += 1;
@@ -547,7 +550,7 @@ function summarizeCompanyFinance(orders, transactions) {
 
 // THE per-order profit definition — the single rule byOrder, byClient and the
 // drill-in detail all reconcile to. Given a set of ledger rows already scoped to
-// ONE order: revenue = signed sum of income/'Customer Sales'; cost = signed sum
+// ONE order: revenue = signed sum of income/'Client Sales'; cost = signed sum
 // of expense rows in COGS_CATEGORIES; profit = revenue − cost. Everything else
 // tagged to the order (a Software expense, a stray non-COGS line, a non-Customer-
 // Sales income) is intentionally OUT of profit — exactly as the byOrder/byClient
@@ -559,7 +562,7 @@ function orderRevenueCost(rows) {
   let revenue = 0;
   let cost = 0;
   for (const t of (rows || [])) {
-    if (t && t.type === 'income') revenue += orderRevenueContribution(t);   // Customer Sales + Refund contra (headline-consistent)
+    if (t && t.type === 'income') revenue += orderRevenueContribution(t);   // Client Sales + Refund contra (headline-consistent)
     else if (t && t.type === 'expense' && cogsCats.has(t.category)) cost += signed(t);
   }
   return { revenue: round2(revenue), cost: round2(cost), profit: round2(revenue - cost) };
@@ -611,7 +614,7 @@ function actualCostByOrder(transactions) {
 // uses (so this never re-derives profit, only explains a gap):
 //   • billed    = what the client was charged = Order.totalValue (the confirmation
 //                 grand total — the order is the source of truth for the invoice).
-//   • collected = Σ signed income/'Customer Sales' transactions linked to the order
+//   • collected = Σ signed income/'Client Sales' transactions linked to the order
 //                 (the cash actually recorded as received — same revenue rule as
 //                 byOrder/summarizeCompanyFinance; a customer-refund credit nets down).
 //   • cost      = Σ signed COGS expense transactions = orderActualCost.actualCost
@@ -913,7 +916,7 @@ function projectNumberByOrderNumber(orders) {
 // and the printer invoice another, a reprint or trailing freight weeks later,
 // sometimes across a year boundary. So we group an order across ALL its dates,
 // net full revenue vs. full cost, and anchor it to the year it was SOLD (its
-// first Customer Sales date). That stops a late-December order whose costs hit
+// first Client Sales date). That stops a late-December order whose costs hit
 // in January from showing up as a phantom loss in the new year.
 //
 // Each row also carries an authoritative `companyKey` (Order join on the
@@ -950,11 +953,11 @@ async function computeOrderPnl(year) {
       const d = t.date && !isNaN(new Date(t.date).getTime()) ? new Date(t.date) : null;
       if (d && (!o.firstDate || d < o.firstDate)) o.firstDate = d;
       if (t.type === 'income') {
-        // Customer Sales counts as-is (a credit nets down); a 'Refund' row is
+        // Client Sales counts as-is (a credit nets down); a 'Refund' row is
         // contra-revenue (−|amount|) — identical to the headline P&L, so the
         // refunded order and the top-line finally reconcile. Other income → 0.
         o.revenue += orderRevenueContribution(t);
-        if (t.category === 'Customer Sales') {
+        if (t.category === 'Client Sales') {
           o.hasSale = true;                                              // a real sale → a real order
           if (!o.client) o.client = t.party;
           if (d && (!o.saleDate || d < o.saleDate)) o.saleDate = d;      // anchor = when it sold
@@ -964,7 +967,7 @@ async function computeOrderPnl(year) {
       }
     });
     let orders = Object.values(map)
-      // A REAL order has a sale (Customer Sales) OR a matching Order doc. A cost-only
+      // A REAL order has a sale (Client Sales) OR a matching Order doc. A cost-only
       // bucket with neither is a mis-keyed receipt (a typo'd #) — drop it; its cost
       // still counts in the headline and the row stays in Transactions to re-point.
       // (The owner's legit orders are often budget-#'d with no Order doc, so we must
@@ -1034,7 +1037,7 @@ const paymentGaps = async (req, res) => {
       const k = normalizeOrderNumber(t.orderNumber);
       if (!k || !t.date) continue;
       const y = new Date(t.date).getUTCFullYear();
-      if (t.type === 'income' && t.category === 'Customer Sales') {
+      if (t.type === 'income' && t.category === 'Client Sales') {
         if (saleYear[k] == null || y < saleYear[k]) saleYear[k] = y;
       } else if (t.type === 'expense' && cogs.has(t.category)) {
         if (costYear[k] == null || y < costYear[k]) costYear[k] = y;
@@ -1153,8 +1156,8 @@ const byClient = async (req, res) => {
       const d = t.date && !isNaN(new Date(t.date).getTime()) ? new Date(t.date) : null;
       if (d && (!o.firstDate || d < o.firstDate)) o.firstDate = d;
       if (t.type === 'income') {
-        o.revenue += orderRevenueContribution(t);   // Customer Sales + Refund contra (headline-consistent)
-        if (t.category === 'Customer Sales') {
+        o.revenue += orderRevenueContribution(t);   // Client Sales + Refund contra (headline-consistent)
+        if (t.category === 'Client Sales') {
           o.hasSale = true;
           if (!o.client) o.client = t.party;
           if (d && (!o.saleDate || d < o.saleDate)) o.saleDate = d;
@@ -1258,6 +1261,20 @@ const resyncYears = async () => {
   return fixed;
 };
 
+// One-time repair (run on boot; idempotent): the owner renamed the income
+// category "Customer Sales" → "Client Sales". Rename it on every stored row —
+// transactions AND receipt extractions — so classification (revenue, per-order
+// P&L, fee auto-booking) keys on ONE spelling. No-op once nothing carries the
+// old name.
+const migrateRenamedCategories = async () => {
+  const Receipt = require('../models/Receipt');
+  const t = await Transaction.updateMany({ category: 'Customer Sales' }, { $set: { category: 'Client Sales' } });
+  const r1 = await Receipt.updateMany({ category: 'Customer Sales' }, { $set: { category: 'Client Sales' } });
+  const r2 = await Receipt.updateMany({ 'extracted.category': 'Customer Sales' }, { $set: { 'extracted.category': 'Client Sales' } });
+  const n = (x) => (x.modifiedCount != null ? x.modifiedCount : (x.nModified || 0));
+  return n(t) + n(r1) + n(r2);
+};
+
 // Idempotent backfill of the ecosystem links on Transaction (projectNumber +
 // vendorId) for rows written before the links existed. FILLS BLANKS ONLY — a
 // row that already carries either link is never touched, so re-running (every
@@ -1312,7 +1329,7 @@ const backfillTransactionLinks = async () => {
   return { projFilled, vendorFilled, scanned: rows.length };
 };
 
-module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears, backfillTransactionLinks, config };
+module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears, backfillTransactionLinks, migrateRenamedCategories, config };
 module.exports.buildLedgerCsv = buildLedgerCsv;
 // Reusable, DB-free finance math for other surfaces (CRM company page, the order
 // view) + tests. All keyed off the SAME Transaction truth via these helpers.

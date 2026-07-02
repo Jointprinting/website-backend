@@ -237,7 +237,8 @@ exports.getProducts = async (req, res) => {
     res.status(200).json({ products: productsWithImages, totalPages: Math.ceil(totalProducts / limit) });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: err.message });
+    console.error('[products] list failed:', err.message);
+    res.status(500).json({ message: 'Could not load products — please try again.' });
   }
 };
 
@@ -987,7 +988,8 @@ exports.browseSS = async (req, res) => {
     });
   } catch (err) {
     console.error('browseSS error:', err.message);
-    return res.status(500).json({ message: err.message || 'Browse failed.' });
+    console.error('[products] browse failed:', err.message);
+    return res.status(500).json({ message: 'Could not load the catalog — please try again.' });
   }
 };
 
@@ -1137,7 +1139,8 @@ exports.getProductByStyleCode = async (req, res) => {
     });
   } catch (err) {
     console.error('getProductByStyleCode error:', err);
-    return res.status(500).json({ message: err.message || 'Could not load product.' });
+    console.error('[products] style load failed:', err.message);
+    return res.status(500).json({ message: 'Could not load this product — please try again.' });
   }
 };
 

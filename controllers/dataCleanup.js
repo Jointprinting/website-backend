@@ -43,7 +43,7 @@ async function buildPlan() {
     // Duplicate-sale detection looks across ALL Customer-Sales income (a doubled sale
     // can be old) — bounded (one row per payment) so loading the lot is cheap. isCredit
     // is selected so the detector can exclude refund credits.
-    Transaction.find({ type: 'income', category: 'Customer Sales', orderNumber: { $ne: '' } })
+    Transaction.find({ type: 'income', category: 'Client Sales', orderNumber: { $ne: '' } })
       .select('orderNumber party amount category date type isCredit').lean(),
   ]);
   const orderKeys = new Set(orders.map((o) => normalizeOrderNumber(o.orderNumber)).filter(Boolean));

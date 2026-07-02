@@ -270,7 +270,7 @@ function decideTransaction(extracted, order) {
     // then the bill-to, then any other non-self name we have. Never us, never a guess.
     const party = firstNonSelf(orderName, e.billTo, e.seller, e.vendor);
     const source = party && party === orderName ? 'order' : (party ? 'billTo' : '');
-    return { type: 'income', category: 'Customer Sales', party, isCredit, source };
+    return { type: 'income', category: 'Client Sales', party, isCredit, source };
   }
 
   // Supplier receipt → expense. Party is the vendor we paid; never us.

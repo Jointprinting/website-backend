@@ -115,8 +115,8 @@ test('re-importing the same row does not pile up duplicate log lines', () => {
 test('scopeCompanyTransactions drops a colliding order number owned by another company', () => {
   // Both "Acme" and "Beta" have order #21. Our company is Acme.
   const rows = [
-    { type: 'income', category: 'Customer Sales', amount: 100, orderNumber: '21', party: 'Acme' },
-    { type: 'income', category: 'Customer Sales', amount: 999, orderNumber: '21', party: 'Beta Co' }, // NOT ours
+    { type: 'income', category: 'Client Sales', amount: 100, orderNumber: '21', party: 'Acme' },
+    { type: 'income', category: 'Client Sales', amount: 999, orderNumber: '21', party: 'Beta Co' }, // NOT ours
   ];
   const scoped = scopeCompanyTransactions(rows, {
     ownNames: new Set(['acme']),
@@ -127,13 +127,13 @@ test('scopeCompanyTransactions drops a colliding order number owned by another c
 });
 
 test('scopeCompanyTransactions counts a uniquely-ours number regardless of party text', () => {
-  const rows = [{ type: 'income', category: 'Customer Sales', amount: 100, orderNumber: '7', party: '' }];
+  const rows = [{ type: 'income', category: 'Client Sales', amount: 100, orderNumber: '7', party: '' }];
   const scoped = scopeCompanyTransactions(rows, { ownNames: new Set(['acme']), sharedNums: new Set() });
   assert.equal(scoped.length, 1); // not shared → always counts
 });
 
 test('scopeCompanyTransactions leaves out a collided row with a blank party (can’t attribute)', () => {
-  const rows = [{ type: 'income', category: 'Customer Sales', amount: 100, orderNumber: '21', party: '' }];
+  const rows = [{ type: 'income', category: 'Client Sales', amount: 100, orderNumber: '21', party: '' }];
   const scoped = scopeCompanyTransactions(rows, { ownNames: new Set(['acme']), sharedNums: new Set(['21']) });
   assert.equal(scoped.length, 0); // under-count beats stealing another company's money
 });
@@ -144,8 +144,8 @@ test('scopeCompanyTransactions keeps OUR row when the party carries a corp suffi
   // though the number collides.
   const { matchKey } = require('../../utils/fieldTrackerImport');
   const rows = [
-    { type: 'income', category: 'Customer Sales', amount: 100, orderNumber: '21', party: 'Acme LLC' },
-    { type: 'income', category: 'Customer Sales', amount: 999, orderNumber: '21', party: 'Beta Co' },
+    { type: 'income', category: 'Client Sales', amount: 100, orderNumber: '21', party: 'Acme LLC' },
+    { type: 'income', category: 'Client Sales', amount: 999, orderNumber: '21', party: 'Beta Co' },
   ];
   const ownNames = new Set([matchKey('Acme', '')]); // 'acme'
   const scoped = scopeCompanyTransactions(rows, { ownNames, sharedNums: new Set(['21']), nameKey: (s) => matchKey(s, '') });

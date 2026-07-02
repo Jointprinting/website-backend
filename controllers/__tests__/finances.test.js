@@ -34,7 +34,7 @@ const Transaction = require('../../models/Transaction');
 
 // Ledger-row factories matching Transaction shape (amount is always positive;
 // isCredit flips direction within the type bucket — same rule as the ledger).
-const sale   = (amount, over = {}) => ({ type: 'income',  category: 'Customer Sales', amount, ...over });
+const sale   = (amount, over = {}) => ({ type: 'income',  category: 'Client Sales', amount, ...over });
 const blank  = (amount, over = {}) => ({ type: 'expense', category: 'Blank COGS',     amount, ...over });
 const printc = (amount, over = {}) => ({ type: 'expense', category: 'Printer COGS',   amount, ...over });
 const refund = (amount, over = {}) => ({ type: 'income',  category: 'Refund',         amount, ...over });
@@ -63,7 +63,7 @@ test('normalizeOrderNumber strips non-digits AND leading zeros (canonical key)',
 });
 
 // ── M6: ONE per-order profit definition (byOrder == drill-in) ────────────────
-test('orderRevenueCost: profit = Customer Sales − COGS; non-COGS/non-revenue rows excluded', () => {
+test('orderRevenueCost: profit = Client Sales − COGS; non-COGS/non-revenue rows excluded', () => {
   // This is the shared definition byOrder/byClient AND the drill-in reconcile to.
   // A non-COGS expense (Software) and a non-revenue income (Other) are both OUT;
   // a 'Refund' income row is now contra-revenue (Phase 2b — see the refund-parity
@@ -106,8 +106,8 @@ test('incomeContribution: Refund reduces income for BOTH plain and credit forms'
   assert.equal(incomeContribution('Refund', -50),  -50);  // credit-form refund (signed −50)
   assert.equal(incomeContribution('Refund', 0),      0);
   // Other income counts as-is; Owner Contribution is equity (0 toward income).
-  assert.equal(incomeContribution('Customer Sales', 1000), 1000);
-  assert.equal(incomeContribution('Customer Sales', -100), -100); // a sales credit nets down
+  assert.equal(incomeContribution('Client Sales', 1000), 1000);
+  assert.equal(incomeContribution('Client Sales', -100), -100); // a sales credit nets down
   assert.equal(incomeContribution('Owner Contribution', 5000), 0);
   assert.equal(incomeContribution('Other', 42), 42);
 });
@@ -244,7 +244,7 @@ test('empty input is all zeroes', () => {
   });
 });
 
-test('revenue counts income/Customer Sales (+ Refund contra); COGS only expense/COGS categories', () => {
+test('revenue counts income/Client Sales (+ Refund contra); COGS only expense/COGS categories', () => {
   const txns = [
     sale(1000),
     blank(300),
@@ -333,14 +333,14 @@ test('non-numeric totalValue is treated as 0 for outstanding', () => {
 // The bug: a customer refund booked as category 'Refund' reduced the HEADLINE P&L
 // (incomeContribution → −|amount|) but was DROPPED from byOrder/byClient/
 // summarizeCompanyFinance/paymentGaps (which counted revenue strictly as
-// income·'Customer Sales'). So the refunded order kept full profit while the
+// income·'Client Sales'). So the refunded order kept full profit while the
 // top-line fell — they never reconciled. orderRevenueContribution is now the ONE
 // rule both sides use, so a refund nets the SAME order/client down by the SAME
 // amount as the headline. These tests pin that AND the safety guarantee: a normal
 // (non-refund) order's revenue/profit is byte-for-byte unchanged.
 
 test('orderRevenueContribution: the single per-order revenue rule (matches headline)', () => {
-  // Customer Sales counts as-is; a Customer-Sales credit nets down; a 'Refund' row
+  // Client Sales counts as-is; a Customer-Sales credit nets down; a 'Refund' row
   // is always contra (−|amount|, plain OR credit form); other income is NOT revenue.
   assert.equal(orderRevenueContribution(sale(1000)), 1000);
   assert.equal(orderRevenueContribution(sale(100, { isCredit: true })), -100);
@@ -350,14 +350,14 @@ test('orderRevenueContribution: the single per-order revenue rule (matches headl
   assert.equal(orderRevenueContribution({ type: 'income', category: 'Owner Contribution', amount: 5000 }), 0);
   assert.equal(orderRevenueContribution(blank(300)), 0);                   // an expense isn't revenue
   assert.equal(orderRevenueContribution(null), 0);
-  // For Customer Sales / Refund it equals the headline's incomeContribution on the
+  // For Client Sales / Refund it equals the headline's incomeContribution on the
   // signed amount — so per-order revenue and the P&L headline cannot drift.
-  assert.equal(orderRevenueContribution(sale(1000)),  incomeContribution('Customer Sales', 1000));
+  assert.equal(orderRevenueContribution(sale(1000)),  incomeContribution('Client Sales', 1000));
   assert.equal(orderRevenueContribution(refund(50)),  incomeContribution('Refund', 50));
 });
 
 test('SAFETY: a normal (no-refund) order is unchanged by the unification', () => {
-  // The whole point — a normal order with only Customer Sales + COGS reads exactly
+  // The whole point — a normal order with only Client Sales + COGS reads exactly
   // as before. Revenue = sale, cost = COGS, profit = revenue − cost. Nothing moved.
   const rows = [sale(2000), blank(600), printc(400)];
   const out = orderRevenueCost(rows);
@@ -399,7 +399,7 @@ test('REFUND PARITY: a partial refund reduces order profit AND headline by the S
 });
 
 test('REFUND PARITY: a Customer-Sales credit form gives the identical result', () => {
-  // Booking the refund the OTHER consistent way (Customer Sales + isCredit) must
+  // Booking the refund the OTHER consistent way (Client Sales + isCredit) must
   // land on the same numbers as the 'Refund'-category form.
   const viaRefundCat = orderRevenueCost([sale(1000), blank(400), refund(150)]);
   const viaCredit    = orderRevenueCost([sale(1000), blank(400), sale(150, { isCredit: true })]);
@@ -548,8 +548,8 @@ test('SAFETY: a fee only ever applies ONCE (computeProcessingFee is on the payme
 test('HARDENING: garbage ledger rows are coerced/skipped, real rows still total', () => {
   const txns = [
     sale(1000),                                            // the one real row
-    { type: 'income',  category: 'Customer Sales', amount: 'not-a-number' }, // NaN amount → 0
-    { type: 'income',  category: 'Customer Sales', amount: null },           // null amount → 0
+    { type: 'income',  category: 'Client Sales', amount: 'not-a-number' }, // NaN amount → 0
+    { type: 'income',  category: 'Client Sales', amount: null },           // null amount → 0
     { type: 'expense', category: 'Blank COGS',     amount: NaN },            // NaN → 0
     { type: 'expense', category: null,             amount: 50 },             // null category → not COGS, ignored from cost
     null,                                                  // a null row
@@ -569,7 +569,7 @@ test('HARDENING: garbage ledger rows are coerced/skipped, real rows still total'
 test('HARDENING: string/numeric-string amounts coerce via num() (no NaN leak)', () => {
   // A numeric STRING is a real value (num('1500') = 1500); a non-numeric string is 0.
   const out = summarizeCompanyFinance([], [
-    { type: 'income',  category: 'Customer Sales', amount: '1500' },   // → 1500
+    { type: 'income',  category: 'Client Sales', amount: '1500' },   // → 1500
     { type: 'expense', category: 'Printer COGS',   amount: '600.50' }, // → 600.50
     { type: 'expense', category: 'Printer COGS',   amount: 'oops' },   // → 0
   ]);
@@ -582,11 +582,11 @@ test('HARDENING: string/numeric-string amounts coerce via num() (no NaN leak)', 
 // ── CSV import: a QuickBooks-style refund must not become a mis-typed expense ──
 test('inferRowType: explicit Type wins; else infer income from the category', () => {
   // Explicit Type column is authoritative.
-  assert.equal(inferRowType('Income', 'Customer Sales'), 'income');
-  assert.equal(inferRowType('Expense', 'Customer Sales'), 'expense');
+  assert.equal(inferRowType('Income', 'Client Sales'), 'income');
+  assert.equal(inferRowType('Expense', 'Client Sales'), 'expense');
   assert.equal(inferRowType('income', 'Blank COGS'), 'income');   // user said income, honored
   // Blank/unknown Type → infer from the category (the QuickBooks-export case).
-  assert.equal(inferRowType('', 'Customer Sales'), 'income');
+  assert.equal(inferRowType('', 'Client Sales'), 'income');
   assert.equal(inferRowType('', 'Refund'), 'income');             // a refund row → income (credit set from sign)
   assert.equal(inferRowType(undefined, 'Owner Contribution'), 'income');
   assert.equal(inferRowType('', 'Printer COGS'), 'expense');      // a cost category → expense

@@ -14,7 +14,7 @@ const mongoose = require('mongoose');
 // the finance API. No other finance data is committed.
 
 const CATEGORIES = [
-  'Customer Sales', 'Blank COGS', 'Printer COGS', 'Shipping', 'Art', 'Commission',
+  'Client Sales', 'Blank COGS', 'Printer COGS', 'Shipping', 'Art', 'Commission',
   'Processing Fee', 'Software', 'Marketing', 'Accounting', 'Travel/Field',
   'Owner Draw', 'Owner Contribution', 'Sales Tax', 'Refund', 'Other',
 ];
@@ -62,7 +62,7 @@ const TransactionSchema = new mongoose.Schema({
   // payment carries the project/order link instead — the merge-duplicates flow keeps
   // BOTH on the single survivor so neither identifier is lost. Free-form ('' if none).
   invoiceNumber: { type: String, default: '', index: true },
-  // How a CLIENT PAYMENT (income/Customer Sales) was taken — drives the auto-booked
+  // How a CLIENT PAYMENT (income/Client Sales) was taken — drives the auto-booked
   // merchant Processing Fee expense. 'cc' (~2.99%) | 'ach' (~1%) | 'none'/'' (no fee,
   // e.g. cash/check or a fee the owner waived). Only meaningful on the payment row;
   // ignored on expenses. Default '' so every legacy/historical row is "no method"
