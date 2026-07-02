@@ -106,6 +106,14 @@ db.once('open', () => {
       .catch((e) => console.warn('[finances] year resync failed:', e.message));
   }, 3_000);
 
+  // Idempotent: fold retired CRM stages onto their live neighbor ('sampling' →
+  // 'quoting') so the trimmed stage enum can never reject an old record's save.
+  setTimeout(() => {
+    require('./controllers/crm').migrateRetiredStages()
+      .then((n) => { if (n) console.log(`[crm] migrated ${n} record(s) off retired stage 'sampling'.`); })
+      .catch((e) => console.warn('[crm] retired-stage migration failed:', e.message));
+  }, 4_500);
+
   // Idempotent: link legacy ledger rows to their project + vendor (fills blanks
   // only — including receipts the owner booked under a PROJECT # instead of the
   // invoice #, which otherwise read as "no receipts linked" on the order).

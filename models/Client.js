@@ -12,7 +12,11 @@ const mongoose = require('mongoose');
 
 // Sales pipeline. Default 'lead' so a freshly-bootstrapped record (e.g. one
 // auto-created from an order) starts at the top of the funnel.
-const CRM_STAGES = ['lead', 'contacted', 'quoting', 'sampling', 'won', 'customer', 'lost', 'dormant'];
+// 'sampling' was retired (owner: not useful). Existing records are migrated to
+// 'quoting' by an idempotent boot repair (controllers/crm.migrateRetiredStages),
+// so no stored doc carries it. 'customer' remains the stored value; the UI
+// labels it "Client" everywhere.
+const CRM_STAGES = ['lead', 'contacted', 'quoting', 'won', 'customer', 'lost', 'dormant'];
 
 // What the company is interested in. '' = unknown/unset.
 const INTEREST_TYPES = ['', 'promos', 'apparel', 'both'];
