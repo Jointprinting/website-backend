@@ -76,6 +76,21 @@ const ensureApprovalToken = async (req, res) => {
   }
 };
 
+// One-time repair (run on boot; idempotent): legacy approval tokens minted
+// before expiry existed carry approvalTokenExpiresAt: null — which the
+// validator treats as "never expires", leaving those links public forever.
+// Give each a finite fuse: 30 days from now, after which the normal machinery
+// applies (an APPROVED order's link still gets the post-arrival grace + 180-day
+// backstop, so no in-flight approval is cut off abruptly). Fills null only —
+// re-running is a no-op.
+async function expireLegacyApprovalTokens() {
+  const r = await Order.updateMany(
+    { approvalToken: { $nin: [null, ''] }, approvalTokenExpiresAt: null },
+    { $set: { approvalTokenExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) } },
+  );
+  return r.modifiedCount != null ? r.modifiedCount : (r.nModified || 0);
+}
+
 // ── Public approval surface (no auth — token-gated) ───────────────────────────
 // Returns one of:
 //   { ok: true, order }          — valid, not expired
@@ -295,7 +310,8 @@ const publicGetProject = async (req, res) => {
       logo: logo ? logo.imageDataUrl : null,
     });
   } catch (e) {
-    res.status(500).json({ message: e.message });
+    console.error('[approval] public handler failed:', e.message);
+    res.status(500).json({ message: 'Something went wrong on our end — please try again.' });
   }
 };
 
@@ -486,7 +502,8 @@ const publicSelectOptions = async (req, res) => {
 
     res.json({ ok: true, pickedAt: now });
   } catch (e) {
-    res.status(500).json({ message: e.message });
+    console.error('[approval] public handler failed:', e.message);
+    res.status(500).json({ message: 'Something went wrong on our end — please try again.' });
   }
 };
 
@@ -582,7 +599,8 @@ const publicApprove = async (req, res) => {
 
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ message: e.message });
+    console.error('[approval] public handler failed:', e.message);
+    res.status(500).json({ message: 'Something went wrong on our end — please try again.' });
   }
 };
 
@@ -620,7 +638,8 @@ const publicRequestChanges = async (req, res) => {
 
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ message: e.message });
+    console.error('[approval] public handler failed:', e.message);
+    res.status(500).json({ message: 'Something went wrong on our end — please try again.' });
   }
 };
 
@@ -859,4 +878,5 @@ module.exports = {
   DEFAULT_TRACKING_STEPS,
   // Exported for unit tests (pure helpers).
   _pickedAtForCycle, _currentApprovalStatus,
+  expireLegacyApprovalTokens,
 };

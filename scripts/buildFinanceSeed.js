@@ -234,7 +234,7 @@ function summarize(rows) {
   //     owner's literal bank-balance change. This is the INTEGRITY cross-check that
   //     must reconcile to the owner pre-parse ($22,413.41) — it proves we read every
   //     row's amount + side correctly, before any P&L refinement.
-  //   • net (P&L profit) = revenue (Customer Sales, refunds netted contra, Owner
+  //   • net (P&L profit) = revenue (Client Sales, refunds netted contra, Owner
   //     Contribution EXCLUDED) − operating expense (Owner Draw EXCLUDED) — the
   //     finance-page "profit". A SMALLER number than cash net by design (the $8,000
   //     owner deposit is equity in, the draw is a distribution, not earnings/cost).
@@ -301,7 +301,7 @@ function main() {
   console.log('— Corrected cash —');
   console.log('  Raw cash net:        $' + summary.rawCashNet.toLocaleString(), '  (after void + fees: every debit − every credit)');
   console.log('— P&L (finance page) —');
-  console.log('  Revenue (income):    $' + summary.income.toLocaleString(), '  (Customer Sales, refunds netted contra; Owner Contribution excluded)');
+  console.log('  Revenue (income):    $' + summary.income.toLocaleString(), '  (Client Sales, refunds netted contra; Owner Contribution excluded)');
   console.log('  Operating expense:   $' + summary.expense.toLocaleString(), '  (Owner Draw excluded)');
   console.log('  NET PROFIT:          $' + summary.net.toLocaleString(), '  (target ≈ $13.4k)');
   console.log('  Owner Contribution:  $' + summary.ownerContribution.toLocaleString(), '  (equity in — NOT revenue/profit)');

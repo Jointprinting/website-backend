@@ -18,7 +18,7 @@
 // The category set MUST stay a subset of models/Transaction.js CATEGORIES so the
 // existing P&L math (incomeContribution / orderRevenueContribution / COGS netting)
 // treats every seeded row correctly with no changes:
-//   income:  Customer Sales | Owner Contribution (equity, excluded) | Refund (contra)
+//   income:  Client Sales | Owner Contribution (equity, excluded) | Refund (contra)
 //   expense: Blank COGS | Printer COGS | Shipping | Art | Commission | Software |
 //            Owner Draw (equity, excluded) | Sales Tax | Other
 // (Processing Fee exists for the live merchant-fee feature; the seed never mints it.)
@@ -204,7 +204,7 @@ function buildProcessingFeeRows(rows, deposits, opts = {}) {
   // deposit's fee lands on the refund row). Owner Contribution is never a deposit.
   const income = (rows || [])
     .map((r, idx) => ({ r, idx }))
-    .filter(({ r }) => r && r.type === 'income' && (r.category === 'Customer Sales' || r.category === 'Refund'));
+    .filter(({ r }) => r && r.type === 'income' && (r.category === 'Client Sales' || r.category === 'Refund'));
 
   // Build every (deposit, candidate-income) pair whose AMOUNTs match, with the date
   // gap, then assign globally smallest-gap-first so the best pairings win and each
@@ -337,7 +337,7 @@ function categorizeExpense(desc) {
   return 'Other';
 }
 
-// INCOME description → category. Default Customer Sales, with two carve-outs:
+// INCOME description → category. Default Client Sales, with two carve-outs:
 //   • "Owner's Deposit" → Owner Contribution (owner capital IN, NOT a sale).
 //   • a refund / sample-return coming back to us → Refund (contra-revenue).
 function categorizeIncome(desc) {
@@ -346,7 +346,7 @@ function categorizeIncome(desc) {
   // Refunds / sample returns on the income side (money coming BACK to us):
   // "* Refund", "* Sample Return", "* Sample Refund", "Amtrak/Allianz Refund".
   if (/\brefund\b/i.test(d) || /sample return/i.test(d) || /sample refund/i.test(d)) return 'Refund';
-  return 'Customer Sales';
+  return 'Client Sales';
 }
 
 // The one entry point the builder/restart call: full description + which side it

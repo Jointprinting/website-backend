@@ -153,7 +153,7 @@ const scan = async (req, res) => {
     // Order-flow-aware decision. Link by the receipt's order/invoice # → the
     // matching Order (the source of truth for the client), then let
     // decideTransaction set type/party/category/direction:
-    //   • our OWN invoice (seller = us) → income · Customer Sales · party = the
+    //   • our OWN invoice (seller = us) → income · Client Sales · party = the
     //     CLIENT (the Order's company, else the bill-to) — NEVER Joint Printing;
     //   • a supplier receipt → expense · party = the vendor we paid.
     // The party is left BLANK when no client can be determined, for the owner to
@@ -308,7 +308,7 @@ const confirm = async (req, res) => {
 
     // Order-flow-aware defaults: link by order# → the Order (source of truth for the
     // client), then decide type/category/party/direction. Our OWN invoice books as
-    // income/Customer Sales with the CLIENT as party (never Joint Printing); a
+    // income/Client Sales with the CLIENT as party (never Joint Printing); a
     // supplier receipt books as an expense with the vendor as party. The OWNER's
     // explicit corrections still win over the read — confirm is the owner's final
     // say — so an edited type/party/category/isCredit is honored verbatim.

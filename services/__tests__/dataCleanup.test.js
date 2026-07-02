@@ -16,7 +16,7 @@ const {
   detectOrphanOrders, detectPollutedClients, detectMisKeyedReceipts, detectDuplicateSales,
 } = require('../dataCleanup');
 
-const income = (o) => ({ type: 'income', category: 'Customer Sales', ...o });
+const income = (o) => ({ type: 'income', category: 'Client Sales', ...o });
 
 // ── orphaned orders ──────────────────────────────────────────────────────────
 test('detectOrphanOrders: flags named orders with no companyKey, derives the key', () => {
@@ -63,7 +63,7 @@ test('detectMisKeyedReceipts: flags expense COGS whose order # matches no order'
   const r = detectMisKeyedReceipts([
     { _id: 't1', type: 'expense', category: 'Blank COGS', orderNumber: '#73938537', party: 'S&S Activewear', amount: 482.46 }, // orphan
     { _id: 't2', type: 'expense', category: 'Printer COGS', orderNumber: '1050', amount: 200 },         // links → ok
-    { _id: 't3', type: 'income', category: 'Customer Sales', orderNumber: '999', amount: 50 },          // income → ignore
+    { _id: 't3', type: 'income', category: 'Client Sales', orderNumber: '999', amount: 50 },          // income → ignore
     { _id: 't4', type: 'expense', category: 'Software', orderNumber: '888', amount: 9 },                 // non-COGS → ignore
   ], orderKeys);
   assert.equal(r.length, 1);

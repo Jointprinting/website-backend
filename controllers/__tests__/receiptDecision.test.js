@@ -8,7 +8,7 @@
 //   node --test controllers/__tests__/receiptDecision.test.js
 //
 // The contract:
-//   • our OWN invoice (seller = us)  → income · 'Customer Sales' · party = the
+//   • our OWN invoice (seller = us)  → income · 'Client Sales' · party = the
 //     CLIENT (the linked Order's company, else the bill-to) — NEVER us, BLANK if
 //     undeterminable;
 //   • a supplier receipt             → expense · party = the vendor we paid;
@@ -41,7 +41,7 @@ const order = (over = {}) => ({
 test('income invoice + linked order → party is the CLIENT (the order is source of truth)', () => {
   const d = decideTransaction(salesInvoice(), order());
   assert.equal(d.type, 'income');
-  assert.equal(d.category, 'Customer Sales');
+  assert.equal(d.category, 'Client Sales');
   assert.equal(d.party, 'NJ Dental 1');          // the Order's companyName wins
   assert.equal(d.isCredit, false);
   assert.equal(isSelf(d.party), false);          // the bug: self must never be the party

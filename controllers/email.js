@@ -210,9 +210,10 @@ exports.sendContactEmail = async (req, res) => {
       try { await submission.save(); } catch (_) {}
     }
     cleanupFiles(req);
+    // The raw error is logged above and stored on the submission (emailError);
+    // the public response stays friendly and internals-free.
     return res.status(500).json({
       message: "We couldn't send the email, but we saved your request — Nate will reach out shortly.",
-      error: err.message,
     });
   }
 };

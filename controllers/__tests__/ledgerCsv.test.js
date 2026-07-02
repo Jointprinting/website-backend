@@ -37,7 +37,7 @@ test('an expense row: two-decimal amount, Money Out, references + receipt link',
 
 test('income is Money In; an income credit (customer refund) is negative and Money Out', () => {
   const csv = buildLedgerCsv([
-    { ...base, type: 'income', category: 'Customer Sales', party: 'Acme', amount: 413.65, paymentMethod: 'cc', qbSynced: true },
+    { ...base, type: 'income', category: 'Client Sales', party: 'Acme', amount: 413.65, paymentMethod: 'cc', qbSynced: true },
     { ...base, type: 'income', category: 'Refund', party: 'Acme', amount: 50, isCredit: true },
   ]);
   const [, sale, refund] = csv.split('\n');

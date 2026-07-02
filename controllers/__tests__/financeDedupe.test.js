@@ -44,13 +44,13 @@ test('Happy Leaf: manual receipt+invoice row ↔ budget project-link row → ONE
   // The manual entry: invoice #1052, has the uploaded RECEIPT, NO project/order link,
   // dated ~2 weeks BEFORE the budget copy (the drift the restart missed).
   const manualHL = receipt({
-    date: '2026-05-21', type: 'income', category: 'Customer Sales', amount: 1537.16,
+    date: '2026-05-21', type: 'income', category: 'Client Sales', amount: 1537.16,
     party: 'Happy Leaf', description: 'Invoice #1052', invoiceNumber: '1052',
     receiptUrl: 'https://r2/receipts/hl-1052.pdf', orderNumber: '',
   });
   // The budget row: has the project/order link (#138), no receipt, no invoice #.
   const budgetHL = budget({
-    date: '2026-06-04', type: 'income', category: 'Customer Sales', amount: 1537.16,
+    date: '2026-06-04', type: 'income', category: 'Client Sales', amount: 1537.16,
     party: 'Happy Leaf Dispensary', description: 'Sales - Happy Leaf Dispensary (Order #138)',
     orderNumber: '138', receiptUrl: '', invoiceNumber: '',
   });
@@ -100,8 +100,8 @@ test('the genuinely-new $100 Anthropic manual entry (no budget twin) is NOT flag
 
 test("the owner's three cases together: exactly TWO merges, the $100 survives", () => {
   const ledger = [
-    receipt({ _id: 'hl-m', date: '2026-05-21', type: 'income', category: 'Customer Sales', amount: 1537.16, party: 'Happy Leaf', invoiceNumber: '1052', receiptUrl: 'r2/hl.pdf' }),
-    budget({ _id: 'hl-b', date: '2026-06-04', type: 'income', category: 'Customer Sales', amount: 1537.16, party: 'Happy Leaf Dispensary', orderNumber: '138', description: 'Sales - Happy Leaf Dispensary (Order #138)' }),
+    receipt({ _id: 'hl-m', date: '2026-05-21', type: 'income', category: 'Client Sales', amount: 1537.16, party: 'Happy Leaf', invoiceNumber: '1052', receiptUrl: 'r2/hl.pdf' }),
+    budget({ _id: 'hl-b', date: '2026-06-04', type: 'income', category: 'Client Sales', amount: 1537.16, party: 'Happy Leaf Dispensary', orderNumber: '138', description: 'Sales - Happy Leaf Dispensary (Order #138)' }),
     receipt({ _id: 'an5-m', date: '2026-06-14', amount: 5, party: 'Anthropic', receiptUrl: 'r2/an5.pdf' }),
     budget({ _id: 'an5-b', date: '2026-06-01', amount: 5, party: 'Anthropic API', description: 'Anthropic API' }),
     manual({ _id: 'an100', date: '2026-06-10', amount: 100, party: 'Anthropic', description: 'Anthropic Monthly Subscription' }),
@@ -177,8 +177,8 @@ test('ADVERSARIAL: a bare brand vs a DIFFERENT business that starts with it ("Ap
 test('CONFLICTING links are preserved: a competing receipt/order/invoice is noted, never silently lost', () => {
   // If BOTH rows carry a DIFFERENT non-empty link, the survivor keeps one as the live
   // field and the loser is preserved in the description note AND the mergedFrom audit.
-  const b = budget({ _id: 'b', date: '2026-06-04', type: 'income', category: 'Customer Sales', amount: 500, party: 'Acme', orderNumber: '111', invoiceNumber: 'INV-1', receiptUrl: 'r2/budget.pdf', description: 'budget sale' });
-  const m = receipt({ _id: 'm', date: '2026-05-25', type: 'income', category: 'Customer Sales', amount: 500, party: 'Acme', orderNumber: '222', invoiceNumber: 'INV-2', receiptUrl: 'r2/manual.pdf', description: 'manual sale' });
+  const b = budget({ _id: 'b', date: '2026-06-04', type: 'income', category: 'Client Sales', amount: 500, party: 'Acme', orderNumber: '111', invoiceNumber: 'INV-1', receiptUrl: 'r2/budget.pdf', description: 'budget sale' });
+  const m = receipt({ _id: 'm', date: '2026-05-25', type: 'income', category: 'Client Sales', amount: 500, party: 'Acme', orderNumber: '222', invoiceNumber: 'INV-2', receiptUrl: 'r2/manual.pdf', description: 'manual sale' });
   const { set } = mergeTransactions(b, m);
   // Survivor keeps its own primary values…
   assert.equal(set.orderNumber, '111');
@@ -238,8 +238,8 @@ test('ADVERSARIAL: an import/order:auto/fee:auto row is never a merge side', () 
 // ── merge-field union: EVERY link is preserved, nothing clobbered ────────────
 
 test('mergeTransactions: unions every link without losing any (receipt from manual, order+invoice from either)', () => {
-  const b = budget({ _id: 'b', date: '2026-06-04', type: 'income', category: 'Customer Sales', amount: 1537.16, party: 'Happy Leaf Dispensary', orderNumber: '138', description: 'Sales - Happy Leaf (Order #138)', qbSynced: true });
-  const m = receipt({ _id: 'm', date: '2026-05-21', type: 'income', category: 'Customer Sales', amount: 1537.16, party: 'Happy Leaf', invoiceNumber: '1052', receiptUrl: 'r2/hl.pdf', description: 'Invoice #1052' });
+  const b = budget({ _id: 'b', date: '2026-06-04', type: 'income', category: 'Client Sales', amount: 1537.16, party: 'Happy Leaf Dispensary', orderNumber: '138', description: 'Sales - Happy Leaf (Order #138)', qbSynced: true });
+  const m = receipt({ _id: 'm', date: '2026-05-21', type: 'income', category: 'Client Sales', amount: 1537.16, party: 'Happy Leaf', invoiceNumber: '1052', receiptUrl: 'r2/hl.pdf', description: 'Invoice #1052' });
   const { survivorId, removeId, set } = mergeTransactions(b, m);
   assert.equal(survivorId, 'b', 'survivor is the budget row');
   assert.equal(removeId, 'm', 'the manual row is removed');
@@ -296,8 +296,8 @@ test('pair keys are content-derived (the two row ids) and STABLE across input or
   // The same data in two different orders must yield the SAME pair keys, so a key the
   // UI captured in the preview still targets the right pair on apply (a DB find() has
   // no guaranteed order).
-  const hlM = receipt({ _id: 'hl-m', date: '2026-05-21', type: 'income', category: 'Customer Sales', amount: 1537.16, party: 'Happy Leaf', invoiceNumber: '1052', receiptUrl: 'r2/hl.pdf' });
-  const hlB = budget({ _id: 'hl-b', date: '2026-06-04', type: 'income', category: 'Customer Sales', amount: 1537.16, party: 'Happy Leaf Dispensary', orderNumber: '138' });
+  const hlM = receipt({ _id: 'hl-m', date: '2026-05-21', type: 'income', category: 'Client Sales', amount: 1537.16, party: 'Happy Leaf', invoiceNumber: '1052', receiptUrl: 'r2/hl.pdf' });
+  const hlB = budget({ _id: 'hl-b', date: '2026-06-04', type: 'income', category: 'Client Sales', amount: 1537.16, party: 'Happy Leaf Dispensary', orderNumber: '138' });
   const an5M = receipt({ _id: 'an5-m', date: '2026-06-14', amount: 5, party: 'Anthropic', receiptUrl: 'r2/an5.pdf' });
   const an5B = budget({ _id: 'an5-b', date: '2026-06-01', amount: 5, party: 'Anthropic API', description: 'Anthropic API' });
 
@@ -323,8 +323,8 @@ test('REVERSIBLE: merge then revert restores both original rows byte-for-byte', 
   // In-memory ledger keyed by _id.
   const store = new Map();
   const seed = (t) => store.set(String(t._id), { ...t });
-  const b = budget({ _id: 'b', date: '2026-06-04', type: 'income', category: 'Customer Sales', amount: 1537.16, party: 'Happy Leaf Dispensary', orderNumber: '138', description: 'Sales - Happy Leaf (Order #138)', mergedFrom: [], dedupeBatchId: '' });
-  const m = receipt({ _id: 'm', date: '2026-05-21', type: 'income', category: 'Customer Sales', amount: 1537.16, party: 'Happy Leaf', invoiceNumber: '1052', receiptUrl: 'r2/hl.pdf', description: 'Invoice #1052' });
+  const b = budget({ _id: 'b', date: '2026-06-04', type: 'income', category: 'Client Sales', amount: 1537.16, party: 'Happy Leaf Dispensary', orderNumber: '138', description: 'Sales - Happy Leaf (Order #138)', mergedFrom: [], dedupeBatchId: '' });
+  const m = receipt({ _id: 'm', date: '2026-05-21', type: 'income', category: 'Client Sales', amount: 1537.16, party: 'Happy Leaf', invoiceNumber: '1052', receiptUrl: 'r2/hl.pdf', description: 'Invoice #1052' });
   seed(b); seed(m);
   const before = JSON.stringify([...store.values()].sort((x, y) => String(x._id).localeCompare(String(y._id))));
 
@@ -377,8 +377,8 @@ test('REVERSIBLE: a survivor with a PRE-EXISTING mergedFrom + feeRateOverride is
   const FIELDS = ['orderNumber', 'invoiceNumber', 'receiptUrl', 'party', 'description', 'category',
     'isCredit', 'qbSynced', 'paymentMethod', 'feeRateOverride', 'source', 'mergedFrom', 'dedupeBatchId'];
   const priorAudit = [{ _id: 'old', party: 'Earlier fold', amount: 1537.16 }];
-  const b = budget({ _id: 'b', date: '2026-06-04', type: 'income', category: 'Customer Sales', amount: 1537.16, party: 'Happy Leaf Dispensary', orderNumber: '138', feeRateOverride: 0.025, mergedFrom: priorAudit, paymentMethod: 'cc' });
-  const m = receipt({ _id: 'm', date: '2026-05-21', type: 'income', category: 'Customer Sales', amount: 1537.16, party: 'Happy Leaf', invoiceNumber: '1052', receiptUrl: 'r2/hl.pdf' });
+  const b = budget({ _id: 'b', date: '2026-06-04', type: 'income', category: 'Client Sales', amount: 1537.16, party: 'Happy Leaf Dispensary', orderNumber: '138', feeRateOverride: 0.025, mergedFrom: priorAudit, paymentMethod: 'cc' });
+  const m = receipt({ _id: 'm', date: '2026-05-21', type: 'income', category: 'Client Sales', amount: 1537.16, party: 'Happy Leaf', invoiceNumber: '1052', receiptUrl: 'r2/hl.pdf' });
 
   // snapshot survivorBefore (the controller's exact capture)
   const before = {}; for (const f of FIELDS) before[f] = b[f];
@@ -403,8 +403,8 @@ test('REVERSIBLE: a survivor with a PRE-EXISTING mergedFrom + feeRateOverride is
 // (which land on different days) are never collapsed.
 
 test('EXACT DUP: two identical same-source rows → one pair (amount counts once)', () => {
-  const a = manual({ _id: 'a', date: '2026-03-10', type: 'income', category: 'Customer Sales', amount: 4852.89, party: 'The CannaBoss Lady', description: 'Invoice #1036', orderNumber: '1036' });
-  const b = manual({ _id: 'b', date: '2026-03-10', type: 'income', category: 'Customer Sales', amount: 4852.89, party: 'The CannaBoss Lady', description: 'Invoice #1036', orderNumber: '1036' });
+  const a = manual({ _id: 'a', date: '2026-03-10', type: 'income', category: 'Client Sales', amount: 4852.89, party: 'The CannaBoss Lady', description: 'Invoice #1036', orderNumber: '1036' });
+  const b = manual({ _id: 'b', date: '2026-03-10', type: 'income', category: 'Client Sales', amount: 4852.89, party: 'The CannaBoss Lady', description: 'Invoice #1036', orderNumber: '1036' });
   const plan = buildDedupePlan([a, b], {});
   assert.equal(plan.summary.exactDuplicatePairs, 1);
   assert.equal(plan.pairCount, 1);
@@ -427,8 +427,8 @@ test('EXACT DUP: receipt copy + identical no-receipt copy → merged, receipt su
 });
 
 test('EXACT DUP: a different order # means distinct payments — never merged', () => {
-  const a = manual({ date: '2026-03-10', type: 'income', category: 'Customer Sales', amount: 500, party: 'Acme', description: 'pmt', orderNumber: '1001' });
-  const b = manual({ date: '2026-03-10', type: 'income', category: 'Customer Sales', amount: 500, party: 'Acme', description: 'pmt', orderNumber: '1002' });
+  const a = manual({ date: '2026-03-10', type: 'income', category: 'Client Sales', amount: 500, party: 'Acme', description: 'pmt', orderNumber: '1001' });
+  const b = manual({ date: '2026-03-10', type: 'income', category: 'Client Sales', amount: 500, party: 'Acme', description: 'pmt', orderNumber: '1002' });
   assert.equal(buildDedupePlan([a, b], {}).pairCount, 0);
 });
 

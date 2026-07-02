@@ -89,7 +89,7 @@ test('sanitizeContacts: non-array input → empty list', () => {
 test('finance config vocabulary comes straight from the Transaction model', () => {
   // The /api/finances/config endpoint serves these statics verbatim — pin that
   // the model actually carries them so the endpoint can never serve undefined.
-  assert.ok(Array.isArray(Transaction.CATEGORIES) && Transaction.CATEGORIES.includes('Customer Sales'));
+  assert.ok(Array.isArray(Transaction.CATEGORIES) && Transaction.CATEGORIES.includes('Client Sales'));
   assert.ok(Array.isArray(Transaction.COGS_CATEGORIES) && Transaction.COGS_CATEGORIES.includes('Printer COGS'));
   assert.equal(typeof Transaction.PROCESSING_FEE_RATES.cc, 'number');
   assert.equal(typeof Transaction.PROCESSING_FEE_RATES.ach, 'number');

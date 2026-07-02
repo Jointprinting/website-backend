@@ -30,7 +30,7 @@ const {
 } = require('../../services/financeSeed');
 
 // ── row factories (seed-row shape: positive amount, explicit type) ───────────
-const inc = (amount, over = {}) => ({ date: '2025-06-05', type: 'income', category: 'Customer Sales', amount, party: 'Acme', orderNumber: '5', description: 'Sales - Acme (Order #5)', ...over });
+const inc = (amount, over = {}) => ({ date: '2025-06-05', type: 'income', category: 'Client Sales', amount, party: 'Acme', orderNumber: '5', description: 'Sales - Acme (Order #5)', ...over });
 const exp = (amount, over = {}) => ({ date: '2025-06-06', type: 'expense', category: 'Blank COGS', amount, party: 'S&S Activewear', orderNumber: '5', description: 'Sales - S&S Activewear (Order #5)', ...over });
 
 // ── seed integrity: the committed seed reconciles to the pre-parse ───────────
@@ -216,7 +216,7 @@ test('buildPreservePlan: a manual row that DUPLICATES a budget row is dropped (n
   // though the manual order # differs (the correction: identity is NOT the order #).
   const seedRows = [inc(1000, { date: '2025-06-05', orderNumber: '5', party: 'Acme' })];
   const live = [
-    { _id: 'm1', source: 'manual', date: new Date('2025-06-05T12:00:00Z'), amount: 1000, orderNumber: '9999', party: 'Acme', type: 'income', category: 'Customer Sales' }, // dup (different #)
+    { _id: 'm1', source: 'manual', date: new Date('2025-06-05T12:00:00Z'), amount: 1000, orderNumber: '9999', party: 'Acme', type: 'income', category: 'Client Sales' }, // dup (different #)
   ];
   const p = buildPreservePlan(seedRows, live);
   assert.equal(p.droppedDuplicateCount, 1, 'the manual duplicate is dropped despite a different order #');
@@ -229,7 +229,7 @@ test('buildPreservePlan: THE FIX — manual "#1052 Happy Leaf" collapses with bu
   // amount + income → ONE order (no double), matched on the client, not the number.
   const seedRows = [inc(1537.16, { date: '2026-06-04', party: 'Happy Leaf Dispensary', orderNumber: '141', description: 'Sales - Happy Leaf Dispensary (Order #141)' })];
   const live = [
-    { _id: 'hl', source: 'manual', date: new Date('2026-06-04T12:00:00Z'), amount: 1537.16, orderNumber: '1052', party: 'Happy Leaf', type: 'income', category: 'Customer Sales', description: '#1052 Happy Leaf' },
+    { _id: 'hl', source: 'manual', date: new Date('2026-06-04T12:00:00Z'), amount: 1537.16, orderNumber: '1052', party: 'Happy Leaf', type: 'income', category: 'Client Sales', description: '#1052 Happy Leaf' },
   ];
   const p = buildPreservePlan(seedRows, live);
   assert.equal(p.droppedDuplicateCount, 1, 'the manual Happy Leaf row collapses into the budget one');
@@ -251,7 +251,7 @@ test('buildPreservePlan: a genuinely-new manual entry NOT in the budget is PRESE
   const live = [
     { _id: 'new1', source: 'manual', date: new Date('2026-06-10T12:00:00Z'), amount: 100, orderNumber: '', party: 'New Vendor', type: 'expense', category: 'Other', description: 'One-off charge' },
     // Same amount as a budget row but a DIFFERENT party + day → not a dup (preserved).
-    { _id: 'new2', source: 'manual', date: new Date('2026-07-01T12:00:00Z'), amount: 1537.16, orderNumber: '', party: 'Different Co', type: 'income', category: 'Customer Sales', description: 'Unrelated sale' },
+    { _id: 'new2', source: 'manual', date: new Date('2026-07-01T12:00:00Z'), amount: 1537.16, orderNumber: '', party: 'Different Co', type: 'income', category: 'Client Sales', description: 'Unrelated sale' },
   ];
   const p = buildPreservePlan(seedRows, live);
   assert.equal(p.preservedCount, 2, 'both genuinely-new manual rows are kept');
@@ -292,7 +292,7 @@ test('dedupSig / buildPreservePlan: a row with no usable date is never dedupable
 
 // ── seedRowToDoc ─────────────────────────────────────────────────────────────
 test('seedRowToDoc: stamps source budget + batch, normalizes order #, UTC-noon date', () => {
-  const d = seedRowToDoc({ date: '2025-06-05', type: 'income', category: 'Customer Sales', amount: 1000, party: 'Acme', orderNumber: '0005', description: 'x', recordedInQB: true }, 'batch-1');
+  const d = seedRowToDoc({ date: '2025-06-05', type: 'income', category: 'Client Sales', amount: 1000, party: 'Acme', orderNumber: '0005', description: 'x', recordedInQB: true }, 'batch-1');
   assert.equal(d.source, 'budget');
   assert.equal(d.restartBatchId, 'batch-1');
   assert.equal(d.orderNumber, '5');
@@ -303,9 +303,9 @@ test('seedRowToDoc: stamps source budget + batch, normalizes order #, UTC-noon d
 });
 
 // ── categorization ───────────────────────────────────────────────────────────
-test('categorizeIncome: Owner Deposit → Owner Contribution; refunds → Refund; else Customer Sales', () => {
+test('categorizeIncome: Owner Deposit → Owner Contribution; refunds → Refund; else Client Sales', () => {
   assert.equal(categorizeIncome("Owner's Deposit"), 'Owner Contribution');
-  assert.equal(categorizeIncome('Sales - JFS (Order #000001)'), 'Customer Sales');
+  assert.equal(categorizeIncome('Sales - JFS (Order #000001)'), 'Client Sales');
   assert.equal(categorizeIncome("Refund - Shaggy's Baggy (Order #000022 - BIC)"), 'Refund');
   assert.equal(categorizeIncome('S&S Sample Return (Order #000043)'), 'Refund');
   assert.equal(categorizeIncome('Allianz Global Assistance - Refund'), 'Refund');
@@ -370,10 +370,10 @@ test('parseOrderHint: pulls a normalized budget hint (or empty)', () => {
 // ── owner corrections: void + QB processing fees (pure builders) ─────────────
 test('applyVoids: a voided order removes BOTH its income and cost rows', () => {
   const rows = [
-    { type: 'income', amount: 3557.27, orderNumber: '122', party: 'Mad Martian Farms', category: 'Customer Sales' },
+    { type: 'income', amount: 3557.27, orderNumber: '122', party: 'Mad Martian Farms', category: 'Client Sales' },
     { type: 'expense', amount: 2239, orderNumber: '0000122', party: 'Cannabis Promotions', category: 'Blank COGS' },
     { type: 'expense', amount: 369.9, orderNumber: '122', party: 'Full Designs', category: 'Printer COGS' },
-    { type: 'income', amount: 1000, orderNumber: '123', party: 'Other', category: 'Customer Sales' }, // survives
+    { type: 'income', amount: 1000, orderNumber: '123', party: 'Other', category: 'Client Sales' }, // survives
   ];
   const kept = applyVoids(rows, [{ orderNumber: '122' }]);
   assert.equal(kept.length, 1, 'all three #122 rows (incl. leading-zero variant) are gone');
@@ -382,8 +382,8 @@ test('applyVoids: a voided order removes BOTH its income and cost rows', () => {
 
 test('buildProcessingFeeRows: matches a deposit to its sale by amount+date → linked COGS', () => {
   const rows = [
-    { date: '2026-06-04', type: 'income', category: 'Customer Sales', amount: 1537.16, party: 'Happy Leaf Dispensary', orderNumber: '141' },
-    { date: '2026-06-01', type: 'income', category: 'Customer Sales', amount: 413.65, party: 'Coastline Dispensary', orderNumber: '140' },
+    { date: '2026-06-04', type: 'income', category: 'Client Sales', amount: 1537.16, party: 'Happy Leaf Dispensary', orderNumber: '141' },
+    { date: '2026-06-01', type: 'income', category: 'Client Sales', amount: 413.65, party: 'Coastline Dispensary', orderNumber: '140' },
   ];
   const deposits = [
     { date: '2026-06-24', gross: 1537.16, fee: 45.96, method: 'CC' },
@@ -403,8 +403,8 @@ test('buildProcessingFeeRows: matches a deposit to its sale by amount+date → l
 
 test('buildProcessingFeeRows: two same-amount sales each grab their OWN nearest deposit', () => {
   const rows = [
-    { date: '2025-09-01', type: 'income', category: 'Customer Sales', amount: 5600, party: 'Stadium Gardens', orderNumber: '107' },
-    { date: '2026-03-01', type: 'income', category: 'Customer Sales', amount: 5600, party: 'Yuma Way', orderNumber: '129' },
+    { date: '2025-09-01', type: 'income', category: 'Client Sales', amount: 5600, party: 'Stadium Gardens', orderNumber: '107' },
+    { date: '2026-03-01', type: 'income', category: 'Client Sales', amount: 5600, party: 'Yuma Way', orderNumber: '129' },
   ];
   const deposits = [
     { date: '2025-09-23', gross: 5600, fee: 56.0, method: 'ACH' },   // nearest to Stadium
@@ -429,7 +429,7 @@ test('buildProcessingFeeRows: the refund deposit books only its fee (no second r
 });
 
 test('buildProcessingFeeRows: a deposit with no matching income still books its fee (unattributed)', () => {
-  const rows = [{ date: '2025-01-01', type: 'income', category: 'Customer Sales', amount: 999, party: 'X', orderNumber: '1' }];
+  const rows = [{ date: '2025-01-01', type: 'income', category: 'Client Sales', amount: 999, party: 'X', orderNumber: '1' }];
   const deposits = [{ date: '2025-03-27', gross: 1464.42, fee: 43.79, method: 'CC' }]; // no income twin
   const fees = buildProcessingFeeRows(rows, deposits);
   assert.equal(fees.length, 1, 'the fee is still booked');

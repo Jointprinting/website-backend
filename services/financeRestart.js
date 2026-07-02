@@ -54,11 +54,11 @@ const DEFAULT_COGS = ['Blank COGS', 'Printer COGS', 'Shipping', 'Art', 'Commissi
 const signed = (t) => (t && t.isCredit ? -num(t.amount) : num(t.amount));
 
 // What ONE income row contributes to REPORTED revenue (headline + per order):
-//   Customer Sales → signed; Refund → −|signed| (contra); else 0 (Owner
+//   Client Sales → signed; Refund → −|signed| (contra); else 0 (Owner
 //   Contribution / Other never count as revenue). Identical to the live P&L.
 function incomeRevenue(t) {
   if (!t || t.type !== 'income') return 0;
-  if (t.category === 'Customer Sales') return signed(t);
+  if (t.category === 'Client Sales') return signed(t);
   if (t.category === 'Refund') return -Math.abs(signed(t)) + 0;
   return 0;
 }
@@ -252,7 +252,7 @@ function groupOrders(rows, opts = {}) {
   // by >1 client is ambiguous → not used to route (those costs fall to time/overhead).
   const saleClientsByHint = new Map();
   for (const t of list) {
-    if (t.type === 'income' && t.category === 'Customer Sales' && t.party) {
+    if (t.type === 'income' && t.category === 'Client Sales' && t.party) {
       const h = normalizeOrderNumber(t.orderNumber);
       if (!h) continue;
       const s = saleClientsByHint.get(h) || new Set();
@@ -268,7 +268,7 @@ function groupOrders(rows, opts = {}) {
   // budget hint → the unique client that sold under that hint. Else null (handled
   // by time-cluster fallback / overhead).
   const clientOf = (t) => {
-    if (t.type === 'income' && t.category === 'Customer Sales' && t.party) return t.party;
+    if (t.type === 'income' && t.category === 'Client Sales' && t.party) return t.party;
     return uniqueClientForHint(normalizeOrderNumber(t.orderNumber));
   };
 
@@ -351,7 +351,7 @@ function mergeRowsIntoOrder(o, rows, cogs) {
     if (h) hintCount.set(h, (hintCount.get(h) || 0) + 1);
     if (t.type === 'income') {
       o.revenue = round2(o.revenue + incomeRevenue(t));
-      if (t.category === 'Customer Sales') hasSale = true;
+      if (t.category === 'Client Sales') hasSale = true;
     } else if (cogs.has(t.category)) {
       o.cost = round2(o.cost + signed(t));
     }
