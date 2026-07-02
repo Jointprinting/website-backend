@@ -2,6 +2,7 @@ const Order = require('../models/Order');
 const Transaction = require('../models/Transaction');
 const ContactSubmission = require('../models/ContactSubmission');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
+const PurchaseOrder = require('../models/PurchaseOrder');
 // REUSE the canonical key + the single PLACED_STATUSES list so "placed order"
 // means exactly the same thing here as in the CRM.
 const { deriveCompanyKey, PLACED_STATUSES } = require('../models/Order');
@@ -456,6 +457,13 @@ const updateOrder = async (req, res) => {
 const deleteOrder = async (req, res) => {
   try {
     await Order.findByIdAndDelete(req.params.id);
+    // Its POs must not linger as live rows pointing at a dead order (they'd keep
+    // counting on vendor cards and in PO lists). Soft-archive — not hard-delete —
+    // per the house pattern, so a mistaken order delete stays fully recoverable.
+    await PurchaseOrder.updateMany(
+      { orderId: req.params.id, archived: { $ne: true } },
+      { $set: { archived: true, archivedAt: new Date(), archivedReason: 'order-deleted' } },
+    );
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ message: e.message });

@@ -26,11 +26,17 @@ const LEAD_SOURCES = ['', 'Website', 'Referral', 'Event', 'Social Media',
   'Cold Outreach', 'Partnership', 'Advertising', 'Organic Search', 'Field Visit'];
 
 // One person at the company. Several may share a single CRM record.
+// `isPrimary` is the ★ main contact: at most ONE per record (the PATCH sanitizer
+// enforces it), and starring mirrors that person's phone/email to the legacy
+// top-level fields — which is what Call/Text/Email, the rows, Today, and the
+// heads-up feed all read (primaryPhone/primaryEmail) — so re-pointing the whole
+// ecosystem at a new person is a single star tap.
 const ContactSchema = new mongoose.Schema({
   name:  { type: String, default: '' },
   role:  { type: String, default: '' },   // "manager", "owner", "buyer", etc.
   phone: { type: String, default: '' },
   email: { type: String, default: '' },
+  isPrimary: { type: Boolean, default: false },
 }, { _id: false });
 
 // A single timestamped touch in the relationship history (call, text, email,
@@ -94,6 +100,10 @@ const ClientSchema = new mongoose.Schema({
   akas:         { type: [String], default: [] },
   tags:         { type: [String], default: [], index: true }, // freeform labels for grouping/filtering ("vip", "promos-only", "wholesale", ...)
   lostReason:   { type: String, default: '' },              // why a deal was marked lost (captured when stage → 'lost')
+  // Hard email opt-out (CAN-SPAM). Set by the public outreach unsubscribe route
+  // (or the owner); the outreach engine refuses to email a company with this
+  // set, no matter what campaign it's enrolled in. Never cleared automatically.
+  doNotEmail:   { type: Boolean, default: false, index: true },
 
   // Soft-delete. NOTHING in the CRM is ever hard-deleted — archive a record and
   // it drops out of every working surface (today/dashboard/pipeline/calendar/

@@ -32,7 +32,19 @@ const TransactionSchema = new mongoose.Schema({
   type:        { type: String, enum: ['income', 'expense'], required: true },
   category:    { type: String, default: 'Other' },
   orderNumber: { type: String, default: '', index: true },  // normalized digits, '' if none
+  // The Order Tracker's project # for the linked order, denormalized at write time
+  // (from the Order doc that matches `orderNumber`) so finance can report per
+  // PROJECT as well as per invoice/order. '' when there is no linked order or the
+  // order predates project numbers. Kept as a string to match how the rest of the
+  // app passes it around (deep links, Order.projectNumber).
+  projectNumber: { type: String, default: '', index: true },
   party:       { type: String, default: '' },               // customer (income) or vendor (expense)
+  // Hard link to the Vendor this EXPENSE was paid to (the printer/supplier card in
+  // the Vendors tab). `party` stays the display string the owner typed; vendorId is
+  // the durable reference that survives renames and powers exact per-vendor spend +
+  // ledger→Vendor deep links. Null for income rows and legacy rows (the backfill
+  // script + name matching cover those).
+  vendorId:    { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', default: null, index: true },
   description: { type: String, default: '' },
   amount:      { type: Number, required: true },             // always positive — magnitude only
   // A credit/return reverses the normal direction of its `type`, without going
@@ -49,7 +61,7 @@ const TransactionSchema = new mongoose.Schema({
   // carries the invoice # he wrote on the paper, while the budget twin of the same
   // payment carries the project/order link instead — the merge-duplicates flow keeps
   // BOTH on the single survivor so neither identifier is lost. Free-form ('' if none).
-  invoiceNumber: { type: String, default: '' },
+  invoiceNumber: { type: String, default: '', index: true },
   // How a CLIENT PAYMENT (income/Customer Sales) was taken — drives the auto-booked
   // merchant Processing Fee expense. 'cc' (~2.99%) | 'ach' (~1%) | 'none'/'' (no fee,
   // e.g. cash/check or a fee the owner waived). Only meaningful on the payment row;

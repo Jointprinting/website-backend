@@ -938,12 +938,17 @@ const getVendor = async (req, res) => {
     const vendorPos = candidatePos.filter((p) => vendorKey(p.vendorName) === wantKey);
 
     // The transactions whose counter-party is this vendor (expense money paid to
-    // them). Party is free-text, so match the SAME case-insensitive exact name;
-    // these are the real dollars spent with the printer.
+    // them). Two paths, unioned: the durable hard link (vendorId, set by the
+    // ledger's vendor picker / auto-resolver / backfill) plus the legacy free-text
+    // party matched by the SAME case-insensitive exact name — so renamed vendors
+    // keep their linked rows and old rows keep working untouched.
     const txns = await Transaction.find({
       type: 'expense',
-      party: new RegExp(`^${String(vendor.name || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
-    }).select('date amount isCredit category orderNumber description receiptUrl party').lean();
+      $or: [
+        { vendorId: vendor._id },
+        { party: new RegExp(`^${String(vendor.name || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+      ],
+    }).select('date amount isCredit category orderNumber description receiptUrl party vendorId').lean();
 
     // Map order ids on POs → their order numbers, so a PO contributes its order to
     // this vendor's "orders they printed". One query for all the linked orders.
@@ -1231,18 +1236,25 @@ const mergeVendors = async (req, res) => {
         if (set.vendorName) posRepointed += 1;
       }
 
-      // Expense Transactions: re-point the counter-party (the dollars paid).
+      // Expense Transactions: re-point the counter-party (the dollars paid) AND
+      // the hard vendorId link, so ledger rows keep resolving to the survivor.
       const candidateTx = await Transaction.find({ type: 'expense', party: mergedNameRe })
         .select('party').lean();
       const txIds = candidateTx.filter((t) => vendorKey(t.party) === mergedKeyVal).map((t) => t._id);
       if (txIds.length) {
         const txUpd = await Transaction.updateMany(
           { _id: { $in: txIds } },
-          { $set: { party: survivorName } },
+          { $set: { party: survivorName, vendorId: survivor._id } },
         );
         txnsRepointed = txUpd.modifiedCount != null ? txUpd.modifiedCount : (txUpd.nModified || 0);
       }
     }
+    // Rows hard-linked to the merged vendor by id (party may have been typed
+    // differently) follow the survivor too — never orphan a vendorId link.
+    await Transaction.updateMany(
+      { vendorId: merged._id },
+      { $set: { vendorId: survivor._id } },
+    );
     // The learned receipt→vendor links lived on the merged Vendor doc itself and
     // were already folded into the survivor by foldVendorFields above — re-saving
     // the survivor (done) is the re-point for those.
