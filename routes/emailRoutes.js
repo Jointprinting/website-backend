@@ -2,9 +2,11 @@
 const express = require('express');
 const router = express.Router();
 
-const { sendContactEmail, sendMockupRequest } = require('../controllers/email');
+const { sendContactEmail } = require('../controllers/email');
 
 router.post('/send-contact', sendContactEmail);
-router.post('/send-mockup-request', sendMockupRequest);
+// /send-mockup-request retired with the public /customize page — the Contact form
+// (send-contact) is the one quote/mockup path, so there's one validation rule and
+// one submission pipeline feeding the Studio inbox.
 
 module.exports = router;

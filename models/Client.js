@@ -26,11 +26,17 @@ const LEAD_SOURCES = ['', 'Website', 'Referral', 'Event', 'Social Media',
   'Cold Outreach', 'Partnership', 'Advertising', 'Organic Search'];
 
 // One person at the company. Several may share a single CRM record.
+// `isPrimary` is the ★ main contact: at most ONE per record (the PATCH sanitizer
+// enforces it), and starring mirrors that person's phone/email to the legacy
+// top-level fields — which is what Call/Text/Email, the rows, Today, and the
+// heads-up feed all read (primaryPhone/primaryEmail) — so re-pointing the whole
+// ecosystem at a new person is a single star tap.
 const ContactSchema = new mongoose.Schema({
   name:  { type: String, default: '' },
   role:  { type: String, default: '' },   // "manager", "owner", "buyer", etc.
   phone: { type: String, default: '' },
   email: { type: String, default: '' },
+  isPrimary: { type: Boolean, default: false },
 }, { _id: false });
 
 // A single timestamped touch in the relationship history (call, text, email,

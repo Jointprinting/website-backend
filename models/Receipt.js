@@ -51,7 +51,7 @@ const ExtractedSchema = new mongoose.Schema({
 const ReceiptSchema = new mongoose.Schema({
   // ── the stored original (saved BEFORE any AI call, so nothing is ever lost) ──
   fileUrl:   { type: String, default: '' },   // R2 public URL
-  fileName:  { type: String, default: '' },
+  fileName:  { type: String, default: '', index: true }, // batch-zip import dedupes by name
   fileMime:  { type: String, default: '' },   // application/pdf | image/jpeg | ...
   fileSize:  { type: Number, default: 0 },
   // When uploaded inside a zip, the folder a receipt sat in is almost always the

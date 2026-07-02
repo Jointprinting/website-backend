@@ -23,6 +23,7 @@ const {
   archiveCompanies,
   unarchiveCompanies,
   deleteLogEntry,
+  updateLogEntry,
   archiveOne,
   unarchiveOne,
   matchCandidates,
@@ -82,8 +83,10 @@ router.patch('/:companyKey', patchOne);
 // Single-card actions the detail page calls directly (all soft / reversible):
 //   • archive / unarchive THIS one company (owner: "fine removing their card")
 //   • delete ONE log entry from the card (owner: "i cant delete notes")
+//   • reword ONE log entry inline (typo fixes; timestamp/kind untouched)
 router.post('/:companyKey/archive',   archiveOne);
 router.post('/:companyKey/unarchive', unarchiveOne);
 router.delete('/:companyKey/log/:entryId', deleteLogEntry);
+router.patch('/:companyKey/log/:entryId', updateLogEntry);
 
 module.exports = router;
