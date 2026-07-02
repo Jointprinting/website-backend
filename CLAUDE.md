@@ -52,3 +52,6 @@ repos, ship them together.
 - Layout: `server.js` (entry), `controllers/`, `models/`, `routes/`, `services/`,
   `middleware/`, `utils/`, `scripts/` (one-off maintenance/migrations), `apps-script/`.
 - Tests run with `node --test`; add coverage next to the code in `__tests__/`.
+- **Know the business before advising on it:** `docs/BUSINESS-MODEL.md` (who pays, how
+  money is made, funnel, integrations, open questions) and `docs/ECOSYSTEM.md` (the
+  canonical order flow + owner decisions). Read them at the start of any non-trivial task.
