@@ -7,10 +7,11 @@
 const express = require('express');
 const router = express.Router();
 const { requireAdmin } = require('../middleware/auth');
-const { listReplies, addReplies, updateStatus, syncGmail } = require('../controllers/replyTriage');
+const { listReplies, addReplies, updateStatus, syncGmail, getWorklist } = require('../controllers/replyTriage');
 
 router.use(requireAdmin);
 
+router.get('/worklist', getWorklist);       // Follow-Up Command Center action buckets
 router.get('/replies', listReplies);
 router.post('/replies', addReplies);       // add one ({...}) or many ({ replies: [...] })
 router.patch('/replies/:id', updateStatus); // { status }

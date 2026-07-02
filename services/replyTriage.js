@@ -125,6 +125,46 @@ function matchReply(fromEmail, subject, { enrollments = [], clients = [] } = {})
   return { matched: false, matchBy: 'none', companyKey: '', companyName: '', enrollmentId: '' };
 }
 
+// ── Follow-Up Command Center (Release 2) ────────────────────────────────────────
+
+// Categories that represent a real human reply the owner should act on (i.e. not
+// a bounce, an unsubscribe, or a clear "no"). Used to build the "needs a response"
+// worklist bucket.
+const ACTIONABLE_CATEGORIES = new Set([
+  'hot_lead', 'needs_response', 'asked_pricing', 'asked_mockups', 'follow_up_later', 'wrong_person',
+]);
+// The strongest buying signals — sorted to the TOP of "needs a response".
+const HOT_CATEGORIES = new Set(['hot_lead', 'asked_pricing', 'asked_mockups']);
+
+const _ts = (d) => { const t = new Date(d).getTime(); return Number.isFinite(t) ? t : 0; };
+
+// Group triage replies into the action buckets the command center shows. PURE:
+// the controller passes the reply rows it loaded, so this is unit-tested without a
+// DB. Buckets map 1:1 to the owner's reply→next-action workflow:
+//   needsResponse   — new, real replies to answer (buying signals first)
+//   quoteRequested  — they asked for pricing / a quote
+//   mockupRequested — they asked for a mockup / proof
+//   followUp        — owner tagged "follow up later"
+// (do-not-contact / not-interested / ignored / handled drop out — they're done.)
+function worklistFromReplies(replies = []) {
+  const buckets = { needsResponse: [], quoteRequested: [], mockupRequested: [], followUp: [] };
+  for (const r of replies) {
+    if (r.status === 'quote_requested') buckets.quoteRequested.push(r);
+    else if (r.status === 'mockup_requested') buckets.mockupRequested.push(r);
+    else if (r.status === 'follow_up') buckets.followUp.push(r);
+    else if (r.status === 'new' && ACTIONABLE_CATEGORIES.has(r.category)) buckets.needsResponse.push(r);
+  }
+  // Buying signals first, then most-recent first.
+  buckets.needsResponse.sort((a, b) =>
+    (HOT_CATEGORIES.has(b.category) ? 1 : 0) - (HOT_CATEGORIES.has(a.category) ? 1 : 0)
+    || _ts(b.receivedAt) - _ts(a.receivedAt));
+  // Oldest-waiting first for the follow-up buckets (don't let anyone rot).
+  for (const k of ['quoteRequested', 'mockupRequested', 'followUp']) {
+    buckets[k].sort((a, b) => _ts(a.receivedAt) - _ts(b.receivedAt));
+  }
+  return buckets;
+}
+
 // ── Gmail sync seam (V2) ───────────────────────────────────────────────────────
 // V1 does NOT fetch from Gmail. This only reports whether a future read-only sync
 // COULD run, so the UI can show an honest "not configured" hint and the /sync
@@ -150,4 +190,6 @@ module.exports = {
   normEmail,
   normSubject,
   isGmailConfigured,
+  worklistFromReplies,
+  ACTIONABLE_CATEGORIES,
 };

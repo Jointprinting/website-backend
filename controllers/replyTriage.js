@@ -18,6 +18,7 @@ const {
   isValidStatus,
   normEmail,
   isGmailConfigured,
+  worklistFromReplies,
 } = require('../services/replyTriage');
 
 const IGNORE_CATEGORY = 'bounce_auto_ignore';
@@ -194,4 +195,55 @@ async function syncGmail(_req, res) {
   });
 }
 
-module.exports = { listReplies, addReplies, updateStatus, syncGmail, ingestOne, applyStatusSideEffects };
+// GET /api/triage/worklist — the Follow-Up Command Center's action buckets.
+// Groups the OPEN triage replies into needs-response / quote / mockup / follow-up
+// (see worklistFromReplies), then adds a bridge bucket: companies the owner MARKED
+// replied via the existing outreach button whose reply hasn't been triaged yet — so
+// the old manual "mark replied" flow and the new triage inbox line up. Read-only;
+// makes no CRM writes.
+async function getWorklist(_req, res) {
+  try {
+    const replies = await TriageReply.find({
+      status: { $in: ['new', 'follow_up', 'mockup_requested', 'quote_requested'] },
+      category: { $ne: IGNORE_CATEGORY },
+    }).sort({ receivedAt: -1 }).limit(500).lean();
+
+    const buckets = worklistFromReplies(replies);
+
+    // Bridge: enrollments marked 'replied' whose company has no triage row yet.
+    const repliedEnr = await OutreachEnrollment.find({ status: 'replied' })
+      .select('companyKey companyName toEmail repliedAt')
+      .sort({ repliedAt: -1 }).limit(200).lean();
+    const enrKeys = [...new Set(repliedEnr.map((e) => e.companyKey).filter(Boolean))];
+    const triagedKeys = new Set(
+      (await TriageReply.find({ companyKey: { $in: enrKeys } }).select('companyKey').lean())
+        .map((r) => r.companyKey),
+    );
+    const untriagedReplied = repliedEnr
+      .filter((e) => e.companyKey && !triagedKeys.has(e.companyKey))
+      .map((e) => ({
+        _id: String(e._id),
+        enrollmentId: String(e._id),
+        companyKey: e.companyKey,
+        companyName: e.companyName,
+        fromEmail: e.toEmail || '',
+        repliedAt: e.repliedAt,
+        matched: true,
+      }));
+
+    const counts = {
+      needsResponse: buckets.needsResponse.length,
+      quoteRequested: buckets.quoteRequested.length,
+      mockupRequested: buckets.mockupRequested.length,
+      followUp: buckets.followUp.length,
+      untriagedReplied: untriagedReplied.length,
+    };
+    counts.total = Object.values(counts).reduce((a, b) => a + b, 0);
+
+    res.json({ ...buckets, untriagedReplied, counts });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
+module.exports = { listReplies, addReplies, updateStatus, syncGmail, getWorklist, ingestOne, applyStatusSideEffects };
