@@ -620,7 +620,7 @@ function mapStatus(raw) {
   // verified placed Order (promoted by the controller, owner-approved).
   if (!negated && (v.includes('customer') || v.includes('client') || v.includes('active'))) return 'contacted';
   if (v.includes('quot')) return 'quoting';
-  if (v.includes('sampl')) return 'sampling';
+  if (v.includes('sampl')) return 'quoting';   // 'sampling' stage retired — nearest live stage
   if (!negated && v.includes('order')) return 'won';
   // 4) Positive-contact keywords.
   if (POSITIVE_CONTACT.some((k) => v.includes(k))) return 'contacted';

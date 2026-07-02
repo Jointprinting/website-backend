@@ -204,18 +204,18 @@ test('archived orders never appear on the board', () => {
   assert.equal(colOf(board, 'quoting').count, 0);
 });
 
-test('won/customer Client stages (no order) contribute NO card; quoting/sampling fall back to the quoting column', () => {
+test('won/customer Client stages (no order) contribute NO card; quoting falls back to the quoting column', () => {
   const board = buildUnifiedBoard({
     clients: [
       mkClient({ companyKey: 'q', stage: 'quoting',  dealValue: 100 }),
-      mkClient({ companyKey: 's', stage: 'sampling', dealValue: 100 }),
+      mkClient({ companyKey: 'q2', stage: 'quoting', dealValue: 100 }),
       mkClient({ companyKey: 'w', stage: 'won',      dealValue: 100 }),
       mkClient({ companyKey: 'c', stage: 'customer', dealValue: 100 }),
     ],
     orders: [],
   });
   // won/customer with no order → no card.
-  // quoting + sampling with no live order → fallback cards in the quoting column.
+  // quoting records with no live order → fallback cards in the quoting column.
   assert.equal(colOf(board, 'quoting').count, 2);
   assert.equal(colOf(board, 'quoting').clients.every((k) => k.cardKind === 'lead'), true);
   // Nothing leaked into the other columns.
@@ -325,7 +325,6 @@ test('promoteStage(_, "quoting") advances early stages but never regresses or re
   assert.equal(promoteStage('contacted', 'quoting'), 'quoting');
   assert.equal(promoteStage('quoting',   'quoting'), 'quoting');
   // An owner-advanced stage past quoting is NOT pulled back.
-  assert.equal(promoteStage('sampling',  'quoting'), 'sampling');
   assert.equal(promoteStage('won',       'quoting'), 'won');
   assert.equal(promoteStage('customer',  'quoting'), 'customer');
   // A deliberately-closed/parked stage is never resurrected by the handoff.

@@ -270,10 +270,10 @@ test('promoteStage refuses to touch lost / dormant (deliberate end states)', () 
   assert.equal(promoteStage('lead', 'lost'), 'lead');
 });
 
-// NOTE: sampling (rank 3) < customer (rank 5), so an order DOES promote a manual
-// 'sampling' up to 'customer' — that's intended (an order outranks mid-funnel).
+// NOTE: quoting (rank 2) < customer (rank 5), so an order DOES promote a manual
+// mid-funnel stage up to 'customer' — intended (an order outranks mid-funnel).
 test('order promotion lifts a mid-funnel stage to customer but not a closed one', () => {
-  assert.equal(promoteStage('sampling', 'customer'), 'customer');
+  assert.equal(promoteStage('contacted', 'customer'), 'customer');
   assert.equal(promoteStage('quoting', 'customer'), 'customer');
 });
 
@@ -602,7 +602,7 @@ test('isPlacedStatus gates exactly the placed statuses', () => {
 
 test('auto-bump promotes a pre-customer stage to customer on placement', () => {
   // The helper does promoteStage(current, 'customer') for each placed order.
-  for (const from of ['lead', 'contacted', 'quoting', 'sampling']) {
+  for (const from of ['lead', 'contacted', 'quoting']) {
     assert.equal(promoteStage(from, 'customer'), 'customer', `bump from ${from}`);
   }
 });

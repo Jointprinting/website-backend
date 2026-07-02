@@ -41,7 +41,8 @@ test('STAGE_PROBABILITY uses the agreed close-rates', () => {
   assert.equal(STAGE_PROBABILITY.lead,      0.1);
   assert.equal(STAGE_PROBABILITY.contacted, 0.25);
   assert.equal(STAGE_PROBABILITY.quoting,   0.5);
-  assert.equal(STAGE_PROBABILITY.sampling,  0.7);
+  // 'sampling' is retired — it must NOT carry a probability anymore.
+  assert.equal(STAGE_PROBABILITY.sampling,  undefined);
   assert.equal(STAGE_PROBABILITY.won,       1);
   assert.equal(STAGE_PROBABILITY.customer,  1);
   assert.equal(STAGE_PROBABILITY.lost,      0);
@@ -67,17 +68,16 @@ test('totalOpenValue counts only open stages; weightedValue weights every stage'
     { stage: 'lead',      dealValue: 1000 },  // open · weight 0.1  → 100
     { stage: 'contacted', dealValue: 2000 },  // open · weight 0.25 → 500
     { stage: 'quoting',   dealValue: 4000 },  // open · weight 0.5  → 2000
-    { stage: 'sampling',  dealValue: 1000 },  // open · weight 0.7  → 700
     { stage: 'won',       dealValue: 5000 },  // CLOSED · weight 1   → 5000
     { stage: 'customer',  dealValue: 3000 },  // CLOSED · weight 1   → 3000
     { stage: 'lost',      dealValue: 9999 },  // CLOSED · weight 0   → 0
     { stage: 'dormant',   dealValue: 8888 },  // CLOSED · weight 0   → 0
   ];
 
-  // Open = lead + contacted + quoting + sampling (won/customer/lost/dormant excluded)
-  const expectedOpen = 1000 + 2000 + 4000 + 1000; // 8000
-  // Weighted = 100 + 500 + 2000 + 700 + 5000 + 3000 + 0 + 0
-  const expectedWeighted = 100 + 500 + 2000 + 700 + 5000 + 3000; // 11300
+  // Open = lead + contacted + quoting (won/customer/lost/dormant excluded)
+  const expectedOpen = 1000 + 2000 + 4000; // 7000
+  // Weighted = 100 + 500 + 2000 + 5000 + 3000 + 0 + 0
+  const expectedWeighted = 100 + 500 + 2000 + 5000 + 3000; // 10600
 
   const out = summarizePipeline(records);
   assert.equal(out.totalOpenValue, expectedOpen);

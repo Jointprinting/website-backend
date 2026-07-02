@@ -51,7 +51,7 @@ const CLOSED_STAGES = ['won', 'lost', 'dormant'];
 // so an order can never silently resurrect a deal the owner closed, and an
 // owner-closed stage is never regressed by an import.
 const STAGE_RANK = {
-  lead: 0, contacted: 1, quoting: 2, sampling: 3, won: 5, customer: 5,
+  lead: 0, contacted: 1, quoting: 2, won: 5, customer: 5,
 };
 // Move `current` toward `target` ONLY if that's a forward move on the funnel and
 // NEITHER stage is a closed/parked end state (lost/dormant). Returns the stage to
@@ -117,7 +117,7 @@ async function promoteCompanyToCustomerOnPlacement(companyKey, sample = {}) {
 //   • for an EXISTING record, nudge the stage UP to 'quoting' via promoteStage —
 //     which never regresses an owner-advanced stage and never touches won/lost/
 //     dormant/customer. So a brand-new company lands at 'quoting'; a lead/contacted
-//     record advances to 'quoting'; a sampling/won/customer/closed record is left
+//     record advances to 'quoting'; a won/customer/closed record is left
 //     exactly as the owner set it.
 // Returns the resulting stage (or null on no-op). The CALLER wraps this in
 // try/catch — an order write must never fail because of a CRM hiccup. `sample`
@@ -167,7 +167,6 @@ const STAGE_PROBABILITY = {
   lead:      0.1,
   contacted: 0.25,
   quoting:   0.5,
-  sampling:  0.7,
   won:       1,
   customer:  1,
   lost:      0,
@@ -182,7 +181,7 @@ const stageProbability = (stage) => (
 // customer are closed-won (revenue realized, not open); lost & dormant are dead.
 // (Distinct from the call-engine's CLOSED_STAGES, which keeps `customer` callable
 // for retention — that's about who to call, not open deal value.)
-const OPEN_STAGES = ['lead', 'contacted', 'quoting', 'sampling'];
+const OPEN_STAGES = ['lead', 'contacted', 'quoting'];
 
 // Compute the board summary from a flat list of { stage, dealValue } records.
 // Pure (no DB) so it's unit-testable. Returns:
@@ -234,15 +233,15 @@ const ALL_BOARD_COLUMNS = [...BOARD_COLUMNS, ...BOARD_CLOSED_COLUMNS];
 
 // The Client pre-quote stages that seed the LEAD columns. Only a company with no
 // live order earns a lead card (else it already shows as an order card). Mid-
-// funnel Client stages (quoting/sampling) are intentionally absent — once a deal
+// funnel Client stages (quoting) are intentionally absent — once a deal
 // is quoting it lives in the ORDER columns, sourced from its Order rows.
 const BOARD_LEAD_STAGES = ['lead', 'contacted'];
 // Client mid-funnel stages that, WITHOUT a live order, fall back to a card in the
-// QUOTING column — so a deal advanced to quoting/sampling never vanishes from the
+// QUOTING column — so a deal advanced to quoting never vanishes from the
 // board in the window before its order row exists (or if the order mint failed).
 // Once the company has a live order, its order card represents it and this
 // fallback is suppressed.
-const BOARD_QUOTING_FALLBACK_STAGES = ['quoting', 'sampling'];
+const BOARD_QUOTING_FALLBACK_STAGES = ['quoting'];
 // The Client closed/parked stages that seed the closed lane (alongside cancelled
 // orders). These mirror the old SECONDARY_STAGES.
 const BOARD_CLOSED_CLIENT_STAGES = ['lost', 'dormant'];
@@ -363,7 +362,7 @@ function buildUnifiedBoard({ clients, orders, withPlacedOrders, dealValueByKey, 
       if (liveKeys.has(c.companyKey)) continue;
       byCol[stage].clients.push(leadCard(c, stage)); // board column == the client stage
     } else if (BOARD_QUOTING_FALLBACK_STAGES.includes(stage)) {
-      // A Client advanced to quoting/sampling but with NO order row yet (a freshly
+      // A Client advanced to quoting but with NO order row yet (a freshly
       // moved deal whose order mint is still in flight, or one whose handoff hiccuped)
       // still shows a card in the QUOTING column so it never silently vanishes from
       // the board. The moment a live order exists it's suppressed here and rendered
@@ -1444,7 +1443,7 @@ function applyImportToDoc(doc, mapped, isNew, opts = {}) {
   // controller may flag that this company has ≥1 linked PLACED Order (hasOrders) —
   // in which case it's a CUSTOMER, never a lead. We take the furthest-along of the
   // candidates but NEVER regress what the owner already advanced (won stays won,
-  // a manual 'sampling' isn't pulled back to 'customer', etc.). promoteStage
+  // a manual 'quoting' isn't pulled back to 'customer', etc.). promoteStage
   // moves up the funnel rank only.
   //   - an order (on the row OR already linked) ⇒ at least 'customer'
   //   - else the status-mapped stage, but only from a default/empty/lead doc
@@ -2418,6 +2417,16 @@ async function matchCandidates(req, res) {
   }
 }
 
+// One-time repair (run on boot; idempotent): fold RETIRED stages onto their
+// nearest live stage — 'sampling' → 'quoting' (owner retired it as not useful).
+// updateMany bypasses enum validation, and once no doc carries a retired stage
+// this is a no-op. Archived records are migrated too (a restore must come back
+// with a valid stage).
+async function migrateRetiredStages() {
+  const r = await Client.updateMany({ stage: 'sampling' }, { $set: { stage: 'quoting' } });
+  return r.modifiedCount != null ? r.modifiedCount : (r.nModified || 0);
+}
+
 module.exports = {
   listCrm,
   getToday,
@@ -2436,6 +2445,7 @@ module.exports = {
   archiveOne,
   unarchiveOne,
   matchCandidates,
+  migrateRetiredStages,
   // exported for tests / reuse
   sanitizeContacts,
   rankMatchCandidates,
