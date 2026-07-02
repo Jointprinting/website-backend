@@ -16,6 +16,7 @@
 const { fetchDispensaries, isRegion, DEFAULT_REGION, REGIONS, NATIONAL_ROLLOUT } = require('./dispensaryFinder');
 const LeadFinderState = require('../models/LeadFinderState');
 const { enrichWebsite } = require('./emailEnricher');
+const { verifyDomainsMx, partitionDeliverable, emailDomain } = require('./emailVerify');
 const LeadFinderRun = require('../models/LeadFinderRun');
 const Client = require('../models/Client');
 const { buildMappedRows, applyMappedRow } = require('../controllers/crm');
@@ -62,7 +63,31 @@ async function discoverRegion(regionId, { maxEnrich = DEFAULT_MAX_ENRICH } = {})
   });
   const withEmail = withEmailCandidates.filter((c) => c.email).length;
 
-  return { region, label, found: candidates.length, candidates: withEmailCandidates, withEmail, enriched };
+  // Verify deliverability (free MX/A check) so scraped-but-dead addresses never
+  // enter the CRM and bounce. Verify only the ones that HAVE an email; the rest
+  // stay as un-emailable coverage. Deduped by domain, so it's a handful of DNS
+  // lookups. Disable with LEAD_FINDER_VERIFY_MX=off.
+  const withEmailOnly = withEmailCandidates.filter((c) => c.email);
+  let candidatesOut = withEmailCandidates;
+  let verified = withEmail;
+  if (process.env.LEAD_FINDER_VERIFY_MX !== 'off' && withEmailOnly.length) {
+    const mxMap = await verifyDomainsMx(withEmailOnly.map((c) => emailDomain(c.email)));
+    const { good } = partitionDeliverable(withEmailOnly, mxMap);
+    const goodSet = new Set(good.map((c) => c.osmId || `${c.name}|${c.email}`));
+    // Blank the email on candidates whose domain can't receive mail (keep the row
+    // for coverage counts, just don't import an undeliverable address).
+    candidatesOut = withEmailCandidates.map((c) => {
+      if (!c.email) return c;
+      const id = c.osmId || `${c.name}|${c.email}`;
+      return goodSet.has(id) ? c : { ...c, email: '', undeliverable: true };
+    });
+    verified = good.length;
+  }
+
+  return {
+    region, label, found: candidates.length, candidates: candidatesOut,
+    withEmail, enriched, verified,
+  };
 }
 
 // Full run: discover → (live) import → tag → record. `dryRun` skips all writes
@@ -87,7 +112,7 @@ async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich } 
     return {
       dryRun: true, region: regionId, label: disc.label,
       found: disc.found, withEmail: disc.withEmail, enriched: disc.enriched,
-      willImport: rows.length,
+      verified: disc.verified, willImport: rows.length,
     };
   }
 
@@ -116,7 +141,7 @@ async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich } 
   const result = {
     region: regionId, label: disc.label,
     found: disc.found, withEmail: disc.withEmail, enriched: disc.enriched,
-    created, updated, skipped,
+    verified: disc.verified, created, updated, skipped,
   };
   await LeadFinderRun.create({ ...result, dryRun: false }).catch(() => {});
   return result;

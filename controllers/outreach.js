@@ -11,6 +11,7 @@
 
 const OutreachCampaign = require('../models/OutreachCampaign');
 const OutreachEnrollment = require('../models/OutreachEnrollment');
+const LeadFinderRun = require('../models/LeadFinderRun');
 const Client = require('../models/Client');
 const Order = require('../models/Order');
 const { PLACED_STATUSES } = require('../models/Order');
@@ -404,6 +405,117 @@ async function runTickNow(req, res) {
   }
 }
 
+// ── Analytics ─────────────────────────────────────────────────────────────────
+
+const US_STATES = new Set([
+  'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS',
+  'KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY',
+  'NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV',
+  'WI','WY','DC',
+]);
+
+// Best-effort 2-letter US state from a stored address ("… City NJ 07102" or
+// "… City, NJ"). '' when it can't tell. Pure + unit-tested.
+function parseState(address) {
+  const s = String(address || '').trim();
+  let m = s.match(/\b([A-Za-z]{2})\s+\d{5}(?:-\d{4})?\s*$/); // "NJ 07102"
+  if (m && US_STATES.has(m[1].toUpperCase())) return m[1].toUpperCase();
+  m = s.match(/,\s*([A-Za-z]{2})\.?\s*$/); // trailing ", NJ"
+  if (m && US_STATES.has(m[1].toUpperCase())) return m[1].toUpperCase();
+  return '';
+}
+
+// Per-state outreach funnel from enrollments + a companyKey→state map. Pure.
+function buildStateFunnels(enrollments = [], stateByKey = new Map()) {
+  const by = new Map();
+  for (const e of enrollments) {
+    if (!e) continue;
+    const st = stateByKey.get(e.companyKey) || 'Unknown';
+    if (!by.has(st)) by.set(st, { state: st, leads: 0, sent: 0, opened: 0, replied: 0, unsubscribed: 0 });
+    const row = by.get(st);
+    row.leads += 1;
+    if ((e.sends || []).length > 0) row.sent += 1;
+    if ((e.openCount || 0) > 0 || e.lastOpenedAt) row.opened += 1;
+    if (e.status === 'replied') row.replied += 1;
+    if (e.status === 'unsubscribed') row.unsubscribed += 1;
+  }
+  // Real states first (by leads desc), Unknown last.
+  return [...by.values()].sort((a, b) => {
+    if (a.state === 'Unknown') return 1;
+    if (b.state === 'Unknown') return -1;
+    return b.leads - a.leads;
+  });
+}
+
+// Monday-anchored UTC week key (ms) for an instant. Pure.
+function weekStartMs(ms) {
+  const d = new Date(ms);
+  const day = (d.getUTCDay() + 6) % 7; // 0 = Monday
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - day * 86400000;
+}
+
+// Weekly send/open/reply trend for the last `weeks` weeks. Pure (nowMs injected).
+function weeklyTrend(enrollments = [], nowMs = Date.now(), weeks = 8) {
+  const thisWeek = weekStartMs(nowMs);
+  const buckets = [];
+  const idx = new Map();
+  for (let i = weeks - 1; i >= 0; i--) {
+    const wk = thisWeek - i * 7 * 86400000;
+    const b = { weekStart: wk, sent: 0, opened: 0, replied: 0 };
+    idx.set(wk, b); buckets.push(b);
+  }
+  const bump = (ms, field) => {
+    const b = idx.get(weekStartMs(ms));
+    if (b) b[field] += 1;
+  };
+  for (const e of enrollments) {
+    for (const s of (e.sends || [])) {
+      if (s && s.at) bump(new Date(s.at).getTime(), 'sent');
+      if (s && s.openedAt) bump(new Date(s.openedAt).getTime(), 'opened');
+    }
+    if (e.repliedAt) bump(new Date(e.repliedAt).getTime(), 'replied');
+  }
+  return buckets;
+}
+
+// GET /api/outreach/analytics — overall funnel, per-state funnel, weekly trend,
+// and finder coverage per state. Powers the Studio's Analytics view.
+async function getAnalytics(req, res) {
+  try {
+    const [enrollments, finderRuns] = await Promise.all([
+      OutreachEnrollment.find({}).lean(),
+      LeadFinderRun.find({ dryRun: false }).sort({ createdAt: -1 }).limit(300).lean(),
+    ]);
+
+    const keys = [...new Set(enrollments.map((e) => e.companyKey))];
+    const clients = keys.length
+      ? await Client.find({ companyKey: { $in: keys } }).select('companyKey address area').lean()
+      : [];
+    const stateByKey = new Map(clients.map((c) => [c.companyKey, parseState(c.address || c.area)]));
+
+    // Finder coverage per region: latest snapshot + cumulative imported.
+    const coverage = new Map();
+    for (const r of finderRuns) {
+      if (!coverage.has(r.region)) {
+        coverage.set(r.region, {
+          region: r.region, found: r.found, withEmail: r.withEmail, verified: r.verified || 0,
+          created: 0, lastSweptAt: r.createdAt,
+        });
+      }
+      coverage.get(r.region).created += (r.created || 0);
+    }
+
+    res.json({
+      overall: summarizeEnrollments(enrollments),
+      perState: buildStateFunnels(enrollments, stateByKey),
+      trend: weeklyTrend(enrollments, Date.now()),
+      coverage: [...coverage.values()],
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
 // ── Lead finder (free dispensary discovery) ───────────────────────────────────
 
 // GET /api/outreach/find-leads/status — regions + last sweep per region + the
@@ -550,8 +662,13 @@ module.exports = {
   findLeads,
   setAutoAdvance,
   runAutoNow,
+  getAnalytics,
   // exported for tests
   summarizeEnrollments,
   enrollBlockReason,
   sanitizeSteps,
+  parseState,
+  buildStateFunnels,
+  weeklyTrend,
+  weekStartMs,
 };
