@@ -1,0 +1,349 @@
+// services/dispensaryIngest.js
+//
+// Pulls a state's dispensary roster (see services/dispensaryStates.js for
+// per-state sources), normalizes it, and upserts into the Dispensary
+// collection. Design goals, in order:
+//
+//   1. NEVER trust a fixed schema. State portals rename columns without
+//      notice, and the Cannlytics aggregate varies by state. Headers are
+//      matched by keyword scoring (sniffHeaders) and the ingest report lists
+//      what mapped where, so drift is visible instead of silent.
+//   2. Degrade, don't fail. primary source → cannlytics fallback → clear
+//      report saying "seed this state from the Google sweep instead".
+//   3. Idempotent. dedupeKey = state+licenseNumber (or address fallback);
+//      re-ingesting refreshes rows and stamps lastVerifiedAt; rows the fresh
+//      roster no longer contains get active:false (never deleted).
+//
+// Geocoding: rosters carry addresses, not always coordinates. Missing coords
+// are geocoded through Mapbox (effectively free at our volume) right after
+// ingest so every store is mappable immediately; Google enrichment
+// (services/dispensaryEnrich.js) later refines coords + adds contact fields.
+
+const axios = require('axios');
+const Dispensary = require('../models/Dispensary');
+const { REC_STATES } = require('./dispensaryStates');
+const { assignChains } = require('./dispensaryChains');
+
+// Same normalizations the CRM uses — keep byte-for-byte in sync with
+// utils/fieldTrackerImport.js (deriveCompanyKey / matchKey).
+function deriveCompanyKey(name) {
+  return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+const CORP_SUFFIXES = ['incorporated', 'corporation', 'company', 'limited',
+  'inc', 'llc', 'l.l.c', 'co', 'corp', 'ltd', 'lp', 'llp', 'plc'];
+function matchKey(name) {
+  let raw = String(name || '').toLowerCase();
+  raw = raw.replace(/['’`]/g, '');
+  for (const suf of CORP_SUFFIXES) {
+    const re = new RegExp(`[\\s,.&-]+${suf.replace(/\./g, '\\.')}\\.?$`, 'i');
+    if (re.test(raw)) { raw = raw.replace(re, ''); break; }
+  }
+  return raw.replace(/[^a-z0-9]+/g, '');
+}
+
+// ── CSV parsing (RFC-4180-ish, no dependency) ────────────────────────────────
+
+/** Parse CSV text → array of objects keyed by header row. Handles quoted
+ *  fields, escaped quotes, and CRLF/LF. */
+function parseCsv(text) {
+  const rows = [];
+  let field = '', row = [], inQuotes = false;
+  const pushField = () => { row.push(field); field = ''; };
+  const pushRow = () => { rows.push(row); row = []; };
+  const s = String(text || '');
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (s[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += c;
+    } else if (c === '"') inQuotes = true;
+    else if (c === ',') pushField();
+    else if (c === '\n') { pushField(); pushRow(); }
+    else if (c === '\r') { /* swallow; \n handles the row */ }
+    else field += c;
+  }
+  if (field !== '' || row.length) { pushField(); pushRow(); }
+  while (rows.length && rows[rows.length - 1].every((v) => v === '')) rows.pop();
+  if (!rows.length) return [];
+  const headers = rows[0].map((h) => String(h || '').trim());
+  return rows.slice(1).map((r) => {
+    const o = {};
+    headers.forEach((h, i) => { if (h) o[h] = r[i] !== undefined ? r[i] : ''; });
+    return o;
+  });
+}
+
+// ── Header sniffing ──────────────────────────────────────────────────────────
+//
+// For each logical field, an ordered list of scoring rules: [mustMatch,
+// bonus]. The header with the highest score wins; ties go to the earlier
+// rule. Headers are compared lowercased with non-alphanumerics squashed.
+
+const norm = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
+
+const FIELD_RULES = {
+  name:          [/dba|doing_business_as/, /trade_name/, /business_name/, /^(business_legal_)?name$/, /retailer/, /establishment/, /entity_name/, /license_holder/, /^premise_name/, /name/],
+  licensee:      [/legal_name/, /licensee/, /license_holder/, /owner/, /entity_name/, /parent/],
+  licenseNumber: [/license_(no|number|num)/, /^license$/, /credential/, /^lic_/, /permit/, /license/],
+  licenseType:   [/license_type/, /_type$/, /class/, /category/, /^type/],
+  licenseStatus: [/status/],
+  address:       [/street.*address|address.*(line)?_?1|premise_address|physical_address/, /^address$/, /location/, /address/],
+  city:          [/city|town|municipality/],
+  zip:           [/zip|postal/],
+  county:        [/county/],
+  lat:           [/^lat(itude)?$|premise_lat/, /lat/],
+  lng:           [/^(lng|lon|long|longitude)$|premise_long/, /lon|lng/],
+  phone:         [/phone|tel/],
+  website:       [/website|web_?site|url/],
+};
+
+/** Map logical fields → actual header names present in `headers`. */
+function sniffHeaders(headers) {
+  const map = {};
+  const normed = headers.map((h) => ({ raw: h, n: norm(h) }));
+  for (const [field, rules] of Object.entries(FIELD_RULES)) {
+    outer:
+    for (const rule of rules) {
+      for (const h of normed) {
+        if (rule.test(h.n)) { map[field] = h.raw; break outer; }
+      }
+    }
+  }
+  return map;
+}
+
+// ── Row filtering + normalization ────────────────────────────────────────────
+
+// A roster row must look like an ADULT-USE RETAIL location. States vary:
+// some rosters are retail-only (CT), some carry every license class (NY).
+// If a type column exists we require retail-ish, and exclude clearly
+// non-retail classes; medical-only types are excluded unless dual-use.
+const RETAILISH = /retail|dispensar|store(front)?|microbusiness|hybrid/i;
+const NON_RETAIL = /cultivat|grow|process|manufactur|transport|distribut|lab(oratory)?|testing|delivery[\s-]*only|wholesal|nursery|event|consumption|research/i;
+const MEDICAL_ONLY_TYPE = /^med(ical)?[\s-]*(marijuana|cannabis)?[\s-]*(dispensary|treatment|only)?$/i;
+const DEAD_STATUS = /inactive|expired|revoked|surrender|cancel|denied|withdraw|closed|terminated/i;
+
+function rowPasses(row, map, typeFilter) {
+  const type = map.licenseType ? String(row[map.licenseType] || '') : '';
+  const status = map.licenseStatus ? String(row[map.licenseStatus] || '') : '';
+  if (status && DEAD_STATUS.test(status)) return false;
+  if (typeFilter) return typeFilter.test(type);
+  if (type) {
+    if (NON_RETAIL.test(type) && !RETAILISH.test(type)) return false;
+    if (MEDICAL_ONLY_TYPE.test(type.trim())) return false;
+    if (!RETAILISH.test(type)) return false;
+  }
+  return true;
+}
+
+function normalizeRow(row, map, state, sourceUrl) {
+  const get = (f) => (map[f] ? String(row[map[f]] ?? '').trim() : '');
+  const name = get('name') || get('licensee');
+  if (!name) return null;
+  const licenseNumber = get('licenseNumber');
+  const address = get('address');
+  const city = get('city');
+  const lat = parseFloat(get('lat'));
+  const lng = parseFloat(get('lng'));
+  const dedupeKey = licenseNumber
+    ? `${state}|lic:${licenseNumber.toLowerCase()}`
+    : `${state}|addr:${deriveCompanyKey(name)}|${deriveCompanyKey(address + city)}`;
+  return {
+    state,
+    name,
+    licensee: get('licensee'),
+    licenseNumber,
+    licenseType: get('licenseType'),
+    licenseStatus: get('licenseStatus'),
+    address,
+    city,
+    zip: get('zip'),
+    phone: get('phone'),
+    website: get('website'),
+    lat: isFinite(lat) ? lat : null,
+    lng: isFinite(lng) ? lng : null,
+    source: 'roster',
+    verified: true,
+    active: true,
+    dedupeKey,
+    rosterSource: sourceUrl,
+    companyKey: deriveCompanyKey(name),
+    matchKey: matchKey(name),
+  };
+}
+
+// ── Fetching ─────────────────────────────────────────────────────────────────
+
+async function fetchRoster(state, { sourceUrlOverride } = {}) {
+  const cfg = REC_STATES[state];
+  if (!cfg) throw Object.assign(new Error(`Unknown rec state "${state}".`), { statusCode: 400 });
+  const attempts = [];
+  if (sourceUrlOverride) {
+    attempts.push({ kind: /\.json/.test(sourceUrlOverride) ? 'socrata' : 'csv', url: sourceUrlOverride });
+  } else {
+    if (cfg.roster.kind !== 'google') attempts.push({ kind: cfg.roster.kind, url: cfg.roster.url });
+    // Cannlytics fallback for states whose primary is something else.
+    if (cfg.roster.kind === 'socrata' || cfg.roster.kind === 'csv') {
+      attempts.push({
+        kind: 'cannlytics',
+        url: `https://huggingface.co/datasets/cannlytics/cannabis_licenses/resolve/main/data/${state.toLowerCase()}/licenses-${state.toLowerCase()}-latest.csv`,
+      });
+    }
+  }
+  const errors = [];
+  for (const att of attempts) {
+    try {
+      const { data } = await axios.get(att.url, { timeout: 60_000, responseType: att.kind === 'socrata' ? 'json' : 'text', maxContentLength: 50 * 1024 * 1024 });
+      const rows = att.kind === 'socrata'
+        ? (Array.isArray(data) ? data : [])
+        : parseCsv(data);
+      if (rows.length) return { rows, sourceUrl: att.url, sourceKind: att.kind, errors };
+      errors.push(`${att.kind}: 0 rows from ${att.url}`);
+    } catch (err) {
+      errors.push(`${att.kind}: ${err.message}`);
+    }
+  }
+  const e = new Error(`No roster source worked for ${state}. Tried: ${errors.join(' | ')}. Seed this state with the Google sweep instead.`);
+  e.statusCode = 502;
+  e.attempts = errors;
+  throw e;
+}
+
+// ── Mapbox geocoding for rows missing coordinates ────────────────────────────
+
+async function geocodeMissing(state, { limit = 300 } = {}) {
+  const token = process.env.MAPBOX_TOKEN || process.env.REACT_APP_MAPBOX_TOKEN;
+  if (!token) return { geocoded: 0, skipped: 0, message: 'MAPBOX_TOKEN not set — skipped geocoding.' };
+  const docs = await Dispensary.find({
+    state, active: true, hidden: false,
+    $or: [{ lat: null }, { lng: null }],
+    address: { $ne: '' },
+  }).limit(limit);
+  let geocoded = 0, failed = 0;
+  for (const doc of docs) {
+    try {
+      const q = encodeURIComponent(`${doc.address}, ${doc.city} ${doc.state} ${doc.zip}`.trim());
+      const { data } = await axios.get(
+        `https://api.mapbox.com/geocoding/v5/mapbox.places/${q}.json`,
+        { params: { access_token: token, limit: 1, country: 'US' }, timeout: 10_000 }
+      );
+      const feat = (data.features || [])[0];
+      if (feat && Array.isArray(feat.center)) {
+        doc.lng = feat.center[0];
+        doc.lat = feat.center[1];
+        await doc.save();
+        geocoded++;
+      } else failed++;
+    } catch { failed++; }
+  }
+  return { geocoded, failed, remaining: Math.max(0, docs.length === limit ? 1 : 0) };
+}
+
+// ── Chain pass over one state (or all) ───────────────────────────────────────
+
+async function rechainState(state) {
+  const filter = { active: true, hidden: false };
+  if (state) filter.state = state;
+  const docs = await Dispensary.find(filter, { name: 1, licensee: 1 }).lean();
+  const chainMap = assignChains(docs.map((d) => ({ name: d.name, licensee: d.licensee })));
+  const ops = [];
+  docs.forEach((d, i) => {
+    const chainName = chainMap.get(i) || '';
+    ops.push({
+      updateOne: {
+        filter: { _id: d._id },
+        update: { $set: { chainName, isChain: !!chainName } },
+      },
+    });
+  });
+  if (ops.length) await Dispensary.bulkWrite(ops, { ordered: false });
+  return { checked: docs.length, chains: [...new Set([...chainMap.values()])].length };
+}
+
+// ── Main entry: ingest one state ─────────────────────────────────────────────
+
+async function ingestState(state, opts = {}) {
+  const startedAt = new Date();
+  const { rows, sourceUrl, sourceKind, errors } = await fetchRoster(state, opts);
+  const cfg = REC_STATES[state];
+
+  const headers = Object.keys(rows[0] || {});
+  const map = sniffHeaders(headers);
+  const typeFilter = cfg.roster.typeFilter || null;
+
+  const normalized = [];
+  let filtered = 0;
+  for (const row of rows) {
+    if (!rowPasses(row, map, typeFilter)) { filtered++; continue; }
+    const n = normalizeRow(row, map, state, sourceUrl);
+    if (n) normalized.push(n);
+  }
+
+  // Dedupe within the batch (rosters sometimes repeat a license per endorsement)
+  const byKey = new Map();
+  for (const n of normalized) byKey.set(n.dedupeKey, n);
+  const unique = [...byKey.values()];
+
+  let created = 0, updated = 0;
+  const seenKeys = [];
+  for (const n of unique) {
+    seenKeys.push(n.dedupeKey);
+    // Preserve enrichment + coords on refresh: only set roster-owned fields.
+    const res = await Dispensary.updateOne(
+      { dedupeKey: n.dedupeKey },
+      {
+        $set: {
+          state: n.state, name: n.name, licensee: n.licensee,
+          licenseNumber: n.licenseNumber, licenseType: n.licenseType,
+          licenseStatus: n.licenseStatus,
+          address: n.address, city: n.city, zip: n.zip,
+          source: 'roster', verified: true, active: true,
+          rosterSource: n.rosterSource, lastVerifiedAt: startedAt,
+          companyKey: n.companyKey, matchKey: n.matchKey,
+          ...(n.phone ? { phone: n.phone } : {}),
+          ...(n.website ? { website: n.website } : {}),
+          ...(n.lat != null && n.lng != null ? { lat: n.lat, lng: n.lng } : {}),
+        },
+      },
+      { upsert: true }
+    );
+    if (res.upsertedCount) created++;
+    else if (res.modifiedCount) updated++;
+  }
+
+  // Roster rows that vanished → mark inactive (license lapsed / store gone).
+  const { modifiedCount: deactivated } = await Dispensary.updateMany(
+    { state, source: 'roster', dedupeKey: { $nin: seenKeys } },
+    { $set: { active: false } }
+  );
+
+  const geo = await geocodeMissing(state);
+  const chains = await rechainState(state);
+  const total = await Dispensary.countDocuments({ state, active: true, hidden: false });
+
+  return {
+    state, sourceKind, sourceUrl,
+    fetchedRows: rows.length,
+    filteredOut: filtered,
+    imported: unique.length,
+    created, updated, deactivated,
+    geocoding: geo,
+    chains,
+    totalActive: total,
+    approxExpected: cfg.approxRetail,
+    lowCoverage: total < cfg.approxRetail * 0.5,
+    headerMap: map,
+    sourceErrors: errors,
+    startedAt,
+  };
+}
+
+module.exports = {
+  ingestState,
+  rechainState,
+  geocodeMissing,
+  // exported for tests:
+  parseCsv, sniffHeaders, normalizeRow, rowPasses, deriveCompanyKey, matchKey,
+};

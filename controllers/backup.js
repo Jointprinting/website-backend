@@ -36,7 +36,6 @@ const BackupLog = require('../models/BackupLog');
 const SKIP_COLLECTIONS = new Set([
   'BackupLog',              // the log of backups — would create confusing self-reference
   'GoogleDriveAuth',        // OAuth refresh token — environment-specific, re-obtained by reconnecting
-  'DispensaryDensityCache', // derived cache, rebuilt on demand
   'JpwApiUsage',            // transient API rate-limit accounting
   'JpwSchedulerState',      // ephemeral scheduler bookkeeping
   'JpwSweepPairHistory',    // transient sweep dedupe history

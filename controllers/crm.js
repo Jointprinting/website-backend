@@ -1232,7 +1232,7 @@ const PATCHABLE = [
   'companyName', 'clientName', 'email', 'phone', 'paymentTerms',
   'defaultPrinter', 'defaultSupplier', 'defaultMarkup', 'notes',
   'stage', 'nextFollowUp', 'lastContact', 'address', 'area', 'interestType',
-  'dealValue', 'contacts', 'source', 'tags', 'lostReason',
+  'dealValue', 'contacts', 'source', 'tags', 'lostReason', 'leadSource',
 ];
 
 // PATCH /api/crm/:companyKey — upsert/update CRM fields.
@@ -1259,6 +1259,9 @@ async function patchOne(req, res) {
       if (f in body) {
         if (f === 'stage' && body.stage && !STAGES.includes(body.stage)) {
           return res.status(400).json({ message: `invalid stage "${body.stage}"` });
+        }
+        if (f === 'leadSource' && body.leadSource && !Client.LEAD_SOURCES.includes(body.leadSource)) {
+          return res.status(400).json({ message: `invalid leadSource "${body.leadSource}"` });
         }
         set[f] = body[f];
       }

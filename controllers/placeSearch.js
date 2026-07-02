@@ -56,51 +56,9 @@ const SMOKE_SHOP_KEYWORDS = [
 const looksLikeSmokeShop = (name = '') =>
   SMOKE_SHOP_KEYWORDS.some((rx) => rx.test(name));
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Known multi-state operator (MSO) detection.
-//
-// Each entry pairs a regex (case-insensitive) with the canonical brand name.
-// When a dispensary's name matches, we tag the result so the frontend can
-// render chains differently — same trip, different sales approach.
-//
-// False negatives are fine (an unmatched name shows as a one-off, which is
-// the safer default). The first match wins; broader patterns last.
-// ─────────────────────────────────────────────────────────────────────────────
-const DISPENSARY_CHAINS = [
-  // Big east-coast MSOs first. Patterns are intentionally loose enough to
-  // match the actual Google Places names you see in the wild, which often
-  // include qualifiers like "Medical and Adult Use" rather than the brand's
-  // own word "Dispensary".
-  [/curaleaf/i,                                  'Curaleaf'],
-  [/trulieve/i,                                  'Trulieve'],
-  [/\brise\s+(medical|adult|dispens|cannabis|recreational|marijuana)/i, 'RISE (GTI)'],
-  [/sunnyside/i,                                 'Sunnyside (Cresco)'],
-  [/verilife|pharmacann/i,                       'Verilife (Pharmacann)'],
-  [/cannabist|columbia\s+care/i,                 'Cannabist (Columbia Care)'],
-  [/liberty\s+health\s+sciences|\bLHS\b/i,       'Liberty Health Sciences'],
-  [/ayr\s*wellness|\bayr\b\s+(medical|cannabis|dispens|recreational|marijuana)/i, 'AYR Wellness'],
-  [/beyond[\s/-]*hello|\bjushi\b/i,              'Beyond/Hello (Jushi)'],
-  [/ascend\s+(wellness|dispens|medical|cannabis|recreational|marijuana)/i, 'Ascend'],
-  [/the\s+botanist|acreage/i,                    'The Botanist (Acreage)'],
-  [/apothecarium|terrascend|\bgage\b/i,          'TerrAscend (Apothecarium/Gage)'],
-  [/zen\s+leaf|verano|\bmüv\b|\bmuv\b/i,         'Zen Leaf (Verano)'],
-  [/theory\s+wellness/i,                         'Theory Wellness'],
-  [/\bneta\b/i,                                  'NETA'],
-  [/harvest\s+(of|hoc|dispens|cannabis|medical|marijuana)/i, 'Harvest'],
-  [/\bmedmen\b/i,                                'MedMen'],
-  [/cookies\s+(retail|dispens|cannabis|on\b)/i,  'Cookies'],
-  [/\binsa\b/i,                                  'Insa'],
-  [/\betain\b/i,                                 'Etain'],
-  [/cresco\s+labs?/i,                            'Cresco Labs'],
-  [/green\s+thumb\s+industries|\bGTI\b/i,        'Green Thumb Industries'],
-];
-
-function detectChain(name = '') {
-  for (const [rx, label] of DISPENSARY_CHAINS) {
-    if (rx.test(name)) return label;
-  }
-  return null;
-}
+// Known-chain detection now lives in services/dispensaryChains.js (shared
+// with the roster ingest so live Google results and DB rows agree).
+const { detectKnownChain: detectChain } = require('../services/dispensaryChains');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Google Places (New) — Text Search and Nearby Search
@@ -220,6 +178,6 @@ async function searchDispensaries(req, res) {
 
 module.exports = {
   searchDispensaries,
-  // Exposed for use by controllers/roadTripRoute.js (density/area):
+  // Exposed for use by controllers/dispensary.js (the "sweep this area" diff):
   runDispensaryTextScan,
 };
