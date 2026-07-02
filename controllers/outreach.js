@@ -208,15 +208,21 @@ function enrollBlockReason(client, alreadyEnrolled, isCustomerByOrder) {
   return '';
 }
 
-// GET /api/outreach/candidates?campaignId=&q=&stage=&leadSource=
-// The enroll dialog's pick-list: companies that could go into the campaign
-// right now. Cold-outreach audience defaults to lead+contacted; an explicit
-// ?stage= narrows further.
+// GET /api/outreach/candidates?campaignId=&q=&stage=&leadSource=&includeContacted=
+// The enroll dialog's pick-list: genuinely COLD companies only. Beyond the hard
+// gates (has email, not opted out, not a customer, not already enrolled), we
+// EXCLUDE anyone the owner has personally touched — the authoritative signal is
+// `lastContact`, which is set whenever a call/text/visit/note is logged (or an
+// import carries a contact date). A company you've already called or visited
+// must never get a stranger's cold intro. `?includeContacted=true` overrides
+// (e.g. deliberately re-warming a lead you searched for by name).
 async function getCandidates(req, res) {
   try {
     const { campaignId = '', q = '', stage = '', leadSource = '' } = req.query || {};
+    const includeContacted = req.query.includeContacted === 'true' || req.query.includeContacted === '1';
     const find = { ...NOT_ARCHIVED, doNotEmail: { $ne: true } };
     find.stage = stage ? stage : { $in: ['lead', 'contacted'] };
+    if (!includeContacted) find.lastContact = null; // cold = never personally contacted
     if (leadSource) find.leadSource = leadSource;
     if (q) {
       const rx = new RegExp(String(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
