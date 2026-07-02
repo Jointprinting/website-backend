@@ -21,6 +21,7 @@ const {
   isValidStatus,
   isValidCategory,
   normSubject,
+  worklistFromReplies,
 } = require('../../services/replyTriage');
 
 const cat = (fields) => classifyReply(fields).category;
@@ -157,4 +158,51 @@ test('matchReply: stays unmatched when nothing lines up (never throws, never gue
 test('matchReply: no email and no subject → unmatched', () => {
   const m = matchReply('', '', { enrollments: ENR, clients: CLIENTS });
   assert.equal(m.matched, false);
+});
+
+// ── worklistFromReplies (Follow-Up Command Center, Release 2) ────────────────────
+test('worklistFromReplies groups open replies into the action buckets', () => {
+  const now = Date.now();
+  const rep = (over) => ({ receivedAt: new Date(now - (over.age || 0)), ...over });
+  const replies = [
+    rep({ status: 'new', category: 'hot_lead' }),          // needsResponse (hot)
+    rep({ status: 'new', category: 'needs_response' }),    // needsResponse
+    rep({ status: 'new', category: 'asked_pricing' }),     // needsResponse (hot)
+    rep({ status: 'quote_requested', category: 'asked_pricing' }), // quoteRequested
+    rep({ status: 'mockup_requested', category: 'asked_mockups' }), // mockupRequested
+    rep({ status: 'follow_up', category: 'follow_up_later' }),      // followUp
+    // These must NOT appear — terminal / noise:
+    rep({ status: 'new', category: 'unsubscribe' }),
+    rep({ status: 'new', category: 'not_interested' }),
+    rep({ status: 'new', category: 'bounce_auto_ignore' }),
+    rep({ status: 'handled', category: 'hot_lead' }),
+    rep({ status: 'do_not_contact', category: 'hot_lead' }),
+    rep({ status: 'ignored', category: 'needs_response' }),
+  ];
+  const w = worklistFromReplies(replies);
+  assert.equal(w.needsResponse.length, 3);
+  assert.equal(w.quoteRequested.length, 1);
+  assert.equal(w.mockupRequested.length, 1);
+  assert.equal(w.followUp.length, 1);
+});
+
+test('worklistFromReplies sorts buying signals to the top of needs-response', () => {
+  const now = Date.now();
+  const replies = [
+    { status: 'new', category: 'needs_response', receivedAt: new Date(now) },       // newest, but not hot
+    { status: 'new', category: 'hot_lead',       receivedAt: new Date(now - 5000) }, // older, but hot
+    { status: 'new', category: 'asked_pricing',  receivedAt: new Date(now - 9000) }, // oldest, but hot
+  ];
+  const w = worklistFromReplies(replies);
+  // Both hot ones come before the plain needs_response, despite being older.
+  assert.ok(['hot_lead', 'asked_pricing'].includes(w.needsResponse[0].category));
+  assert.ok(['hot_lead', 'asked_pricing'].includes(w.needsResponse[1].category));
+  assert.equal(w.needsResponse[2].category, 'needs_response');
+});
+
+test('worklistFromReplies never throws on empty / missing dates', () => {
+  const w = worklistFromReplies([{ status: 'new', category: 'hot_lead' }]); // no receivedAt
+  assert.equal(w.needsResponse.length, 1);
+  const empty = worklistFromReplies([]);
+  assert.deepEqual(empty, { needsResponse: [], quoteRequested: [], mockupRequested: [], followUp: [] });
 });
