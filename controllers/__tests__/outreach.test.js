@@ -14,6 +14,7 @@ const {
   summarizeEnrollments,
   enrollBlockReason,
   sanitizeSteps,
+  extractBounceEmails,
 } = require('../outreach');
 
 // ── Funnel math ──────────────────────────────────────────────────────────────
@@ -84,4 +85,22 @@ test('sanitizeSteps tolerates garbage input', () => {
   assert.deepEqual(sanitizeSteps(null), []);
   assert.deepEqual(sanitizeSteps('nope'), []);
   assert.deepEqual(sanitizeSteps([null, undefined, {}]), []);
+});
+
+// ── Bounce email extraction (provider-agnostic) ──────────────────────────────
+test('extractBounceEmails digs emails out of any payload shape', () => {
+  // SendPulse-style array of events
+  assert.deepEqual(
+    extractBounceEmails([{ event: 'hard_bounce', email: 'DEAD@shop.com' }, { email: 'gone@x.io' }]).sort(),
+    ['dead@shop.com', 'gone@x.io'],
+  );
+  // Nested single object with a recipient key
+  assert.deepEqual(extractBounceEmails({ data: { recipient: 'no-one@nope.com' } }), ['no-one@nope.com']);
+  // Deduped + only email-keyed strings (a random text field is ignored)
+  assert.deepEqual(
+    extractBounceEmails({ to: 'a@b.com', note: 'contact c@d.com by phone', address: 'a@b.com' }),
+    ['a@b.com'],
+  );
+  assert.deepEqual(extractBounceEmails({}), []);
+  assert.deepEqual(extractBounceEmails(null), []);
 });

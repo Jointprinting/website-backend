@@ -578,6 +578,63 @@ async function runAutoNow(req, res) {
   }
 }
 
+// ── Bounce webhook (provider-posted; suppresses dead addresses) ───────────────
+
+// Pull every email address out of an arbitrary provider bounce payload. Walks
+// the JSON and collects strings under email-ish keys, so it survives whatever
+// shape SendPulse (or any provider) posts. Pure + unit-tested.
+function extractBounceEmails(body) {
+  const found = new Set();
+  const push = (v) => {
+    const s = String(v || '').trim().toLowerCase();
+    if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s)) found.add(s);
+  };
+  const walk = (o) => {
+    if (!o || typeof o !== 'object') return;
+    if (Array.isArray(o)) { o.forEach(walk); return; }
+    for (const [k, v] of Object.entries(o)) {
+      if (typeof v === 'string' && /(email|recipient|address|^to$|^rcpt)/i.test(k)) push(v);
+      else walk(v);
+    }
+  };
+  walk(body);
+  return [...found];
+}
+
+// POST /api/outreach/bounce?key=SECRET — a mail provider tells us an address
+// bounced/complained; we suppress it everywhere (doNotEmail + stop any active
+// sequence) so we never waste another send on it. Guarded by a shared secret
+// (OUTREACH_BOUNCE_SECRET); DISABLED entirely until that's set, so it can never
+// be an open suppression endpoint.
+async function bounceWebhook(req, res) {
+  const secret = process.env.OUTREACH_BOUNCE_SECRET || '';
+  if (!secret) return res.status(403).json({ message: 'bounce webhook disabled (set OUTREACH_BOUNCE_SECRET)' });
+  const provided = req.query.key || req.headers['x-webhook-key'] || (req.body && req.body.key) || '';
+  if (String(provided) !== secret) return res.status(401).json({ message: 'bad key' });
+
+  const emails = extractBounceEmails(req.body);
+  let suppressed = 0;
+  const now = new Date();
+  for (const email of emails) {
+    // Stop any active enrollment aimed at this address, and gather its companies.
+    const enrs = await OutreachEnrollment.find({ toEmail: email }).select('companyKey status');
+    const keys = new Set();
+    for (const e of enrs) {
+      keys.add(e.companyKey);
+      if (e.status === 'active') { e.status = 'failed'; e.stopReason = 'bounced'; e.nextSendAt = null; await e.save().catch(() => {}); }
+    }
+    // Suppress the company both by matching email and by enrollment linkage.
+    const or = [{ email }, { 'contacts.email': email }];
+    if (keys.size) or.push({ companyKey: { $in: [...keys] } });
+    const r = await Client.updateMany(
+      { $or: or, doNotEmail: { $ne: true } },
+      { $set: { doNotEmail: true }, $push: { log: { at: now, text: 'Email bounced — suppressed from outreach', kind: 'email', dedupKey: `bounce:${email}` } } },
+    ).catch(() => ({ modifiedCount: 0 }));
+    suppressed += r.modifiedCount || 0;
+  }
+  res.json({ ok: true, emails: emails.length, suppressed });
+}
+
 // ── Public routes (no auth — token-keyed) ─────────────────────────────────────
 
 // 1×1 transparent PNG for the open pixel.
@@ -663,10 +720,12 @@ module.exports = {
   setAutoAdvance,
   runAutoNow,
   getAnalytics,
+  bounceWebhook,
   // exported for tests
   summarizeEnrollments,
   enrollBlockReason,
   sanitizeSteps,
+  extractBounceEmails,
   parseState,
   buildStateFunnels,
   weeklyTrend,
