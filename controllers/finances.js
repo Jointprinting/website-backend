@@ -7,6 +7,8 @@
 const Transaction = require('../models/Transaction');
 const Order = require('../models/Order');
 const PurchaseOrder = require('../models/PurchaseOrder');
+const Vendor = require('../models/Vendor');
+const { resolveVendorFromList } = require('../utils/vendorMatch');
 const r2 = require('../services/r2');
 
 const num = (v) => Number(v) || 0;
@@ -272,13 +274,61 @@ const list = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
+// GET /api/finances/config — the finance vocabulary served from the ONE source of
+// truth (the Transaction model), so the Studio reads live values instead of
+// trusting its hardcoded mirrors. The frontend keeps those mirrors only as an
+// offline fallback; any drift (e.g. a negotiated fee rate change) is corrected
+// the moment the tab loads. Cheap and static — safe to call on every mount.
+const config = async (req, res) => {
+  res.json({
+    categories: Transaction.CATEGORIES,
+    cogsCategories: Transaction.COGS_CATEGORIES,
+    processingFeeRates: Transaction.PROCESSING_FEE_RATES,
+  });
+};
+
+// Enrich a transaction body with its ecosystem links before it is saved. Two links:
+//   • projectNumber — denormalized from the Order matching the (canonical) order #,
+//     so finance can report per PROJECT. Only fills when the caller didn't send one;
+//     clears when the order link itself is cleared (a stale project # must not
+//     outlive its order link). Collision-safe: two orders sharing a canonical
+//     number with DIFFERENT project #s → leave '' rather than guess.
+//   • vendorId — for EXPENSE rows, resolve the free-text `party` to the Vendor card
+//     via the SAME ambiguity-safe resolver the PO builder uses (exact key match,
+//     then conservative fuzzy; never guesses on >1 candidate). An explicit
+//     vendorId from the caller always wins; a re-typed party re-resolves so the
+//     hard link can't go stale against the display name.
+// `isExpense` is computed by the caller (update knows it from the saved row when
+// the edit doesn't resend `type`).
+async function enrichTransactionLinks(body, { isExpense }) {
+  const out = { ...body };
+  if (out.orderNumber !== undefined && out.projectNumber === undefined) {
+    const key = normalizeOrderNumber(out.orderNumber);
+    if (!key) {
+      out.projectNumber = '';
+    } else {
+      const matches = await Order.find({ orderNumber: new RegExp(`^0*${key}$`) })
+        .select('projectNumber').lean();
+      const projs = [...new Set(matches.map((o) => String(o.projectNumber || '')).filter(Boolean))];
+      out.projectNumber = projs.length === 1 ? projs[0] : '';
+    }
+  }
+  if (out.vendorId === '') out.vendorId = null;
+  if (out.vendorId === undefined && isExpense && out.party !== undefined) {
+    const vendors = await Vendor.find({ archived: { $ne: true } }).select('name').lean();
+    const hit = resolveVendorFromList(out.party, vendors);
+    out.vendorId = hit ? hit._id : null;
+  }
+  return out;
+}
+
 // Accepts an optional `receiptDataUrl` (image or PDF) — stored to R2 and linked
 // so the invoice/receipt lives with the transaction (replacing the manual
 // "download → personal Drive" step). The actual amount entered is the source of
 // truth for COGS.
 const create = async (req, res) => {
   try {
-    const body = { ...req.body };
+    const body = await enrichTransactionLinks({ ...req.body }, { isExpense: req.body.type === 'expense' });
     const dataUrl = body.receiptDataUrl; delete body.receiptDataUrl;
     // Payment-method tagging drives the auto Processing Fee. An optional `feeRate`
     // (fraction) overrides the CC/ACH default; we PERSIST it on the payment row (as
@@ -300,7 +350,16 @@ const create = async (req, res) => {
 };
 const update = async (req, res) => {
   try {
-    const body = { ...req.body };
+    // Expense-ness for the vendor auto-link: the edited type if resent, else the
+    // saved row's. (One cheap read; the update itself still goes through
+    // findByIdAndUpdate so validators/hooks behave exactly as before.)
+    let isExpense = req.body.type === 'expense';
+    if (req.body.type === undefined) {
+      const cur = await Transaction.findById(req.params.id).select('type').lean();
+      if (!cur) return res.status(404).json({ message: 'Not found' });
+      isExpense = cur.type === 'expense';
+    }
+    const body = await enrichTransactionLinks({ ...req.body }, { isExpense });
     // Allow attaching (or replacing) a receipt on an existing entry later.
     const dataUrl = body.receiptDataUrl; delete body.receiptDataUrl;
     // A re-sent feeRate persists as the new override; if absent we DON'T clear the
@@ -791,6 +850,25 @@ function companyKeyByOrderNumber(orders) {
   return map;
 }
 
+// CANONICAL order-number → Order Tracker project # map — the same first-wins /
+// collision-safe shape as companyKeyByOrderNumber, for the per-project lens. Two
+// orders sharing a canonical number with DIFFERENT project #s → '' (don't guess).
+// Pure (POJOs in, plain object out) so it's unit-testable without Mongo.
+function projectNumberByOrderNumber(orders) {
+  const map = {};
+  (Array.isArray(orders) ? orders : []).forEach((o) => {
+    if (!o) return;
+    const key = normalizeOrderNumber(o.orderNumber);
+    if (!key) return;
+    const pn = String(o.projectNumber || '').trim();
+    if (!pn) return;
+    if (!(key in map)) { map[key] = pn; return; }
+    if (map[key] && map[key] !== pn) map[key] = null;
+  });
+  Object.keys(map).forEach((k) => { if (!map[k]) map[k] = ''; });
+  return map;
+}
+
 // GET /api/finances/by-order?year=  — per-order P&L: revenue, cost, profit,
 // margin %. An order's economics span time — the sale lands one day, the blanks
 // and the printer invoice another, a reprint or trailing freight weeks later,
@@ -803,15 +881,15 @@ function companyKeyByOrderNumber(orders) {
 // canonical number) so the UI can deep-link the client name straight to its CRM
 // card — '' when no order resolves (or the number is shared/ambiguous), which
 // the UI treats as "not linked" (no dead-end).
-const byOrder = async (req, res) => {
-  try {
-    const year = req.query.year ? Number(req.query.year) : null;
+async function computeOrderPnl(year) {
     const rows = await Transaction.find({ orderNumber: { $ne: '' } }).lean();
     // CRM bridge: this order#→companyKey map is built from the Orders' stored
     // canonical companyKey, so the client-name link resolves to the exact card.
+    // The project # rides along the same join for the per-project lens.
     const orderDocs = await Order.find({ orderNumber: { $ne: '' } })
-      .select('orderNumber companyKey').lean();
+      .select('orderNumber companyKey projectNumber').lean();
     const ckByOrder = companyKeyByOrderNumber(orderDocs);
+    const projByOrder = projectNumberByOrderNumber(orderDocs);
     // The set of REAL order numbers (canonical). A transaction whose orderNumber
     // matches none of these is an ORPHAN — almost always a mis-keyed receipt (e.g.
     // a blanks receipt booked under a typo'd #). We drop those phantom rows from
@@ -826,7 +904,10 @@ const byOrder = async (req, res) => {
       // and a "21" row are the same order — not two split buckets on the drill-in.
       const key = normalizeOrderNumber(t.orderNumber);
       if (!key) return;
-      const o = (map[key] ||= { orderNumber: key, client: '', hasSale: false, revenue: 0, cost: 0, saleDate: null, firstDate: null });
+      const o = (map[key] ||= { orderNumber: key, client: '', hasSale: false, revenue: 0, cost: 0, saleDate: null, firstDate: null, projectNumber: '' });
+      // A row-carried project # is the fallback for budget-#'d orders that have no
+      // Order doc to join on (the doc-derived map below wins when both exist).
+      if (!o.projectNumber && t.projectNumber) o.projectNumber = String(t.projectNumber);
       const d = t.date && !isNaN(new Date(t.date).getTime()) ? new Date(t.date) : null;
       if (d && (!o.firstDate || d < o.firstDate)) o.firstDate = d;
       if (t.type === 'income') {
@@ -858,6 +939,8 @@ const byOrder = async (req, res) => {
           // Prefer the order-resolved key; fall back to the client name so every
           // row links to its CRM card, not just the ones with a linked Order doc.
           companyKey: ckByOrder[o.orderNumber] || deriveCompanyKey(o.client),
+          // Order-doc project # wins; a row-carried one covers budget-only orders.
+          projectNumber: projByOrder[o.orderNumber] || o.projectNumber || '',
           year: anchor ? new Date(anchor).getUTCFullYear() : null,
           revenue: round2(o.revenue), cost: round2(o.cost), profit,
           margin: pct(profit, o.revenue),
@@ -865,7 +948,49 @@ const byOrder = async (req, res) => {
       });
     if (year) orders = orders.filter((o) => o.year === year);  // by the year it SOLD, not by cost dates
     orders.sort((a, b) => Number(b.orderNumber) - Number(a.orderNumber));
-    res.json({ orders });
+    return orders;
+}
+
+const byOrder = async (req, res) => {
+  try {
+    const year = req.query.year ? Number(req.query.year) : null;
+    res.json({ orders: await computeOrderPnl(year) });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+// GET /api/finances/by-project?year=  — the per-PROJECT P&L. Same buckets as
+// byOrder (same sale-anchored year, same signing rules), folded one level up: all
+// of a project's orders/invoices roll into one row, so a project that spans a
+// deposit invoice + a balance invoice + a reprint reads as ONE piece of work.
+// Orders with no resolvable project # stay as their own single-order rows (the
+// row's projectNumber is '' and its order # is the label) — nothing is hidden.
+const byProject = async (req, res) => {
+  try {
+    const year = req.query.year ? Number(req.query.year) : null;
+    const rows = await computeOrderPnl(year);
+    const map = {};
+    rows.forEach((r) => {
+      const key = r.projectNumber || `order:${r.orderNumber}`;
+      const p = (map[key] ||= {
+        projectNumber: r.projectNumber || '', orderNumbers: [],
+        client: '', companyKey: '', revenue: 0, cost: 0,
+      });
+      p.orderNumbers.push(r.orderNumber);
+      if (!p.client && r.client) p.client = r.client;
+      if (!p.companyKey && r.companyKey) p.companyKey = r.companyKey;
+      p.revenue += r.revenue;
+      p.cost += r.cost;
+    });
+    const projects = Object.values(map).map((p) => {
+      const revenue = round2(p.revenue);
+      const cost = round2(p.cost);
+      const profit = round2(revenue - cost);
+      return { ...p, revenue, cost, profit, margin: pct(profit, revenue) };
+    });
+    projects.sort((a, b) =>
+      (Number(b.projectNumber) || 0) - (Number(a.projectNumber) || 0)
+      || (Number(b.orderNumbers[0]) || 0) - (Number(a.orderNumbers[0]) || 0));
+    res.json({ projects });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
@@ -1095,12 +1220,13 @@ const resyncYears = async () => {
   return fixed;
 };
 
-module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears };
+module.exports = { importCsv, list, create, update, remove, summary, byOrder, byProject, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears, config };
 // Reusable, DB-free finance math for other surfaces (CRM company page, the order
 // view) + tests. All keyed off the SAME Transaction truth via these helpers.
 module.exports.summarizeCompanyFinance = summarizeCompanyFinance;
 module.exports.normalizeOrderNumber = normalizeOrderNumber;
 module.exports.companyKeyByOrderNumber = companyKeyByOrderNumber;
+module.exports.projectNumberByOrderNumber = projectNumberByOrderNumber;
 module.exports.orderRevenueCost = orderRevenueCost;
 module.exports.orderActualCost = orderActualCost;
 module.exports.actualCostByOrder = actualCostByOrder;

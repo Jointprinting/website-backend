@@ -1265,6 +1265,27 @@ const PATCHABLE = [
   'dealValue', 'contacts', 'source', 'tags', 'lostReason', 'doNotEmail',
 ];
 
+// Normalize a PATCHed contacts array: known fields only, strings trimmed, rows
+// that are entirely blank dropped, and AT MOST ONE ★ primary (first starred one
+// wins — the UI stars one at a time, this just makes the invariant unbreakable).
+// Blanks are dropped BEFORE the star is assigned, so a starred-but-empty row
+// can never consume the one primary and then vanish (which would silently
+// un-star the real main contact). Pure + exported for tests.
+function sanitizeContacts(raw) {
+  let sawPrimary = false;
+  return (Array.isArray(raw) ? raw : [])
+    .map((c) => {
+      const s = (v) => String(v == null ? '' : v).trim();
+      return { name: s(c && c.name), role: s(c && c.role), phone: s(c && c.phone), email: s(c && c.email), isPrimary: !!(c && c.isPrimary) };
+    })
+    .filter((c) => c.name || c.role || c.phone || c.email)
+    .map((c) => {
+      const keep = c.isPrimary && !sawPrimary;
+      if (keep) sawPrimary = true;
+      return { ...c, isPrimary: keep };
+    });
+}
+
 // PATCH /api/crm/:companyKey — upsert/update CRM fields.
 // Two helper intents (composable with plain field edits):
 //   • log a touch: { logText, kind?, nextFollowUp? }
@@ -1291,6 +1312,21 @@ async function patchOne(req, res) {
           return res.status(400).json({ message: `invalid stage "${body.stage}"` });
         }
         set[f] = body[f];
+      }
+    }
+
+    // Contacts: sanitize the wholesale array (same mechanism tags use), then
+    // mirror the ★ primary's phone/email to the legacy top-level fields — the
+    // fields every surface (rows, Today, right-click Call/Text/Email, heads-up)
+    // reads via primaryPhone/primaryEmail. Mirror NON-EMPTY values only (a
+    // starred contact without a phone must not wipe a working number), and an
+    // explicit phone/email in the SAME patch always wins over the mirror.
+    if ('contacts' in body) {
+      set.contacts = sanitizeContacts(body.contacts);
+      const prim = set.contacts.find((c) => c.isPrimary);
+      if (prim) {
+        if (prim.phone && !('phone' in body)) set.phone = prim.phone;
+        if (prim.email && !('email' in body)) set.email = prim.email;
       }
     }
 
@@ -2138,6 +2174,41 @@ async function deleteLogEntry(req, res) {
   }
 }
 
+// PATCH /api/crm/:companyKey/log/:entryId — reword ONE logged touch (fix a typo,
+// tighten a note) without disturbing its timestamp or kind unless the caller
+// sends one. Targets the entry by _id with the SAME numeric-index fallback the
+// delete uses, so legacy entries that predate stable ids are editable too.
+async function updateLogEntry(req, res) {
+  try {
+    const key = req.params.companyKey;
+    const id = String(req.params.entryId == null ? '' : req.params.entryId);
+    if (!key) return res.status(400).json({ message: 'companyKey required' });
+    const body = req.body || {};
+    const doc = await Client.findOne({ companyKey: key });
+    if (!doc) return res.status(404).json({ message: 'No CRM record for that key.' });
+
+    const arr = Array.isArray(doc.log) ? doc.log : [];
+    let idx = arr.findIndex((e) => e && e._id != null && String(e._id) === id);
+    if (idx < 0 && /^\d+$/.test(id)) {
+      const n = Number(id);
+      if (n >= 0 && n < arr.length) idx = n;
+    }
+    if (idx < 0) return res.status(404).json({ message: 'Log entry not found.' });
+
+    if (typeof body.text === 'string') {
+      const text = body.text.trim();
+      if (!text) return res.status(400).json({ message: 'text cannot be empty — delete the entry instead' });
+      arr[idx].text = text;
+    }
+    if (typeof body.kind === 'string' && body.kind) arr[idx].kind = body.kind;
+    doc.markModified('log');
+    await doc.save();
+    res.json({ ok: true, client: doc.toObject() });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
 // POST /api/crm/:companyKey/archive — soft-archive THIS one card (owner: "fine
 // removing their card"). NEVER hard-deletes; the record + its order links + log
 // are fully preserved and restorable. Archived cards drop out of every working
@@ -2358,10 +2429,12 @@ module.exports = {
   archiveCompanies,
   unarchiveCompanies,
   deleteLogEntry,
+  updateLogEntry,
   archiveOne,
   unarchiveOne,
   matchCandidates,
   // exported for tests / reuse
+  sanitizeContacts,
   rankMatchCandidates,
   scoreNameMatch,
   groupDuplicateDocs,

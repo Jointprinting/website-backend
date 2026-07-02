@@ -10,8 +10,10 @@ const orderReconcile = require('../controllers/orderReconcile');
 router.use(requireAdmin);
 
 // Literal/report routes first.
+router.get('/config', ctl.config);        // finance vocabulary (categories/COGS/fee rates) from the model — the anti-drift source the Studio reads on mount
 router.get('/summary', ctl.summary);
 router.get('/by-order', ctl.byOrder);
+router.get('/by-project', ctl.byProject); // per-project P&L (orders folded up by projectNumber)
 router.get('/by-month', ctl.byMonth);
 router.get('/by-client', ctl.byClient);
 router.get('/order-actuals', ctl.orderActuals);

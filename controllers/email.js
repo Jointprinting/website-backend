@@ -256,6 +256,5 @@ function customerAutoReplyText(c, products) {
   ].join('\n');
 }
 
-exports.sendMockupRequest = async (req, res) => {
-  return exports.sendContactEmail(req, res);
-};
+// sendMockupRequest (a thin alias of sendContactEmail) was retired along with the
+// public /customize page — /api/email/send-contact is the one submission path.
