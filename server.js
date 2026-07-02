@@ -94,6 +94,11 @@ db.once('open', () => {
   // volume must never ride the main transactional identity.
   require('./services/outreachEngine').startOutreachEngine();
 
+  // Self-advancing lead finder: weekly, works the frontier region until it's dry
+  // then steps to the next state. Free (OSM + own-site scrape); idle until the
+  // owner enables auto-advance from the Studio.
+  require('./services/leadFinderScheduler').startLeadFinderScheduler();
+
   // Weekly push of the full backup (incl. R2 receipt images) to Google Drive.
   // No-op until the admin connects Drive — safe to start unconditionally.
   require('./services/gdriveBackup').startGoogleDriveBackup();

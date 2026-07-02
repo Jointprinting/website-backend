@@ -13,7 +13,8 @@
 // Cost: $0. OSM is free/keyless; enrichment only fetches pages the shops publish
 // themselves. A per-run scrape cap keeps a sweep bounded and polite.
 
-const { fetchDispensaries, isRegion, DEFAULT_REGION, REGIONS, ADJACENT } = require('./dispensaryFinder');
+const { fetchDispensaries, isRegion, DEFAULT_REGION, REGIONS, NATIONAL_ROLLOUT } = require('./dispensaryFinder');
+const LeadFinderState = require('../models/LeadFinderState');
 const { enrichWebsite } = require('./emailEnricher');
 const LeadFinderRun = require('../models/LeadFinderRun');
 const Client = require('../models/Client');
@@ -121,17 +122,28 @@ async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich } 
   return result;
 }
 
-// Status for the Studio: recent runs + per-region last-swept + suggested next
-// region to expand into once the current one is worked through.
+// Status for the Studio: the auto-pilot frontier + recent runs + per-region
+// last-swept, in national-rollout order (so the UI can show the frontier line).
 async function finderStatus() {
-  const runs = await LeadFinderRun.find({ dryRun: false }).sort({ createdAt: -1 }).limit(10).lean();
+  const [runs, state] = await Promise.all([
+    LeadFinderRun.find({ dryRun: false }).sort({ createdAt: -1 }).limit(10).lean(),
+    LeadFinderState.findOne({ key: 'frontier' }).lean(),
+  ]);
   const lastByRegion = {};
   for (const r of runs) if (!lastByRegion[r.region]) lastByRegion[r.region] = r;
+  const activeRegion = (state && state.activeRegion) || DEFAULT_REGION;
   return {
-    regions: Object.entries(REGIONS).map(([id, r]) => ({
-      id, label: r.label, last: lastByRegion[id] || null,
-    })),
-    adjacency: ADJACENT,
+    frontier: {
+      activeRegion,
+      activeLabel: REGIONS[activeRegion] ? REGIONS[activeRegion].label : activeRegion,
+      autoAdvance: !!(state && state.autoAdvance),
+      dryStreak: (state && state.dryStreak) || 0,
+      lastRunAt: state ? state.lastRunAt : null,
+      lastResult: state ? state.lastResult : '',
+    },
+    regions: NATIONAL_ROLLOUT
+      .filter((id) => REGIONS[id])
+      .map((id) => ({ id, label: REGIONS[id].label, last: lastByRegion[id] || null })),
     recentRuns: runs,
   };
 }

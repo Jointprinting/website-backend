@@ -32,6 +32,7 @@ async function keysWithPlacedOrders(keys) {
 }
 const { engineStatus, runOutreachTick, newToken, pickEmail, sendBlockReason } = require('../services/outreachEngine');
 const { runFinder, finderStatus } = require('../services/leadFinderRunner');
+const { runFrontierSweep, getState } = require('../services/leadFinderScheduler');
 const { REGIONS, isRegion } = require('../services/dispensaryFinder');
 const { etToday } = require('../utils/time');
 
@@ -434,6 +435,37 @@ async function findLeads(req, res) {
   }
 }
 
+// POST /api/outreach/find-leads/auto { enabled?, activeRegion? }
+// Toggle the self-advancing auto-pilot and/or jump the frontier to a region.
+async function setAutoAdvance(req, res) {
+  try {
+    const body = req.body || {};
+    const state = await getState();
+    if ('enabled' in body) state.autoAdvance = body.enabled === true || body.enabled === 'true';
+    if (body.activeRegion) {
+      if (!isRegion(body.activeRegion)) {
+        return res.status(400).json({ message: `unknown region "${body.activeRegion}"` });
+      }
+      state.activeRegion = body.activeRegion;
+      state.dryStreak = 0;
+    }
+    await state.save();
+    res.json(await finderStatus());
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
+// POST /api/outreach/find-leads/auto/run — run one auto-pilot tick now (sweep the
+// active region + advance the frontier if it's dry), regardless of the toggle.
+async function runAutoNow(req, res) {
+  try {
+    res.json(await runFrontierSweep({ force: true }));
+  } catch (e) {
+    res.status(502).json({ message: e.message });
+  }
+}
+
 // ── Public routes (no auth — token-keyed) ─────────────────────────────────────
 
 // 1×1 transparent PNG for the open pixel.
@@ -516,6 +548,8 @@ module.exports = {
   unsubscribe,
   getFinderStatus,
   findLeads,
+  setAutoAdvance,
+  runAutoNow,
   // exported for tests
   summarizeEnrollments,
   enrollBlockReason,

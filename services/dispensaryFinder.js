@@ -39,13 +39,60 @@ const REGIONS = {
   de: { label: 'Delaware',     bbox: [38.44, -75.80, 39.84, -75.03] },
   md: { label: 'Maryland',     bbox: [37.88, -79.49, 39.72, -75.04] },
   ma: { label: 'Massachusetts',bbox: [41.23, -73.51, 42.89, -69.86] },
+  ri: { label: 'Rhode Island', bbox: [41.15, -71.91, 42.02, -71.12] },
+  vt: { label: 'Vermont',      bbox: [42.73, -73.44, 45.02, -71.46] },
+  me: { label: 'Maine',        bbox: [42.98, -71.08, 47.46, -66.95] },
+  va: { label: 'Virginia',     bbox: [36.54, -83.68, 39.47, -75.24] },
+  oh: { label: 'Ohio',         bbox: [38.40, -84.82, 41.98, -80.52] },
+  mi: { label: 'Michigan',     bbox: [41.70, -90.42, 48.31, -82.12] },
+  il: { label: 'Illinois',     bbox: [36.97, -91.51, 42.51, -87.02] },
+  mn: { label: 'Minnesota',    bbox: [43.50, -97.24, 49.38, -89.49] },
+  mo: { label: 'Missouri',     bbox: [35.99, -95.77, 40.61, -89.10] },
+  az: { label: 'Arizona',      bbox: [31.33, -114.82, 37.00, -109.04] },
+  co: { label: 'Colorado',     bbox: [36.99, -109.06, 41.00, -102.04] },
+  nm: { label: 'New Mexico',   bbox: [31.33, -109.05, 37.00, -103.00] },
+  nv: { label: 'Nevada',       bbox: [35.00, -120.01, 42.00, -114.04] },
+  ca: { label: 'California',   bbox: [32.53, -124.41, 42.01, -114.13] },
+  or: { label: 'Oregon',       bbox: [41.99, -124.57, 46.29, -116.46] },
+  wa: { label: 'Washington',   bbox: [45.54, -124.85, 49.00, -116.92] },
+  mt: { label: 'Montana',      bbox: [44.36, -116.05, 49.00, -104.04] },
+  ak: { label: 'Alaska',       bbox: [51.21, -179.15, 71.44, -129.98] },
 };
 const DEFAULT_REGION = 'nj';
-// Suggested expansion order once a region is worked through (NJ → its neighbors).
-const ADJACENT = { nj: ['ny', 'pa', 'de'], ny: ['ct', 'ma', 'pa'], pa: ['md', 'de'] };
+
+// The national rollout order the auto-pilot advances through: NJ first, then
+// outward by proximity, then the rest of the adult-use map. The scheduler works
+// the active region until it stops turning up NEW shops, then steps to the next
+// here — and WRAPS at the end, so it periodically loops back to catch newly
+// opened dispensaries. Only ids present in REGIONS are valid.
+const NATIONAL_ROLLOUT = [
+  'nj', 'ny', 'pa', 'ct', 'de', 'md', 'ma', 'ri', 'vt', 'me',
+  'va', 'oh', 'mi', 'il', 'mn', 'mo', 'az', 'co', 'nm', 'nv',
+  'ca', 'or', 'wa', 'mt', 'ak',
+];
 
 function regionIds() { return Object.keys(REGIONS); }
 function isRegion(id) { return Object.prototype.hasOwnProperty.call(REGIONS, id); }
+
+// The region AFTER `region` in the rollout, wrapping at the end. Unknown → first.
+// Pure + testable.
+function nextRegionAfter(region, rollout = NATIONAL_ROLLOUT) {
+  const i = rollout.indexOf(region);
+  if (i < 0) return rollout[0];
+  return rollout[(i + 1) % rollout.length];
+}
+
+// The auto-pilot's per-run decision. A run that imported NO new leads is "dry";
+// after `advanceAfter` consecutive dry runs the frontier steps to the next
+// region (a region can legitimately go quiet for a run, so we don't jump on the
+// first empty result). Any run that finds new leads resets the streak. Pure +
+// testable — the scheduler is just I/O around this.
+function decideFrontier({ region, created, dryStreak = 0, rollout = NATIONAL_ROLLOUT, advanceAfter = 2 }) {
+  if ((Number(created) || 0) > 0) return { region, dryStreak: 0, advanced: false };
+  const streak = (Number(dryStreak) || 0) + 1;
+  if (streak >= advanceAfter) return { region: nextRegionAfter(region, rollout), dryStreak: 0, advanced: true };
+  return { region, dryStreak: streak, advanced: false };
+}
 
 // One Overpass QL query for every cannabis retailer in a bbox. We match the
 // tag combos OSM actually uses for dispensaries, on nodes AND ways (buildings),
@@ -146,7 +193,7 @@ async function fetchDispensaries(regionId = DEFAULT_REGION) {
 module.exports = {
   REGIONS,
   DEFAULT_REGION,
-  ADJACENT,
+  NATIONAL_ROLLOUT,
   regionIds,
   isRegion,
   fetchDispensaries,
@@ -155,4 +202,6 @@ module.exports = {
   osmAddress,
   normalizeWebsite,
   parseOverpassElements,
+  nextRegionAfter,
+  decideFrontier,
 };

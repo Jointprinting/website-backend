@@ -12,6 +12,7 @@ const assert = require('node:assert/strict');
 
 const {
   buildOverpassQuery, osmAddress, normalizeWebsite, parseOverpassElements, isRegion,
+  nextRegionAfter, decideFrontier, NATIONAL_ROLLOUT,
 } = require('../dispensaryFinder');
 const {
   sanitizeEmail, extractEmails, pickBestEmail, findContactLink, hostOf,
@@ -136,4 +137,37 @@ test('findContactLink finds a same-site contact page, ignores off-site + mailto'
 test('hostOf strips www and lowercases', () => {
   assert.equal(hostOf('https://WWW.GreenLeaf.com/contact'), 'greenleaf.com');
   assert.equal(hostOf('not a url'), '');
+});
+
+// ── Auto-advancing frontier ──────────────────────────────────────────────────
+test('NATIONAL_ROLLOUT starts at NJ and every id is a real region', () => {
+  assert.equal(NATIONAL_ROLLOUT[0], 'nj');
+  for (const id of NATIONAL_ROLLOUT) assert.equal(isRegion(id), true, `unknown region "${id}"`);
+});
+
+test('nextRegionAfter steps forward and wraps at the end', () => {
+  assert.equal(nextRegionAfter('nj'), 'ny');
+  assert.equal(nextRegionAfter('ny'), 'pa');
+  assert.equal(nextRegionAfter(NATIONAL_ROLLOUT[NATIONAL_ROLLOUT.length - 1]), 'nj'); // wraps
+  assert.equal(nextRegionAfter('zz'), 'nj'); // unknown → start
+});
+
+test('decideFrontier: new leads reset the streak and hold the region', () => {
+  assert.deepEqual(
+    decideFrontier({ region: 'nj', created: 4, dryStreak: 1 }),
+    { region: 'nj', dryStreak: 0, advanced: false },
+  );
+});
+
+test('decideFrontier: advances only after N consecutive dry sweeps', () => {
+  // First dry sweep — hold, streak → 1.
+  assert.deepEqual(
+    decideFrontier({ region: 'nj', created: 0, dryStreak: 0, advanceAfter: 2 }),
+    { region: 'nj', dryStreak: 1, advanced: false },
+  );
+  // Second dry sweep — advance to NY, reset streak.
+  assert.deepEqual(
+    decideFrontier({ region: 'nj', created: 0, dryStreak: 1, advanceAfter: 2 }),
+    { region: 'ny', dryStreak: 0, advanced: true },
+  );
 });
