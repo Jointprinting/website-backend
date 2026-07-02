@@ -997,41 +997,6 @@ const byOrder = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
-// GET /api/finances/by-project?year=  — the per-PROJECT P&L. Same buckets as
-// byOrder (same sale-anchored year, same signing rules), folded one level up: all
-// of a project's orders/invoices roll into one row, so a project that spans a
-// deposit invoice + a balance invoice + a reprint reads as ONE piece of work.
-// Orders with no resolvable project # stay as their own single-order rows (the
-// row's projectNumber is '' and its order # is the label) — nothing is hidden.
-const byProject = async (req, res) => {
-  try {
-    const year = req.query.year ? Number(req.query.year) : null;
-    const rows = await computeOrderPnl(year);
-    const map = {};
-    rows.forEach((r) => {
-      const key = r.projectNumber || `order:${r.orderNumber}`;
-      const p = (map[key] ||= {
-        projectNumber: r.projectNumber || '', orderNumbers: [],
-        client: '', companyKey: '', revenue: 0, cost: 0,
-      });
-      p.orderNumbers.push(r.orderNumber);
-      if (!p.client && r.client) p.client = r.client;
-      if (!p.companyKey && r.companyKey) p.companyKey = r.companyKey;
-      p.revenue += r.revenue;
-      p.cost += r.cost;
-    });
-    const projects = Object.values(map).map((p) => {
-      const revenue = round2(p.revenue);
-      const cost = round2(p.cost);
-      const profit = round2(revenue - cost);
-      return { ...p, revenue, cost, profit, margin: pct(profit, revenue) };
-    });
-    projects.sort((a, b) =>
-      (Number(b.projectNumber) || 0) - (Number(a.projectNumber) || 0)
-      || (Number(b.orderNumbers[0]) || 0) - (Number(a.orderNumbers[0]) || 0));
-    res.json({ projects });
-  } catch (e) { res.status(500).json({ message: e.message }); }
-};
 
 // GET /api/finances/payment-gaps?year=  — the "money owed to you / unrecorded
 // payments" lens: per order, billed vs collected vs cost, flagging orders with
@@ -1347,7 +1312,7 @@ const backfillTransactionLinks = async () => {
   return { projFilled, vendorFilled, scanned: rows.length };
 };
 
-module.exports = { importCsv, list, create, update, remove, summary, byOrder, byProject, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears, backfillTransactionLinks, config };
+module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears, backfillTransactionLinks, config };
 module.exports.buildLedgerCsv = buildLedgerCsv;
 // Reusable, DB-free finance math for other surfaces (CRM company page, the order
 // view) + tests. All keyed off the SAME Transaction truth via these helpers.
