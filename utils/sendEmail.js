@@ -27,6 +27,12 @@ const sendEmail = async (options) => {
     if (options.replyTo) mailOptions.replyTo = options.replyTo;
     if (options.headers) mailOptions.headers = options.headers;   // e.g. List-Unsubscribe
     if (options.textAlt) mailOptions.text = options.textAlt;      // plain-text alternative part
+    // A caller-supplied stable Message-ID (the outreach engine keys one per
+    // enrollment+step) lets the provider dedupe if a crash-retry re-sends the
+    // same step, and lets follow-ups thread via In-Reply-To/References.
+    if (options.messageId) mailOptions.messageId = options.messageId;
+    if (options.inReplyTo) mailOptions.inReplyTo = options.inReplyTo;
+    if (options.references) mailOptions.references = options.references;
 
     // FIX 2: Replace the Promise wrapper with direct async/await call (cleaner)
     try {

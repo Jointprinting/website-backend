@@ -23,6 +23,10 @@ const {
   bodyToHtml,
   pickEmail,
   isPermanentSmtpError,
+  transientBackoffMs,
+  jitteredFollowUpAt,
+  variableBatch,
+  outreachMessageId,
 } = require('../outreachEngine');
 
 // ── Warm-up ramp (doubles weekly) ────────────────────────────────────────────
@@ -175,4 +179,43 @@ test('isPermanentSmtpError: temporary / unknown = NOT permanent (retry)', () => 
   assert.equal(isPermanentSmtpError({ message: 'socket hang up' }), false);
   assert.equal(isPermanentSmtpError(null), false);
   assert.equal(isPermanentSmtpError({}), false);
+});
+
+// ── Wave 3: engine hardening (pacing / backoff / idempotency) ─────────────────
+test('transientBackoffMs grows 30m → 2h → 6h and then holds', () => {
+  assert.equal(transientBackoffMs(1), 30 * 60 * 1000);
+  assert.equal(transientBackoffMs(2), 2 * 60 * 60 * 1000);
+  assert.equal(transientBackoffMs(3), 6 * 60 * 60 * 1000);
+  assert.equal(transientBackoffMs(4), 6 * 60 * 60 * 1000); // clamped
+  assert.equal(transientBackoffMs(0), 30 * 60 * 1000);     // floored
+});
+
+test('jitteredFollowUpAt lands offsetDays out, jittered within ±3h of the target', () => {
+  const base = new Date('2026-07-03T14:00:00Z');
+  const target = base.getTime() + 3 * 86400000;
+  const mid = jitteredFollowUpAt(base, 3, 0.5).getTime();   // rand .5 → no jitter
+  assert.equal(mid, target);
+  const lo = jitteredFollowUpAt(base, 3, 0).getTime();      // rand 0 → -3h
+  const hi = jitteredFollowUpAt(base, 3, 1).getTime();      // rand 1 → +3h
+  assert.equal(lo, target - 3 * 60 * 60 * 1000);
+  assert.equal(hi, target + 3 * 60 * 60 * 1000);
+  // Never schedules in under a day, even with offset 0 and full negative jitter.
+  assert.ok(jitteredFollowUpAt(base, 0, 0).getTime() >= base.getTime() + 86400000 - 3 * 60 * 60 * 1000);
+});
+
+test('variableBatch varies around the base but never below 1', () => {
+  assert.equal(variableBatch(5, 0), 4);      // -1
+  assert.equal(variableBatch(5, 0.5), 6);    // +1
+  assert.equal(variableBatch(5, 0.99), 7);   // +2
+  assert.equal(variableBatch(1, 0), 1);      // floored at 1
+});
+
+test('outreachMessageId is stable per (enrollment, step) for provider dedupe', () => {
+  const enr = { _id: 'abc123' };
+  const a = outreachMessageId(enr, 0);
+  const b = outreachMessageId(enr, 0);
+  const c = outreachMessageId(enr, 1);
+  assert.equal(a, b);          // same step → identical id (a retry dedupes)
+  assert.notEqual(a, c);       // next step → different id
+  assert.match(a, /^<outreach-abc123-0@.+>$/);
 });
