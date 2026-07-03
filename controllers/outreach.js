@@ -46,7 +46,7 @@ const NOT_ARCHIVED = { archived: { $ne: true } };
 function summarizeEnrollments(rows = []) {
   const s = {
     enrolled: 0, active: 0, sent: 0, opened: 0, replied: 0,
-    completed: 0, unsubscribed: 0, stopped: 0, failed: 0,
+    completed: 0, unsubscribed: 0, stopped: 0, failed: 0, noEmail: 0,
   };
   for (const e of rows) {
     if (!e) continue;
@@ -54,8 +54,56 @@ function summarizeEnrollments(rows = []) {
     if ((e.sends || []).length > 0) s.sent += 1;
     if ((e.openCount || 0) > 0 || e.lastOpenedAt) s.opened += 1;
     if (e.status && s[e.status] != null) s[e.status] += 1;
+    // The silent killer: enrolled but no address to send to → stopped 'no-email'.
+    // Counted separately so the UI can say exactly why nothing is going out.
+    if (e.status === 'stopped' && e.stopReason === 'no-email') s.noEmail += 1;
   }
   return s;
+}
+
+// Pure campaign-health read (unit-tested): turns funnel stats into one
+// at-a-glance signal the UI badges, and — critically — explains WHY a campaign
+// isn't sending instead of leaving the owner staring at zeros. Levels:
+// 'ok' (green) | 'warn' (amber) | 'action' (red — needs a decision).
+function campaignHealth(campaign = {}, stats = {}) {
+  const st = { enrolled: 0, active: 0, sent: 0, replied: 0, completed: 0, noEmail: 0, ...stats };
+  const status = campaign.status || 'draft';
+  if (status === 'draft')  return { level: 'warn', label: 'Draft', hint: 'Launch it when the steps read right.' };
+  if (status === 'paused') return { level: 'warn', label: 'Paused', hint: 'Sends are halted — resume to continue the drip.' };
+  if (status === 'archived') return { level: 'warn', label: 'Archived', hint: 'This campaign is retired.' };
+  if (st.enrolled === 0) return { level: 'warn', label: 'No leads yet', hint: 'Enroll companies to start the sequence.' };
+  // Active but nothing is (or can be) sending — say precisely why.
+  if (st.noEmail > 0 && st.sent === 0) {
+    return { level: 'action', label: `${st.noEmail} missing email`,
+      hint: `${st.noEmail} enrolled ${st.noEmail === 1 ? 'lead has' : 'leads have'} no email address, so nothing can send. Enroll leads that have emails (Find leads filters to emailable), or add addresses to these.` };
+  }
+  if (st.active === 0 && st.sent === 0) {
+    return { level: 'action', label: 'Nothing sending',
+      hint: 'Every enrolled lead stopped before a send (missing email, unsubscribed, or became a customer). Enroll fresh leads to start the drip.' };
+  }
+  if (st.active === 0 && st.completed > 0) {
+    return { level: 'warn', label: 'Sequence complete',
+      hint: 'Everyone finished the sequence. Enroll fresh leads, or add a follow-up touch to keep it warm.' };
+  }
+  if (st.sent >= 15 && (st.replied / st.sent) < 0.02) {
+    return { level: 'warn', label: 'Low reply rate',
+      hint: `Only ${st.replied} of ${st.sent} sent have replied. Try a sharper subject line or opener.` };
+  }
+  return { level: 'ok', label: 'Sending',
+    hint: `${st.active} in sequence · ${st.sent} sent · ${st.replied} replied.` };
+}
+
+// Fire a catch-up tick when the dashboard is opened and the in-process cron may
+// have missed a beat (host idled/restarted). Guarded so it only fires when the
+// window is open, the sender is configured, and the last real run is stale —
+// so it costs nothing on the happy path and never blocks the response.
+function maybeSelfHealTick(engine) {
+  try {
+    if (!engine || !engine.withinWindow || !engine.smtpConfigured || !engine.senderConfigured) return;
+    const last = engine.lastRunAt ? new Date(engine.lastRunAt).getTime() : 0;
+    if (Date.now() - last < 20 * 60 * 1000) return; // fresh — the cron has it
+    runOutreachTick().catch(() => {}); // fire-and-forget; the tick self-guards against overlap
+  } catch { /* never let self-heal break the overview */ }
 }
 
 // ── Campaigns ─────────────────────────────────────────────────────────────────
@@ -77,10 +125,13 @@ async function getOverview(req, res) {
       if (!byCampaign.has(k)) byCampaign.set(k, []);
       byCampaign.get(k).push(e);
     }
-    const campaignRows = campaigns.map((c) => ({
-      ...c,
-      stats: summarizeEnrollments(byCampaign.get(String(c._id)) || []),
-    }));
+    // Opening the dashboard nudges a catch-up send if the cron may have idled.
+    maybeSelfHealTick(engine);
+
+    const campaignRows = campaigns.map((c) => {
+      const stats = summarizeEnrollments(byCampaign.get(String(c._id)) || []);
+      return { ...c, stats, health: campaignHealth(c, stats) };
+    });
     const campaignName = new Map(campaigns.map((c) => [String(c._id), c.name]));
 
     // Warm = engaged: replied first (hottest), then multi-opens, then single
@@ -172,6 +223,26 @@ async function updateCampaign(req, res) {
     const campaign = await OutreachCampaign.findByIdAndUpdate(req.params.id, { $set: set }, { new: true }).lean();
     if (!campaign) return res.status(404).json({ message: 'campaign not found' });
     res.json({ campaign });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
+// POST /api/outreach/campaigns/:id/launch — the one-click "go". Flips the
+// campaign to 'active' AND kicks a send tick immediately, so touch 1 goes out
+// now (within the send window) instead of waiting up to 15 min for the cron.
+// Everything after that — the follow-up touches, the daily pacing — the engine
+// handles on its own. Returns whether a batch actually fired so the UI can say so.
+async function launchCampaign(req, res) {
+  try {
+    const campaign = await OutreachCampaign.findByIdAndUpdate(
+      req.params.id, { $set: { status: 'active' } }, { new: true },
+    ).lean();
+    if (!campaign) return res.status(404).json({ message: 'campaign not found' });
+    // Kick a tick now; report the result so the UI can show "sent N" or the
+    // exact reason it held (outside window, cap reached, nothing due).
+    const tick = await runOutreachTick().catch((e) => ({ error: e.message }));
+    res.json({ campaign, tick });
   } catch (e) {
     res.status(400).json({ message: e.message });
   }
@@ -294,8 +365,12 @@ async function enrollCompanies(req, res) {
       const reason = enrollBlockReason(client, enrolledSet.has(key), customerKeys.has(key));
       if (reason) { skipped.push({ companyKey: key, reason }); continue; }
       const email = String(pickEmail(client) || '').toLowerCase();
-      if (email && usedEmails.has(email)) { skipped.push({ companyKey: key, reason: 'duplicate-email' }); continue; }
-      if (email) usedEmails.add(email);
+      // Belt-and-suspenders: gate enroll-eligibility on the SAME pickEmail() the
+      // sender uses, so a lead can never pass enroll but then stop 'no-email' on
+      // its first tick (leaving the owner with "N enrolled, 0 sent, no reason").
+      if (!email) { skipped.push({ companyKey: key, reason: 'no-email' }); continue; }
+      if (usedEmails.has(email)) { skipped.push({ companyKey: key, reason: 'duplicate-email' }); continue; }
+      usedEmails.add(email);
       eligible.push(client);
     }
 
@@ -732,6 +807,7 @@ module.exports = {
   getOverview,
   createCampaign,
   updateCampaign,
+  launchCampaign,
   getCampaign,
   getCandidates,
   enrollCompanies,
@@ -749,6 +825,7 @@ module.exports = {
   bounceWebhook,
   // exported for tests
   summarizeEnrollments,
+  campaignHealth,
   enrollBlockReason,
   sanitizeSteps,
   extractBounceEmails,
