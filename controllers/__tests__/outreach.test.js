@@ -167,3 +167,43 @@ test('classifyBounceEvent splits complaint / hard / soft / unknown', () => {
   assert.equal(classifyBounceEvent({ reason: 'mailbox full', category: 'temporary' }), 'soft');
   assert.equal(classifyBounceEvent({ email: 'a@b.com' }), 'unknown'); // no event field
 });
+
+// ── Wave 6: per-step drop-off funnel + bounce/unsub health ────────────────────
+const { buildStepFunnel } = require('../outreach');
+test('buildStepFunnel attributes sends/opens per touch and reply/unsub to the last touch', () => {
+  const enr = [
+    // received touch 0 + 1, opened touch 0, replied after touch 1
+    { status: 'replied', sends: [{ stepIndex: 0, openedAt: new Date() }, { stepIndex: 1 }] },
+    // received touch 0 only, unsubscribed after it
+    { status: 'unsubscribed', sends: [{ stepIndex: 0 }] },
+    // received touches 0,1,2 — still active
+    { status: 'active', sends: [{ stepIndex: 0 }, { stepIndex: 1 }, { stepIndex: 2, openedAt: new Date() }] },
+    { status: 'active', sends: [] }, // never sent
+  ];
+  const f = buildStepFunnel(enr);
+  assert.equal(f.length, 3);
+  assert.equal(f[0].sent, 3);          // three leads got touch 0
+  assert.equal(f[0].opened, 1);
+  assert.equal(f[0].unsubscribed, 1);  // unsub attributed to touch 0 (their last)
+  assert.equal(f[1].sent, 2);
+  assert.equal(f[1].replied, 1);       // reply attributed to touch 1 (their last)
+  assert.equal(f[2].sent, 1);
+  assert.equal(f[2].opened, 1);
+});
+
+test('buildStepFunnel is empty for no data', () => {
+  assert.deepEqual(buildStepFunnel([]), []);
+  assert.deepEqual(buildStepFunnel(), []);
+});
+
+test('campaignHealth flags a high bounce rate as action (deliverability first)', () => {
+  const h = campaignHealth({ status: 'active' }, { enrolled: 40, active: 10, sent: 30, replied: 1, bounced: 4 });
+  assert.equal(h.level, 'action');
+  assert.match(h.label, /bouncing/);
+});
+
+test('campaignHealth flags a high unsubscribe rate as warn', () => {
+  const h = campaignHealth({ status: 'active' }, { enrolled: 40, active: 20, sent: 30, replied: 1, unsubscribed: 2 });
+  assert.equal(h.level, 'warn');
+  assert.match(h.label, /unsubscribe/i);
+});
