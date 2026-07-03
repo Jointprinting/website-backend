@@ -17,7 +17,11 @@ const {
 } = require('../dispensaryFinder');
 const {
   sanitizeEmail, extractEmails, pickBestEmail, findContactLink, hostOf,
+  rankContactLinks, decodeCfemail, decodeEntities, deobfuscate,
 } = require('../emailEnricher');
+const {
+  isTransientDnsError, isDisposableDomain, partitionDeliverable,
+} = require('../emailVerify');
 
 // ── Overpass query ───────────────────────────────────────────────────────────
 test('buildOverpassQuery embeds the bbox and asks for JSON + centers', () => {
@@ -251,4 +255,83 @@ test('decideFrontier: advances only after N consecutive dry sweeps', () => {
     decideFrontier({ region: 'nj', created: 0, dryStreak: 1, advanceAfter: 2 }),
     { region: 'ny', dryStreak: 0, advanced: true },
   );
+});
+
+// ── Apollo-grade email finding: de-obfuscation ───────────────────────────────
+test('decodeCfemail XOR-decodes a Cloudflare-protected address', () => {
+  // "hi@x.com" encoded with key 0x2a: [2a] then each char ^ 0x2a, hex.
+  const key = 0x2a;
+  const plain = 'hi@x.com';
+  let hex = key.toString(16).padStart(2, '0');
+  for (const ch of plain) hex += (ch.charCodeAt(0) ^ key).toString(16).padStart(2, '0');
+  assert.equal(decodeCfemail(hex), plain);
+  assert.equal(decodeCfemail('zz'), '');       // non-hex → ''
+  assert.equal(decodeCfemail(''), '');
+});
+
+test('decodeEntities turns HTML-entity @ and . back into a real address', () => {
+  assert.equal(decodeEntities('info&#64;shop&#46;com'), 'info@shop.com');
+  assert.equal(decodeEntities('info&commat;shop&period;com'), 'info@shop.com');
+  assert.equal(decodeEntities('info&#x40;shop&#x2e;com'), 'info@shop.com');
+});
+
+test('deobfuscate normalizes [at]/[dot] and the bare "at … dot … tld" shape', () => {
+  assert.match(deobfuscate('info [at] shop [dot] com'), /info@shop\.com/);
+  assert.match(deobfuscate('sales (at) budz (dot) co'), /sales@budz\.co/);
+  assert.match(deobfuscate('hello at greenleaf dot com'), /hello@greenleaf\.com/);
+  // normal prose is NOT mangled into an email
+  assert.doesNotMatch(deobfuscate('meet us at the shop'), /@/);
+});
+
+test('extractEmails recovers Cloudflare + entity + [at]/[dot] obfuscated emails', () => {
+  const key = 0x1b; const plain = 'team@budz.co';
+  let hex = key.toString(16).padStart(2, '0');
+  for (const ch of plain) hex += (ch.charCodeAt(0) ^ key).toString(16).padStart(2, '0');
+  const html = `
+    <a class="__cf_email__" data-cfemail="${hex}">[email&#160;protected]</a>
+    <p>Wholesale: sales&#64;budz&#46;com</p>
+    <p>Or reach us: info [at] budz [dot] com</p>`;
+  const found = extractEmails(html);
+  assert.ok(found.includes('team@budz.co'), `cfemail — got ${found}`);
+  assert.ok(found.includes('sales@budz.com'), `entity — got ${found}`);
+  assert.ok(found.includes('info@budz.com'), `[at]/[dot] — got ${found}`);
+});
+
+test('rankContactLinks ranks wholesale/contact/team pages, ignores off-site', () => {
+  const html = `
+    <a href="/wholesale">Wholesale</a>
+    <a href="/our-team">Team</a>
+    <a href="/contact-us">Contact</a>
+    <a href="/blog/2024/some-post">Blog</a>
+    <a href="https://facebook.com/contact">FB</a>`;
+  const links = rankContactLinks(html, 'https://budz.com', 4);
+  assert.equal(links[0], 'https://budz.com/wholesale');   // highest weight first
+  assert.ok(links.includes('https://budz.com/contact-us'));
+  assert.ok(links.every((u) => u.startsWith('https://budz.com')));  // same-site only
+  assert.ok(!links.some((u) => u.includes('/blog/')));    // non-keyword page skipped
+});
+
+// ── Apollo-grade verification: DNS-cache safety + disposable filter ───────────
+test('isTransientDnsError distinguishes temp failures from a definitive no-domain', () => {
+  assert.equal(isTransientDnsError({ code: 'ETIMEOUT' }), true);
+  assert.equal(isTransientDnsError({ code: 'ESERVFAIL' }), true);
+  assert.equal(isTransientDnsError({ code: 'EAI_AGAIN' }), true);
+  assert.equal(isTransientDnsError({ message: 'dns-timeout' }), true);
+  assert.equal(isTransientDnsError({ code: 'ENOTFOUND' }), false); // NXDOMAIN = definitive
+  assert.equal(isTransientDnsError({ code: 'ENODATA' }), false);
+});
+
+test('isDisposableDomain flags throwaway inboxes', () => {
+  assert.equal(isDisposableDomain('mailinator.com'), true);
+  assert.equal(isDisposableDomain('YOPMAIL.com'), true);
+  assert.equal(isDisposableDomain('greenleaf.com'), false);
+});
+
+test('partitionDeliverable rejects disposable domains even with valid MX', () => {
+  const mx = new Map([['budz.com', true], ['mailinator.com', true]]);
+  const { good, bad } = partitionDeliverable(
+    [{ email: 'info@budz.com' }, { email: 'x@mailinator.com' }], mx,
+  );
+  assert.deepEqual(good.map((c) => c.email), ['info@budz.com']);
+  assert.deepEqual(bad.map((c) => c.email), ['x@mailinator.com']);
 });
