@@ -238,6 +238,7 @@ const receiptRoutes        = require('./routes/receiptRoutes');
 const crmRoutes            = require('./routes/crmRoutes');
 const outreachRoutes       = require('./routes/outreachRoutes');
 const triageRoutes         = require('./routes/triageRoutes');
+const signalsRoutes        = require('./routes/signalsRoutes');
 
 app.use('/api/products/ss', ssProxyLimiter);
 app.use('/api/products', productRoutes);
@@ -257,6 +258,8 @@ app.use('/api/crm', express.json({ limit: '8mb' }), crmRoutes);
 app.use('/api/outreach', express.json(), outreachRoutes);
 // Reply Triage: pasted/imported buyer replies — snippets only, small bodies.
 app.use('/api/triage', express.json({ limit: '2mb' }), triageRoutes);
+// Smart Alerts: read-only composed "what needs your attention" feed for the hub.
+app.use('/api/signals', signalsRoutes);
 app.use('/api/public', express.json(), publicApprovalRoutes);
 app.use('/api/admin/backup', backupRoutes);
 app.use('/api/jpw', express.json({ limit: '20mb' }), jpwRoutes);
