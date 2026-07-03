@@ -100,6 +100,10 @@ db.once('open', () => {
   // are set; never modifies the mailbox.
   require('./controllers/replyTriage').startGmailIngest();
 
+  // Auto-enroll: tops the chosen active campaign from the cold-lead reserve every
+  // 30 min (idle until the owner turns it on for a campaign).
+  require('./controllers/outreach').startAutoEnroll();
+
   // Self-advancing lead finder: weekly, works the frontier region until it's dry
   // then steps to the next state. Free (OSM + own-site scrape); idle until the
   // owner enables auto-advance from the Studio.
