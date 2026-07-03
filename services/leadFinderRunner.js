@@ -208,7 +208,20 @@ async function finderStatus() {
     },
     regions: NATIONAL_ROLLOUT
       .filter((id) => REGIONS[id])
-      .map((id) => ({ id, label: REGIONS[id].label, last: lastByRegion[id] || null })),
+      .map((id) => {
+        const last = lastByRegion[id] || null;
+        const lastSweptAt = last ? last.createdAt : null;
+        // "Just swept" = a real sweep within the last 6h (one refill cycle), so
+        // the UI can grey the manual button and tell the owner it's done for now.
+        const recentlySwept = lastSweptAt ? (Date.now() - new Date(lastSweptAt).getTime() < 6 * 3600 * 1000) : false;
+        return {
+          id, label: REGIONS[id].label, last,
+          lastSweptAt,
+          lastFound: last ? (last.found || 0) : 0,
+          lastNew: last ? (last.created || 0) : 0,
+          recentlySwept,
+        };
+      }),
     recentRuns: runs,
   };
 }

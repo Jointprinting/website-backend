@@ -22,6 +22,7 @@ const {
   getQueue,
   markReplied,
   stopEnrollment,
+  unenrollAll,
   runTickNow,
   trackOpen,
   unsubscribe,
@@ -60,6 +61,7 @@ router.get('/campaigns/:id',         getCampaign);
 router.patch('/campaigns/:id',       updateCampaign);
 router.post('/campaigns/:id/launch', launchCampaign);
 router.post('/campaigns/:id/enroll', enrollCompanies);
+router.post('/campaigns/:id/unenroll-all', unenrollAll);
 
 router.post('/enrollments/:id/replied', markReplied);
 router.post('/enrollments/:id/stop',    stopEnrollment);
