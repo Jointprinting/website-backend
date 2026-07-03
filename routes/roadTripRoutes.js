@@ -16,7 +16,7 @@ const {
 } = require('../controllers/roadTripLead');
 
 const {
-  listDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain,
+  listDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, suggest,
 } = require('../controllers/dispensary');
 
 const {
@@ -39,6 +39,7 @@ router.post  ('/dispensaries/rechain',      rechain);
 router.post  ('/dispensaries/:id/hide',     hide);
 
 // ── Today's Run ──────────────────────────────────────────────────────────────
+router.get   ('/suggest',           suggest);   // best nearby prospects to visit
 router.get   ('/run',               getCurrent);
 router.patch ('/run',               patchRun);
 router.post  ('/run/stops',         addStop);
