@@ -24,6 +24,10 @@ const TriageReplySchema = new mongoose.Schema({
   // Link to an existing outreach lead. companyKey is the join key used everywhere;
   // an unmatched reply keeps these blank (still shown, never hidden).
   matched:      { type: Boolean, default: false, index: true },
+  // HOW it matched: 'thread' | 'email' | 'subject' | 'domain' | 'none'. Thread/
+  // email/subject are strong (safe to auto-stop + warm on); 'domain' is a soft
+  // same-business-domain link the UI shows but the loop never auto-acts on.
+  matchBy:      { type: String, default: '' },
   companyKey:   { type: String, default: '' },
   companyName:  { type: String, default: '' },
   enrollmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'OutreachEnrollment', default: null },

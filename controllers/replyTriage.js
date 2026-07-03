@@ -14,15 +14,40 @@ const Client = require('../models/Client');
 const {
   classifyReply,
   matchReply,
+  parseOooResume,
   suggestedActionFor,
   isValidStatus,
   normEmail,
+  domainOf,
+  FREEMAIL,
+  STRONG_MATCHES,
   isGmailConfigured,
   worklistFromReplies,
 } = require('../services/replyTriage');
+const { warmFromEnrollment } = require('../services/warmHandoff');
+const { suppress } = require('../services/suppression');
 
 const IGNORE_CATEGORY = 'bounce_auto_ignore';
 const VALID_SOURCES = ['manual', 'import', 'gmail'];
+
+// Categories that mean "a real human replied" — auto-stop the drip + warm the
+// CRM (on a STRONG match). Kill/soft/noise categories are handled separately.
+const HUMAN_WARM = new Set(['hot_lead', 'needs_response', 'asked_pricing', 'asked_mockups', 'follow_up_later']);
+
+// Pull thread-id headers (In-Reply-To / References) out of a raw reply, however
+// it was handed in (top-level fields or a headers map). Used to match a reply to
+// the exact send it answers even when it comes from a different address.
+function messageIdsFromRaw(raw = {}) {
+  const ids = [];
+  const push = (v) => String(v || '').split(/\s+/).forEach((x) => { const t = x.trim(); if (t) ids.push(t); });
+  const h = raw.headers || {};
+  push(raw.inReplyTo); push(raw.references);
+  push(h['in-reply-to'] || h['In-Reply-To']);
+  push(h.references || h.References);
+  return [...new Set(ids)];
+}
+
+const escapeRegex = (s) => String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // Classify + match one raw reply and persist it. Own sent mail is dropped (not a
 // reply); everything else — including bounces/auto-replies and unmatched senders —
@@ -42,22 +67,45 @@ async function ingestOne(raw = {}) {
     if (dup) return { skip: 'duplicate' };
   }
 
-  const { category, self } = classifyReply({ subject, snippet, fromEmail, fromName });
-  if (self) return { skip: 'self' }; // our own outbound mail is never a reply
+  const cls = classifyReply({ subject, snippet, fromEmail, fromName });
+  const { category } = cls;
+  if (cls.self) return { skip: 'self' }; // our own outbound mail is never a reply
 
-  // Candidate matches (loaded here; matchReply itself is pure/testable).
+  // Candidate matches (loaded here; matchReply itself is pure/testable). Beyond
+  // "same sender address" we also pull enrollments the reply THREADS to (its
+  // In-Reply-To/References vs a send's Message-ID) and enrollments on the same
+  // BUSINESS domain — so a buyer replying from a personal/shared inbox still
+  // matches instead of silently becoming UNMATCHED.
+  const messageIds = messageIdsFromRaw(raw);
+  const refVariants = [...new Set(messageIds.flatMap((id) => {
+    const bare = String(id).replace(/[<>]/g, '').trim();
+    return [id, bare, `<${bare}>`];
+  }).filter(Boolean))];
+  const dom = domainOf(fromEmail);
+
   let enrollments = [];
   let clients = [];
-  if (fromEmail) {
-    [enrollments, clients] = await Promise.all([
-      OutreachEnrollment.find({ toEmail: fromEmail }).select('companyKey companyName toEmail sends').lean(),
-      Client.find({ $or: [{ email: fromEmail }, { 'contacts.email': fromEmail }] })
-        .select('companyKey companyName email contacts').lean(),
-    ]);
+  const enrOr = [];
+  if (fromEmail) enrOr.push({ toEmail: fromEmail });
+  if (dom && !FREEMAIL.has(dom)) enrOr.push({ toEmail: new RegExp(`@${escapeRegex(dom)}$`, 'i') });
+  if (refVariants.length) enrOr.push({ 'sends.messageId': { $in: refVariants } });
+  if (enrOr.length) {
+    enrollments = await OutreachEnrollment.find({ $or: enrOr })
+      .select('companyKey companyName toEmail sends').limit(50).lean();
   }
+  if (fromEmail) {
+    clients = await Client.find({ $or: [{ email: fromEmail }, { 'contacts.email': fromEmail }] })
+      .select('companyKey companyName email contacts').lean();
+  }
+
   const match = matchReply(fromEmail, subject, {
-    enrollments: enrollments.map((e) => ({ ...e, subjects: (e.sends || []).map((s) => s.subject) })),
+    enrollments: enrollments.map((e) => ({
+      ...e,
+      subjects: (e.sends || []).map((s) => s.subject),
+      messageIds: (e.sends || []).map((s) => s.messageId),
+    })),
     clients,
+    messageIds,
   });
 
   const source = VALID_SOURCES.includes(raw.source) ? raw.source : 'manual';
@@ -73,13 +121,63 @@ async function ingestOne(raw = {}) {
     suggestedAction: suggestedActionFor(category),
     status: 'new',
     matched: match.matched,
+    matchBy: match.matchBy,
     companyKey: match.companyKey,
     companyName: match.companyName,
     enrollmentId: match.enrollmentId || null,
     source,
     gmailMessageId,
   });
+
+  // Close the loop: auto-stop / warm / suppress / snooze based on what they said.
+  // Best-effort — a side-effect hiccup must not fail the ingest (row is saved).
+  try {
+    await applyReplyAutoActions(doc, cls, match);
+  } catch (e) {
+    console.warn('[triage] auto-action failed:', e.message);
+  }
+
   return { saved: doc.toObject() };
+}
+
+// The loop-closing behavior for one just-ingested reply. THE fix: a matched
+// human reply must stop the drip and warm the CRM instead of silently sitting in
+// the inbox while the day-14 breakup keeps firing. Runs on manual/imported/synced
+// replies alike (they all flow through ingestOne).
+//   unsubscribe    → suppress the address + do-not-contact + stop sequences
+//   not_interested → stop sequences (no warm — it's a "no")
+//   auto_reply_ooo → snooze the enrollment ~7 days (keep active → it resumes)
+//   human reply    → STRONG match only: stop the drip + warm the company (Today)
+//   wrong_person / bounce / soft(domain) match → left for manual triage
+async function applyReplyAutoActions(reply, cls, match) {
+  const category = cls.category;
+  const strong = STRONG_MATCHES.has(match.matchBy);
+
+  if (category === 'unsubscribe') {
+    await applyStatusSideEffects(reply, 'do_not_contact'); // suppress + stop (even unmatched)
+    return;
+  }
+  if (category === 'not_interested') {
+    await applyStatusSideEffects(reply, 'not_interested');
+    return;
+  }
+  if (category === IGNORE_CATEGORY) return; // machine noise
+  if (cls.ooo || category === 'auto_reply_ooo') {
+    if (strong && match.enrollmentId) {
+      const resumeAt = parseOooResume(reply.snippet, reply.receivedAt);
+      await OutreachEnrollment.updateOne(
+        { _id: match.enrollmentId, status: 'active' },
+        { $set: { nextSendAt: resumeAt } },
+      );
+    }
+    return;
+  }
+  // A genuine human reply — stop the drip + warm the CRM, but only on a strong
+  // match (never auto-act on a soft same-domain guess).
+  if (HUMAN_WARM.has(category) && strong && match.enrollmentId) {
+    const enr = await OutreachEnrollment.findById(match.enrollmentId);
+    if (enr) await warmFromEnrollment(enr, { source: 'triage' });
+  }
 }
 
 // GET /api/triage/replies?category=&status=&matched=&includeIgnored=
@@ -129,8 +227,14 @@ async function addReplies(req, res) {
 // fire on a matched company. "do not contact" == the unsubscribe/bounce path
 // (doNotEmail + stop active sequences); "not interested" just halts the sequence.
 async function applyStatusSideEffects(reply, status) {
-  if (!reply.companyKey) return;
   const now = new Date();
+  // Address-level suppression is company-independent — it must fire even for an
+  // UNMATCHED opt-out (no companyKey), so a stranger who says "stop" is never
+  // cold-emailed again anywhere, no matter how they're re-discovered.
+  if (status === 'do_not_contact' && reply.fromEmail) {
+    await suppress(reply.fromEmail, { reason: 'do-not-contact', source: 'triage' });
+  }
+  if (!reply.companyKey) return;
   if (status === 'do_not_contact') {
     await Client.updateOne(
       { companyKey: reply.companyKey },

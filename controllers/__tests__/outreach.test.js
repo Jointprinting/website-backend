@@ -112,6 +112,10 @@ test('enrollBlockReason: every gate fires with its own reason', () => {
   assert.equal(enrollBlockReason(lead, false, false), '');
   // Contact-level email is enough.
   assert.equal(enrollBlockReason({ stage: 'lead', contacts: [{ email: 'c@d.com' }] }, false, false), '');
+  // A globally-suppressed address (unsubscribed / bounced somewhere) is blocked
+  // even when everything else is fine.
+  assert.equal(enrollBlockReason(lead, false, false, true), 'suppressed');
+  assert.equal(enrollBlockReason(lead, false, false, false), '');
 });
 
 // ── Step sanitizing (the campaign editor's server-side guardrails) ───────────

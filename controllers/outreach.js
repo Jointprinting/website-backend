@@ -15,7 +15,8 @@ const LeadFinderRun = require('../models/LeadFinderRun');
 const Client = require('../models/Client');
 const Order = require('../models/Order');
 const { PLACED_STATUSES } = require('../models/Order');
-const { promoteStage } = require('./crm');
+const { warmFromEnrollment } = require('../services/warmHandoff');
+const { suppress, suppressedSet } = require('../services/suppression');
 
 // The tag stamped on every company the moment it's enrolled in a campaign, so a
 // reply (which also gets 'warm') is unmistakably traceable to the cold merge —
@@ -36,7 +37,6 @@ const { runFinder, finderStatus } = require('../services/leadFinderRunner');
 const { scoreLead } = require('../services/leadScore');
 const { runFrontierSweep, getState } = require('../services/leadFinderScheduler');
 const { REGIONS, isRegion } = require('../services/dispensaryFinder');
-const { etToday } = require('../utils/time');
 
 const NOT_ARCHIVED = { archived: { $ne: true } };
 
@@ -270,13 +270,16 @@ async function getCampaign(req, res) {
 // else the skip reason. The order-reality check is what keeps a client who's
 // still stored at an early stage (e.g. a repeat buyer never bumped to 'customer')
 // out of the cold list — the owner's #1 ask: "don't spam my clients."
-function enrollBlockReason(client, alreadyEnrolled, isCustomerByOrder) {
+function enrollBlockReason(client, alreadyEnrolled, isCustomerByOrder, isSuppressedEmail = false) {
   if (!client) return 'not-found';
   if (alreadyEnrolled) return 'already-enrolled';
   if (isCustomerByOrder) return 'is-customer';
   const live = sendBlockReason(client); // archived / do-not-email / closed / customer-stage
   if (live) return live;
   if (!pickEmail(client)) return 'no-email';
+  // Address is on the global do-not-contact list (unsubscribed / bounced /
+  // complained somewhere before) — never cold-email it again.
+  if (isSuppressedEmail) return 'suppressed';
   return '';
 }
 
@@ -316,6 +319,9 @@ async function getCandidates(req, res) {
       (await OutreachEnrollment.find({}).select('toEmail').lean())
         .map((e) => String(e.toEmail || '').toLowerCase()).filter(Boolean),
     );
+    // Globally suppressed addresses (unsubscribed / bounced / complained) — never
+    // offer one as a fresh candidate.
+    const suppressed = await suppressedSet(clients.map((c) => pickEmail(c)));
 
     const rows = [];
     const seenEmail = new Set();
@@ -323,7 +329,7 @@ async function getCandidates(req, res) {
       const outreachEmail = pickEmail(c);
       if (!outreachEmail || enrolledKeys.has(c.companyKey) || customerKeys.has(c.companyKey)) continue;
       const e = outreachEmail.toLowerCase();
-      if (usedEmails.has(e) || seenEmail.has(e)) continue; // de-dupe by email
+      if (usedEmails.has(e) || seenEmail.has(e) || suppressed.has(e)) continue; // de-dupe + suppression
       seenEmail.add(e);
       // Attach the lead-quality score so the pick-list can lead with the
       // best/most-reachable leads instead of alphabetically — the whole point of
@@ -364,12 +370,16 @@ async function enrollCompanies(req, res) {
     // Every inbox already queued anywhere — plus the emails we accept in THIS
     // batch — so the same address is never cold-emailed twice.
     const usedEmails = new Set(allEnrollments.map((e) => String(e.toEmail || '').toLowerCase()).filter(Boolean));
+    // Globally suppressed addresses (unsubscribed / bounced / complained) — one
+    // query for the whole batch; a suppressed lead can never re-enter the machine.
+    const suppressed = await suppressedSet(clients.map((c) => pickEmail(c)));
 
     const eligible = [];
     const skipped = [];
     for (const key of keys) {
       const client = clientByKey.get(key) || null;
-      const reason = enrollBlockReason(client, enrolledSet.has(key), customerKeys.has(key));
+      const suppressedEmail = client ? suppressed.has(String(pickEmail(client) || '').toLowerCase()) : false;
+      const reason = enrollBlockReason(client, enrolledSet.has(key), customerKeys.has(key), suppressedEmail);
       if (reason) { skipped.push({ companyKey: key, reason }); continue; }
       const email = String(pickEmail(client) || '').toLowerCase();
       // Belt-and-suspenders: gate enroll-eligibility on the SAME pickEmail() the
@@ -450,35 +460,15 @@ async function getQueue(req, res) {
 }
 
 // POST /api/outreach/enrollments/:id/replied — the "they answered!" button.
-// Stops the sequence and flips the company hot in the CRM: 'warm' tag, follow
-// up TODAY (lands in the Today call queue), touch logged, stage → contacted.
+// Stops the sequence and flips the company hot in the CRM (warm tag, follow up
+// TODAY, touch logged, stage → contacted) via the SHARED warm handoff — the
+// exact same transition the automatic reply ingest runs, so the button and the
+// triage inbox can never drift apart.
 async function markReplied(req, res) {
   try {
     const enr = await OutreachEnrollment.findById(req.params.id);
     if (!enr) return res.status(404).json({ message: 'enrollment not found' });
-    const now = new Date();
-    enr.status = 'replied';
-    enr.repliedAt = now;
-    enr.nextSendAt = null;
-    await enr.save();
-
-    const campaign = await OutreachCampaign.findById(enr.campaignId).lean();
-    const client = await Client.findOne({ companyKey: enr.companyKey });
-    if (client) {
-      const tags = Array.isArray(client.tags) ? client.tags : [];
-      if (!tags.some((t) => String(t).toLowerCase() === 'warm')) tags.push('warm');
-      client.tags = tags;
-      client.nextFollowUp = new Date(`${etToday(now)}T00:00:00.000Z`); // today → Today queue
-      client.lastContact = now;
-      client.stage = promoteStage(client.stage, 'contacted');
-      client.log.push({
-        at: now,
-        text: `Replied to outreach${campaign ? ` (${campaign.name})` : ''} — follow up today`,
-        kind: 'email',
-        dedupKey: `outreach-reply:${enr._id}`,
-      });
-      await client.save();
-    }
+    await warmFromEnrollment(enr, { source: 'button' });
     res.json({ ok: true, enrollment: enr.toObject() });
   } catch (e) {
     res.status(400).json({ message: e.message });
@@ -743,6 +733,9 @@ async function bounceWebhook(req, res) {
   let suppressed = 0;
   const now = new Date();
   for (const email of emails) {
+    // Global address-level suppression first — works even when we have no Client
+    // for this address (a bounced lead we never imported).
+    await suppress(email, { reason: 'hard-bounce', source: 'bounce-webhook' });
     // Stop any active enrollment aimed at this address, and gather its companies.
     const enrs = await OutreachEnrollment.find({ toEmail: email }).select('companyKey status');
     const keys = new Set();
@@ -814,6 +807,9 @@ async function unsubscribe(req, res) {
           $push: { log: { at: now, text: 'Unsubscribed from outreach emails', kind: 'email', dedupKey: `outreach-unsub:${enr._id}` } },
         },
       );
+      // Address-level suppression: never cold-email this inbox again, even if the
+      // company is re-discovered under a different companyKey.
+      await suppress(enr.toEmail, { reason: 'unsubscribe', source: 'unsubscribe-link' });
     }
   } catch (e) {
     console.warn('[outreach] unsubscribe failed:', e.message);

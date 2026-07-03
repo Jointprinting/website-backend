@@ -17,6 +17,7 @@ const {
   STATUSES,
   classifyReply,
   matchReply,
+  parseOooResume,
   suggestedActionFor,
   isValidStatus,
   isValidCategory,
@@ -27,9 +28,10 @@ const {
 const cat = (fields) => classifyReply(fields).category;
 
 // ── Enums ───────────────────────────────────────────────────────────────────────
-test('enums expose the nine categories and the triage statuses', () => {
-  assert.equal(CATEGORIES.length, 9);
+test('enums expose the categories and the triage statuses', () => {
+  assert.equal(CATEGORIES.length, 10);
   assert.ok(CATEGORIES.includes('hot_lead'));
+  assert.ok(CATEGORIES.includes('auto_reply_ooo'));
   assert.ok(CATEGORIES.includes('bounce_auto_ignore'));
   assert.deepEqual(STATUSES, ['new', 'handled', 'follow_up', 'mockup_requested', 'quote_requested', 'not_interested', 'do_not_contact', 'ignored']);
   assert.ok(isValidStatus('do_not_contact'));
@@ -79,10 +81,32 @@ test('unsubscribe: opt-out language', () => {
   assert.equal(cat({ snippet: 'Do not contact me again.' }), 'unsubscribe');
 });
 
-test('bounce_auto_ignore: machine mail by sender or subject', () => {
+test('bounce_auto_ignore: hard machine mail by sender or delivery-failure subject', () => {
   assert.equal(cat({ fromEmail: 'mailer-daemon@googlemail.com', subject: 'Delivery Status Notification (Failure)' }), 'bounce_auto_ignore');
-  assert.equal(cat({ fromEmail: 'sam@shop.com', subject: 'Automatic reply: Out of office' }), 'bounce_auto_ignore');
   assert.equal(cat({ fromEmail: 'no-reply@news.example.com', subject: 'This week at Example' }), 'bounce_auto_ignore');
+});
+
+test('auto_reply_ooo: out-of-office auto-replies get their own category (snoozed, not ignored)', () => {
+  const r = classifyReply({ fromEmail: 'sam@shop.com', subject: 'Automatic reply: Out of office' });
+  assert.equal(r.category, 'auto_reply_ooo');
+  assert.equal(r.ooo, true);
+  assert.equal(r.ignore, false); // NOT dropped — the sequence should resume
+  assert.equal(cat({ fromEmail: 'sam@shop.com', subject: 'Re: merch', snippet: 'I am currently out of the office until next week.' }), 'auto_reply_ooo');
+  assert.equal(cat({ fromEmail: 'jo@shop.com', subject: 'Re: hi', snippet: 'This is an automated response — on vacation.' }), 'auto_reply_ooo');
+});
+
+test('parseOooResume: honors an explicit near-future M/D, else +7 days', () => {
+  const now = new Date('2026-07-03T12:00:00Z');
+  // explicit "back on 7/15" → that date
+  const d = parseOooResume('I am out, back on 7/15.', now);
+  assert.equal(d.getUTCMonth(), 6); // July (0-based)
+  assert.equal(d.getUTCDate(), 15);
+  // no date → default +7 days
+  const def = parseOooResume('Out of office, limited access to email.', now);
+  assert.equal(Math.round((def.getTime() - now.getTime()) / 86400000), 7);
+  // an implausible far-out / past date is ignored → default +7
+  const far = parseOooResume('back on 1/2', now); // already passed this year
+  assert.equal(Math.round((far.getTime() - now.getTime()) / 86400000), 7);
 });
 
 test('needs_response: a genuine human reply with no clear signal', () => {
@@ -158,6 +182,33 @@ test('matchReply: stays unmatched when nothing lines up (never throws, never gue
 test('matchReply: no email and no subject → unmatched', () => {
   const m = matchReply('', '', { enrollments: ENR, clients: CLIENTS });
   assert.equal(m.matched, false);
+});
+
+test('matchReply: threads on In-Reply-To/References even from a different address', () => {
+  const enr = [{ _id: 'e9', toEmail: 'buyer@greenleaf.com', companyKey: 'greenleaf', companyName: 'Green Leaf',
+    messageIds: ['<abc123@mail.jointprinting.com>'] }];
+  // Reply comes from the OWNER'S personal gmail (would otherwise be UNMATCHED),
+  // but carries the original Message-ID in References → thread match.
+  const m = matchReply('personal@gmail.com', 'Re: whatever',
+    { enrollments: enr, messageIds: ['<abc123@mail.jointprinting.com>'] });
+  assert.equal(m.matched, true);
+  assert.equal(m.matchBy, 'thread');
+  assert.equal(m.companyKey, 'greenleaf');
+  assert.equal(m.enrollmentId, 'e9');
+});
+
+test('matchReply: soft domain fallback for a business domain, but never for freemail', () => {
+  const enr = [{ _id: 'e5', toEmail: 'info@highlanddispo.com', companyKey: 'highland', companyName: 'Highland' }];
+  // Different mailbox, same business domain → soft 'domain' match.
+  const soft = matchReply('owner@highlanddispo.com', 'Re: merch', { enrollments: enr });
+  assert.equal(soft.matched, true);
+  assert.equal(soft.matchBy, 'domain');
+  assert.equal(soft.companyKey, 'highland');
+  // A shared freemail domain must NOT domain-match (many shops use gmail).
+  const gmailEnr = [{ _id: 'e6', toEmail: 'shopA@gmail.com', companyKey: 'shopa', companyName: 'Shop A' }];
+  const none = matchReply('shopB@gmail.com', 'Re: hi', { enrollments: gmailEnr });
+  assert.equal(none.matched, false);
+  assert.equal(none.matchBy, 'none');
 });
 
 // ── worklistFromReplies (Follow-Up Command Center, Release 2) ────────────────────
