@@ -28,6 +28,7 @@ const Transaction   = require('../models/Transaction');
 // /api/finances exactly (same revenue/COGS/profit/margin math, same order-number
 // normalization). Never re-derive finance numbers here.
 const { summarizeCompanyFinance, normalizeOrderNumber } = require('./finances');
+const { scoreLead } = require('../services/leadScore');
 const {
   parseCsv, rowsToObjects, rowsToObjectsWithMeta, mapTrackerRow,
   matchKey: deriveMatchKey, matchKeysFuzzyEqual, normPhone, normEmail,
@@ -707,7 +708,14 @@ async function listCrm(req, res) {
     }
 
     const clients = await Client.find(filter).sort({ companyName: 1 }).lean();
-    res.json({ clients });
+    // Attach a lead-quality grade (A–D) to each row — how actionable the lead is
+    // for cold email + road visits (see services/leadScore.js) — so the Companies
+    // list can badge and sort by it and the owner works the best leads first.
+    const scored = clients.map((c) => {
+      const s = scoreLead(c);
+      return { ...c, leadScore: s.score, leadGrade: s.grade, leadReasons: s.reasons };
+    });
+    res.json({ clients: scored });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
