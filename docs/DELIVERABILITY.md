@@ -63,6 +63,40 @@ provide. Wire the provider's **bounce webhook** to
 `POST /api/outreach/bounce?key=$OUTREACH_BOUNCE_SECRET` so hard bounces and
 complaints auto-suppress.
 
+## Send more per day — for free (sender pool)
+
+The daily cap is **per sending inbox** (that's what protects reputation), so a
+second campaign just shares the same cap — it doesn't get you more volume. To
+actually send more for **$0**, add more inboxes and let the engine round-robin
+across them. Free ESP tiers stack up fast:
+
+| Provider | Free daily send | SMTP host (example) |
+| --- | --- | --- |
+| Brevo (Sendinblue) | ~300/day | `smtp-relay.brevo.com:587` |
+| MailerSend | ~100/day (12k/mo) | `smtp.mailersend.net:587` |
+| Mailjet | ~200/day (6k/mo) | `in-v3.mailjet.com:587` |
+| Zoho / Gmail mailbox | your normal limit | provider SMTP |
+
+Two or three of these = **500–800 emails/day, free.** Configure them as a JSON
+array in one env var — `OUTREACH_SENDERS`:
+
+```json
+[
+  {"label":"brevo","from":"nate@getjointprinting.com","replyTo":"nate@jointprinting.com","host":"smtp-relay.brevo.com","port":587,"user":"YOUR_BREVO_LOGIN","pass":"YOUR_BREVO_SMTP_KEY","dailyCap":250},
+  {"label":"mailjet","from":"hello@getjointprinting.com","host":"in-v3.mailjet.com","port":587,"user":"YOUR_MJ_KEY","pass":"YOUR_MJ_SECRET","dailyCap":180}
+]
+```
+
+- Each inbox keeps its **own daily sub-cap** and its from-address; the engine
+  fills them round-robin and the Dashboard shows the pool + total.
+- **Authenticate every from-domain** (SPF/DKIM/DMARC, section 1–3) — the auth
+  badge checks the primary; do the DNS for each.
+- Leave `dailyCap` a bit under each provider's free limit for headroom.
+- Omit `host`/`user` on an entry to reuse the global `SMTP_*` transport (handy
+  when one provider allows several from-addresses).
+- If `OUTREACH_SENDERS` is unset, nothing changes — the single legacy
+  `OUTREACH_EMAIL_FROM` + `SMTP_*` identity is used exactly as before.
+
 ## Ramp & pacing (already automatic)
 
 - The engine warms up: **10/day** the first week, doubling weekly to
