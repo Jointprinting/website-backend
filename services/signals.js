@@ -14,8 +14,10 @@
 
 const Order = require('../models/Order');
 const Client = require('../models/Client');
+const TriageReply = require('../models/TriageReply');
 
 const { orderPlacedAt, etAgeDays } = require('../controllers/orders');
+const { HOT_CATEGORIES, ACTIONABLE_CATEGORIES } = require('./replyTriage');
 const { dayDiffFromToday } = require('../utils/time');
 
 // ── Thresholds ───────────────────────────────────────────────────────────────
@@ -58,6 +60,31 @@ function bucketFollowUps(clients = [], now = new Date()) {
   // Most-overdue first for the overdue bucket.
   overdue.sort((a, b) => dayDiffFromToday(a.nextFollowUp, now) - dayDiffFromToday(b.nextFollowUp, now));
   return { overdue, dueToday };
+}
+
+// A short "3h" / "2d" age label for an inbound reply. '' when unknown/future.
+function replyAgeLabel(receivedAt, now = new Date()) {
+  const h = (now.getTime() - new Date(receivedAt).getTime()) / 3600000;
+  if (!Number.isFinite(h) || h < 0) return '';
+  return h >= 24 ? `${Math.round(h / 24)}d` : `${Math.max(1, Math.round(h))}h`;
+}
+
+// Split NEW, still-un-answered outreach replies into hot (a real buying signal —
+// asked pricing / a mockup / high intent) vs. other actionable replies. PURE:
+// the source passes rows already sorted oldest-first, so order = urgency.
+function bucketOutreachReplies(replies = [], now = new Date()) {
+  const hot = [];
+  const other = [];
+  for (const r of replies) {
+    if (!r || r.status !== 'new' || !ACTIONABLE_CATEGORIES.has(r.category)) continue;
+    const item = {
+      companyKey: r.companyKey || '',
+      name: (r.companyName || r.fromName || r.fromEmail || 'Lead'),
+      metric: replyAgeLabel(r.receivedAt, now),
+    };
+    (HOT_CATEGORIES.has(r.category) ? hot : other).push(item);
+  }
+  return { hot, other };
 }
 
 // Bucket a flat list of signal groups into { critical, warning, info } in the
@@ -135,9 +162,30 @@ async function followUps(now) {
   ];
 }
 
+// Un-answered outreach replies → the hub alert the owner asked for: a heads-up
+// when a good lead has replied and is waiting. Hot (buying-signal) replies are
+// critical; other new replies to answer are info. kind:'triage' → the hub row
+// deep-links to the Outreach → Replies inbox.
+async function outreachReplies(now) {
+  const replies = await TriageReply.find({
+    status: 'new',
+    category: { $in: [...ACTIONABLE_CATEGORIES] },
+  }).select('fromEmail fromName companyKey companyName category receivedAt status')
+    .sort({ receivedAt: 1 }).limit(200).lean();
+  const { hot, other } = bucketOutreachReplies(replies, now);
+  return [
+    { id: 'outreach_hot_lead', severity: 'critical', kind: 'triage',
+      label: `${hot.length} hot lead${hot.length === 1 ? '' : 's'} waiting on a reply`,
+      count: hot.length, items: cap(hot) },
+    { id: 'outreach_reply', severity: 'info', kind: 'triage',
+      label: `${other.length} new repl${other.length === 1 ? 'y' : 'ies'} to answer`,
+      count: other.length, items: cap(other) },
+  ];
+}
+
 // buildSignals — compose all sources; a thrown source drops only its group.
 async function buildSignals({ now = new Date() } = {}) {
-  const sources = [ordersAging(now), followUps(now)];
+  const sources = [ordersAging(now), followUps(now), outreachReplies(now)];
   const settled = await Promise.allSettled(sources);
   const all = [];
   for (const r of settled) {
@@ -153,6 +201,8 @@ module.exports = {
   // pure helpers exported for tests
   classifyOrderAge,
   bucketFollowUps,
+  bucketOutreachReplies,
+  replyAgeLabel,
   toGroups,
   // constants
   AGE_RUNNING_LONG,
