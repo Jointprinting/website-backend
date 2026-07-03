@@ -17,6 +17,10 @@ const OutreachStateSchema = new mongoose.Schema({
   // getSentToday), then $inc's per send.
   sentToday:     { type: Number, default: 0 },
   sentTodayDate: { type: String, default: '' }, // "YYYY-MM-DD" in ET
+  // Read-only Gmail reply-ingest bookkeeping (Wave 2) — powers the "last synced
+  // Xm ago · N new" pill.
+  gmailLastSyncAt: { type: Date, default: null },
+  gmailLastCount:  { type: Number, default: 0 },
 }, { timestamps: true });
 
 module.exports = mongoose.model('OutreachState', OutreachStateSchema);

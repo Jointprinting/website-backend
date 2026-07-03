@@ -7,7 +7,7 @@
 const express = require('express');
 const router = express.Router();
 const { requireAdmin } = require('../middleware/auth');
-const { listReplies, addReplies, updateStatus, syncGmail, getWorklist } = require('../controllers/replyTriage');
+const { listReplies, addReplies, updateStatus, syncGmail, getSyncStatus, getWorklist } = require('../controllers/replyTriage');
 
 router.use(requireAdmin);
 
@@ -15,6 +15,7 @@ router.get('/worklist', getWorklist);       // Follow-Up Command Center action b
 router.get('/replies', listReplies);
 router.post('/replies', addReplies);       // add one ({...}) or many ({ replies: [...] })
 router.patch('/replies/:id', updateStatus); // { status }
-router.post('/sync', syncGmail);            // Gmail sync seam (env-gated no-op in V1)
+router.post('/sync', syncGmail);            // run the read-only Gmail pull now
+router.get('/sync-status', getSyncStatus);  // live "last synced Xm ago · N new" pill
 
 module.exports = router;
