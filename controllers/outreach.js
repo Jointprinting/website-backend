@@ -202,6 +202,8 @@ function sanitizeSteps(steps) {
       offsetDays: i === 0 ? 0 : Math.max(1, Math.round(Number(s && s.offsetDays) || 1)),
       subject: String((s && s.subject) || ''),
       body: String((s && s.body) || ''),
+      // Follow-ups thread by default; a step can opt out to a fresh subject line.
+      freshSubject: !!(s && s.freshSubject),
     }))
     .filter((s) => s.subject.trim() || s.body.trim());
 }

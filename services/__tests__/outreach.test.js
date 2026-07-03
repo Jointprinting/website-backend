@@ -94,6 +94,8 @@ test('buildMergeContext derives firstName and falls back through contacts', () =
   assert.equal(c.companyName, 'Green Leaf Dispensary');
   assert.equal(c.firstName, 'Samantha');
   assert.equal(c.city, 'Trenton');
+  assert.equal(c.state, 'NJ');           // {{state}} parsed from the address
+  assert.equal(c.senderName, 'Nate');    // default when OUTREACH_SENDER_NAME unset
 
   const viaContact = buildMergeContext({
     companyName: 'Green Leaf',

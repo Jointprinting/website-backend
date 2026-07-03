@@ -18,6 +18,11 @@ const StepSchema = new mongoose.Schema({
   offsetDays: { type: Number, default: 0 },
   subject:    { type: String, default: '' },
   body:       { type: String, default: '' },
+  // By default a follow-up (step > 0) THREADS into the first email: it reuses
+  // "Re: <original subject>" + In-Reply-To/References so it lands in the same
+  // conversation. Set freshSubject:true on a step to deliberately break out with
+  // its own new subject line instead.
+  freshSubject: { type: Boolean, default: false },
 }, { _id: false });
 
 const OutreachCampaignSchema = new mongoose.Schema({

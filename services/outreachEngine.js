@@ -38,7 +38,29 @@ const Client = require('../models/Client');
 const sendEmail = require('../utils/sendEmail');
 const { promoteStage } = require('../controllers/crm');
 const { suppress, isSuppressed } = require('./suppression');
+const { applySpintax } = require('./outreachContent');
 const { BUSINESS_TZ, etStartOfToday, etToday } = require('../utils/time');
+
+// The person the outreach signs off as — used by the {{senderName}} merge token
+// so the sign-off isn't hardcoded in every template body.
+const outreachSenderName = () => process.env.OUTREACH_SENDER_NAME || 'Nate';
+
+// US states, for the {{state}} merge token parsed from a stored address. (Kept
+// local to avoid importing the controller — which imports this engine.)
+const US_STATES = new Set([
+  'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS',
+  'KY', 'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY',
+  'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV',
+  'WI', 'WY', 'DC',
+]);
+function stateFromAddress(address) {
+  const s = String(address || '').trim();
+  let m = s.match(/\b([A-Za-z]{2})\s+\d{5}(?:-\d{4})?\s*$/); // "NJ 07102"
+  if (m && US_STATES.has(m[1].toUpperCase())) return m[1].toUpperCase();
+  m = s.match(/,\s*([A-Za-z]{2})\.?\s*$/); // trailing ", NJ"
+  if (m && US_STATES.has(m[1].toUpperCase())) return m[1].toUpperCase();
+  return '';
+}
 
 // A sane default for ONE fresh sending inbox. The ramp climbs to it over weeks
 // (rampCap); raise OUTREACH_DAILY_CAP as your SMTP plan + a warmed reputation
@@ -180,6 +202,8 @@ function buildMergeContext(client = {}) {
     firstName,
     greeting:    firstName ? `Hey ${firstName},` : 'Hey,',
     city:        cityFromAddress(client.address || client.area),
+    state:       stateFromAddress(client.address || client.area),
+    senderName:  outreachSenderName(),
   };
 }
 
@@ -206,6 +230,10 @@ function outreachMessageId(enr, stepIndex) {
   const dom = domainOfEmail(outreachFrom()) || 'jointprinting.com';
   return `<outreach-${enr._id}-${stepIndex}@${dom}>`;
 }
+
+// Strip any leading "Re:" chain so a threaded follow-up subject is exactly
+// "Re: <original>", never "Re: Re: Re: <original>".
+const stripRePrefix = (s) => String(s || '').replace(/^(?:\s*re\s*:\s*)+/i, '').trim();
 
 // Full HTML + plain-text message for one send: rendered body, CAN-SPAM footer
 // (postal address + opt-out), and the open pixel when a public base is set.
@@ -394,11 +422,22 @@ async function sendOne(enr, campaign, now = new Date()) {
   }
 
   const ctx = buildMergeContext(client);
-  // Merge values come from client records — collapse any stray newlines so a
-  // weird companyName can never smuggle extra SMTP headers via the subject.
-  const subject = (renderTemplate(step.subject, ctx).replace(/[\r\n]+/g, ' ').trim())
-    || `Quick question for ${ctx.companyName || 'you'}`;
-  const bodyText = renderTemplate(step.body, ctx);
+  const spinSeed = `${enr.token}:${enr.stepIndex}`;
+  // Threading: a follow-up (step > 0) reuses the first email's subject as
+  // "Re: …" and references its Message-ID so it lands in the SAME conversation
+  // — unless the step opts out with freshSubject.
+  const threads = enr.stepIndex > 0 && !!enr.originMessageId && !step.freshSubject;
+  let subject;
+  if (threads) {
+    subject = `Re: ${stripRePrefix(enr.originSubject)}`.replace(/[\r\n]+/g, ' ').trim();
+  } else {
+    // Merge FIRST, then resolve spintax — so a {{merge|fallback}} token is never
+    // mistaken for a spin group. Collapse newlines so a weird companyName can't
+    // smuggle extra SMTP headers via the subject.
+    subject = applySpintax(renderTemplate(step.subject, ctx), `${spinSeed}:subj`).replace(/[\r\n]+/g, ' ').trim()
+      || `Quick question for ${ctx.companyName || 'you'}`;
+  }
+  const bodyText = applySpintax(renderTemplate(step.body, ctx), `${spinSeed}:body`);
   const { html, text } = composeMessage({ bodyText, token: enr.token });
 
   const unsub = unsubscribeUrl(enr.token);
@@ -410,12 +449,16 @@ async function sendOne(enr, campaign, now = new Date()) {
   try {
     const info = await sendEmail({
       to, subject, html, textAlt: text, headers, messageId,
+      ...(threads ? { inReplyTo: enr.originMessageId, references: enr.originMessageId } : {}),
       from: outreachFrom(),
       ...(outreachReplyTo() ? { replyTo: outreachReplyTo() } : {}),
     });
 
     // Advance the enrollment.
-    enr.sends.push({ stepIndex: enr.stepIndex, at: now, subject, messageId: (info && info.messageId) || messageId });
+    const sentMessageId = (info && info.messageId) || messageId;
+    enr.sends.push({ stepIndex: enr.stepIndex, at: now, subject, messageId: sentMessageId });
+    // Anchor the thread on the FIRST send so every follow-up can reply into it.
+    if (!enr.originMessageId) { enr.originMessageId = sentMessageId; enr.originSubject = subject; }
     enr.toEmail = to;
     enr.sendAttempts = 0;
     enr.lastError = '';
