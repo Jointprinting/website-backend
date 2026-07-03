@@ -507,11 +507,21 @@ const updatePo = async (req, res) => {
 };
 
 // DELETE /api/orders/pos/:poId
+// Archive-not-delete (house principle: nothing is ever hard-deleted). The PO is
+// soft-archived, not destroyed — it drops out of the order's PO list (listPos
+// filters NOT_ARCHIVED) and every vendor rollup ($match archived $ne true), so the
+// owner sees it disappear exactly as before, but the record + its costs are kept
+// and restorable. Was findByIdAndDelete, which permanently lost the PO.
 const deletePo = async (req, res) => {
   try {
     if (badId(req.params.poId)) return res.status(404).json({ message: 'PO not found' });
-    await PurchaseOrder.findByIdAndDelete(req.params.poId);
-    res.json({ ok: true });
+    const po = await PurchaseOrder.findByIdAndUpdate(
+      req.params.poId,
+      { $set: { archived: true, archivedAt: new Date(), archivedReason: 'manual' } },
+      { new: true },
+    ).select('_id').lean();
+    if (!po) return res.status(404).json({ message: 'PO not found' });
+    res.json({ ok: true, archived: true });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
