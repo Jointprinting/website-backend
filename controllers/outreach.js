@@ -108,6 +108,44 @@ function campaignHealth(campaign = {}, stats = {}) {
     hint: `${st.active} in sequence · ${st.sent} sent · ${st.replied} replied.` };
 }
 
+// The one ranked to-do list the Dashboard leads with — synthesized from data
+// getOverview already has, so the operator always knows the single most-important
+// next move instead of scanning cards. Pure + unit-tested. Levels rank
+// action > warm > info > ok; the first item is the "next best action" banner.
+function buildNextActions({ engine = {}, campaigns = [], warmCount = 0, coldReserve = 0 } = {}) {
+  const actions = [];
+  const add = (level, text, cta = null) => actions.push({ level, text, cta });
+
+  if (!engine.senderConfigured) {
+    add('action', 'Set OUTREACH_EMAIL_FROM on the API to a dedicated cold-sending address — the engine is holding until then.');
+  }
+  if (engine.auth && engine.auth.level === 'red' && engine.authGate) {
+    add('action', 'Sending is held: your sender domain isn’t authenticated (SPF/DMARC). Add the DNS records in docs/DELIVERABILITY.md.');
+  }
+  if (engine.deliverability && engine.deliverability.tripped) {
+    add('action', `Sending auto-paused — ${engine.deliverability.reason}. Clean the list, then it resumes on its own.`, { view: 'analytics' });
+  }
+  if (warmCount > 0) {
+    add('warm', `${warmCount} warm lead${warmCount === 1 ? '' : 's'} replied or opening — follow up today.`, { view: 'replies' });
+  }
+  for (const c of campaigns) {
+    if (c.health && c.health.level === 'action') add('action', `“${c.name}”: ${c.health.hint}`, { view: 'campaigns', campaignId: String(c._id) });
+  }
+  const anyActive = campaigns.some((c) => c.status === 'active');
+  if (!anyActive && coldReserve > 0) {
+    add('info', `${coldReserve} cold lead${coldReserve === 1 ? '' : 's'} in reserve and no active campaign — launch one to start sending.`, { view: 'campaigns' });
+  } else if (anyActive && coldReserve >= 20) {
+    add('info', `${coldReserve} cold leads waiting — enroll a fresh batch to keep the drip full.`, { view: 'import' });
+  } else if (anyActive && coldReserve === 0 && warmCount === 0) {
+    add('info', 'Lead pool is running low — run the finder (or turn on auto-pilot) to refill.', { view: 'import' });
+  }
+  if (!actions.length) add('ok', 'All caught up — the engine is running and nothing needs you right now.');
+
+  const rank = { action: 0, warm: 1, info: 2, ok: 3 };
+  actions.sort((a, b) => rank[a.level] - rank[b.level]);
+  return actions;
+}
+
 // Fire a catch-up tick when the dashboard is opened and the in-process cron may
 // have missed a beat (host idled/restarted). Guarded so it only fires when the
 // window is open, the sender is configured, and the last real run is stale —
@@ -185,7 +223,14 @@ async function getOverview(req, res) {
       .sort((a, b) => new Date(b.at) - new Date(a.at))
       .slice(0, 25);
 
-    res.json({ engine, campaigns: campaignRows, warm, recent });
+    // The single ranked to-do list the Dashboard leads with — cold-lead reserve
+    // is a cheap count of never-personally-contacted leads (the enrollable pool).
+    const coldReserve = await Client.countDocuments({
+      ...NOT_ARCHIVED, doNotEmail: { $ne: true }, stage: { $in: ['lead', 'contacted'] }, lastContact: null,
+    }).catch(() => 0);
+    const nextActions = buildNextActions({ engine, campaigns: campaignRows, warmCount: warm.length, coldReserve });
+
+    res.json({ engine, campaigns: campaignRows, warm, recent, nextActions, coldReserve });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -947,6 +992,7 @@ module.exports = {
   // exported for tests
   summarizeEnrollments,
   campaignHealth,
+  buildNextActions,
   enrollBlockReason,
   sanitizeSteps,
   extractBounceEmails,

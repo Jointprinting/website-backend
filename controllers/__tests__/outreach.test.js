@@ -207,3 +207,33 @@ test('campaignHealth flags a high unsubscribe rate as warn', () => {
   assert.equal(h.level, 'warn');
   assert.match(h.label, /unsubscribe/i);
 });
+
+// ── Wave 6b: next-best-action feed ────────────────────────────────────────────
+const { buildNextActions } = require('../outreach');
+test('buildNextActions ranks blockers first, then warm, then nudges', () => {
+  const a = buildNextActions({
+    engine: { senderConfigured: true, authGate: true, auth: { level: 'red' }, deliverability: { tripped: false } },
+    campaigns: [{ _id: 'c1', name: 'Dispo', status: 'active', health: { level: 'action', hint: 'Nothing sending' } }],
+    warmCount: 3,
+    coldReserve: 50,
+  });
+  assert.equal(a[0].level, 'action');
+  assert.ok(a.some((x) => x.level === 'warm' && /warm lead/i.test(x.text)));
+  assert.ok(a.some((x) => /SPF|DMARC|authenticated/i.test(x.text)));
+});
+
+test('buildNextActions: all-clear yields a single ok item', () => {
+  const a = buildNextActions({
+    engine: { senderConfigured: true, authGate: true, auth: { level: 'green' }, deliverability: { tripped: false } },
+    campaigns: [{ _id: 'c1', name: 'Dispo', status: 'active', health: { level: 'ok' } }],
+    warmCount: 0,
+    coldReserve: 5,
+  });
+  assert.equal(a.length, 1);
+  assert.equal(a[0].level, 'ok');
+});
+
+test('buildNextActions: no active campaign but reserve → launch nudge', () => {
+  const a = buildNextActions({ engine: { senderConfigured: true }, campaigns: [], warmCount: 0, coldReserve: 40 });
+  assert.ok(a.some((x) => /launch one/i.test(x.text)));
+});
