@@ -9,6 +9,7 @@ const assert = require('node:assert');
 
 const {
   classifyOrderAge,
+  orderApprovedAt,
   bucketFollowUps,
   replySeverity,
   toGroups,
@@ -24,6 +25,30 @@ test('classifyOrderAge honors the 2-week / 3-week turnaround thresholds', () => 
   assert.strictEqual(classifyOrderAge(AGE_POSSIBLY_LATE - 1), 'running_long'); // 20d
   assert.strictEqual(classifyOrderAge(AGE_POSSIBLY_LATE), 'possibly_late'); // 21d
   assert.strictEqual(classifyOrderAge(45), 'possibly_late');
+});
+
+test('orderApprovedAt anchors to the approved event, then acceptance, else null', () => {
+  const evAt = '2026-06-20T12:00:00Z';
+  // Prefers the status_changed→approved activity event (earliest, if several).
+  assert.strictEqual(
+    orderApprovedAt({
+      activity: [
+        { kind: 'status_changed', meta: { to: 'approved' }, at: '2026-06-25T00:00:00Z' },
+        { kind: 'status_changed', meta: { to: 'approved' }, at: evAt },
+        { kind: 'status_changed', meta: { to: 'placed' }, at: '2026-06-28T00:00:00Z' },
+      ],
+      approvalTermsAcceptedAt: '2026-01-01T00:00:00Z',
+    }),
+    evAt,
+  );
+  // Falls back to the approval acceptance timestamp when there's no event.
+  assert.strictEqual(
+    orderApprovedAt({ activity: [], approvalTermsAcceptedAt: evAt }),
+    evAt,
+  );
+  // Unknown approval time → null (so a stale createdAt never triggers a false stall).
+  assert.strictEqual(orderApprovedAt({ activity: [{ kind: 'note', at: evAt }] }), null);
+  assert.strictEqual(orderApprovedAt({}), null);
 });
 
 test('bucketFollowUps splits overdue vs due-today by ET calendar day and drops closed/empty', () => {
