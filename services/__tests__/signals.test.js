@@ -73,3 +73,28 @@ test('toGroups on an all-empty day yields nothing (clean-day invariant)', () => 
   assert.deepStrictEqual(groups, { critical: [], warning: [], info: [] });
   assert.strictEqual(counts.total, 0);
 });
+
+// ── Outreach hot-lead hub alert ───────────────────────────────────────────────
+const { bucketOutreachReplies, replyAgeLabel } = require('../signals');
+test('bucketOutreachReplies splits hot buying-signals from other new replies', () => {
+  const now = new Date('2026-07-03T18:00:00Z');
+  const replies = [
+    { status: 'new', category: 'asked_pricing', companyName: 'Green Leaf', receivedAt: new Date(now - 3 * 3600000) },
+    { status: 'new', category: 'hot_lead', companyName: 'Highland', receivedAt: new Date(now - 5 * 3600000) },
+    { status: 'new', category: 'needs_response', companyName: 'Bud Co', receivedAt: new Date(now - 2 * 3600000) },
+    { status: 'new', category: 'unsubscribe', companyName: 'Nope', receivedAt: new Date(now) },       // not actionable → dropped
+    { status: 'handled', category: 'hot_lead', companyName: 'Done', receivedAt: new Date(now) },        // not new → dropped
+  ];
+  const { hot, other } = bucketOutreachReplies(replies, now);
+  assert.equal(hot.length, 2);           // asked_pricing + hot_lead
+  assert.equal(other.length, 1);         // needs_response
+  assert.ok(hot.every((h) => h.name && h.metric));
+});
+
+test('replyAgeLabel renders hours then days, blank for future/garbage', () => {
+  const now = new Date('2026-07-03T18:00:00Z');
+  assert.equal(replyAgeLabel(new Date(now - 3 * 3600000), now), '3h');
+  assert.equal(replyAgeLabel(new Date(now - 50 * 3600000), now), '2d');
+  assert.equal(replyAgeLabel(new Date(now.getTime() + 3600000), now), ''); // future
+  assert.equal(replyAgeLabel('garbage', now), '');
+});
