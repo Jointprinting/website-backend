@@ -44,6 +44,10 @@ const ATTENTION_OPEN_STATUSES = ['placed', 'in_production', 'shipped'];
 const FOLLOWUP_CLOSED_STAGES = ['won', 'lost', 'dormant'];
 // A neglected deal at/above this value escalates (mirror crm.js HEADS_UP).
 const BIG_DEAL = 2000;
+// An order the client approved (invoice sent) that hasn't moved to 'placed' in
+// this many ET days = money to chase / blanks to order. The /attention age feed
+// deliberately excludes 'approved', so this is an otherwise-uncovered gap.
+const APPROVED_STALLED_DAYS = 5;
 // Cap the per-group item list; the group count still reflects the true total.
 const ITEM_CAP = 25;
 
@@ -55,6 +59,17 @@ function classifyOrderAge(ageDays) {
   if (ageDays >= AGE_POSSIBLY_LATE) return 'possibly_late';
   if (ageDays >= AGE_RUNNING_LONG) return 'running_long';
   return null;
+}
+
+// The instant an order was approved: the status_changed→approved activity event
+// (mirrors orders.js orderPlacedAt), then the approval acceptance timestamp.
+// Returns null when the approval time is unknown so we never flag on a stale
+// createdAt (avoids false "stalled" positives for an order approved long ago).
+function orderApprovedAt(o) {
+  const ev = (Array.isArray(o.activity) ? o.activity : [])
+    .filter((e) => e && e.kind === 'status_changed' && e.meta && e.meta.to === 'approved')
+    .sort((a, b) => new Date(a.at || 0) - new Date(b.at || 0))[0];
+  return (ev && ev.at) || o.approvalTermsAcceptedAt || null;
 }
 
 // Split active follow-ups into overdue (before today) vs dueToday, by ET calendar
@@ -131,6 +146,30 @@ async function ordersAging(now) {
     { id: 'order_running_long', severity: 'warning', kind: 'order',
       label: `${long.length} order${long.length === 1 ? '' : 's'} running long · 2+ weeks`,
       count: long.length, items: cap(long) },
+  ];
+}
+
+async function approvedStalled(now) {
+  const rows = await Order.find({ status: 'approved', archived: { $ne: true } })
+    .select('projectNumber orderNumber companyName clientName status orderDate createdAt activity approvalTermsAcceptedAt')
+    .lean();
+  const items = [];
+  for (const o of rows) {
+    const ageDays = etAgeDays(orderApprovedAt(o), now);
+    if (ageDays == null || ageDays < APPROVED_STALLED_DAYS) continue;
+    items.push({
+      _id: String(o._id),
+      projectNumber: o.projectNumber || '',
+      orderNumber: o.orderNumber || '',
+      name: nameOf(o) || (o.projectNumber ? `#${o.projectNumber}` : 'Order'),
+      metric: `${ageDays}d`,
+    });
+  }
+  items.sort((a, b) => parseInt(b.metric, 10) - parseInt(a.metric, 10));
+  return [
+    { id: 'approved_stalled', severity: 'warning', kind: 'order',
+      label: `${items.length} approved order${items.length === 1 ? '' : 's'} awaiting placement · ${APPROVED_STALLED_DAYS}+ days`,
+      count: items.length, items: cap(items) },
   ];
 }
 
@@ -227,7 +266,7 @@ async function repliesWaiting() {
 
 // buildSignals — compose all sources; a thrown source drops only its group.
 async function buildSignals({ now = new Date() } = {}) {
-  const sources = [ordersAging(now), moneyOwed(), followUps(now), repliesWaiting(), bigDealsQuiet(now)];
+  const sources = [ordersAging(now), approvedStalled(now), moneyOwed(), followUps(now), repliesWaiting(), bigDealsQuiet(now)];
   const settled = await Promise.allSettled(sources);
   const all = [];
   for (const r of settled) {
@@ -242,6 +281,7 @@ module.exports = {
   buildSignals,
   // pure helpers exported for tests
   classifyOrderAge,
+  orderApprovedAt,
   bucketFollowUps,
   replySeverity,
   toGroups,
