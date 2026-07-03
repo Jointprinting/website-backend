@@ -1,17 +1,14 @@
 // services/__tests__/signals.test.js
 //
-// Unit tests for the pure helpers behind the Smart Alerts feed (services/signals.js).
-// No DB: these cover the age thresholds, ET follow-up bucketing, hot-reply
-// escalation, and group assembly — the logic that decides what shows and how loud.
+// Unit tests for the pure helpers behind the Signals feed (services/signals.js):
+// the order-age thresholds, ET follow-up bucketing, and group assembly.
 
 const test = require('node:test');
 const assert = require('node:assert');
 
 const {
   classifyOrderAge,
-  orderApprovedAt,
   bucketFollowUps,
-  replySeverity,
   toGroups,
   AGE_RUNNING_LONG,
   AGE_POSSIBLY_LATE,
@@ -25,30 +22,6 @@ test('classifyOrderAge honors the 2-week / 3-week turnaround thresholds', () => 
   assert.strictEqual(classifyOrderAge(AGE_POSSIBLY_LATE - 1), 'running_long'); // 20d
   assert.strictEqual(classifyOrderAge(AGE_POSSIBLY_LATE), 'possibly_late'); // 21d
   assert.strictEqual(classifyOrderAge(45), 'possibly_late');
-});
-
-test('orderApprovedAt anchors to the approved event, then acceptance, else null', () => {
-  const evAt = '2026-06-20T12:00:00Z';
-  // Prefers the status_changed→approved activity event (earliest, if several).
-  assert.strictEqual(
-    orderApprovedAt({
-      activity: [
-        { kind: 'status_changed', meta: { to: 'approved' }, at: '2026-06-25T00:00:00Z' },
-        { kind: 'status_changed', meta: { to: 'approved' }, at: evAt },
-        { kind: 'status_changed', meta: { to: 'placed' }, at: '2026-06-28T00:00:00Z' },
-      ],
-      approvalTermsAcceptedAt: '2026-01-01T00:00:00Z',
-    }),
-    evAt,
-  );
-  // Falls back to the approval acceptance timestamp when there's no event.
-  assert.strictEqual(
-    orderApprovedAt({ activity: [], approvalTermsAcceptedAt: evAt }),
-    evAt,
-  );
-  // Unknown approval time → null (so a stale createdAt never triggers a false stall).
-  assert.strictEqual(orderApprovedAt({ activity: [{ kind: 'note', at: evAt }] }), null);
-  assert.strictEqual(orderApprovedAt({}), null);
 });
 
 test('bucketFollowUps splits overdue vs due-today by ET calendar day and drops closed/empty', () => {
@@ -75,17 +48,6 @@ test('bucketFollowUps orders overdue most-overdue-first', () => {
   ];
   const { overdue } = bucketFollowUps(clients, now);
   assert.deepStrictEqual(overdue.map((c) => c.companyKey), ['oldest', 'recent']);
-});
-
-test('replySeverity escalates to critical only when a hot buying signal is waiting', () => {
-  assert.strictEqual(replySeverity([]), 'warning');
-  assert.strictEqual(replySeverity([{ category: 'needs_response' }]), 'warning');
-  assert.strictEqual(replySeverity([{ category: 'hot_lead' }]), 'critical');
-  assert.strictEqual(replySeverity([{ category: 'asked_pricing' }]), 'critical');
-  assert.strictEqual(
-    replySeverity([{ category: 'needs_response' }, { category: 'asked_mockups' }]),
-    'critical',
-  );
 });
 
 test('toGroups buckets by severity, drops empty groups, and counts the non-empty ones', () => {
