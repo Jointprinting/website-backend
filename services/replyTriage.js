@@ -254,10 +254,27 @@ function worklistFromReplies(replies = []) {
   return buckets;
 }
 
-// ── Gmail sync seam ──────────────────────────────────────────────────────────
-// Reports whether a read-only Gmail sync COULD run. The actual read-only fetch
-// (Wave 2) is gated on these creds; until then the UI shows an honest hint and
-// the /sync endpoint no-ops.
+// ── Gmail sync ───────────────────────────────────────────────────────────────
+
+// Parse an RFC 5322 From header ("Sam Rivera <sam@shop.com>" or "sam@shop.com")
+// into { email, name }. PURE — the network fetch lives in the controller.
+function parseFromHeader(from) {
+  const s = String(from || '').trim();
+  const m = s.match(/<([^>]+)>/);
+  const email = (m ? m[1] : s).trim().toLowerCase();
+  let name = m ? s.slice(0, m.index).trim() : '';
+  name = name.replace(/^"(.*)"$/, '$1').trim();
+  return { email: /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) ? email : '', name };
+}
+
+// The Gmail search query for inbound replies to pull: recent, not our own
+// outbound, not chats, primary inbox. Deduped downstream by gmailMessageId, so
+// re-scanning the window each tick is safe. PURE.
+function gmailQuery({ windowDays = 7 } = {}) {
+  return `newer_than:${Math.max(1, Math.round(windowDays))}d -from:me -in:chats`;
+}
+
+// Reports whether a read-only Gmail sync CAN run (creds present + enabled).
 function isGmailConfigured() {
   return Boolean(
     process.env.GMAIL_TRIAGE_ENABLED === 'true' &&
@@ -276,6 +293,8 @@ module.exports = {
   isValidStatus,
   classifyReply,
   parseOooResume,
+  parseFromHeader,
+  gmailQuery,
   matchReply,
   normEmail,
   normSubject,

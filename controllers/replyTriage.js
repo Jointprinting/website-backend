@@ -8,13 +8,17 @@
 // company's existing doNotEmail flag and stops its active sequences — the same
 // thing the public unsubscribe + bounce paths already do.
 
+const cron = require('node-cron');
 const TriageReply = require('../models/TriageReply');
 const OutreachEnrollment = require('../models/OutreachEnrollment');
+const OutreachState = require('../models/OutreachState');
 const Client = require('../models/Client');
 const {
   classifyReply,
   matchReply,
   parseOooResume,
+  parseFromHeader,
+  gmailQuery,
   suggestedActionFor,
   isValidStatus,
   normEmail,
@@ -285,18 +289,121 @@ async function updateStatus(req, res) {
   }
 }
 
-// POST /api/triage/sync — Gmail sync seam. V1 does NOT fetch from Gmail (that read-
-// only OAuth is a separate, opt-in PR). This reports honestly whether a sync could
-// run so the UI can prompt the owner to add replies manually for now.
-async function syncGmail(_req, res) {
-  const configured = isGmailConfigured();
-  res.json({
-    configured,
-    imported: 0,
-    message: configured
-      ? 'Gmail credentials are set, but the read-only fetch ships in a later version. No messages were pulled.'
-      : 'Gmail auto-sync is not set up. Add replies manually for now, or set GMAIL_TRIAGE_ENABLED + Gmail credentials to enable it later.',
+// ── Read-only Gmail ingest (Wave 2) ───────────────────────────────────────────
+// Uses the gated GMAIL_* refresh-token creds to pull recent inbound replies via
+// the Gmail REST API (no googleapis dep — Node's global fetch), and runs each
+// through ingestOne (which dedupes by gmailMessageId + fires the auto-actions).
+// Read-only: it never modifies the mailbox.
+
+async function gmailAccessToken() {
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: process.env.GMAIL_CLIENT_ID,
+      client_secret: process.env.GMAIL_CLIENT_SECRET,
+      refresh_token: process.env.GMAIL_REFRESH_TOKEN,
+      grant_type: 'refresh_token',
+    }),
   });
+  if (!res.ok) throw new Error(`gmail token exchange ${res.status}`);
+  const j = await res.json();
+  if (!j.access_token) throw new Error('gmail token: no access_token');
+  return j.access_token;
+}
+
+async function gmailApi(path, token) {
+  const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`gmail api ${res.status} on ${path.split('?')[0]}`);
+  return res.json();
+}
+
+// Pull recent inbound replies and ingest them. Bounded (maxMessages) and safe to
+// re-run (ingestOne dedupes). Returns a summary; records last-sync on state.
+async function runGmailSync({ maxMessages = 50, windowDays = 7 } = {}) {
+  if (!isGmailConfigured()) return { configured: false, imported: 0 };
+  const token = await gmailAccessToken();
+  const q = encodeURIComponent(gmailQuery({ windowDays }));
+  const list = await gmailApi(`messages?q=${q}&maxResults=${maxMessages}`, token);
+  const ids = (list.messages || []).map((m) => m.id);
+  let imported = 0;
+  const skipped = { empty: 0, self: 0, duplicate: 0 };
+  const HEADERS = ['From', 'Subject', 'Message-Id', 'In-Reply-To', 'References', 'Date']
+    .map((h) => `metadataHeaders=${h}`).join('&');
+  for (const id of ids) {
+    const msg = await gmailApi(`messages/${id}?format=metadata&${HEADERS}`, token).catch(() => null);
+    if (!msg) continue;
+    const h = {};
+    for (const hdr of (msg.payload && msg.payload.headers) || []) h[hdr.name.toLowerCase()] = hdr.value;
+    const { email, name } = parseFromHeader(h.from);
+    const r = await ingestOne({
+      fromEmail: email,
+      fromName: name,
+      subject: h.subject || '',
+      snippet: msg.snippet || '',
+      receivedAt: msg.internalDate ? new Date(Number(msg.internalDate)) : new Date(),
+      inReplyTo: h['in-reply-to'] || '',
+      references: h.references || '',
+      gmailMessageId: id,
+      source: 'gmail',
+    });
+    if (r.saved) imported += 1;
+    else if (r.skip && skipped[r.skip] != null) skipped[r.skip] += 1;
+  }
+  await OutreachState.findOneAndUpdate(
+    { key: 'engine' },
+    { $set: { gmailLastSyncAt: new Date(), gmailLastCount: imported } },
+    { upsert: true },
+  ).catch(() => {});
+  return { configured: true, scanned: ids.length, imported, skipped };
+}
+
+// POST /api/triage/sync — run the read-only Gmail pull now (owner-triggered),
+// or report honestly that it's not configured.
+async function syncGmail(_req, res) {
+  if (!isGmailConfigured()) {
+    return res.json({
+      configured: false, imported: 0,
+      message: 'Gmail auto-sync is not set up. Add replies manually, or set GMAIL_TRIAGE_ENABLED + Gmail credentials to enable read-only sync.',
+    });
+  }
+  try {
+    const r = await runGmailSync();
+    res.json({ ...r, message: `Synced Gmail — ${r.imported} new repl${r.imported === 1 ? 'y' : 'ies'} imported (${r.scanned} scanned).` });
+  } catch (e) {
+    res.status(502).json({ configured: true, imported: 0, message: `Gmail sync failed: ${e.message}` });
+  }
+}
+
+// GET /api/triage/sync-status — the live "last synced Xm ago · N new" pill.
+async function getSyncStatus(_req, res) {
+  try {
+    const st = await OutreachState.findOne({ key: 'engine' }).select('gmailLastSyncAt gmailLastCount').lean();
+    res.json({
+      configured: isGmailConfigured(),
+      lastSyncAt: st ? st.gmailLastSyncAt : null,
+      lastCount: st ? st.gmailLastCount : 0,
+    });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
+// Cron: read-only Gmail ingest every 10 min (only when configured). Modeled on
+// the outreach engine + jpwScheduler crons; started from server.js.
+function startGmailIngest() {
+  if (!isGmailConfigured()) {
+    console.log('[triage] Gmail ingest idle — set GMAIL_TRIAGE_ENABLED + GMAIL_* creds to enable read-only reply sync');
+    return;
+  }
+  cron.schedule('*/10 * * * *', () => {
+    runGmailSync()
+      .then((r) => { if (r.imported) console.log(`[triage] gmail sync: +${r.imported} new (${r.scanned} scanned)`); })
+      .catch((e) => console.warn('[triage] gmail sync failed:', e.message));
+  });
+  console.log('[triage] Gmail read-only reply ingest started — every 10 min');
 }
 
 // GET /api/triage/worklist — the Follow-Up Command Center's action buckets.
@@ -350,4 +457,7 @@ async function getWorklist(_req, res) {
   }
 }
 
-module.exports = { listReplies, addReplies, updateStatus, syncGmail, getWorklist, ingestOne, applyStatusSideEffects };
+module.exports = {
+  listReplies, addReplies, updateStatus, syncGmail, getSyncStatus, getWorklist,
+  ingestOne, applyStatusSideEffects, runGmailSync, startGmailIngest,
+};

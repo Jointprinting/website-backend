@@ -257,3 +257,21 @@ test('worklistFromReplies never throws on empty / missing dates', () => {
   const empty = worklistFromReplies([]);
   assert.deepEqual(empty, { needsResponse: [], quoteRequested: [], mockupRequested: [], followUp: [] });
 });
+
+// ── Wave 2: Gmail ingest pure helpers ─────────────────────────────────────────
+const { parseFromHeader, gmailQuery } = require('../../services/replyTriage');
+test('parseFromHeader pulls email + name from an RFC5322 From header', () => {
+  assert.deepEqual(parseFromHeader('Sam Rivera <sam@shop.com>'), { email: 'sam@shop.com', name: 'Sam Rivera' });
+  assert.deepEqual(parseFromHeader('"Rivera, Sam" <SAM@Shop.com>'), { email: 'sam@shop.com', name: 'Rivera, Sam' });
+  assert.deepEqual(parseFromHeader('bare@shop.com'), { email: 'bare@shop.com', name: '' });
+  assert.deepEqual(parseFromHeader('not an email'), { email: '', name: '' });
+  assert.deepEqual(parseFromHeader(''), { email: '', name: '' });
+});
+
+test('gmailQuery targets recent inbound, not our own mail or chats', () => {
+  const q = gmailQuery({ windowDays: 7 });
+  assert.match(q, /newer_than:7d/);
+  assert.match(q, /-from:me/);
+  assert.match(q, /-in:chats/);
+  assert.match(gmailQuery({ windowDays: 2 }), /newer_than:2d/);
+});

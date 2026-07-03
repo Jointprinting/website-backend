@@ -95,6 +95,11 @@ db.once('open', () => {
   // volume must never ride the main transactional identity.
   require('./services/outreachEngine').startOutreachEngine();
 
+  // Read-only Gmail reply ingest: pulls inbound replies every 10 min and runs
+  // them through triage (auto-stop / warm / suppress). Idle until GMAIL_* creds
+  // are set; never modifies the mailbox.
+  require('./controllers/replyTriage').startGmailIngest();
+
   // Self-advancing lead finder: weekly, works the frontier region until it's dry
   // then steps to the next state. Free (OSM + own-site scrape); idle until the
   // owner enables auto-advance from the Studio.
