@@ -192,4 +192,5 @@ module.exports = {
   isGmailConfigured,
   worklistFromReplies,
   ACTIONABLE_CATEGORIES,
+  HOT_CATEGORIES,
 };
