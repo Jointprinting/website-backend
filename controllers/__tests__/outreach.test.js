@@ -237,3 +237,29 @@ test('buildNextActions: no active campaign but reserve → launch nudge', () => 
   const a = buildNextActions({ engine: { senderConfigured: true }, campaigns: [], warmCount: 0, coldReserve: 40 });
   assert.ok(a.some((x) => /launch one/i.test(x.text)));
 });
+
+// ── test-send handler (first-run wizard) ─────────────────────────────────────
+// A tiny res double so we can assert the status/JSON without Express.
+function mockRes() {
+  return {
+    _status: 200, _json: null,
+    status(c) { this._status = c; return this; },
+    json(o) { this._json = o; return this; },
+  };
+}
+
+test('sendTest: no sender configured → 400 with a fix-your-config message', async () => {
+  const { sendTest } = require('../outreach');
+  const saved = { from: process.env.OUTREACH_EMAIL_FROM, senders: process.env.OUTREACH_SENDERS };
+  delete process.env.OUTREACH_EMAIL_FROM;
+  delete process.env.OUTREACH_SENDERS;
+  try {
+    const res = mockRes();
+    await sendTest({ body: { to: 'me@example.com' } }, res);
+    assert.equal(res._status, 400);
+    assert.match(res._json.message, /OUTREACH_EMAIL_FROM/);
+  } finally {
+    if (saved.from != null) process.env.OUTREACH_EMAIL_FROM = saved.from;
+    if (saved.senders != null) process.env.OUTREACH_SENDERS = saved.senders;
+  }
+});

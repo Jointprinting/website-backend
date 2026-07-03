@@ -38,7 +38,7 @@ const Suppression = require('../models/Suppression');
 const Client = require('../models/Client');
 const sendEmail = require('../utils/sendEmail');
 const { promoteStage } = require('../controllers/crm');
-const { suppress, isSuppressed } = require('./suppression');
+const { suppress, isSuppressed, isEmail } = require('./suppression');
 const { applySpintax } = require('./outreachContent');
 const { getSenders } = require('./senderPool');
 const { getAuthStatus } = require('../utils/dnsAuth');
@@ -238,8 +238,11 @@ function bodyToHtml(text) {
     .join('');
 }
 
-const unsubscribeUrl = (token) => (PUBLIC_BASE ? `${PUBLIC_BASE}/api/outreach/u/${token}` : '');
-const openPixelUrl   = (token) => (PUBLIC_BASE ? `${PUBLIC_BASE}/api/outreach/t/${token}/open.png` : '');
+// Both are keyed by the enrollment token; with no token (e.g. the wizard's
+// tokenless test send) they return '' so composeMessage falls back to the
+// reply-based opt-out and skips the pixel — never a broken /u/ or /open.png link.
+const unsubscribeUrl = (token) => (PUBLIC_BASE && token ? `${PUBLIC_BASE}/api/outreach/u/${token}` : '');
+const openPixelUrl   = (token) => (PUBLIC_BASE && token ? `${PUBLIC_BASE}/api/outreach/t/${token}/open.png` : '');
 // Open tracking is OFF by default: a hidden 1×1 pixel is a classic tracker
 // fingerprint and Apple Mail Privacy Protection makes opens near-meaningless
 // anyway. Set OUTREACH_OPEN_PIXEL=on to re-enable (then it's a plain 1×1, not
@@ -503,6 +506,50 @@ async function recordRun(result) {
     { $set: { last_run_at: new Date(), last_result: result } },
     { upsert: true },
   ).catch((e) => console.warn('[outreach] state write failed:', e.message));
+}
+
+// One-shot "does my sending actually work" probe for the first-run wizard.
+// Renders a tiny sample through the REAL from-identity + SMTP the engine uses
+// (the primary pool inbox) and delivers it to the operator's own address, so
+// they can confirm the domain authenticates and lands in the inbox — not spam —
+// BEFORE enrolling a single lead. No enrollment, no tracking pixel, no CRM write:
+// a self-contained diagnostic. Returns { ok, to, from } or throws a plain-English
+// error the controller surfaces as a 400.
+async function sendTestEmail(to) {
+  if (!outreachFrom())   throw new Error('Set OUTREACH_EMAIL_FROM on the API first, then send the test.');
+  if (!smtpConfigured()) throw new Error('SMTP isn’t configured on the API yet — set the SMTP_* (or per-sender) credentials.');
+
+  const dest = String(to || '').trim() || outreachFrom();
+  if (!isEmail(dest)) throw new Error('Enter a valid email address to send the test to (e.g. your own inbox).');
+
+  const sender = getSenders()[0] || {};
+  const fromAddr = sender.from || outreachFrom();
+  const replyToAddr = sender.replyTo || outreachReplyTo();
+  const auth = await getAuthStatus(fromAddr).catch(() => null);
+  const authLine = auth
+    ? `Sender auth right now: SPF ${auth.spf ? '✓' : '✗'} · DKIM ${auth.dkim ? '✓' : '✗'} · DMARC ${auth.dmarc ? '✓' : '✗'} (${auth.level}).`
+    : 'Sender auth: could not verify DNS just now.';
+  const bodyText = [
+    'This is a test from your Joint Printing outreach engine.',
+    '',
+    'If it landed in your inbox (not spam or promotions), your sending address is ready — go ahead and enroll leads.',
+    'If it went to spam or never arrived, finish the SPF / DKIM / DMARC setup in docs/DELIVERABILITY.md before starting a campaign.',
+    '',
+    authLine,
+    '',
+    `Sent from ${fromAddr}${replyToAddr ? ` · replies go to ${replyToAddr}` : ''}.`,
+  ].join('\n');
+  const { html, text } = composeMessage({ bodyText, token: '' }); // '' → reply-based opt-out, no pixel
+
+  const info = await sendEmail({
+    to: dest,
+    subject: 'Outreach test — your sender is working',
+    html, textAlt: text,
+    from: fromAddr,
+    ...(replyToAddr ? { replyTo: replyToAddr } : {}),
+    ...(sender.smtp ? { smtp: sender.smtp } : {}),
+  });
+  return { ok: true, to: dest, from: fromAddr, messageId: (info && info.messageId) || null };
 }
 
 // Send ONE enrollment's next due step, optionally through a specific pool
@@ -834,6 +881,7 @@ module.exports = {
   runOutreachTick,
   engineStatus,
   sendOne,
+  sendTestEmail,
   newToken,
   pickEmail,
   // pure helpers (unit-tested)
