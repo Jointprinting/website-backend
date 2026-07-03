@@ -9,7 +9,8 @@ const LeadFinderStateSchema = new mongoose.Schema({
   key:          { type: String, required: true, unique: true }, // always 'frontier'
   activeRegion: { type: String, default: 'nj' },
   dryStreak:    { type: Number, default: 0 },   // consecutive no-new-lead sweeps
-  autoAdvance:  { type: Boolean, default: false }, // owner toggles the auto-pilot on
+  // Vestigial — the engine is always on now (no toggle); kept so old docs load.
+  autoAdvance:  { type: Boolean, default: true },
   lastRunAt:    { type: Date, default: null },
   lastResult:   { type: String, default: '' },
 }, { timestamps: true });

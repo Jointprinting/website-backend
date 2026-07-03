@@ -26,6 +26,9 @@ const SendSchema = new mongoose.Schema({
   // Which sending identity (senderPool label) delivered this — powers the
   // per-inbox daily cap so a multi-inbox pool can send more, safely.
   sender:    { type: String, default: '' },
+  // 'A' | 'B' when this send's step ran a subject A/B test ('' = no test) —
+  // the campaign's per-variant results are aggregated off this.
+  variant:   { type: String, default: '' },
 }, { _id: false });
 
 const OutreachEnrollmentSchema = new mongoose.Schema({

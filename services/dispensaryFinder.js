@@ -60,11 +60,11 @@ const REGIONS = {
 };
 const DEFAULT_REGION = 'nj';
 
-// The national rollout order the auto-pilot advances through: NJ first, then
-// outward by proximity, then the rest of the adult-use map. The scheduler works
-// the active region until it stops turning up NEW shops, then steps to the next
-// here — and WRAPS at the end, so it periodically loops back to catch newly
-// opened dispensaries. Only ids present in REGIONS are valid.
+// The national rollout order the always-on lead engine advances through: NJ
+// first, then outward by proximity, then the rest of the adult-use map. Each
+// queue-aware refill run sweeps successive frontier states along this list —
+// WRAPPING at the end, so it periodically loops back to catch newly opened
+// dispensaries. Only ids present in REGIONS are valid.
 const NATIONAL_ROLLOUT = [
   'nj', 'ny', 'pa', 'ct', 'de', 'md', 'ma', 'ri', 'vt', 'me',
   'va', 'oh', 'mi', 'il', 'mn', 'mo', 'az', 'co', 'nm', 'nv',
@@ -82,11 +82,11 @@ function nextRegionAfter(region, rollout = NATIONAL_ROLLOUT) {
   return rollout[(i + 1) % rollout.length];
 }
 
-// The auto-pilot's per-run decision. A run that imported NO new leads is "dry";
-// after `advanceAfter` consecutive dry runs the frontier steps to the next
-// region (a region can legitimately go quiet for a run, so we don't jump on the
-// first empty result). Any run that finds new leads resets the streak. Pure +
-// testable — the scheduler is just I/O around this.
+// Legacy per-run frontier decision (kept for its tests + any manual tooling):
+// a run that imported NO new leads is "dry"; after `advanceAfter` consecutive
+// dry runs the frontier steps to the next region. The current lead engine
+// advances via nextRegionAfter on every swept state instead (see
+// leadFinderScheduler.runFrontierSweep). Pure + testable.
 function decideFrontier({ region, created, dryStreak = 0, rollout = NATIONAL_ROLLOUT, advanceAfter = 2 }) {
   if ((Number(created) || 0) > 0) return { region, dryStreak: 0, advanced: false };
   const streak = (Number(dryStreak) || 0) + 1;

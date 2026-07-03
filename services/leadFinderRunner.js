@@ -200,7 +200,9 @@ async function finderStatus() {
     frontier: {
       activeRegion,
       activeLabel: REGIONS[activeRegion] ? REGIONS[activeRegion].label : activeRegion,
-      autoAdvance: !!(state && state.autoAdvance),
+      // The lead engine is always on now (the toggle is gone); reported for
+      // any older client still reading it.
+      autoAdvance: true,
       availableColdLeads: available,
       dryStreak: (state && state.dryStreak) || 0,
       lastRunAt: state ? state.lastRunAt : null,

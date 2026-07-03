@@ -661,3 +661,23 @@ test('companyKeyByOrderNumber: a blank/absent companyKey never overwrites a real
   assert.equal(m['21'], 'acme');
   assert.equal(m['22'] || '', '');
 });
+
+// ── Owner-managed categories ─────────────────────────────────────────────────
+const { normalizeCategoryName, categoriesWithCustom } = require('../finances');
+
+test('normalizeCategoryName trims, collapses whitespace, caps length', () => {
+  assert.equal(normalizeCategoryName('  Office   Snacks '), 'Office Snacks');
+  assert.equal(normalizeCategoryName(''), '');
+  assert.equal(normalizeCategoryName(null), '');
+  assert.equal(normalizeCategoryName('x'.repeat(60)).length, 40);
+});
+
+test('categoriesWithCustom: built-ins first, customs before Other, dupes dropped case-insensitively', () => {
+  const cats = categoriesWithCustom(['Office Snacks', 'office snacks', 'SOFTWARE', '  ', 'Trade Shows']);
+  assert.equal(cats[cats.length - 1], 'Other');                    // catch-all stays last
+  assert.ok(cats.includes('Office Supplies'));                     // new built-in present
+  assert.ok(cats.includes('Office Snacks') && cats.includes('Trade Shows'));
+  assert.equal(cats.filter((c) => c.toLowerCase() === 'office snacks').length, 1); // deduped
+  assert.equal(cats.filter((c) => c.toLowerCase() === 'software').length, 1);      // built-in wins
+  assert.deepEqual(categoriesWithCustom([]), categoriesWithCustom());              // no customs = built-ins
+});

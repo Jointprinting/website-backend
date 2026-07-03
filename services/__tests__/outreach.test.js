@@ -241,3 +241,18 @@ test('pickEmail prefers a named person over a role inbox', () => {
   assert.equal(pickEmail({ email: 'owner@shop.com', contacts: [{ email: 'x@shop.com' }] }), 'owner@shop.com');
   assert.equal(pickEmail({}), '');
 });
+
+// ── Subject A/B arm assignment ───────────────────────────────────────────────
+const { abVariant } = require('../outreachEngine');
+
+test('abVariant: stable per token, and both arms occur across tokens', () => {
+  const arms = new Set();
+  for (let i = 0; i < 40; i++) {
+    const tok = `token-${i}`;
+    const v = abVariant(tok);
+    assert.equal(v, abVariant(tok)); // same token → same arm, always
+    assert.ok(v === 'A' || v === 'B');
+    arms.add(v);
+  }
+  assert.equal(arms.size, 2); // a 40-token sample hits both arms
+});

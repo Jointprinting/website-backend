@@ -51,3 +51,32 @@ test('domainOf pulls the host from an address or bare domain', () => {
   assert.equal(domainOf('getjp.com'), 'getjp.com');
   assert.equal(domainOf(''), '');
 });
+
+// ── recommendedRecords — the exact fix-it rows the Studio renders ────────────
+const { recommendedRecords } = require('../../utils/dnsAuth');
+
+test('recommendedRecords: DKIM missing + DMARC p=none → dkim row + optional dmarc upgrade', () => {
+  const recs = recommendedRecords({ domain: 'jointprintingshop.com', spf: true, dkim: false, dmarc: true, dmarcPolicy: 'none' });
+  const ids = recs.map((r) => r.id);
+  assert.deepEqual(ids, ['dkim', 'dmarc-upgrade']);
+  assert.match(recs[0].value, /SendPulse/);
+  assert.match(recs[1].value, /p=quarantine/);
+  assert.match(recs[1].note, /Not required to send/);
+});
+
+test('recommendedRecords: nothing set → spf + dkim + dmarc rows with paste-able values', () => {
+  const recs = recommendedRecords({ domain: 'x.com', spf: false, dkim: false, dmarc: false });
+  assert.deepEqual(recs.map((r) => r.id), ['spf', 'dkim', 'dmarc']);
+  assert.equal(recs[0].host, '@');
+  assert.match(recs[0].value, /^v=spf1 /);
+  assert.match(recs[2].value, /^v=DMARC1/);
+});
+
+test('recommendedRecords: fully green → empty (panel hides)', () => {
+  assert.deepEqual(recommendedRecords({ domain: 'x.com', spf: true, dkim: true, dmarc: true, dmarcPolicy: 'quarantine' }), []);
+});
+
+test('recommendedRecords: unknown posture (DNS unreachable) recommends NOTHING — flags are false from zero data', () => {
+  assert.deepEqual(recommendedRecords({ domain: 'x.com', level: 'unknown', spf: false, dkim: false, dmarc: false }), []);
+  assert.deepEqual(recommendedRecords({ domain: '', spf: false, dkim: false, dmarc: false }), []);
+});

@@ -35,10 +35,10 @@ async function keysWithPlacedOrders(keys) {
     .select('companyKey').lean();
   return new Set(rows.map((r) => r.companyKey));
 }
-const { engineStatus, runOutreachTick, sendTestEmail, newToken, pickEmail, sendBlockReason, deliverabilityStats } = require('../services/outreachEngine');
+const { engineStatus, runOutreachTick, sendTestEmail, recheckAuth, newToken, pickEmail, sendBlockReason, deliverabilityStats } = require('../services/outreachEngine');
 const { runFinder, finderStatus } = require('../services/leadFinderRunner');
 const { scoreLead } = require('../services/leadScore');
-const { runFrontierSweep, getState } = require('../services/leadFinderScheduler');
+const { runFrontierSweep } = require('../services/leadFinderScheduler');
 const { REGIONS, isRegion } = require('../services/dispensaryFinder');
 
 const NOT_ARCHIVED = { archived: { $ne: true } };
@@ -67,6 +67,28 @@ function summarizeEnrollments(rows = []) {
   return s;
 }
 
+// Per-variant results for a campaign running a subject A/B test (unit-tested).
+// The engine stamps 'A'/'B' on each send; an enrollment's arm is its first
+// stamped send (arms are stable per token, so all its sends agree). Returns
+// null when no send carries a variant, so the UI can hide the strip entirely
+// for campaigns that aren't testing.
+function summarizeAbTest(rows = []) {
+  const mk = () => ({ sent: 0, opened: 0, replied: 0 });
+  const out = { A: mk(), B: mk() };
+  let any = false;
+  for (const e of rows || []) {
+    if (!e) continue;
+    const first = (e.sends || []).find((x) => x && (x.variant === 'A' || x.variant === 'B'));
+    if (!first) continue;
+    any = true;
+    const v = out[first.variant];
+    v.sent += 1;
+    if ((e.openCount || 0) > 0 || (e.sends || []).some((x) => x && x.openedAt)) v.opened += 1;
+    if (e.status === 'replied') v.replied += 1;
+  }
+  return any ? out : null;
+}
+
 // Pure campaign-health read (unit-tested): turns funnel stats into one
 // at-a-glance signal the UI badges, and — critically — explains WHY a campaign
 // isn't sending instead of leaving the owner staring at zeros. Levels:
@@ -81,7 +103,7 @@ function campaignHealth(campaign = {}, stats = {}) {
   // Active but nothing is (or can be) sending — say precisely why.
   if (st.noEmail > 0 && st.sent === 0) {
     return { level: 'action', label: `${st.noEmail} missing email`,
-      hint: `${st.noEmail} enrolled ${st.noEmail === 1 ? 'lead has' : 'leads have'} no email address, so nothing can send. Enroll leads that have emails (Find leads filters to emailable), or add addresses to these.` };
+      hint: `${st.noEmail} enrolled ${st.noEmail === 1 ? 'lead has' : 'leads have'} no email address, so nothing can send. Enroll a fresh batch (the enroll list only offers leads with emails), or add addresses to these.` };
   }
   if (st.active === 0 && st.sent === 0) {
     return { level: 'action', label: 'Nothing sending',
@@ -121,7 +143,7 @@ function buildNextActions({ engine = {}, campaigns = [], warmCount = 0, coldRese
     add('action', 'Set OUTREACH_EMAIL_FROM on the API to a dedicated cold-sending address — the engine is holding until then.');
   }
   if (engine.auth && engine.auth.level === 'red' && engine.authGate) {
-    add('action', 'Sending is held: your sender domain isn’t authenticated (SPF/DMARC). Add the DNS records in docs/DELIVERABILITY.md.');
+    add('action', 'Sending is held: your sender domain isn’t authenticated. The exact DNS records to paste are in the panel below — add them, then hit re-check.');
   }
   if (engine.deliverability && engine.deliverability.tripped) {
     add('action', `Sending auto-paused — ${engine.deliverability.reason}. Clean the list, then it resumes on its own.`, { view: 'analytics' });
@@ -136,9 +158,11 @@ function buildNextActions({ engine = {}, campaigns = [], warmCount = 0, coldRese
   if (!anyActive && coldReserve > 0) {
     add('info', `${coldReserve} cold lead${coldReserve === 1 ? '' : 's'} in reserve and no active campaign — launch one to start sending.`, { view: 'campaigns' });
   } else if (anyActive && coldReserve >= 20) {
-    add('info', `${coldReserve} cold leads waiting — enroll a fresh batch to keep the drip full.`, { view: 'import' });
+    // Enrolling happens in the Campaigns enroll dialog (the Lead engine tab is a
+    // progress readout) — point the button where the action actually lives.
+    add('info', `${coldReserve} cold leads waiting — enroll a fresh batch to keep the drip full.`, { view: 'campaigns' });
   } else if (anyActive && coldReserve === 0 && warmCount === 0) {
-    add('info', 'Lead pool is running low — run the finder (or turn on auto-pilot) to refill.', { view: 'import' });
+    add('info', 'Lead pool ran dry — the lead engine refills it automatically; check its progress.', { view: 'import' });
   }
   if (!actions.length) add('ok', 'All caught up — the engine is running and nothing needs you right now.');
 
@@ -183,8 +207,9 @@ async function getOverview(req, res) {
     maybeSelfHealTick(engine);
 
     const campaignRows = campaigns.map((c) => {
-      const stats = summarizeEnrollments(byCampaign.get(String(c._id)) || []);
-      return { ...c, stats, health: campaignHealth(c, stats) };
+      const rows = byCampaign.get(String(c._id)) || [];
+      const stats = summarizeEnrollments(rows);
+      return { ...c, stats, health: campaignHealth(c, stats), abTest: summarizeAbTest(rows) };
     });
     const campaignName = new Map(campaigns.map((c) => [String(c._id), c.name]));
 
@@ -266,6 +291,9 @@ function sanitizeSteps(steps) {
       body: String((s && s.body) || ''),
       // Follow-ups thread by default; a step can opt out to a fresh subject line.
       freshSubject: !!(s && s.freshSubject),
+      // Optional subject A/B arm (see StepSchema) — kept even where threading
+      // will ignore it, so the owner's draft survives a step reorder.
+      subjectB: String((s && s.subjectB) || ''),
     }))
     .filter((s) => s.subject.trim() || s.body.trim());
 }
@@ -338,6 +366,11 @@ function enrollBlockReason(client, alreadyEnrolled, isCustomerByOrder, isSuppres
   if (!client) return 'not-found';
   if (alreadyEnrolled) return 'already-enrolled';
   if (isCustomerByOrder) return 'is-customer';
+  // Cold means cold — enforced at the WRITE path too, not just the pick-list
+  // query, so a stale dialog, a raw API call, or any future caller can never
+  // enroll someone the owner has personally touched (his real clients whose
+  // orders predate the Orders system live behind exactly this flag).
+  if (client.lastContact) return 'already-contacted';
   const live = sendBlockReason(client); // archived / do-not-email / closed / customer-stage
   if (live) return live;
   if (!pickEmail(client)) return 'no-email';
@@ -347,21 +380,23 @@ function enrollBlockReason(client, alreadyEnrolled, isCustomerByOrder, isSuppres
   return '';
 }
 
-// GET /api/outreach/candidates?campaignId=&q=&stage=&leadSource=&includeContacted=
-// The enroll dialog's pick-list: genuinely COLD companies only. Beyond the hard
-// gates (has email, not opted out, not a customer, not already enrolled), we
-// EXCLUDE anyone the owner has personally touched — the authoritative signal is
-// `lastContact`, which is set whenever a call/text/visit/note is logged (or an
-// import carries a contact date). A company you've already called or visited
-// must never get a stranger's cold intro. `?includeContacted=true` overrides
-// (e.g. deliberately re-warming a lead you searched for by name).
+// GET /api/outreach/candidates?campaignId=&q=&stage=&leadSource=
+// The enroll dialog's pick-list: genuinely COLD companies only, no overrides.
+// Beyond the hard gates (has email, not opted out, not a customer, not already
+// enrolled), we EXCLUDE anyone the owner has personally touched — the
+// authoritative signal is `lastContact`, which is set whenever a call/text/
+// visit/note is logged (or an import carries a contact date). A company you've
+// already called or visited must never get a stranger's cold intro. There used
+// to be an ?includeContacted override; it was removed on purpose — it let real
+// clients (whose orders predate the Orders system, so the order-reality check
+// can't see them) surface in the cold list. Re-warming someone you know is a
+// personal email from you, not a campaign.
 async function getCandidates(req, res) {
   try {
     const { campaignId = '', q = '', stage = '', leadSource = '' } = req.query || {};
-    const includeContacted = req.query.includeContacted === 'true' || req.query.includeContacted === '1';
     const find = { ...NOT_ARCHIVED, doNotEmail: { $ne: true } };
     find.stage = stage ? stage : { $in: ['lead', 'contacted'] };
-    if (!includeContacted) find.lastContact = null; // cold = never personally contacted
+    find.lastContact = null; // cold = never personally contacted, always
     if (leadSource) find.leadSource = leadSource;
     if (q) {
       const rx = new RegExp(String(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
@@ -734,6 +769,19 @@ async function sendTest(req, res) {
   }
 }
 
+// POST /api/outreach/auth-recheck — bypass the 1h DNS cache and re-classify the
+// sender domain right now. The owner just pasted a record and wants the chips
+// to go green without waiting out the cache.
+async function recheckAuthNow(req, res) {
+  try {
+    const auth = await recheckAuth();
+    if (!auth) return res.status(400).json({ message: 'Set OUTREACH_EMAIL_FROM first — there is no sender domain to check yet.' });
+    res.json({ auth });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
 // ── Analytics ─────────────────────────────────────────────────────────────────
 
 const US_STATES = new Set([
@@ -906,29 +954,10 @@ async function findLeads(req, res) {
   }
 }
 
-// POST /api/outreach/find-leads/auto { enabled?, activeRegion? }
-// Toggle the self-advancing auto-pilot and/or jump the frontier to a region.
-async function setAutoAdvance(req, res) {
-  try {
-    const body = req.body || {};
-    const state = await getState();
-    if ('enabled' in body) state.autoAdvance = body.enabled === true || body.enabled === 'true';
-    if (body.activeRegion) {
-      if (!isRegion(body.activeRegion)) {
-        return res.status(400).json({ message: `unknown region "${body.activeRegion}"` });
-      }
-      state.activeRegion = body.activeRegion;
-      state.dryStreak = 0;
-    }
-    await state.save();
-    res.json(await finderStatus());
-  } catch (e) {
-    res.status(400).json({ message: e.message });
-  }
-}
-
-// POST /api/outreach/find-leads/auto/run — run one auto-pilot tick now (sweep the
-// active region + advance the frontier if it's dry), regardless of the toggle.
+// POST /api/outreach/find-leads/auto/run — force one lead-engine sweep right
+// now (the Studio's "Refill now" button). The engine otherwise runs itself:
+// always on, queue-aware, milking each state dry before advancing the frontier.
+// (The old on/off toggle endpoint is gone — there is nothing to turn off.)
 async function runAutoNow(req, res) {
   try {
     res.json(await runFrontierSweep({ force: true }));
@@ -1116,16 +1145,17 @@ module.exports = {
   startAutoEnroll,
   runTickNow,
   sendTest,
+  recheckAuthNow,
   trackOpen,
   unsubscribe,
   getFinderStatus,
   findLeads,
-  setAutoAdvance,
   runAutoNow,
   getAnalytics,
   bounceWebhook,
   // exported for tests
   summarizeEnrollments,
+  summarizeAbTest,
   campaignHealth,
   buildNextActions,
   enrollBlockReason,

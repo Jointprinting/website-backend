@@ -104,9 +104,10 @@ db.once('open', () => {
   // 30 min (idle until the owner turns it on for a campaign).
   require('./controllers/outreach').startAutoEnroll();
 
-  // Self-advancing lead finder: weekly, works the frontier region until it's dry
-  // then steps to the next state. Free (OSM + own-site scrape); idle until the
-  // owner enables auto-advance from the Studio.
+  // Always-on lead engine: every 6h it checks the cold-lead reserve and, when
+  // low, sweeps successive states along the national rollout (milking each dry,
+  // wrapping at the end). Free (OSM + own-site scrape); no toggle — the Studio
+  // only reads its progress.
   require('./services/leadFinderScheduler').startLeadFinderScheduler();
 
   // Weekly push of the full backup (incl. R2 receipt images) to Google Drive.

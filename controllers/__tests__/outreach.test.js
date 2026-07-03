@@ -263,3 +263,40 @@ test('sendTest: no sender configured → 400 with a fix-your-config message', as
     if (saved.senders != null) process.env.OUTREACH_SENDERS = saved.senders;
   }
 });
+
+// ── Subject A/B results + subjectB round-trip ────────────────────────────────
+const { summarizeAbTest } = require('../outreach');
+
+test('summarizeAbTest: splits results by first stamped variant; opens/replies count once per company', () => {
+  const rows = [
+    { status: 'active',  sends: [{ variant: 'A' }], openCount: 0 },
+    { status: 'active',  sends: [{ variant: 'A', openedAt: new Date() }] },
+    { status: 'replied', sends: [{ variant: 'B' }, { variant: 'B' }], openCount: 3 },
+    { status: 'active',  sends: [{ variant: '' }] },   // pre-test send — ignored
+    null,
+  ];
+  const ab = summarizeAbTest(rows);
+  assert.deepEqual(ab.A, { sent: 2, opened: 1, replied: 0 });
+  assert.deepEqual(ab.B, { sent: 1, opened: 1, replied: 1 });
+});
+
+test('summarizeAbTest: null when no send carries a variant (no test running)', () => {
+  assert.equal(summarizeAbTest([{ status: 'active', sends: [{ variant: '' }] }]), null);
+  assert.equal(summarizeAbTest([]), null);
+});
+
+test('sanitizeSteps keeps subjectB and defaults it to empty', () => {
+  const steps = sanitizeSteps([
+    { subject: 'a', body: 'b', subjectB: 'alt line' },
+    { subject: 'c', body: 'd', offsetDays: 3 },
+  ]);
+  assert.equal(steps[0].subjectB, 'alt line');
+  assert.equal(steps[1].subjectB, '');
+});
+
+test('enrollBlockReason: personally-contacted companies are blocked at the WRITE path', () => {
+  const lead = { stage: 'lead', email: 'x@y.com' };
+  // The pick-list already hides these; this guards raw API calls / stale dialogs.
+  assert.equal(enrollBlockReason({ ...lead, lastContact: new Date() }, false, false), 'already-contacted');
+  assert.equal(enrollBlockReason({ ...lead, lastContact: null }, false, false), '');
+});

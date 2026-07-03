@@ -23,6 +23,11 @@ const StepSchema = new mongoose.Schema({
   // conversation. Set freshSubject:true on a step to deliberately break out with
   // its own new subject line instead.
   freshSubject: { type: Boolean, default: false },
+  // Optional subject A/B test: when set, a stable half of enrollments get this
+  // instead of `subject` on the step's send. Only applies where the subject is
+  // actually used — step 0 and freshSubject steps; threaded follow-ups reuse
+  // "Re: <original>" regardless. Results are read per-variant off sends[].variant.
+  subjectB: { type: String, default: '' },
 }, { _id: false });
 
 const OutreachCampaignSchema = new mongoose.Schema({
