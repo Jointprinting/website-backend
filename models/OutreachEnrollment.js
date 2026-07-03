@@ -39,6 +39,11 @@ const OutreachEnrollmentSchema = new mongoose.Schema({
   nextSendAt: { type: Date, default: null, index: true }, // when that step is due
 
   sends:        { type: [SendSchema], default: [] },
+  // The first send's Message-ID + rendered subject — so follow-up touches thread
+  // into the SAME conversation (In-Reply-To/References + "Re: <subject>") instead
+  // of landing as disconnected cold emails, which reads human and lifts delivery.
+  originMessageId: { type: String, default: '' },
+  originSubject:   { type: String, default: '' },
   openCount:    { type: Number, default: 0 },
   lastOpenedAt: { type: Date, default: null },
   repliedAt:    { type: Date, default: null },
