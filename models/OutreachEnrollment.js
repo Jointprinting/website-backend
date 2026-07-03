@@ -23,6 +23,9 @@ const SendSchema = new mongoose.Schema({
   subject:   { type: String, default: '' },
   messageId: { type: String, default: '' },
   openedAt:  { type: Date, default: null },
+  // Which sending identity (senderPool label) delivered this — powers the
+  // per-inbox daily cap so a multi-inbox pool can send more, safely.
+  sender:    { type: String, default: '' },
 }, { _id: false });
 
 const OutreachEnrollmentSchema = new mongoose.Schema({

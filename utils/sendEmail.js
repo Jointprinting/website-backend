@@ -2,16 +2,20 @@ const nodemailer = require('nodemailer');
 
 // The core function called by your controllers (email.js)
 const sendEmail = async (options) => {
-    // FIX 1: Configure transporter to use the new SMTP variables (SendPulse)
+    // Per-identity SMTP (options.smtp) lets the outreach engine round-robin across
+    // several free-tier ESP inboxes for more free daily volume; falls back to the
+    // global SMTP_* env when none is passed (all other callers, and legacy senders).
+    const smtp = options.smtp || {};
+    const host = smtp.host || process.env.SMTP_HOST;
+    const port = String(smtp.port || process.env.SMTP_PORT || '587');
+    const user = smtp.user || process.env.SMTP_USER;
+    const pass = smtp.pass || process.env.SMTP_PASS;
     const transporter = nodemailer.createTransport({
-        host: process.env.SMTP_HOST, 
-        port: process.env.SMTP_PORT, 
-        // Use 'secure: true' for port 465 (SMTPS), or 'secure: false' for port 2525 (TLS)
-        secure: process.env.SMTP_PORT === '465', 
-        auth: {
-            user: process.env.SMTP_USER,
-            pass: process.env.SMTP_PASS
-        }
+        host,
+        port,
+        // 'secure: true' for port 465 (SMTPS); false for 587/2525 (STARTTLS).
+        secure: port === '465',
+        auth: { user, pass },
     });
 
     const mailOptions = {

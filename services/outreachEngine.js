@@ -40,6 +40,7 @@ const sendEmail = require('../utils/sendEmail');
 const { promoteStage } = require('../controllers/crm');
 const { suppress, isSuppressed } = require('./suppression');
 const { applySpintax } = require('./outreachContent');
+const { getSenders } = require('./senderPool');
 const { getAuthStatus } = require('../utils/dnsAuth');
 const { BUSINESS_TZ, etStartOfToday, etToday } = require('../utils/time');
 
@@ -90,9 +91,19 @@ const POSTAL_ADDRESS = process.env.OUTREACH_POSTAL_ADDRESS || 'Joint Printing ·
 // wording (still compliant) and skip open tracking.
 const PUBLIC_BASE = String(process.env.OUTREACH_PUBLIC_API_BASE || '').replace(/\/+$/, '');
 
-const outreachFrom    = () => process.env.OUTREACH_EMAIL_FROM || '';
+// The primary from-address (first identity in the sender pool) — used for the
+// auth check + status display. The pool (services/senderPool.js) resolves to the
+// legacy single identity when OUTREACH_SENDERS is unset, so this stays correct.
+const outreachFrom    = () => (getSenders()[0] || {}).from || process.env.OUTREACH_EMAIL_FROM || '';
 const outreachReplyTo = () => process.env.OUTREACH_REPLY_TO || '';
-const smtpConfigured  = () => !!(process.env.SMTP_HOST && process.env.SMTP_USER);
+const globalSmtpSet   = () => !!(process.env.SMTP_HOST && process.env.SMTP_USER);
+// Sendable when there's at least one identity that has a usable transport
+// (its own per-identity SMTP, or the shared global SMTP_* one).
+const smtpConfigured  = () => {
+  const senders = getSenders();
+  if (!senders.length) return globalSmtpSet();
+  return senders.some((s) => s.smtp || globalSmtpSet());
+};
 
 // ── Pure helpers (unit-tested in services/__tests__/outreach.test.js) ─────────
 
@@ -425,29 +436,61 @@ async function sentTodayByDomain(now = new Date()) {
   return map;
 }
 
+// Today's sends bucketed by sending IDENTITY (senderPool label) → Map(label →
+// count). Powers the per-inbox daily cap so a multi-inbox pool sends more safely.
+async function sentTodayBySender(now = new Date()) {
+  const since = etStartOfToday(now);
+  const rows = await OutreachEnrollment.aggregate([
+    { $match: { 'sends.at': { $gte: since } } },
+    { $unwind: '$sends' },
+    { $match: { 'sends.at': { $gte: since } } },
+    { $group: { _id: { $ifNull: ['$sends.sender', ''] }, n: { $sum: 1 } } },
+  ]);
+  const map = new Map();
+  for (const r of rows) map.set(r._id || '', r.n || 0);
+  return map;
+}
+
 // Engine status snapshot for the Studio (Outreach tab header + overview).
 async function engineStatus(now = new Date()) {
   const state = await OutreachState.findOne({ key: 'engine' }).lean();
   const firstSendAt = state && state.firstSendAt ? state.firstSendAt : null;
   const daysSince = firstSendAt ? Math.floor((now - new Date(firstSendAt)) / 86400000) : null;
-  const cap = rampCap(daysSince == null ? 0 : daysSince, DAILY_CAP_MAX);
+  const days = daysSince == null ? 0 : daysSince;
   const sentToday = await getSentToday(now);
+
+  // Sender pool: per-inbox ramped cap + today's count; total is the sum.
+  const pool = getSenders();
+  const sentBySender = await sentTodayBySender(now).catch(() => new Map());
+  const legacyCount = sentBySender.get('') || 0;
+  const senders = pool.map((s, i) => {
+    const c = rampCap(days, s.dailyCap);
+    const used = (sentBySender.get(s.label) || 0) + (i === 0 ? legacyCount : 0);
+    return { label: s.label, from: s.from, cap: c, sentToday: used, remaining: Math.max(0, c - used) };
+  });
+  const cap = senders.reduce((a, s) => a + s.cap, 0);
+  const dailyCapMax = pool.reduce((a, s) => a + s.dailyCap, 0) || DAILY_CAP_MAX;
+  const remainingToday = senders.reduce((a, s) => a + s.remaining, 0);
+  const fromLabel = pool.length > 1 ? `${pool.length} inboxes (${pool[0].from} +${pool.length - 1})` : outreachFrom();
+
   const auth = outreachFrom() ? await getAuthStatus(outreachFrom()).catch(() => null) : null;
   const deliverability = await deliverabilityStats(now).catch(() => null);
   return {
     senderConfigured: !!outreachFrom(),
     smtpConfigured: smtpConfigured(),
-    from: outreachFrom(),
+    from: fromLabel,
+    senders,
+    senderCount: pool.length,
     auth,
     authGate: authGateEnabled(),
     deliverability,
     withinWindow: isWithinSendWindow(now),
     firstSendAt,
-    rampWeek: firstSendAt ? Math.floor((daysSince || 0) / 7) + 1 : 1,
+    rampWeek: firstSendAt ? Math.floor(days / 7) + 1 : 1,
     dailyCap: cap,
-    dailyCapMax: DAILY_CAP_MAX,
+    dailyCapMax,
     sentToday,
-    remainingToday: Math.max(0, cap - sentToday),
+    remainingToday,
     publicLinksConfigured: !!PUBLIC_BASE,
     lastRunAt: state ? state.last_run_at : null,
     lastResult: state ? state.last_result : '',
@@ -462,8 +505,10 @@ async function recordRun(result) {
   ).catch((e) => console.warn('[outreach] state write failed:', e.message));
 }
 
-// Send ONE enrollment's next due step. Returns 'sent' | 'skipped' | 'error'.
-async function sendOne(enr, campaign, now = new Date()) {
+// Send ONE enrollment's next due step, optionally through a specific pool
+// identity `sender` (else the primary/legacy from + global SMTP). Returns
+// 'sent' | 'skipped' | 'error'.
+async function sendOne(enr, campaign, now = new Date(), sender = null) {
   const client = await Client.findOne({ companyKey: enr.companyKey });
 
   // Live-guard: stop (don't send) when the company left cold-outreach land.
@@ -533,17 +578,21 @@ async function sendOne(enr, campaign, now = new Date()) {
     : undefined;
 
   const messageId = outreachMessageId(enr, enr.stepIndex);
+  // Sending identity: the chosen pool sender, else the primary/legacy from.
+  const fromAddr = (sender && sender.from) || outreachFrom();
+  const replyToAddr = (sender && sender.replyTo) || outreachReplyTo();
   try {
     const info = await sendEmail({
       to, subject, html, textAlt: text, headers, messageId,
       ...(threads ? { inReplyTo: enr.originMessageId, references: enr.originMessageId } : {}),
-      from: outreachFrom(),
-      ...(outreachReplyTo() ? { replyTo: outreachReplyTo() } : {}),
+      from: fromAddr,
+      ...(replyToAddr ? { replyTo: replyToAddr } : {}),
+      ...(sender && sender.smtp ? { smtp: sender.smtp } : {}),
     });
 
     // Advance the enrollment.
     const sentMessageId = (info && info.messageId) || messageId;
-    enr.sends.push({ stepIndex: enr.stepIndex, at: now, subject, messageId: sentMessageId });
+    enr.sends.push({ stepIndex: enr.stepIndex, at: now, subject, messageId: sentMessageId, sender: (sender && sender.label) || '' });
     // Anchor the thread on the FIRST send so every follow-up can reply into it.
     if (!enr.originMessageId) { enr.originMessageId = sentMessageId; enr.originSubject = subject; }
     enr.toEmail = to;
@@ -670,11 +719,38 @@ async function runOutreachTick(now = new Date(), opts = {}) {
     const state = await OutreachState.findOne({ key: 'engine' }).lean();
     const daysSince = state && state.firstSendAt
       ? Math.floor((now - new Date(state.firstSendAt)) / 86400000) : null;
-    const cap = rampCap(daysSince == null ? 0 : daysSince, DAILY_CAP_MAX);
+    const days = daysSince == null ? 0 : daysSince;
+
+    // Sender POOL: total daily capacity = sum of each inbox's (warm-up-ramped)
+    // cap. Per-inbox remaining tracks that inbox's own daily count so we round-
+    // robin without overshooting any one — the free way to send more per day.
+    const senders = getSenders();
+    const sentBySender = await sentTodayBySender(now);
+    const legacyCount = sentBySender.get('') || 0; // pre-pool / untagged sends → the primary
+    const remaining = new Map();
+    let cap = 0;
+    senders.forEach((s, i) => {
+      const effCap = rampCap(days, s.dailyCap);
+      cap += effCap;
+      const used = (sentBySender.get(s.label) || 0) + (i === 0 ? legacyCount : 0);
+      remaining.set(s.label, Math.max(0, effCap - used));
+    });
     const sentToday = await getSentToday(now);
+    const totalRemaining = [...remaining.values()].reduce((a, b) => a + b, 0);
     const batch = variableBatch(BATCH_PER_TICK, Math.random()); // vary the burst size
-    const budget = Math.min(cap - sentToday, batch);
+    const budget = Math.min(totalRemaining, batch);
     if (budget <= 0) { await recordRun(`held: daily cap reached (cap ${cap}, sentToday ${sentToday})`); return { skipped: 'daily-cap', cap, sentToday }; }
+
+    // Round-robin the next sender that still has daily headroom.
+    let rr = 0;
+    const pickSender = () => {
+      for (let k = 0; k < senders.length; k++) {
+        const idx = (rr + k) % senders.length;
+        const s = senders[idx];
+        if ((remaining.get(s.label) || 0) > 0) { rr = (idx + 1) % senders.length; return s; }
+      }
+      return null;
+    };
 
     // Per-domain daily counts (seeded once), incremented as we send this tick, so
     // no single domain gets more than DOMAIN_DAILY_CAP across the whole day.
@@ -708,12 +784,19 @@ async function runOutreachTick(now = new Date(), opts = {}) {
         continue;
       }
 
+      // Pick a sending inbox with headroom; if all are maxed, stop for now.
+      const sender = pickSender();
+      if (!sender) break;
+
       // Space real sends apart (cron only) to break the robotic burst.
       if (pace && sent > 0) await sleep(PACE_MIN_MS + Math.floor(Math.random() * (PACE_MAX_MS - PACE_MIN_MS)));
 
-      const r = await sendOne(enr, campaign, now);
-      if (r === 'sent') { sent += 1; if (dom) domainCounts.set(dom, (domainCounts.get(dom) || 0) + 1); }
-      else if (r === 'skipped') skipped += 1;
+      const r = await sendOne(enr, campaign, now, sender);
+      if (r === 'sent') {
+        sent += 1;
+        remaining.set(sender.label, (remaining.get(sender.label) || 1) - 1);
+        if (dom) domainCounts.set(dom, (domainCounts.get(dom) || 0) + 1);
+      } else if (r === 'skipped') skipped += 1;
       else errors += 1;
     }
 
