@@ -34,6 +34,7 @@ const crypto = require('crypto');
 const OutreachCampaign = require('../models/OutreachCampaign');
 const OutreachEnrollment = require('../models/OutreachEnrollment');
 const OutreachState = require('../models/OutreachState');
+const Suppression = require('../models/Suppression');
 const Client = require('../models/Client');
 const sendEmail = require('../utils/sendEmail');
 const { promoteStage } = require('../controllers/crm');
@@ -228,6 +229,18 @@ function bodyToHtml(text) {
 
 const unsubscribeUrl = (token) => (PUBLIC_BASE ? `${PUBLIC_BASE}/api/outreach/u/${token}` : '');
 const openPixelUrl   = (token) => (PUBLIC_BASE ? `${PUBLIC_BASE}/api/outreach/t/${token}/open.png` : '');
+// Open tracking is OFF by default: a hidden 1×1 pixel is a classic tracker
+// fingerprint and Apple Mail Privacy Protection makes opens near-meaningless
+// anyway. Set OUTREACH_OPEN_PIXEL=on to re-enable (then it's a plain 1×1, not
+// display:none). Replies/clicks are the signals that matter.
+const openPixelEnabled = () => process.env.OUTREACH_OPEN_PIXEL === 'on';
+// The address a mailto: List-Unsubscribe points at (fuller CAN-SPAM / bulk-sender
+// compliance alongside the https one-click). Falls back to the reply-to / from.
+const unsubMailtoAddr = () => {
+  const raw = process.env.OUTREACH_UNSUB_MAILTO || outreachReplyTo() || outreachFrom() || '';
+  const m = String(raw).match(/[^<>\s@]+@[^<>\s@]+/);
+  return m ? m[0] : '';
+};
 
 // Stable Message-ID for one (enrollment, step) — the SAME id on a crash-retry of
 // that step, so the provider dedupes a double-send, and follow-ups can thread to
@@ -251,13 +264,13 @@ function composeMessage({ bodyText, token }) {
   const optOutText = unsub
     ? `Don't want these? Unsubscribe: ${unsub}`
     : `Don't want these? Reply "unsubscribe" and we'll take you off the list.`;
-  const pixel = openPixelUrl(token);
+  const pixel = openPixelEnabled() ? openPixelUrl(token) : '';
   const html = [
     `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#222;">`,
     bodyToHtml(bodyText),
     `<p style="margin:1.5em 0 0 0;font-size:11px;line-height:1.5;color:#999;">`,
     `${escapeHtml(POSTAL_ADDRESS)}<br>${optOutHtml}</p>`,
-    pixel ? `<img src="${pixel}" width="1" height="1" alt="" style="display:none;">` : '',
+    pixel ? `<img src="${pixel}" width="1" height="1" alt="">` : '', // no display:none
     `</div>`,
   ].join('');
   const text = `${String(bodyText || '')}\n\n--\n${POSTAL_ADDRESS}\n${optOutText}\n`;
@@ -276,12 +289,35 @@ function sendBlockReason(client) {
   return '';
 }
 
-// First usable email for a company: its own, else the first contact's.
+// Role-inbox local-parts — a named person is a far better cold-outreach target
+// than a shared "info@/sales@" alias (higher reply rate, less likely a
+// catch-all). Used to rank candidate addresses in pickEmail.
+const ROLE_LOCALS = new Set([
+  'info', 'sales', 'contact', 'admin', 'hello', 'orders', 'order', 'support',
+  'office', 'team', 'mail', 'marketing', 'general', 'inquiries', 'inquiry',
+  'help', 'service', 'noreply', 'no-reply', 'donotreply', 'webmaster', 'store',
+]);
+function isRoleEmail(email) {
+  const local = String(email || '').toLowerCase().split('@')[0] || '';
+  return ROLE_LOCALS.has(local.replace(/[.+_-].*$/, '')); // "sales.team" / "info+nj" → role
+}
+
+// Best usable email for a company: prefer a NAMED person over a role inbox.
+// Ranks every candidate (the company's own email + each contact's) by
+// non-role + has-a-name, so a buyer's personal address beats info@ when both
+// exist — but a role inbox is still returned when it's all we have.
 function pickEmail(client = {}) {
+  const cands = [];
   const own = String(client.email || '').trim();
-  if (own) return own;
-  const c = (Array.isArray(client.contacts) ? client.contacts : []).find((x) => x && String(x.email || '').trim());
-  return c ? String(c.email).trim() : '';
+  if (own) cands.push({ email: own, name: String(client.clientName || '').trim() });
+  for (const c of (Array.isArray(client.contacts) ? client.contacts : [])) {
+    const e = String((c && c.email) || '').trim();
+    if (e) cands.push({ email: e, name: String((c && c.name) || '').trim() });
+  }
+  if (!cands.length) return '';
+  const score = (c) => (isRoleEmail(c.email) ? 0 : 2) + (c.name ? 1 : 0);
+  cands.sort((a, b) => score(b) - score(a));
+  return cands[0].email;
 }
 
 const newToken = () => crypto.randomBytes(16).toString('hex');
@@ -327,6 +363,40 @@ async function getSentToday(now = new Date()) {
   return actual;
 }
 
+// ── Deliverability circuit-breaker ───────────────────────────────────────────
+// Rolling 7-day bounce + complaint rate. Bounces/complaints come from the global
+// Suppression list (written by the bounce webhook + permanent-SMTP path);
+// denominator is sends in the same window. Cached ~10 min — it's read on every
+// tick + dashboard load.
+const BREAKER_MIN_SAMPLE = parseInt(process.env.OUTREACH_BREAKER_MIN_SAMPLE || '30', 10);
+const MAX_BOUNCE_RATE = parseFloat(process.env.OUTREACH_MAX_BOUNCE_RATE || '0.05');       // 5%
+const MAX_COMPLAINT_RATE = parseFloat(process.env.OUTREACH_MAX_COMPLAINT_RATE || '0.002'); // 0.2%
+let _dstatsCache = { at: 0, val: null };
+const DSTATS_TTL = parseInt(process.env.OUTREACH_DSTATS_TTL_MS || String(10 * 60 * 1000), 10);
+
+async function deliverabilityStats(now = new Date(), { force = false } = {}) {
+  const nowMs = now.getTime();
+  if (!force && _dstatsCache.val && (nowMs - _dstatsCache.at) < DSTATS_TTL) return _dstatsCache.val;
+  const since = new Date(nowMs - 7 * 86400000);
+  const [sent7d, bounced7d, complaints7d] = await Promise.all([
+    countSentSince(since),
+    Suppression.countDocuments({ reason: 'hard-bounce', createdAt: { $gte: since } }).catch(() => 0),
+    Suppression.countDocuments({ reason: 'complaint', createdAt: { $gte: since } }).catch(() => 0),
+  ]);
+  const bounceRate = sent7d > 0 ? bounced7d / sent7d : 0;
+  const complaintRate = sent7d > 0 ? complaints7d / sent7d : 0;
+  const enoughData = sent7d >= BREAKER_MIN_SAMPLE;
+  const tripped = enoughData && (bounceRate > MAX_BOUNCE_RATE || complaintRate > MAX_COMPLAINT_RATE);
+  const reason = !tripped ? ''
+    : bounceRate > MAX_BOUNCE_RATE
+      ? `${(bounceRate * 100).toFixed(1)}% bounce rate (7d) exceeds ${(MAX_BOUNCE_RATE * 100).toFixed(0)}% — clean the list`
+      : `${(complaintRate * 100).toFixed(2)}% complaint rate (7d) exceeds ${(MAX_COMPLAINT_RATE * 100).toFixed(2)}%`;
+  const val = { sent7d, bounced7d, complaints7d, bounceRate, complaintRate, tripped, reason,
+    maxBounceRate: MAX_BOUNCE_RATE, maxComplaintRate: MAX_COMPLAINT_RATE };
+  _dstatsCache = { at: nowMs, val };
+  return val;
+}
+
 // Increment the daily counter by `n` for today's ET day (no-op if the stored day
 // already rolled — getSentToday reseeds on the next read).
 async function bumpSentToday(n, now = new Date()) {
@@ -363,12 +433,14 @@ async function engineStatus(now = new Date()) {
   const cap = rampCap(daysSince == null ? 0 : daysSince, DAILY_CAP_MAX);
   const sentToday = await getSentToday(now);
   const auth = outreachFrom() ? await getAuthStatus(outreachFrom()).catch(() => null) : null;
+  const deliverability = await deliverabilityStats(now).catch(() => null);
   return {
     senderConfigured: !!outreachFrom(),
     smtpConfigured: smtpConfigured(),
     from: outreachFrom(),
     auth,
     authGate: authGateEnabled(),
+    deliverability,
     withinWindow: isWithinSendWindow(now),
     firstSendAt,
     rampWeek: firstSendAt ? Math.floor((daysSince || 0) / 7) + 1 : 1,
@@ -450,8 +522,14 @@ async function sendOne(enr, campaign, now = new Date()) {
   const { html, text } = composeMessage({ bodyText, token: enr.token });
 
   const unsub = unsubscribeUrl(enr.token);
-  const headers = unsub
-    ? { 'List-Unsubscribe': `<${unsub}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' }
+  // List-Unsubscribe: a mailto: (always) + the https one-click (when public
+  // links are configured) — the fuller compliance signal Gmail/Yahoo reward.
+  const mailtoAddr = unsubMailtoAddr();
+  const luParts = [];
+  if (mailtoAddr) luParts.push(`<mailto:${mailtoAddr}?subject=unsubscribe>`);
+  if (unsub) luParts.push(`<${unsub}>`);
+  const headers = luParts.length
+    ? { 'List-Unsubscribe': luParts.join(', '), ...(unsub ? { 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' } : {}) }
     : undefined;
 
   const messageId = outreachMessageId(enr, enr.stepIndex);
@@ -571,6 +649,14 @@ async function runOutreachTick(now = new Date(), opts = {}) {
       return { skipped: 'auth-hold', auth };
     }
   }
+  // Circuit-breaker: auto-pause if the rolling 7-day bounce/complaint rate is too
+  // high — sending into a bad list only digs the reputation hole deeper. Clears
+  // itself as the bad window ages out.
+  const breaker = await deliverabilityStats(now).catch(() => null);
+  if (breaker && breaker.tripped) {
+    await recordRun(`held: circuit-breaker — ${breaker.reason}`);
+    return { skipped: 'circuit-breaker', deliverability: breaker };
+  }
   if (_ticking) return { skipped: 'already-running' };
   _ticking = true;
   try {
@@ -681,6 +767,8 @@ module.exports = {
   jitteredFollowUpAt,
   variableBatch,
   outreachMessageId,
+  isRoleEmail,
+  deliverabilityStats,
   DAILY_CAP_MAX,
   DOMAIN_DAILY_CAP,
 };
