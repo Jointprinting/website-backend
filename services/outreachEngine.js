@@ -39,7 +39,13 @@ const sendEmail = require('../utils/sendEmail');
 const { promoteStage } = require('../controllers/crm');
 const { suppress, isSuppressed } = require('./suppression');
 const { applySpintax } = require('./outreachContent');
+const { getAuthStatus } = require('../utils/dnsAuth');
 const { BUSINESS_TZ, etStartOfToday, etToday } = require('../utils/time');
+
+// Hold cold sends when the sender domain is missing SPF/DMARC (the Gmail/Yahoo
+// bulk-sender essentials) — the same "don't send blind" stance as the
+// OUTREACH_EMAIL_FROM hold. Set OUTREACH_DMARC_GATE=off to disable (advisory-only).
+const authGateEnabled = () => process.env.OUTREACH_DMARC_GATE !== 'off';
 
 // The person the outreach signs off as — used by the {{senderName}} merge token
 // so the sign-off isn't hardcoded in every template body.
@@ -356,10 +362,13 @@ async function engineStatus(now = new Date()) {
   const daysSince = firstSendAt ? Math.floor((now - new Date(firstSendAt)) / 86400000) : null;
   const cap = rampCap(daysSince == null ? 0 : daysSince, DAILY_CAP_MAX);
   const sentToday = await getSentToday(now);
+  const auth = outreachFrom() ? await getAuthStatus(outreachFrom()).catch(() => null) : null;
   return {
     senderConfigured: !!outreachFrom(),
     smtpConfigured: smtpConfigured(),
     from: outreachFrom(),
+    auth,
+    authGate: authGateEnabled(),
     withinWindow: isWithinSendWindow(now),
     firstSendAt,
     rampWeek: firstSendAt ? Math.floor((daysSince || 0) / 7) + 1 : 1,
@@ -553,6 +562,15 @@ async function runOutreachTick(now = new Date(), opts = {}) {
   if (!smtpConfigured()) return { skipped: 'smtp-not-configured' };
   if (!outreachFrom())   return { skipped: 'sender-not-configured' };
   if (!isWithinSendWindow(now)) return { skipped: 'outside-window' };
+  // Email-auth gate: hold if the sender domain is missing SPF/DMARC (cached DNS;
+  // 'unknown'/transient never holds). Surfaced red in the Studio so it's fixable.
+  if (authGateEnabled()) {
+    const auth = await getAuthStatus(outreachFrom()).catch(() => null);
+    if (auth && !auth.gateOk) {
+      await recordRun(`held: sender email-auth (${auth.issues[0] || 'SPF/DMARC missing'})`);
+      return { skipped: 'auth-hold', auth };
+    }
+  }
   if (_ticking) return { skipped: 'already-running' };
   _ticking = true;
   try {
