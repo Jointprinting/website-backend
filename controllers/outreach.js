@@ -502,6 +502,25 @@ async function stopEnrollment(req, res) {
   }
 }
 
+// POST /api/outreach/campaigns/:id/unenroll-all — clear the whole roster off a
+// campaign so it can be re-enrolled fresh (e.g. after enrolling leads that turned
+// out to have no email). Deletes the enrollment rows; the companies stay in the
+// CRM. By default it protects anyone already sent to (won't wipe real send
+// history / re-cold-email them); pass { includeSent: true } to remove everyone.
+async function unenrollAll(req, res) {
+  try {
+    const campaign = await OutreachCampaign.findById(req.params.id).lean();
+    if (!campaign) return res.status(404).json({ message: 'campaign not found' });
+    const includeSent = (req.body || {}).includeSent === true || (req.body || {}).includeSent === 'true';
+    const filter = { campaignId: campaign._id };
+    if (!includeSent) filter['sends.0'] = { $exists: false }; // only never-sent rows
+    const result = await OutreachEnrollment.deleteMany(filter);
+    res.json({ ok: true, removed: result.deletedCount || 0, keptSent: !includeSent });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
 // POST /api/outreach/run-tick — owner-triggered "send the next batch now".
 // Same code path as the cron (window, caps, guards all apply).
 async function runTickNow(req, res) {
@@ -821,6 +840,7 @@ module.exports = {
   getQueue,
   markReplied,
   stopEnrollment,
+  unenrollAll,
   runTickNow,
   trackOpen,
   unsubscribe,
