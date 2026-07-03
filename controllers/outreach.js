@@ -17,6 +17,7 @@ const Order = require('../models/Order');
 const { PLACED_STATUSES } = require('../models/Order');
 const { warmFromEnrollment } = require('../services/warmHandoff');
 const { suppress, suppressedSet } = require('../services/suppression');
+const { lintSteps } = require('../services/outreachContent');
 
 // The tag stamped on every company the moment it's enrolled in a campaign, so a
 // reply (which also gets 'warm') is unmistakably traceable to the cold merge —
@@ -188,7 +189,7 @@ async function createCampaign(req, res) {
       description: String(description || ''),
       steps: sanitizeSteps(steps),
     });
-    res.json({ campaign });
+    res.json({ campaign, lint: lintSteps(campaign.steps) });
   } catch (e) {
     res.status(400).json({ message: e.message });
   }
@@ -225,7 +226,7 @@ async function updateCampaign(req, res) {
     }
     const campaign = await OutreachCampaign.findByIdAndUpdate(req.params.id, { $set: set }, { new: true }).lean();
     if (!campaign) return res.status(404).json({ message: 'campaign not found' });
-    res.json({ campaign });
+    res.json({ campaign, lint: lintSteps(campaign.steps) });
   } catch (e) {
     res.status(400).json({ message: e.message });
   }
@@ -259,7 +260,7 @@ async function getCampaign(req, res) {
     if (!campaign) return res.status(404).json({ message: 'campaign not found' });
     const enrollments = await OutreachEnrollment.find({ campaignId: campaign._id })
       .sort({ updatedAt: -1 }).lean();
-    res.json({ campaign, stats: summarizeEnrollments(enrollments), enrollments });
+    res.json({ campaign, stats: summarizeEnrollments(enrollments), enrollments, lint: lintSteps(campaign.steps) });
   } catch (e) {
     res.status(400).json({ message: e.message });
   }

@@ -56,3 +56,46 @@ test('hashStr is stable and unsigned', () => {
   assert.notEqual(hashStr('abc'), hashStr('abd'));
   assert.ok(hashStr('anything') >= 0);
 });
+
+// ── Content spam-linter ──────────────────────────────────────────────────────
+const { lintContent, lintSteps } = require('../outreachContent');
+
+test('lintContent passes clean, natural cold-email copy (no false positives)', () => {
+  const r = lintContent({
+    subject: 'custom merch for Green Leaf',
+    body: 'Hey Sam,\n\nI run Joint Printing — we make custom apparel for dispensaries. I\'ll design free mockups with your branding so you can see real product first.\n\nReply with what you\'re thinking and a rough quantity.\n\n— Nate',
+  });
+  assert.equal(r.level, 'ok');
+  assert.ok(r.score >= 80, `expected clean copy to score high, got ${r.score}`);
+  assert.equal(r.issues.length, 0);
+});
+
+test('lintContent flags spam phrasing, ALL-CAPS subject, and !!!', () => {
+  const r = lintContent({ subject: 'ACT NOW LIMITED TIME', body: 'CLICK HERE to BUY NOW!!! 100% free money!!!' });
+  assert.ok(r.score < 80);
+  const codes = r.issues.map((i) => i.code);
+  assert.ok(codes.includes('spam-words'));
+  assert.ok(codes.includes('subject-caps'));
+});
+
+test('lintContent flags link stuffing and a bare-link body', () => {
+  const many = lintContent({ subject: 'hi', body: 'https://a.com https://b.com https://c.com https://d.com' });
+  assert.ok(many.issues.some((i) => i.code === 'links'));
+  const bare = lintContent({ subject: 'hi', body: 'see this https://a.com' });
+  assert.ok(bare.issues.some((i) => i.code === 'bare-link'));
+});
+
+test('lintContent flags a too-long subject and an empty body', () => {
+  const longSubj = lintContent({ subject: 'x'.repeat(80), body: 'plenty of real text here to avoid the bare-link and empty flags entirely.' });
+  assert.ok(longSubj.issues.some((i) => i.code === 'subject-long'));
+  const empty = lintContent({ subject: 'hi', body: '' });
+  assert.ok(empty.issues.some((i) => i.code === 'empty-body'));
+});
+
+test('lintSteps lints each step and tags its index', () => {
+  const out = lintSteps([{ subject: 'ok subject', body: 'a nice bit of real body text goes right here for the reviewer.' }, { subject: 'BUY NOW!!!', body: 'CLICK HERE' }]);
+  assert.equal(out.length, 2);
+  assert.equal(out[0].step, 0);
+  assert.equal(out[1].step, 1);
+  assert.ok(out[1].score < out[0].score);
+});
