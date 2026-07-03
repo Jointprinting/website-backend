@@ -28,8 +28,9 @@ const TriageReply = require('../models/TriageReply');
 
 const { orderPlacedAt, etAgeDays } = require('../controllers/orders');
 const { paymentGapsForOrders, orderInProgress } = require('../controllers/finances');
+const { classifyHeadsUp } = require('../controllers/crm');
 const { worklistFromReplies, HOT_CATEGORIES } = require('./replyTriage');
-const { dayDiffFromToday } = require('../utils/time');
+const { dayDiffFromToday, etStartOfToday } = require('../utils/time');
 
 // ── Thresholds (mirrored, keep in sync) ──────────────────────────────────────
 // Order turnaround: mirrors controllers/orders.js attention() (owner's explicit
@@ -175,6 +176,37 @@ async function followUps(now) {
   ];
 }
 
+async function bigDealsQuiet(now) {
+  // "Hot deal gone quiet" — a top-tier open deal (dealValue >= $2k) we've neglected
+  // (no contact in 2+ weeks, or never). Reuses the CRM heads-up engine's exact
+  // rule (classifyHeadsUp → 'hot_quiet') — the flag the engine itself calls the
+  // owner's biggest blind spot. Pre-filtered to big open deals so the scan is cheap.
+  const clients = await Client.find({
+    archived: { $ne: true },
+    stage: { $nin: FOLLOWUP_CLOSED_STAGES },
+    dealValue: { $gte: BIG_DEAL },
+  }).select('companyKey companyName clientName phone contacts dealValue stage nextFollowUp lastContact tags updatedAt').lean();
+  const nowMs = now.getTime();
+  const todayMs = etStartOfToday(now).getTime();
+  const hot = [];
+  for (const c of clients) {
+    for (const it of classifyHeadsUp(c, nowMs, todayMs)) {
+      if (it.type === 'hot_quiet') hot.push(it);
+    }
+  }
+  hot.sort((a, b) => (Number(b.value) || 0) - (Number(a.value) || 0)); // biggest deal first
+  const items = hot.map((it) => ({
+    companyKey: it.companyKey || '',
+    name: it.name || 'Company',
+    metric: `$${Math.round(Number(it.value) || 0).toLocaleString('en-US')}`,
+  }));
+  return [
+    { id: 'big_deal_quiet', severity: 'critical', kind: 'crm',
+      label: `${items.length} hot deal${items.length === 1 ? '' : 's'} gone quiet`,
+      count: items.length, items: cap(items) },
+  ];
+}
+
 async function repliesWaiting() {
   const open = await TriageReply.find({
     status: { $in: ['new', 'quote_requested', 'mockup_requested', 'follow_up'] },
@@ -195,7 +227,7 @@ async function repliesWaiting() {
 
 // buildSignals — compose all sources; a thrown source drops only its group.
 async function buildSignals({ now = new Date() } = {}) {
-  const sources = [ordersAging(now), moneyOwed(), followUps(now), repliesWaiting()];
+  const sources = [ordersAging(now), moneyOwed(), followUps(now), repliesWaiting(), bigDealsQuiet(now)];
   const settled = await Promise.allSettled(sources);
   const all = [];
   for (const r of settled) {
