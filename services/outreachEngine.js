@@ -10,9 +10,12 @@
 //     BUSINESS_TZ) — a cron tick every 15 min sends a small batch, so the day's
 //     volume is spread out instead of one robotic burst.
 //   • A DAILY CAP with a warm-up ramp anchored to the first-ever send
-//     (OutreachState.firstSendAt): 10/day week one, +10 each week, topping out
-//     at OUTREACH_DAILY_CAP (default 40). A fresh sending identity builds
-//     reputation instead of tripping spam filters.
+//     (OutreachState.firstSendAt): 10/day week one, then DOUBLING weekly
+//     (10 → 20 → 40 → …) until it holds at OUTREACH_DAILY_CAP (default 50 — a
+//     reputation-safe ceiling for ONE inbox). A fresh sending identity builds
+//     reputation instead of tripping spam filters. Sends are also paced with
+//     per-send jitter + a per-domain cap so the day's volume never lands as one
+//     robotic burst.
 //   • HARD REQUIREMENT: OUTREACH_EMAIL_FROM must be set. The engine never
 //     falls back to the main EMAIL_FROM transactional identity — cold volume
 //     must not ride (or risk) the owner's real domain.
@@ -35,10 +38,22 @@ const Client = require('../models/Client');
 const sendEmail = require('../utils/sendEmail');
 const { promoteStage } = require('../controllers/crm');
 const { suppress, isSuppressed } = require('./suppression');
-const { BUSINESS_TZ, etStartOfToday } = require('../utils/time');
+const { BUSINESS_TZ, etStartOfToday, etToday } = require('../utils/time');
 
-const DAILY_CAP_MAX  = parseInt(process.env.OUTREACH_DAILY_CAP || '150', 10);
+// A sane default for ONE fresh sending inbox. The ramp climbs to it over weeks
+// (rampCap); raise OUTREACH_DAILY_CAP as your SMTP plan + a warmed reputation
+// allow. 50 (not 150) is the reputation-safe ceiling for a single identity.
+const DAILY_CAP_MAX  = parseInt(process.env.OUTREACH_DAILY_CAP || '50', 10);
 const BATCH_PER_TICK = parseInt(process.env.OUTREACH_BATCH_PER_TICK || '5', 10);
+// No single recipient domain gets hammered in one day (a chain's shared inbox,
+// or a clump of gmail.com leads) — protects both them and our reputation.
+const DOMAIN_DAILY_CAP = parseInt(process.env.OUTREACH_DOMAIN_DAILY_CAP || '15', 10);
+// How long a claimed (leased) row is hidden from other workers before it's
+// eligible again — crash-safety without permanently stranding a row.
+const LEASE_MS = parseInt(process.env.OUTREACH_LEASE_MS || String(10 * 60 * 1000), 10);
+// Inter-send pacing jitter (cron path only) — breaks the "all at :00:00" burst.
+const PACE_MIN_MS = 5000;
+const PACE_MAX_MS = 20000;
 // Physical postal address for the CAN-SPAM footer — set the real one in env.
 const POSTAL_ADDRESS = process.env.OUTREACH_POSTAL_ADDRESS || 'Joint Printing · New Jersey, USA';
 // Public base URL of THIS API (e.g. https://api.jointprinting.com) — powers the
@@ -65,6 +80,38 @@ function rampCap(daysSinceFirstSend, maxCap = DAILY_CAP_MAX) {
   const week = Math.floor(days / 7);
   const geometric = 10 * Math.pow(2, week); // 10, 20, 40, 80, 160, 320, …
   return Math.min(geometric, maxCap);
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
+const domainOfEmail = (e) => { const s = String(e || '').trim().toLowerCase(); const i = s.lastIndexOf('@'); return i >= 0 ? s.slice(i + 1) : ''; };
+
+// Back-off schedule for a TRANSIENT SMTP error (greylist, timeout, rate limit):
+// 30m → 2h → 6h → 6h… so one temporary hiccup can't burn all attempts in ~45
+// min and permanently fail a good lead (the audited bug). PURE. Returns ms.
+function transientBackoffMs(attempts = 1) {
+  const ladder = [30 * 60 * 1000, 2 * 60 * 60 * 1000, 6 * 60 * 60 * 1000];
+  const i = Math.max(0, Math.min(ladder.length - 1, Math.round(attempts) - 1));
+  return ladder[i];
+}
+
+// A follow-up's due time: base day + offsetDays, JITTERED off the exact
+// wall-clock minute so touch N+1 never lands at the identical time as touch N
+// (the send-window gate still holds it to business hours). `rand` ∈ [0,1) is
+// injected so it's PURE + unit-tested. Spreads ±~3h around the target.
+function jitteredFollowUpAt(base, offsetDays, rand = 0.5) {
+  const b = base instanceof Date ? base.getTime() : Number(base) || Date.now();
+  const days = Math.max(1, Number(offsetDays) || 1);
+  const jitter = Math.round((rand - 0.5) * 6 * 60 * 60 * 1000); // ±3h
+  return new Date(b + days * 86400000 + jitter);
+}
+
+// Vary the per-tick batch size around BATCH_PER_TICK so the burst size isn't a
+// constant fingerprint. `rand` ∈ [0,1) injected → PURE. Range [base-1, base+2],
+// floored at 1.
+function variableBatch(base = BATCH_PER_TICK, rand = 0.5) {
+  const b = Math.max(1, Math.round(base));
+  const delta = Math.floor(rand * 4) - 1; // -1..+2
+  return Math.max(1, b + delta);
 }
 
 // Send window: Mon–Fri, 9:00–16:59 in the business timezone. Emails that land
@@ -152,6 +199,14 @@ function bodyToHtml(text) {
 const unsubscribeUrl = (token) => (PUBLIC_BASE ? `${PUBLIC_BASE}/api/outreach/u/${token}` : '');
 const openPixelUrl   = (token) => (PUBLIC_BASE ? `${PUBLIC_BASE}/api/outreach/t/${token}/open.png` : '');
 
+// Stable Message-ID for one (enrollment, step) — the SAME id on a crash-retry of
+// that step, so the provider dedupes a double-send, and follow-ups can thread to
+// it via In-Reply-To/References (Wave 4). Domain taken from the sending identity.
+function outreachMessageId(enr, stepIndex) {
+  const dom = domainOfEmail(outreachFrom()) || 'jointprinting.com';
+  return `<outreach-${enr._id}-${stepIndex}@${dom}>`;
+}
+
 // Full HTML + plain-text message for one send: rendered body, CAN-SPAM footer
 // (postal address + opt-out), and the open pixel when a public base is set.
 function composeMessage({ bodyText, token }) {
@@ -221,13 +276,58 @@ async function countSentSince(since) {
   return rows.length ? rows[0].total : 0;
 }
 
+// O(1) "sent today" (ET). Fast path: read the counter on OutreachState. On a day
+// rollover (or first-ever read), seed it ONCE from the authoritative scan so it
+// self-heals and can't drift — then every send $inc's it. Replaces re-scanning
+// every enrollment's unbounded sends[] on every 15-min tick.
+async function getSentToday(now = new Date()) {
+  const key = etToday(now);
+  const state = await OutreachState.findOne({ key: 'engine' }).select('sentToday sentTodayDate').lean();
+  if (state && state.sentTodayDate === key) return state.sentToday || 0;
+  const actual = await countSentSince(etStartOfToday(now));
+  await OutreachState.findOneAndUpdate(
+    { key: 'engine' },
+    { $set: { sentTodayDate: key, sentToday: actual } },
+    { upsert: true },
+  ).catch(() => {});
+  return actual;
+}
+
+// Increment the daily counter by `n` for today's ET day (no-op if the stored day
+// already rolled — getSentToday reseeds on the next read).
+async function bumpSentToday(n, now = new Date()) {
+  if (!n) return;
+  await OutreachState.updateOne(
+    { key: 'engine', sentTodayDate: etToday(now) },
+    { $inc: { sentToday: n } },
+  ).catch(() => {});
+}
+
+// Today's sends bucketed by recipient DOMAIN → Map(domain → count). One
+// aggregation per tick; seeds the per-domain cap so a single domain can't be
+// hammered across the day (not just within one tick).
+async function sentTodayByDomain(now = new Date()) {
+  const since = etStartOfToday(now);
+  const rows = await OutreachEnrollment.aggregate([
+    { $match: { 'sends.at': { $gte: since }, toEmail: { $ne: '' } } },
+    { $project: { toEmail: 1, n: { $size: { $filter: { input: '$sends', as: 's', cond: { $gte: ['$$s.at', since] } } } } } },
+  ]);
+  const map = new Map();
+  for (const r of rows) {
+    const dom = domainOfEmail(r.toEmail);
+    if (!dom) continue;
+    map.set(dom, (map.get(dom) || 0) + (r.n || 0));
+  }
+  return map;
+}
+
 // Engine status snapshot for the Studio (Outreach tab header + overview).
 async function engineStatus(now = new Date()) {
   const state = await OutreachState.findOne({ key: 'engine' }).lean();
   const firstSendAt = state && state.firstSendAt ? state.firstSendAt : null;
   const daysSince = firstSendAt ? Math.floor((now - new Date(firstSendAt)) / 86400000) : null;
   const cap = rampCap(daysSince == null ? 0 : daysSince, DAILY_CAP_MAX);
-  const sentToday = await countSentSince(etStartOfToday(now));
+  const sentToday = await getSentToday(now);
   return {
     senderConfigured: !!outreachFrom(),
     smtpConfigured: smtpConfigured(),
@@ -306,15 +406,16 @@ async function sendOne(enr, campaign, now = new Date()) {
     ? { 'List-Unsubscribe': `<${unsub}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' }
     : undefined;
 
+  const messageId = outreachMessageId(enr, enr.stepIndex);
   try {
     const info = await sendEmail({
-      to, subject, html, textAlt: text, headers,
+      to, subject, html, textAlt: text, headers, messageId,
       from: outreachFrom(),
       ...(outreachReplyTo() ? { replyTo: outreachReplyTo() } : {}),
     });
 
     // Advance the enrollment.
-    enr.sends.push({ stepIndex: enr.stepIndex, at: now, subject, messageId: (info && info.messageId) || '' });
+    enr.sends.push({ stepIndex: enr.stepIndex, at: now, subject, messageId: (info && info.messageId) || messageId });
     enr.toEmail = to;
     enr.sendAttempts = 0;
     enr.lastError = '';
@@ -323,7 +424,9 @@ async function sendOne(enr, campaign, now = new Date()) {
     if (nextStep) {
       enr.stepIndex = nextIndex;
       const offset = Math.max(1, Number(nextStep.offsetDays) || 1);
-      enr.nextSendAt = new Date(now.getTime() + offset * 86400000);
+      // Jitter off the exact wall-clock minute so touch N+1 never lands at the
+      // same time as touch N (the window gate still holds it to business hours).
+      enr.nextSendAt = jitteredFollowUpAt(now, offset, Math.random());
     } else {
       enr.status = 'completed';
       enr.nextSendAt = null;
@@ -380,12 +483,19 @@ async function sendOne(enr, campaign, now = new Date()) {
       console.warn(`[outreach] permanent bounce for ${enr.companyKey} (${to}) — suppressed`);
       return 'skipped';
     }
-    if (enr.sendAttempts >= 3) {
+    // TRANSIENT error (greylist / timeout / rate limit): back off with a growing
+    // delay (30m → 2h → 6h) instead of retrying every tick and hammering the MX.
+    // Only give up after 5 attempts — one temporary hiccup must not permanently
+    // fail a good lead.
+    if (enr.sendAttempts >= 5) {
       enr.status = 'failed';
       enr.stopReason = 'smtp-error';
+      enr.nextSendAt = null;
+    } else {
+      enr.nextSendAt = new Date(now.getTime() + transientBackoffMs(enr.sendAttempts));
     }
     await enr.save();
-    console.error(`[outreach] send failed for ${enr.companyKey}:`, err.message);
+    console.error(`[outreach] send failed for ${enr.companyKey} (attempt ${enr.sendAttempts}):`, err.message);
     return 'error';
   }
 }
@@ -396,7 +506,7 @@ async function sendOne(enr, campaign, now = new Date()) {
 // tick must never process the same due row at once (that could double-send).
 let _ticking = false;
 
-async function runOutreachTick(now = new Date()) {
+async function runOutreachTick(now = new Date(), opts = {}) {
   if (!smtpConfigured()) return { skipped: 'smtp-not-configured' };
   if (!outreachFrom())   return { skipped: 'sender-not-configured' };
   if (!isWithinSendWindow(now)) return { skipped: 'outside-window' };
@@ -408,40 +518,67 @@ async function runOutreachTick(now = new Date()) {
     // (and the dashboard's self-heal only fires when a tick is genuinely stale).
     if (!campaigns.length) { await recordRun('idle: no active campaigns'); return { skipped: 'no-active-campaigns' }; }
     const byId = new Map(campaigns.map((c) => [String(c._id), c]));
+    const campaignIds = campaigns.map((c) => c._id);
 
     const state = await OutreachState.findOne({ key: 'engine' }).lean();
     const daysSince = state && state.firstSendAt
       ? Math.floor((now - new Date(state.firstSendAt)) / 86400000) : null;
     const cap = rampCap(daysSince == null ? 0 : daysSince, DAILY_CAP_MAX);
-    const sentToday = await countSentSince(etStartOfToday(now));
-    const budget = Math.min(cap - sentToday, BATCH_PER_TICK);
+    const sentToday = await getSentToday(now);
+    const batch = variableBatch(BATCH_PER_TICK, Math.random()); // vary the burst size
+    const budget = Math.min(cap - sentToday, batch);
     if (budget <= 0) { await recordRun(`held: daily cap reached (cap ${cap}, sentToday ${sentToday})`); return { skipped: 'daily-cap', cap, sentToday }; }
 
-    // Oldest-due first; fetch slack beyond the budget since some will be
-    // guard-skipped rather than sent.
-    const due = await OutreachEnrollment.find({
-      status: 'active',
-      campaignId: { $in: campaigns.map((c) => c._id) },
-      nextSendAt: { $lte: now },
-    }).sort({ nextSendAt: 1 }).limit(budget * 4);
+    // Per-domain daily counts (seeded once), incremented as we send this tick, so
+    // no single domain gets more than DOMAIN_DAILY_CAP across the whole day.
+    const domainCounts = await sentTodayByDomain(now);
+    const pace = opts.pace === true; // cron paces sends; manual "run now" fires immediately
 
-    let sent = 0, skipped = 0, errors = 0;
-    for (const enr of due) {
-      if (sent >= budget) break;
+    let sent = 0, skipped = 0, errors = 0, domainDeferred = 0, attempts = 0;
+    const maxAttempts = budget * 6; // bound the claim loop (some rows guard-skip/defer)
+    while (sent < budget && attempts < maxAttempts) {
+      attempts += 1;
+      // ATOMIC claim: lease the oldest-due active row so no other worker (a
+      // second instance, or a self-heal tick racing the cron) can grab the same
+      // one and double-send. The lease pushes nextSendAt forward; whatever
+      // sendOne does next sets a definitive nextSendAt (or a terminal status).
+      const enr = await OutreachEnrollment.findOneAndUpdate(
+        { status: 'active', campaignId: { $in: campaignIds }, nextSendAt: { $lte: now } },
+        { $set: { nextSendAt: new Date(now.getTime() + LEASE_MS) } },
+        { sort: { nextSendAt: 1 }, new: true },
+      );
+      if (!enr) break; // nothing left due
       const campaign = byId.get(String(enr.campaignId));
       if (!campaign) continue;
+
+      // Per-domain cap: defer (don't consume budget) a row whose domain is maxed
+      // out today. Push it past today's window; it stays active and resumes.
+      const dom = domainOfEmail(enr.toEmail);
+      if (dom && (domainCounts.get(dom) || 0) >= DOMAIN_DAILY_CAP) {
+        enr.nextSendAt = new Date(now.getTime() + 12 * 60 * 60 * 1000);
+        await enr.save();
+        domainDeferred += 1;
+        continue;
+      }
+
+      // Space real sends apart (cron only) to break the robotic burst.
+      if (pace && sent > 0) await sleep(PACE_MIN_MS + Math.floor(Math.random() * (PACE_MAX_MS - PACE_MIN_MS)));
+
       const r = await sendOne(enr, campaign, now);
-      if (r === 'sent') sent += 1;
+      if (r === 'sent') { sent += 1; if (dom) domainCounts.set(dom, (domainCounts.get(dom) || 0) + 1); }
       else if (r === 'skipped') skipped += 1;
       else errors += 1;
     }
-    const result = due.length
-      ? `sent ${sent}, skipped ${skipped}, errors ${errors} (cap ${cap}, sentToday ${sentToday + sent})`
+
+    if (sent) await bumpSentToday(sent, now);
+    const worked = sent || skipped || errors || domainDeferred;
+    const result = worked
+      ? `sent ${sent}, skipped ${skipped}, errors ${errors}${domainDeferred ? `, domain-deferred ${domainDeferred}` : ''} (cap ${cap}, sentToday ${sentToday + sent})`
       : `idle: nothing due (cap ${cap}, sentToday ${sentToday})`;
     if (sent || skipped || errors) console.log(`[outreach] tick: ${result}`);
     // Always record an in-window tick, so "last run" tracks the live engine.
     await recordRun(result);
-    return { sent, skipped, errors, cap, sentToday: sentToday + sent };
+    return { sent, skipped, errors, domainDeferred, cap, sentToday: sentToday + sent };
   } finally {
     _ticking = false;
   }
@@ -452,7 +589,8 @@ function startOutreachEngine() {
   // Every 15 minutes; the tick itself gates on the ET business-hours window,
   // so UTC/DST drift can never move the send window.
   cron.schedule('*/15 * * * *', () => {
-    runOutreachTick().catch((e) => console.error('[outreach] tick error:', e.message));
+    // pace:true → space sends apart with jitter (the manual "run now" fires immediately).
+    runOutreachTick(new Date(), { pace: true }).catch((e) => console.error('[outreach] tick error:', e.message));
   });
   console.log(
     outreachFrom()
@@ -478,5 +616,10 @@ module.exports = {
   sendBlockReason,
   bodyToHtml,
   isPermanentSmtpError,
+  transientBackoffMs,
+  jitteredFollowUpAt,
+  variableBatch,
+  outreachMessageId,
   DAILY_CAP_MAX,
+  DOMAIN_DAILY_CAP,
 };

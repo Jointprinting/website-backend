@@ -401,7 +401,10 @@ async function enrollCompanies(req, res) {
           toEmail: pickEmail(c),
           status: 'active',
           stepIndex: 0,
-          nextSendAt: now,
+          // Stagger the first-touch due time (0–90 min) so a batch of enrolls
+          // doesn't create a clump of identical nextSendAt timestamps — the
+          // daily cap still paces the actual sends.
+          nextSendAt: new Date(now.getTime() + Math.floor(Math.random() * 90 * 60 * 1000)),
           token: newToken(),
         })), { ordered: false });
       } catch (err) {
