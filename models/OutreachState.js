@@ -21,6 +21,9 @@ const OutreachStateSchema = new mongoose.Schema({
   // Xm ago · N new" pill.
   gmailLastSyncAt: { type: Date, default: null },
   gmailLastCount:  { type: Number, default: 0 },
+  // Auto-enroll (Wave 7): when set, the finder reserve is topped straight into
+  // this campaign on a cron. Null = off (the owner enrolls manually).
+  autoEnrollCampaignId: { type: mongoose.Schema.Types.ObjectId, ref: 'OutreachCampaign', default: null },
 }, { timestamps: true });
 
 module.exports = mongoose.model('OutreachState', OutreachStateSchema);

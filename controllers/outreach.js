@@ -11,6 +11,7 @@
 
 const OutreachCampaign = require('../models/OutreachCampaign');
 const OutreachEnrollment = require('../models/OutreachEnrollment');
+const OutreachState = require('../models/OutreachState');
 const LeadFinderRun = require('../models/LeadFinderRun');
 const Client = require('../models/Client');
 const Order = require('../models/Order');
@@ -229,8 +230,10 @@ async function getOverview(req, res) {
       ...NOT_ARCHIVED, doNotEmail: { $ne: true }, stage: { $in: ['lead', 'contacted'] }, lastContact: null,
     }).catch(() => 0);
     const nextActions = buildNextActions({ engine, campaigns: campaignRows, warmCount: warm.length, coldReserve });
+    const st = await OutreachState.findOne({ key: 'engine' }).select('autoEnrollCampaignId').lean().catch(() => null);
 
-    res.json({ engine, campaigns: campaignRows, warm, recent, nextActions, coldReserve });
+    res.json({ engine, campaigns: campaignRows, warm, recent, nextActions, coldReserve,
+      autoEnrollCampaignId: st && st.autoEnrollCampaignId ? String(st.autoEnrollCampaignId) : null });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -587,6 +590,113 @@ async function unenrollAll(req, res) {
     if (!includeSent) filter['sends.0'] = { $exists: false }; // only never-sent rows
     const result = await OutreachEnrollment.deleteMany(filter);
     res.json({ ok: true, removed: result.deletedCount || 0, keptSent: !includeSent });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
+// ── Auto-enroll (Wave 7) ──────────────────────────────────────────────────────
+
+// Discover cold candidates and enroll up to `limit` of them into `campaign`,
+// best-lead-first — the same cold-only + suppression + hygiene guards the manual
+// enroll uses, so the auto path can never do anything the owner couldn't. Used by
+// the auto-enroll cron and the "fill now" toggle. Returns { enrolled }.
+async function autoFillCampaign(campaign, { limit = 100 } = {}) {
+  // Cold = never personally contacted, has an email, not opted out.
+  const clients = await Client.find({ ...NOT_ARCHIVED, doNotEmail: { $ne: true },
+    stage: { $in: ['lead', 'contacted'] }, lastContact: null })
+    .select('companyKey companyName clientName email phone address area stage leadSource contacts lastContact')
+    .limit(1500).lean();
+  if (!clients.length) return { enrolled: 0 };
+
+  const keys = clients.map((c) => c.companyKey);
+  const [existing, customerKeys, allEnrollments] = await Promise.all([
+    OutreachEnrollment.find({ campaignId: campaign._id, companyKey: { $in: keys } }).select('companyKey').lean(),
+    keysWithPlacedOrders(keys),
+    OutreachEnrollment.find({}).select('toEmail').lean(),
+  ]);
+  const enrolledSet = new Set(existing.map((e) => e.companyKey));
+  const usedEmails = new Set(allEnrollments.map((e) => String(e.toEmail || '').toLowerCase()).filter(Boolean));
+  const suppressed = await suppressedSet(clients.map((c) => pickEmail(c)));
+
+  // Best-scored leads first, take up to `limit` eligible.
+  const scored = clients.map((c) => ({ c, sc: scoreLead(c).score })).sort((a, b) => b.sc - a.sc);
+  const eligible = [];
+  for (const { c } of scored) {
+    if (eligible.length >= limit) break;
+    const email = String(pickEmail(c) || '').toLowerCase();
+    const reason = enrollBlockReason(c, enrolledSet.has(c.companyKey), customerKeys.has(c.companyKey), email ? suppressed.has(email) : false);
+    if (reason || !email || usedEmails.has(email)) continue;
+    usedEmails.add(email);
+    eligible.push(c);
+  }
+  if (!eligible.length) return { enrolled: 0 };
+
+  // List hygiene: drop dead-MX domains before enrolling.
+  const mxMap = await verifyDomainsMx(eligible.map((c) => emailDomain(String(pickEmail(c) || '').toLowerCase()))).catch(() => new Map());
+  const kept = eligible.filter((c) => {
+    const d = emailDomain(String(pickEmail(c) || '').toLowerCase());
+    return !(d && mxMap.get(d) === false);
+  });
+  if (!kept.length) return { enrolled: 0 };
+
+  const now = new Date();
+  try {
+    await OutreachEnrollment.insertMany(kept.map((c) => ({
+      campaignId: campaign._id,
+      companyKey: c.companyKey,
+      companyName: c.companyName || c.clientName || '',
+      toEmail: pickEmail(c),
+      status: 'active',
+      stepIndex: 0,
+      nextSendAt: new Date(now.getTime() + Math.floor(Math.random() * 90 * 60 * 1000)),
+      token: newToken(),
+    })), { ordered: false });
+  } catch (err) {
+    if (err.code !== 11000 && !(err.writeErrors || []).every((w) => w.code === 11000)) throw err;
+  }
+  await Client.updateMany({ companyKey: { $in: kept.map((c) => c.companyKey) } }, { $addToSet: { tags: COLD_TAG } });
+  return { enrolled: kept.length };
+}
+
+// Cron: top up the auto-enroll target from the reserve every 30 min (idle when
+// off). Started from server.js.
+function startAutoEnroll() {
+  const cron = require('node-cron');
+  cron.schedule('*/30 * * * *', () => {
+    runAutoEnrollTick()
+      .then((r) => { if (r && r.enrolled) console.log(`[outreach] auto-enroll: +${r.enrolled}`); })
+      .catch((e) => console.warn('[outreach] auto-enroll failed:', e.message));
+  });
+  console.log('[outreach] auto-enroll cron started — tops the active campaign from the reserve when enabled');
+}
+
+// One auto-enroll cron pass: if a target campaign is set + still active, top it
+// up from the reserve. Bounded; safe to call often (dedupe via the unique index).
+async function runAutoEnrollTick() {
+  const state = await OutreachState.findOne({ key: 'engine' }).lean().catch(() => null);
+  const id = state && state.autoEnrollCampaignId;
+  if (!id) return { skipped: 'off' };
+  const campaign = await OutreachCampaign.findById(id).lean();
+  if (!campaign || campaign.status !== 'active') return { skipped: 'campaign-inactive' };
+  return autoFillCampaign(campaign, { limit: 100 });
+}
+
+// POST /api/outreach/campaigns/:id/auto-enroll { enabled } — turn auto-enroll on
+// for THIS campaign (only one at a time) or off. Enabling runs one fill now.
+async function setAutoEnroll(req, res) {
+  try {
+    const campaign = await OutreachCampaign.findById(req.params.id).lean();
+    if (!campaign) return res.status(404).json({ message: 'campaign not found' });
+    const enabled = (req.body || {}).enabled === true || (req.body || {}).enabled === 'true';
+    await OutreachState.findOneAndUpdate(
+      { key: 'engine' },
+      { $set: { autoEnrollCampaignId: enabled ? campaign._id : null } },
+      { upsert: true },
+    );
+    let filled = null;
+    if (enabled && campaign.status === 'active') filled = await autoFillCampaign(campaign, { limit: 100 }).catch(() => null);
+    res.json({ ok: true, autoEnrollCampaignId: enabled ? String(campaign._id) : null, filled });
   } catch (e) {
     res.status(400).json({ message: e.message });
   }
@@ -980,6 +1090,9 @@ module.exports = {
   markReplied,
   stopEnrollment,
   unenrollAll,
+  setAutoEnroll,
+  runAutoEnrollTick,
+  startAutoEnroll,
   runTickNow,
   trackOpen,
   unsubscribe,
