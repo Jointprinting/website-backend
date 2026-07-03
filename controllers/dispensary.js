@@ -285,4 +285,84 @@ async function rechain(req, res) {
   }
 }
 
-module.exports = { listDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain };
+// ── GET /api/roadtrip/suggest?lat&lng[&radius&limit] ─────────────────────────
+// "Plan me a run near here." Returns the best nearby dispensaries to actually
+// visit — active, visible, and NOT already a customer or a dead lead — ranked by
+// sales value (a never-worked prospect with a phone beats a warm one), then by
+// distance. The owner one-taps these into Today's Run and optimizes the route.
+const SUGGEST_CLOSED_STAGES = new Set(['won', 'customer', 'lost', 'dormant']);
+
+// Great-circle distance in miles between two lat/lng points.
+function haversineMi(lat1, lng1, lat2, lng2) {
+  const R = 3958.8, r = Math.PI / 180;
+  const dLa = (lat2 - lat1) * r, dLo = (lng2 - lng1) * r;
+  const a = Math.sin(dLa / 2) ** 2 + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin(dLo / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+// Pure ranker (unit-tested). Keeps dispensaries within the radius that are real
+// prospects (drops customers / dead leads), scores each, and returns the top N.
+//   fresh (never in CRM) = +2, has a phone = +1 → sort by score, then nearest.
+function rankProspects(docs, origin, { radiusMi = 25, stageByKey = new Map(), limit = 12 } = {}) {
+  const out = [];
+  for (const d of (docs || [])) {
+    if (d == null || d.lat == null || d.lng == null) continue;
+    const miles = haversineMi(origin.lat, origin.lng, d.lat, d.lng);
+    if (!(miles <= radiusMi)) continue;
+    const stage = stageByKey.get(d.companyKey) || null;
+    if (stage && SUGGEST_CLOSED_STAGES.has(stage)) continue; // already ours / dead — skip
+    const fresh = !stage;
+    const hasPhone = !!d.phone;
+    out.push({
+      _id: String(d._id), name: d.name || 'Dispensary',
+      lat: d.lat, lng: d.lng, phone: d.phone || '', website: d.website || '',
+      companyKey: d.companyKey || '', stage, fresh,
+      miles: Math.round(miles * 10) / 10, score: (fresh ? 2 : 0) + (hasPhone ? 1 : 0),
+    });
+  }
+  out.sort((a, b) => (b.score - a.score) || (a.miles - b.miles) || String(a.name).localeCompare(String(b.name)));
+  return out.slice(0, limit);
+}
+
+async function suggest(req, res) {
+  try {
+    const lat = parseFloat(req.query.lat), lng = parseFloat(req.query.lng);
+    if (!isFinite(lat) || !isFinite(lng)) return res.status(400).json({ message: 'lat and lng are required.' });
+    const radiusMi = Math.min(Math.max(parseFloat(req.query.radius) || 25, 1), 100);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 12, 1), 40);
+    // bbox pre-filter (~radius) keeps the scan cheap; haversine does the exact cut.
+    const dLat = radiusMi / 69;
+    const dLng = radiusMi / ((69 * Math.cos(lat * Math.PI / 180)) || 69);
+    const docs = await Dispensary.find({
+      active: true, hidden: false,
+      lat: { $ne: null, $gte: lat - dLat, $lte: lat + dLat },
+      lng: { $ne: null, $gte: lng - dLng, $lte: lng + dLng },
+    }).select('name lat lng phone website companyKey matchKey').limit(1500).lean();
+    // CRM cross-reference (same companyKey/matchKey rule the map uses) so we can
+    // skip stores that are already customers or dead leads.
+    const companyKeys = [...new Set(docs.map((d) => d.companyKey).filter(Boolean))];
+    const matchKeys = [...new Set(docs.map((d) => d.matchKey).filter(Boolean))];
+    const clients = companyKeys.length || matchKeys.length
+      ? await Client.find(
+          { archived: { $ne: true }, $or: [{ companyKey: { $in: companyKeys } }, { matchKey: { $in: matchKeys } }] },
+          { companyKey: 1, matchKey: 1, stage: 1 },
+        ).lean()
+      : [];
+    const byCompanyKey = new Map(), byMatchKey = new Map();
+    for (const c of clients) {
+      if (c.companyKey) byCompanyKey.set(c.companyKey, c.stage);
+      if (c.matchKey) byMatchKey.set(c.matchKey, c.stage);
+    }
+    const stageByKey = new Map();
+    for (const d of docs) {
+      const st = byCompanyKey.get(d.companyKey) || byMatchKey.get(d.matchKey) || null;
+      if (st && d.companyKey) stageByKey.set(d.companyKey, st);
+    }
+    const suggestions = rankProspects(docs, { lat, lng }, { radiusMi, stageByKey, limit });
+    res.json({ count: suggestions.length, radiusMi, suggestions });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'Suggest failed.' });
+  }
+}
+
+module.exports = { listDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, suggest, rankProspects, haversineMi };
