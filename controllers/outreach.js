@@ -18,6 +18,7 @@ const { PLACED_STATUSES } = require('../models/Order');
 const { warmFromEnrollment } = require('../services/warmHandoff');
 const { suppress, suppressedSet } = require('../services/suppression');
 const { lintSteps } = require('../services/outreachContent');
+const { verifyDomainsMx, emailDomain } = require('../services/emailVerify');
 
 // The tag stamped on every company the moment it's enrolled in a campaign, so a
 // reply (which also gets 'warm') is unmistakably traceable to the cold merge —
@@ -394,6 +395,23 @@ async function enrollCompanies(req, res) {
       eligible.push(client);
     }
 
+    // List-hygiene: verify each eligible address's DOMAIN actually accepts mail
+    // (MX / A-record) before we burn a send + daily cap on it. Deduped per
+    // domain, so a batch is a few DNS lookups, not one per lead. Definitively
+    // dead domains are dropped as 'dead-domain'; the company stays in the CRM.
+    if (eligible.length) {
+      const domains = eligible.map((c) => emailDomain(String(pickEmail(c) || '').toLowerCase()));
+      const mxMap = await verifyDomainsMx(domains).catch(() => new Map());
+      const kept = [];
+      for (const c of eligible) {
+        const dom = emailDomain(String(pickEmail(c) || '').toLowerCase());
+        if (dom && mxMap.get(dom) === false) { skipped.push({ companyKey: c.companyKey, reason: 'dead-domain' }); continue; }
+        kept.push(c);
+      }
+      eligible.length = 0;
+      eligible.push(...kept);
+    }
+
     if (!dryRun && eligible.length) {
       const now = new Date();
       try {
@@ -724,41 +742,73 @@ function extractBounceEmails(body) {
   return [...found];
 }
 
+// Classify a provider bounce/complaint payload into 'complaint' | 'hard' |
+// 'soft' | 'unknown' by walking its event/type/status fields. Only hard bounces
+// and complaints should permanently suppress — a soft/transient bounce (full
+// mailbox, greylist, temporary block) must NOT kill a good lead forever. Pure.
+function classifyBounceEvent(body) {
+  let type = '';
+  const scan = (s) => {
+    const v = String(s || '').toLowerCase();
+    if (!type && /(complaint|spam[_\s-]?report|abuse|fbl|feedback[_\s-]?loop)/.test(v)) type = 'complaint';
+    else if (!type && /(hard[_\s-]?bounce|permanent|invalid|does[_\s-]?not[_\s-]?exist|unknown[_\s-]?user|no[_\s-]?such|user[_\s-]?unknown|mailbox[_\s-]?(not|unavailable)|5\.\d\.\d)/.test(v)) type = 'hard';
+    else if (!type && /(soft[_\s-]?bounce|transient|temporary|deferred|greylist|delay|throttl|mailbox[_\s-]?full|quota|4\.\d\.\d)/.test(v)) type = 'soft';
+  };
+  const walk = (o) => {
+    if (!o || typeof o !== 'object') return;
+    if (Array.isArray(o)) { o.forEach(walk); return; }
+    for (const [k, v] of Object.entries(o)) {
+      if (typeof v === 'string' && /(event|type|status|category|reason|notification|action|severity|state)/i.test(k)) scan(v);
+      else walk(v);
+    }
+  };
+  walk(body);
+  return type || 'unknown';
+}
+
 // POST /api/outreach/bounce?key=SECRET — a mail provider tells us an address
-// bounced/complained; we suppress it everywhere (doNotEmail + stop any active
-// sequence) so we never waste another send on it. Guarded by a shared secret
-// (OUTREACH_BOUNCE_SECRET); DISABLED entirely until that's set, so it can never
-// be an open suppression endpoint.
+// bounced/complained; we suppress HARD bounces + complaints everywhere
+// (address-level Suppression + doNotEmail + stop any active sequence). SOFT /
+// transient bounces are ignored so a full mailbox or greylist can't permanently
+// kill a deliverable lead. Guarded by a shared secret (OUTREACH_BOUNCE_SECRET);
+// DISABLED entirely until that's set, so it can never be an open endpoint.
 async function bounceWebhook(req, res) {
   const secret = process.env.OUTREACH_BOUNCE_SECRET || '';
   if (!secret) return res.status(403).json({ message: 'bounce webhook disabled (set OUTREACH_BOUNCE_SECRET)' });
   const provided = req.query.key || req.headers['x-webhook-key'] || (req.body && req.body.key) || '';
   if (String(provided) !== secret) return res.status(401).json({ message: 'bad key' });
 
+  const event = classifyBounceEvent(req.body);
   const emails = extractBounceEmails(req.body);
+  // Soft/transient → record nothing punitive; a later attempt (with backoff) is fine.
+  if (event === 'soft') return res.json({ ok: true, event, emails: emails.length, suppressed: 0, skipped: 'soft-bounce' });
+
+  const isComplaint = event === 'complaint';
+  const reason = isComplaint ? 'complaint' : 'hard-bounce';
+  const source = isComplaint ? 'complaint-webhook' : 'bounce-webhook';
   let suppressed = 0;
   const now = new Date();
   for (const email of emails) {
     // Global address-level suppression first — works even when we have no Client
-    // for this address (a bounced lead we never imported).
-    await suppress(email, { reason: 'hard-bounce', source: 'bounce-webhook' });
-    // Stop any active enrollment aimed at this address, and gather its companies.
+    // for this address (a bounced lead we never imported). Distinct reason so the
+    // deliverability circuit-breaker can tell bounces from complaints.
+    await suppress(email, { reason, source });
     const enrs = await OutreachEnrollment.find({ toEmail: email }).select('companyKey status');
     const keys = new Set();
     for (const e of enrs) {
       keys.add(e.companyKey);
-      if (e.status === 'active') { e.status = 'failed'; e.stopReason = 'bounced'; e.nextSendAt = null; await e.save().catch(() => {}); }
+      if (e.status === 'active') { e.status = 'failed'; e.stopReason = isComplaint ? 'complaint' : 'bounced'; e.nextSendAt = null; await e.save().catch(() => {}); }
     }
-    // Suppress the company both by matching email and by enrollment linkage.
     const or = [{ email }, { 'contacts.email': email }];
     if (keys.size) or.push({ companyKey: { $in: [...keys] } });
+    const logText = isComplaint ? 'Marked our email as spam — suppressed from outreach' : 'Email bounced — suppressed from outreach';
     const r = await Client.updateMany(
       { $or: or, doNotEmail: { $ne: true } },
-      { $set: { doNotEmail: true }, $push: { log: { at: now, text: 'Email bounced — suppressed from outreach', kind: 'email', dedupKey: `bounce:${email}` } } },
+      { $set: { doNotEmail: true }, $push: { log: { at: now, text: logText, kind: 'email', dedupKey: `${reason}:${email}` } } },
     ).catch(() => ({ modifiedCount: 0 }));
     suppressed += r.modifiedCount || 0;
   }
-  res.json({ ok: true, emails: emails.length, suppressed });
+  res.json({ ok: true, event, emails: emails.length, suppressed });
 }
 
 // ── Public routes (no auth — token-keyed) ─────────────────────────────────────
@@ -858,6 +908,7 @@ module.exports = {
   enrollBlockReason,
   sanitizeSteps,
   extractBounceEmails,
+  classifyBounceEvent,
   parseState,
   buildStateFunnels,
   weeklyTrend,

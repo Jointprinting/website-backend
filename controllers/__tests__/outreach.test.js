@@ -156,3 +156,14 @@ test('extractBounceEmails digs emails out of any payload shape', () => {
   assert.deepEqual(extractBounceEmails({}), []);
   assert.deepEqual(extractBounceEmails(null), []);
 });
+
+// ── Wave 5b: bounce/complaint classification ──────────────────────────────────
+const { classifyBounceEvent } = require('../outreach');
+test('classifyBounceEvent splits complaint / hard / soft / unknown', () => {
+  assert.equal(classifyBounceEvent({ event: 'spam_complaint', email: 'a@b.com' }), 'complaint');
+  assert.equal(classifyBounceEvent({ type: 'hard_bounce', to: 'a@b.com' }), 'hard');
+  assert.equal(classifyBounceEvent({ notification_type: 'Bounce', bounce: { bounceType: 'Permanent' } }), 'hard');
+  assert.equal(classifyBounceEvent({ status: 'soft_bounce' }), 'soft');
+  assert.equal(classifyBounceEvent({ reason: 'mailbox full', category: 'temporary' }), 'soft');
+  assert.equal(classifyBounceEvent({ email: 'a@b.com' }), 'unknown'); // no event field
+});

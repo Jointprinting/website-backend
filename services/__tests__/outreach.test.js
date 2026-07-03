@@ -221,3 +221,23 @@ test('outreachMessageId is stable per (enrollment, step) for provider dedupe', (
   assert.notEqual(a, c);       // next step → different id
   assert.match(a, /^<outreach-abc123-0@.+>$/);
 });
+
+// ── Wave 5b: decision-maker targeting ─────────────────────────────────────────
+test('isRoleEmail flags shared aliases, not named people', () => {
+  const { isRoleEmail } = require('../outreachEngine');
+  assert.ok(isRoleEmail('info@shop.com'));
+  assert.ok(isRoleEmail('sales.team@shop.com'));
+  assert.ok(isRoleEmail('orders+nj@shop.com'));
+  assert.ok(!isRoleEmail('jane@shop.com'));
+  assert.ok(!isRoleEmail('john.smith@shop.com'));
+});
+
+test('pickEmail prefers a named person over a role inbox', () => {
+  // role top-level email, but a named contact exists → pick the person
+  assert.equal(pickEmail({ email: 'info@shop.com', contacts: [{ email: 'jane@shop.com', name: 'Jane Doe' }] }), 'jane@shop.com');
+  // only a role inbox → still return it (better than nothing)
+  assert.equal(pickEmail({ email: 'info@shop.com' }), 'info@shop.com');
+  // a non-role top-level email wins over an unnamed contact
+  assert.equal(pickEmail({ email: 'owner@shop.com', contacts: [{ email: 'x@shop.com' }] }), 'owner@shop.com');
+  assert.equal(pickEmail({}), '');
+});
