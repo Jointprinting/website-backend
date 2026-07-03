@@ -34,6 +34,7 @@ const OutreachState = require('../models/OutreachState');
 const Client = require('../models/Client');
 const sendEmail = require('../utils/sendEmail');
 const { promoteStage } = require('../controllers/crm');
+const { suppress, isSuppressed } = require('./suppression');
 const { BUSINESS_TZ, etStartOfToday } = require('../utils/time');
 
 const DAILY_CAP_MAX  = parseInt(process.env.OUTREACH_DAILY_CAP || '150', 10);
@@ -274,6 +275,17 @@ async function sendOne(enr, campaign, now = new Date()) {
     return 'skipped';
   }
 
+  // Global suppression re-check at send time — the last line of defense. An
+  // address that unsubscribed / bounced / complained on ANY campaign must never
+  // get another send, even if this enrollment predates the suppression.
+  if (await isSuppressed(to)) {
+    enr.status = 'stopped';
+    enr.stopReason = 'suppressed';
+    enr.nextSendAt = null;
+    await enr.save();
+    return 'skipped';
+  }
+
   const step = (campaign.steps || [])[enr.stepIndex];
   if (!step) {
     enr.status = 'completed';
@@ -355,6 +367,9 @@ async function sendOne(enr, campaign, now = new Date()) {
       enr.stopReason = 'invalid-address';
       enr.nextSendAt = null;
       await enr.save();
+      // Suppress the ADDRESS globally (survives re-discovery under a new key)…
+      await suppress(to, { reason: 'hard-bounce', source: 'smtp-bounce' });
+      // …and flag the company so no OTHER campaign wastes a send on it either.
       await Client.updateOne(
         { companyKey: enr.companyKey, doNotEmail: { $ne: true } },
         {

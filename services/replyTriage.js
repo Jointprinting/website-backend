@@ -1,18 +1,22 @@
 // services/replyTriage.js
 //
-// Gmail Reply Triage V1 — the pure classify + match logic behind the triage inbox
-// (controllers/replyTriage.js). Deliberately keyword-based, no AI, no auto-send.
+// Gmail Reply Triage — the pure classify + match logic behind the triage inbox
+// (controllers/replyTriage.js). Deliberately keyword-based, no AI, no auto-send
+// of new mail. What it DOES drive (in the controller) is the loop-closing
+// behavior: a matched human reply auto-stops the drip and warms the CRM, an
+// opt-out suppresses the address, and an out-of-office auto-reply snoozes the
+// sequence instead of firing into an empty office.
 //
-// No Gmail FETCHING lives here: V1 ingests replies manually / by import, and a real
-// read-only Gmail sync is a gated V2 seam (isGmailConfigured) so we don't take on
-// risky OAuth now. Keeping the classifier + matcher PURE means they're unit-tested
-// without a DB or network — the same convention as the rest of the suite.
+// Keeping the classifier + matcher PURE means they're unit-tested without a DB
+// or network — the same convention as the rest of the suite.
 
 const { isSelf } = require('./selfIdentity');
 
 // ── Enums (mirrored on the frontend: src/screens/studio/outreach/_outreach.js) ──
 
-// The nine buckets the owner sorts a reply into.
+// The buckets the owner sorts a reply into. `auto_reply_ooo` is machine-ish but
+// NOT noise — it's a real mailbox temporarily away, so it gets its own category
+// and the controller snoozes the sequence rather than ignoring it.
 const CATEGORIES = [
   'hot_lead',
   'needs_response',
@@ -22,6 +26,7 @@ const CATEGORIES = [
   'not_interested',
   'wrong_person',
   'unsubscribe',
+  'auto_reply_ooo',
   'bounce_auto_ignore',
 ];
 
@@ -48,6 +53,7 @@ const SUGGESTED_ACTION = {
   not_interested:     'Mark not interested; stop the sequence',
   wrong_person:       'Get the right contact; note it in the CRM',
   unsubscribe:        'Add to do-not-email and stop',
+  auto_reply_ooo:     'Auto-reply — sequence paused, resumes automatically',
   bounce_auto_ignore: 'Ignore — no action needed',
 };
 
@@ -58,9 +64,14 @@ const isValidStatus = (s) => STATUSES.includes(s);
 
 // ── Classification ─────────────────────────────────────────────────────────────
 
-// Senders / subjects that are machine mail, never a human reply.
+// Senders that are machine mail, never a human reply.
 const AUTO_FROM = /(mailer-daemon|postmaster|no-?reply|do-?not-?reply|notification|newsletter|@(?:bounce|mailer|email\.|em\.))/i;
-const AUTO_SUBJECT = /(out of office|auto(?:matic)?[ -]?reply|automatic reply|delivery (?:status notification|has failed|failure)|undeliverable|returned mail|mail delivery (?:failed|subsystem)|failure notice|vacation|away from (?:the |my )?office|read receipt|accepted:|declined:|canceled:)/i;
+// Hard delivery failures + calendar/receipt noise → ignore entirely.
+const BOUNCE_SUBJECT = /(delivery (?:status notification|has failed|failure)|undeliverable|returned mail|mail delivery (?:failed|subsystem)|failure notice|read receipt|accepted:|declined:|canceled:)/i;
+// Out-of-office / vacation auto-responders — a REAL mailbox that's temporarily
+// away. Detected separately so the controller can snooze-and-resume the drip.
+const OOO_SUBJECT = /\b(out of (?:the )?office|auto(?:matic)?[ -]?reply|automatic reply|on vacation|away from (?:the |my )?office|on (?:leave|holiday|pto)|maternity leave|paternity leave)\b/i;
+const OOO_BODY = /\b(i(?:'| a)?m (?:currently )?(?:out of (?:the )?office|on (?:vacation|leave|pto|holiday)|away|traveling)|out of (?:the )?office (?:until|through|from|and)|automatic(?:ally)? (?:generated )?(?:reply|response)|this is an autom(?:ated|atic)|limited access to (?:my )?email)\b/i;
 
 // Content signals. Order below encodes precedence.
 const RE_UNSUB = /\b(unsubscribe|remove me|take me off|stop (?:emailing|contacting|sending)|opt[ -]?out|do not (?:contact|email)|quit emailing)\b/i;
@@ -71,18 +82,25 @@ const RE_MOCKUP = /\b(mock[ -]?up|sample|proof|artwork|\bdesign\b|\blogo\b|see (
 const RE_HOT = /\b(interested|let'?s (?:talk|chat|do it|connect|set)|call me|give me a call|set up (?:a )?(?:call|meeting|time)|ready to (?:go|order|start)|place an order|move forward|when can (?:we|you)|sounds good|let'?s go|i(?:'?d| would) like to (?:order|get|buy))\b/i;
 const RE_LATER = /\b(not (?:right )?now|next (?:month|quarter|year|week|season)|circle back|reach back|check back|touch base (?:later|next)|after (?:the )?(?:holidays|summer|new year|season)|busy (?:right )?now|maybe (?:later|down the road)|revisit|in (?:a few|the) (?:weeks|months))\b/i;
 
-// Classify one reply into a category. Precedence: kill-signals (self, machine mail,
-// unsubscribe, not-interested) win over positive intent, so "unsubscribe — btw what
-// are your prices" is never mis-filed as a pricing lead. `ignore` marks mail that
-// isn't a real human reply (own sent mail, bounces, auto-replies).
+// Classify one reply into a category. Precedence: kill-signals (self, machine
+// bounce, OOO, unsubscribe, not-interested) win over positive intent, so
+// "unsubscribe — btw what are your prices" is never mis-filed as a pricing lead.
+// Returns { category, ignore, self, ooo }: `ignore` = not a real human reply to
+// act on; `ooo` = an out-of-office auto-reply the caller should snooze on.
 function classifyReply({ subject = '', snippet = '', fromEmail = '', fromName = '' } = {}) {
   const from = String(fromEmail).toLowerCase();
-  const hay = `${subject}\n${snippet}`;
+  const subj = String(subject);
+  const body = String(snippet);
+  const hay = `${subj}\n${body}`;
 
   // Our own outbound mail is never a reply to triage.
   if (isSelf(from) || isSelf(fromName)) return { category: 'bounce_auto_ignore', ignore: true, self: true };
 
-  if (AUTO_FROM.test(from) || AUTO_SUBJECT.test(subject)) return { category: 'bounce_auto_ignore', ignore: true, self: false };
+  // Hard machine mail (bounces, receipts, calendar) → ignore.
+  if (AUTO_FROM.test(from) || BOUNCE_SUBJECT.test(subj)) return { category: 'bounce_auto_ignore', ignore: true, self: false };
+  // Out-of-office auto-reply → its own category (snooze, don't ignore).
+  if (OOO_SUBJECT.test(subj) || OOO_BODY.test(body)) return { category: 'auto_reply_ooo', ignore: false, self: false, ooo: true };
+
   if (RE_UNSUB.test(hay))          return { category: 'unsubscribe',      ignore: false, self: false };
   if (RE_NOT_INTERESTED.test(hay)) return { category: 'not_interested',  ignore: false, self: false };
   if (RE_WRONG_PERSON.test(hay))   return { category: 'wrong_person',    ignore: false, self: false };
@@ -93,33 +111,103 @@ function classifyReply({ subject = '', snippet = '', fromEmail = '', fromName = 
   return { category: 'needs_response', ignore: false, self: false };
 }
 
+// Parse an out-of-office "back on <date>" into a resume Date. Best-effort: an
+// explicit M/D (optionally /YY) that reads as a plausible near-future return
+// (1–45 days out) is honored; otherwise we default to +7 days. PURE (now
+// injected) so it's unit-tested without the clock.
+function parseOooResume(text, now = new Date()) {
+  const base = now instanceof Date ? now : new Date(now);
+  const DEFAULT = new Date(base.getTime() + 7 * 86400000);
+  const m = String(text || '').match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
+  if (m) {
+    const mo = parseInt(m[1], 10) - 1;
+    const day = parseInt(m[2], 10);
+    let yr = m[3] ? parseInt(m[3], 10) : base.getUTCFullYear();
+    if (yr < 100) yr += 2000;
+    if (mo >= 0 && mo <= 11 && day >= 1 && day <= 31) {
+      const cand = new Date(Date.UTC(yr, mo, day, 14, 0, 0)); // ~9-10a ET
+      const days = (cand.getTime() - base.getTime()) / 86400000;
+      if (Number.isFinite(days) && days >= 1 && days <= 45) return cand;
+    }
+  }
+  return DEFAULT;
+}
+
 // ── Matching ─────────────────────────────────────────────────────────────────
 
 const normEmail = (e) => String(e == null ? '' : e).trim().toLowerCase();
+const domainOf = (e) => { const s = normEmail(e); const i = s.lastIndexOf('@'); return i >= 0 ? s.slice(i + 1) : ''; };
+const stripAngles = (s) => String(s == null ? '' : s).replace(/[<>]/g, '').trim().toLowerCase();
 // Drop leading Re:/Fwd:/Fw: markers so a reply subject can be compared to the
 // campaign subject it's answering.
 const normSubject = (s) => String(s == null ? '' : s).replace(/^(?:\s*(?:re|fwd?|aw|sv)\s*:\s*)+/i, '').trim().toLowerCase();
 
+// Freemail / consumer domains — many different shops share these, so a
+// domain-only match against one is meaningless and must never fire.
+const FREEMAIL = new Set([
+  'gmail.com', 'googlemail.com', 'yahoo.com', 'ymail.com', 'hotmail.com', 'hotmail.co.uk',
+  'outlook.com', 'live.com', 'msn.com', 'aol.com', 'icloud.com', 'me.com', 'mac.com',
+  'protonmail.com', 'proton.me', 'gmx.com', 'gmx.net', 'comcast.net', 'verizon.net',
+  'att.net', 'sbcglobal.net', 'ymail.co', 'mail.com', 'zoho.com',
+]);
+
+// Match confidence, strongest → weakest. STRONG matches are safe to auto-act on
+// (stop the drip, warm the CRM); a 'domain' match is a soft link the UI shows
+// but the loop never auto-acts on.
+const STRONG_MATCHES = new Set(['thread', 'email', 'subject']);
+
+function hit(matchBy, enr) {
+  return {
+    matched: true, matchBy,
+    companyKey: enr.companyKey || '',
+    companyName: enr.companyName || '',
+    enrollmentId: enr._id ? String(enr._id) : '',
+  };
+}
+
 // Match a reply to an existing outreach lead. PURE: the controller passes the
-// candidate rows it already loaded (enrollments whose toEmail equals the sender,
-// clients whose email/contact matches), so this needs no DB. Email is the strong
-// signal; a subject still carrying our campaign's subject line is a soft fallback.
+// candidate rows it already loaded, so this needs no DB. Order = confidence:
+//   1) thread   — the reply's In-Reply-To/References vs a send's Message-ID
+//   2) email    — exact sender address (enrollment, then any client contact)
+//   3) subject  — the reply still carries our campaign's subject line
+//   4) domain   — same BUSINESS domain, different mailbox (soft; skips freemail)
 // Uncertain → matched:false (kept as UNMATCHED, never dropped, so nothing hides).
-function matchReply(fromEmail, subject, { enrollments = [], clients = [] } = {}) {
+function matchReply(fromEmail, subject, { enrollments = [], clients = [], messageIds = [] } = {}) {
   const from = normEmail(fromEmail);
 
+  // 1) Thread headers — strongest signal, survives a reply from any address.
+  const refSet = new Set((messageIds || []).map(stripAngles).filter(Boolean));
+  if (refSet.size) {
+    const enr = enrollments.find((e) => {
+      const ids = (e.messageIds && e.messageIds.length)
+        ? e.messageIds
+        : (e.sends || []).map((s) => s && s.messageId);
+      return (ids || []).map(stripAngles).some((id) => id && refSet.has(id));
+    });
+    if (enr) return hit('thread', enr);
+  }
+
+  // 2) Exact sender email — enrollment first, then any client.
   if (from) {
     const enr = enrollments.find((e) => normEmail(e.toEmail) === from);
-    if (enr) return { matched: true, matchBy: 'email', companyKey: enr.companyKey || '', companyName: enr.companyName || '', enrollmentId: enr._id ? String(enr._id) : '' };
-
+    if (enr) return hit('email', enr);
     const cl = clients.find((c) => normEmail(c.email) === from || (c.contacts || []).some((k) => normEmail(k.email) === from));
     if (cl) return { matched: true, matchBy: 'email', companyKey: cl.companyKey || '', companyName: cl.companyName || '', enrollmentId: '' };
   }
 
+  // 3) Subject still carrying our campaign subject.
   const subj = normSubject(subject);
   if (subj) {
     const enr = enrollments.find((e) => (e.subjects || []).some((x) => normSubject(x) && normSubject(x) === subj));
-    if (enr) return { matched: true, matchBy: 'subject', companyKey: enr.companyKey || '', companyName: enr.companyName || '', enrollmentId: enr._id ? String(enr._id) : '' };
+    if (enr) return hit('subject', enr);
+  }
+
+  // 4) Domain fallback (soft) — a buyer replying from a personal/shared inbox on
+  //    the same business domain. Skipped for freemail so it can't over-match.
+  const dom = domainOf(from);
+  if (dom && !FREEMAIL.has(dom)) {
+    const enr = enrollments.find((e) => domainOf(e.toEmail) === dom);
+    if (enr) return hit('domain', enr);
   }
 
   return { matched: false, matchBy: 'none', companyKey: '', companyName: '', enrollmentId: '' };
@@ -128,8 +216,8 @@ function matchReply(fromEmail, subject, { enrollments = [], clients = [] } = {})
 // ── Follow-Up Command Center (Release 2) ────────────────────────────────────────
 
 // Categories that represent a real human reply the owner should act on (i.e. not
-// a bounce, an unsubscribe, or a clear "no"). Used to build the "needs a response"
-// worklist bucket.
+// a bounce, an OOO auto-reply, an unsubscribe, or a clear "no"). Used to build
+// the "needs a response" worklist bucket.
 const ACTIONABLE_CATEGORIES = new Set([
   'hot_lead', 'needs_response', 'asked_pricing', 'asked_mockups', 'follow_up_later', 'wrong_person',
 ]);
@@ -145,7 +233,8 @@ const _ts = (d) => { const t = new Date(d).getTime(); return Number.isFinite(t) 
 //   quoteRequested  — they asked for pricing / a quote
 //   mockupRequested — they asked for a mockup / proof
 //   followUp        — owner tagged "follow up later"
-// (do-not-contact / not-interested / ignored / handled drop out — they're done.)
+// (do-not-contact / not-interested / ignored / handled / OOO drop out — done or
+// auto-handled.)
 function worklistFromReplies(replies = []) {
   const buckets = { needsResponse: [], quoteRequested: [], mockupRequested: [], followUp: [] };
   for (const r of replies) {
@@ -165,10 +254,10 @@ function worklistFromReplies(replies = []) {
   return buckets;
 }
 
-// ── Gmail sync seam (V2) ───────────────────────────────────────────────────────
-// V1 does NOT fetch from Gmail. This only reports whether a future read-only sync
-// COULD run, so the UI can show an honest "not configured" hint and the /sync
-// endpoint can no-op safely. Wiring the actual read-only fetch is a separate PR.
+// ── Gmail sync seam ──────────────────────────────────────────────────────────
+// Reports whether a read-only Gmail sync COULD run. The actual read-only fetch
+// (Wave 2) is gated on these creds; until then the UI shows an honest hint and
+// the /sync endpoint no-ops.
 function isGmailConfigured() {
   return Boolean(
     process.env.GMAIL_TRIAGE_ENABLED === 'true' &&
@@ -186,9 +275,14 @@ module.exports = {
   isValidCategory,
   isValidStatus,
   classifyReply,
+  parseOooResume,
   matchReply,
   normEmail,
   normSubject,
+  domainOf,
+  stripAngles,
+  FREEMAIL,
+  STRONG_MATCHES,
   isGmailConfigured,
   worklistFromReplies,
   ACTIONABLE_CATEGORIES,
