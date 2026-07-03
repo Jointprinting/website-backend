@@ -15,6 +15,7 @@ const {
   getOverview,
   createCampaign,
   updateCampaign,
+  launchCampaign,
   getCampaign,
   getCandidates,
   enrollCompanies,
@@ -57,6 +58,7 @@ router.post('/find-leads/auto/run', runAutoNow);     // run one frontier tick no
 router.post('/campaigns',            createCampaign);
 router.get('/campaigns/:id',         getCampaign);
 router.patch('/campaigns/:id',       updateCampaign);
+router.post('/campaigns/:id/launch', launchCampaign);
 router.post('/campaigns/:id/enroll', enrollCompanies);
 
 router.post('/enrollments/:id/replied', markReplied);

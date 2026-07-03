@@ -12,6 +12,7 @@ const assert = require('node:assert/strict');
 
 const {
   summarizeEnrollments,
+  campaignHealth,
   enrollBlockReason,
   sanitizeSteps,
   extractBounceEmails,
@@ -47,6 +48,53 @@ test('summarizeEnrollments: empty/missing input yields zeroes', () => {
   assert.equal(zero.enrolled, 0);
   assert.equal(zero.sent, 0);
   assert.deepEqual(summarizeEnrollments(), zero);
+});
+
+test('summarizeEnrollments breaks out no-email stops separately', () => {
+  const rows = [
+    { status: 'stopped', stopReason: 'no-email', sends: [] },
+    { status: 'stopped', stopReason: 'no-email', sends: [] },
+    { status: 'stopped', stopReason: 'became-customer', sends: [] },
+    { status: 'active', sends: [{ at: new Date() }] },
+  ];
+  const s = summarizeEnrollments(rows);
+  assert.equal(s.stopped, 3);
+  assert.equal(s.noEmail, 2);
+});
+
+// ── Campaign health (the "why isn't it sending?" signal) ─────────────────────
+test('campaignHealth: draft / paused report their own state', () => {
+  assert.equal(campaignHealth({ status: 'draft' }, {}).level, 'warn');
+  assert.equal(campaignHealth({ status: 'draft' }, {}).label, 'Draft');
+  assert.equal(campaignHealth({ status: 'paused' }, { enrolled: 5 }).label, 'Paused');
+});
+
+test('campaignHealth: active + all no-email → action, names the exact problem', () => {
+  const h = campaignHealth({ status: 'active' }, { enrolled: 48, active: 0, sent: 0, noEmail: 48 });
+  assert.equal(h.level, 'action');
+  assert.match(h.label, /48 missing email/);
+});
+
+test('campaignHealth: active, nothing left in sequence, none sent → action', () => {
+  const h = campaignHealth({ status: 'active' }, { enrolled: 10, active: 0, sent: 0, noEmail: 0 });
+  assert.equal(h.level, 'action');
+  assert.equal(h.label, 'Nothing sending');
+});
+
+test('campaignHealth: sequence complete → warn (enroll fresh leads)', () => {
+  const h = campaignHealth({ status: 'active' }, { enrolled: 10, active: 0, sent: 10, completed: 10 });
+  assert.equal(h.level, 'warn');
+  assert.equal(h.label, 'Sequence complete');
+});
+
+test('campaignHealth: healthy active drip → ok', () => {
+  const h = campaignHealth({ status: 'active' }, { enrolled: 20, active: 15, sent: 5, replied: 1 });
+  assert.equal(h.level, 'ok');
+  assert.equal(h.label, 'Sending');
+});
+
+test('campaignHealth: no enrollments yet → warn', () => {
+  assert.equal(campaignHealth({ status: 'active' }, { enrolled: 0 }).label, 'No leads yet');
 });
 
 // ── Enroll eligibility ───────────────────────────────────────────────────────

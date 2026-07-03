@@ -377,47 +377,59 @@ async function sendOne(enr, campaign, now = new Date()) {
 
 // One engine tick: window → cap → due batch. Exported for tests + a manual
 // "run now" trigger from the Studio.
+// In-process overlap guard: the 15-min cron and a dashboard-triggered self-heal
+// tick must never process the same due row at once (that could double-send).
+let _ticking = false;
+
 async function runOutreachTick(now = new Date()) {
   if (!smtpConfigured()) return { skipped: 'smtp-not-configured' };
   if (!outreachFrom())   return { skipped: 'sender-not-configured' };
   if (!isWithinSendWindow(now)) return { skipped: 'outside-window' };
+  if (_ticking) return { skipped: 'already-running' };
+  _ticking = true;
+  try {
+    const campaigns = await OutreachCampaign.find({ status: 'active' }).lean();
+    // Record even idle in-window ticks so `last_run_at` reflects a live engine
+    // (and the dashboard's self-heal only fires when a tick is genuinely stale).
+    if (!campaigns.length) { await recordRun('idle: no active campaigns'); return { skipped: 'no-active-campaigns' }; }
+    const byId = new Map(campaigns.map((c) => [String(c._id), c]));
 
-  const campaigns = await OutreachCampaign.find({ status: 'active' }).lean();
-  if (!campaigns.length) return { skipped: 'no-active-campaigns' };
-  const byId = new Map(campaigns.map((c) => [String(c._id), c]));
+    const state = await OutreachState.findOne({ key: 'engine' }).lean();
+    const daysSince = state && state.firstSendAt
+      ? Math.floor((now - new Date(state.firstSendAt)) / 86400000) : null;
+    const cap = rampCap(daysSince == null ? 0 : daysSince, DAILY_CAP_MAX);
+    const sentToday = await countSentSince(etStartOfToday(now));
+    const budget = Math.min(cap - sentToday, BATCH_PER_TICK);
+    if (budget <= 0) { await recordRun(`held: daily cap reached (cap ${cap}, sentToday ${sentToday})`); return { skipped: 'daily-cap', cap, sentToday }; }
 
-  const state = await OutreachState.findOne({ key: 'engine' }).lean();
-  const daysSince = state && state.firstSendAt
-    ? Math.floor((now - new Date(state.firstSendAt)) / 86400000) : null;
-  const cap = rampCap(daysSince == null ? 0 : daysSince, DAILY_CAP_MAX);
-  const sentToday = await countSentSince(etStartOfToday(now));
-  const budget = Math.min(cap - sentToday, BATCH_PER_TICK);
-  if (budget <= 0) return { skipped: 'daily-cap', cap, sentToday };
+    // Oldest-due first; fetch slack beyond the budget since some will be
+    // guard-skipped rather than sent.
+    const due = await OutreachEnrollment.find({
+      status: 'active',
+      campaignId: { $in: campaigns.map((c) => c._id) },
+      nextSendAt: { $lte: now },
+    }).sort({ nextSendAt: 1 }).limit(budget * 4);
 
-  // Oldest-due first; fetch slack beyond the budget since some will be
-  // guard-skipped rather than sent.
-  const due = await OutreachEnrollment.find({
-    status: 'active',
-    campaignId: { $in: campaigns.map((c) => c._id) },
-    nextSendAt: { $lte: now },
-  }).sort({ nextSendAt: 1 }).limit(budget * 4);
-
-  let sent = 0, skipped = 0, errors = 0;
-  for (const enr of due) {
-    if (sent >= budget) break;
-    const campaign = byId.get(String(enr.campaignId));
-    if (!campaign) continue;
-    const r = await sendOne(enr, campaign, now);
-    if (r === 'sent') sent += 1;
-    else if (r === 'skipped') skipped += 1;
-    else errors += 1;
-  }
-  const result = `sent ${sent}, skipped ${skipped}, errors ${errors} (cap ${cap}, sentToday ${sentToday + sent})`;
-  if (sent || skipped || errors) {
-    console.log(`[outreach] tick: ${result}`);
+    let sent = 0, skipped = 0, errors = 0;
+    for (const enr of due) {
+      if (sent >= budget) break;
+      const campaign = byId.get(String(enr.campaignId));
+      if (!campaign) continue;
+      const r = await sendOne(enr, campaign, now);
+      if (r === 'sent') sent += 1;
+      else if (r === 'skipped') skipped += 1;
+      else errors += 1;
+    }
+    const result = due.length
+      ? `sent ${sent}, skipped ${skipped}, errors ${errors} (cap ${cap}, sentToday ${sentToday + sent})`
+      : `idle: nothing due (cap ${cap}, sentToday ${sentToday})`;
+    if (sent || skipped || errors) console.log(`[outreach] tick: ${result}`);
+    // Always record an in-window tick, so "last run" tracks the live engine.
     await recordRun(result);
+    return { sent, skipped, errors, cap, sentToday: sentToday + sent };
+  } finally {
+    _ticking = false;
   }
-  return { sent, skipped, errors, cap, sentToday: sentToday + sent };
 }
 
 // ── Bootstrap ────────────────────────────────────────────────────────────────
