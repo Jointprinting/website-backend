@@ -5,6 +5,7 @@
 // per-order and per-client margin. Admin-only.
 
 const Transaction = require('../models/Transaction');
+const FinanceSettings = require('../models/FinanceSettings');
 const Order = require('../models/Order');
 const PurchaseOrder = require('../models/PurchaseOrder');
 const Vendor = require('../models/Vendor');
@@ -277,17 +278,83 @@ const list = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
+// ── Category vocabulary (built-ins + the owner's custom labels) ───────────────
+
+// Normalize an owner-typed category name: trim, collapse inner whitespace, cap
+// the length. '' = invalid. Pure (unit-tested).
+const normalizeCategoryName = (raw) =>
+  String(raw || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+
+// The full category list the Studio shows: built-ins (which drive P&L math and
+// can't be removed) + the owner's custom labels, with 'Other' kept last as the
+// catch-all. Pure (unit-tested).
+function categoriesWithCustom(custom = []) {
+  const builtIns = Transaction.CATEGORIES;
+  const seen = new Set(builtIns.map((c) => c.toLowerCase()));
+  const extras = [];
+  for (const c of custom || []) {
+    const name = normalizeCategoryName(c);
+    if (!name || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    extras.push(name);
+  }
+  const base = builtIns.filter((c) => c !== 'Other');
+  return [...base, ...extras, 'Other'];
+}
+
+async function customCategoryList() {
+  const s = await FinanceSettings.findOne({ key: 'settings' }).lean().catch(() => null);
+  return (s && s.customCategories) || [];
+}
+
 // GET /api/finances/config — the finance vocabulary served from the ONE source of
-// truth (the Transaction model), so the Studio reads live values instead of
-// trusting its hardcoded mirrors. The frontend keeps those mirrors only as an
-// offline fallback; any drift (e.g. a negotiated fee rate change) is corrected
-// the moment the tab loads. Cheap and static — safe to call on every mount.
+// truth (the Transaction model + the owner's custom labels), so the Studio reads
+// live values instead of trusting its hardcoded mirrors. The frontend keeps those
+// mirrors only as an offline fallback; any drift (e.g. a negotiated fee rate
+// change) is corrected the moment the tab loads. Cheap — safe to call on mount.
 const config = async (req, res) => {
+  const custom = await customCategoryList();
   res.json({
-    categories: Transaction.CATEGORIES,
+    categories: categoriesWithCustom(custom),
+    customCategories: custom,           // which of the above the owner may remove
     cogsCategories: Transaction.COGS_CATEGORIES,
     processingFeeRates: Transaction.PROCESSING_FEE_RATES,
   });
+};
+
+// POST /api/finances/categories { name } — add a custom category. Built-ins and
+// existing names (case-insensitive) are rejected so the list can't grow dupes.
+const addCategory = async (req, res) => {
+  try {
+    const name = normalizeCategoryName(req.body && req.body.name);
+    if (!name) return res.status(400).json({ message: 'Give the category a name (up to 40 characters).' });
+    const custom = await customCategoryList();
+    const taken = new Set([...Transaction.CATEGORIES, ...custom].map((c) => c.toLowerCase()));
+    if (taken.has(name.toLowerCase())) return res.status(400).json({ message: `“${name}” already exists.` });
+    await FinanceSettings.findOneAndUpdate(
+      { key: 'settings' },
+      { $addToSet: { customCategories: name } },
+      { upsert: true },
+    );
+    const updated = await customCategoryList();
+    res.json({ categories: categoriesWithCustom(updated), customCategories: updated });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+// DELETE /api/finances/categories/:name — remove a CUSTOM category. Built-ins
+// can't go (P&L math branches on them). Existing transactions keep their label —
+// the edit dialog keeps an off-list saved category selectable, so old rows are
+// never blanked; they just stop being offered for new entries.
+const removeCategory = async (req, res) => {
+  try {
+    const name = normalizeCategoryName(req.params.name);
+    if (Transaction.CATEGORIES.some((c) => c.toLowerCase() === name.toLowerCase())) {
+      return res.status(400).json({ message: `“${name}” is built-in — it drives the P&L math and can't be removed.` });
+    }
+    await FinanceSettings.updateOne({ key: 'settings' }, { $pull: { customCategories: name } });
+    const updated = await customCategoryList();
+    res.json({ categories: categoriesWithCustom(updated), customCategories: updated });
+  } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
 // Enrich a transaction body with its ecosystem links before it is saved. Two links:
@@ -1329,7 +1396,9 @@ const backfillTransactionLinks = async () => {
   return { projFilled, vendorFilled, scanned: rows.length };
 };
 
-module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears, backfillTransactionLinks, migrateRenamedCategories, config };
+module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears, backfillTransactionLinks, migrateRenamedCategories, config, addCategory, removeCategory };
+module.exports.normalizeCategoryName = normalizeCategoryName;
+module.exports.categoriesWithCustom = categoriesWithCustom;
 module.exports.buildLedgerCsv = buildLedgerCsv;
 // Reusable, DB-free finance math for other surfaces (CRM company page, the order
 // view) + tests. All keyed off the SAME Transaction truth via these helpers.

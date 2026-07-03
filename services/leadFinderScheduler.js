@@ -8,8 +8,9 @@
 // it refills more; sit idle, it stays quiet. NJ → NY → PA → … → wraps at the end
 // to re-catch newly opened shops.
 //
-// Free ($0 — OSM + own-site scraping). Idle until the owner enables auto-advance
-// from the Studio; the cron re-checks the flag each run. Pattern mirrors
+// Free ($0 — OSM + own-site scraping). ALWAYS ON — there is no toggle. The
+// owner wants leads to stack up behind the scenes without operating anything;
+// the queue-aware gate above is the only throttle. Pattern mirrors
 // services/jpwScheduler.js.
 
 const cron = require('node-cron');
@@ -33,13 +34,12 @@ async function getState() {
   );
 }
 
-// One auto-pilot tick. Queue-aware: no-op when the cold-lead pool is healthy;
+// One lead-engine tick. Queue-aware: no-op when the cold-lead pool is healthy;
 // otherwise sweeps successive states until the pool is refilled (or the per-run
-// cap is hit). `force` bypasses both the on/off flag AND the healthy-queue
-// short-circuit (the Studio's "run now" button), so a manual run always sweeps.
+// cap is hit). `force` bypasses the healthy-queue short-circuit (the Studio's
+// "Refill now" button), so a manual run always sweeps.
 async function runFrontierSweep({ force = false } = {}) {
   const state = await getState();
-  if (!state.autoAdvance && !force) return { skipped: 'auto-advance-off' };
 
   const available = await countAvailableColdLeads();
   if (available >= LOW_WATERMARK && !force) {
@@ -78,13 +78,13 @@ async function runFrontierSweep({ force = false } = {}) {
 }
 
 function startLeadFinderScheduler() {
-  // Every 6 hours. The tick self-gates on the on/off flag AND on queue depth, so
-  // it's a cheap no-op when the pool is full — but it refills promptly (within
-  // hours, not a week) once sending draws the pool down.
+  // Every 6 hours, always on. The tick self-gates on queue depth, so it's a
+  // cheap no-op when the pool is full — but it refills promptly (within hours,
+  // not a week) once sending draws the pool down.
   cron.schedule('0 */6 * * *', () => {
     runFrontierSweep({ force: false }).catch((e) => console.error('[lead-finder] sweep error:', e.message));
   });
-  console.log(`[lead-finder] scheduler started — queue-aware refill every 6h (low<${LOW_WATERMARK}, target ${REFILL_TARGET}, ≤${MAX_REGIONS_PER_RUN} states/run; idle until auto-advance is on)`);
+  console.log(`[lead-finder] engine started — always on, queue-aware refill every 6h (low<${LOW_WATERMARK}, target ${REFILL_TARGET}, ≤${MAX_REGIONS_PER_RUN} states/run)`);
 }
 
 module.exports = { startLeadFinderScheduler, runFrontierSweep, getState };

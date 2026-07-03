@@ -108,4 +108,46 @@ async function getAuthStatus(fromAddress, { now = Date.now(), force = false, sel
   return result;
 }
 
-module.exports = { classifyAuth, checkDomainAuth, getAuthStatus, domainOf };
+// The exact DNS rows still needed to finish (or harden) email auth, derived
+// from what actually resolved — the Studio renders these with copy buttons so
+// the owner never has to read a doc to know what to paste where. DKIM's value
+// is the ESP's public key, so that row carries a where-to-copy-it note instead
+// of a literal value. Pure (unit-tested).
+function recommendedRecords(auth = {}) {
+  // 'unknown' means DNS couldn't be reached — the flags are all false because
+  // nothing resolved, not because records are missing. Recommending three DNS
+  // changes off zero data would be actively misleading; say nothing instead.
+  if (!auth.domain || auth.level === 'unknown' || auth.reachable === false) return [];
+  const dom = auth.domain;
+  const recs = [];
+  if (!auth.spf) {
+    recs.push({
+      id: 'spf', host: '@', type: 'TXT',
+      value: 'v=spf1 include:mxsspf.sendpulse.com ~all',
+      note: `Authorizes your SMTP provider to send as ${dom}. One SPF record only — if one already exists, add the include to it instead of creating a second.`,
+    });
+  }
+  if (!auth.dkim) {
+    recs.push({
+      id: 'dkim', host: `<selector>._domainkey (exact name shown by your provider)`, type: 'TXT',
+      value: `— copy from your SMTP provider (SendPulse: Account settings → Sender domains → ${dom} → DKIM record)`,
+      note: 'The cryptographic signature receivers check. Paste the host and value exactly as the provider shows them; it can take up to an hour to go live.',
+    });
+  }
+  if (!auth.dmarc) {
+    recs.push({
+      id: 'dmarc', host: '_dmarc', type: 'TXT',
+      value: 'v=DMARC1; p=none;',
+      note: 'Tells receivers you publish a policy (Gmail/Yahoo require one). Start at p=none (monitor only).',
+    });
+  } else if (auth.dmarcPolicy === 'none') {
+    recs.push({
+      id: 'dmarc-upgrade', host: '_dmarc', type: 'TXT',
+      value: 'v=DMARC1; p=quarantine;',
+      note: 'Optional hardening: after DKIM passes and a clean week of sending, upgrade p=none → p=quarantine so spoofers get junked. Not required to send.',
+    });
+  }
+  return recs;
+}
+
+module.exports = { classifyAuth, checkDomainAuth, getAuthStatus, domainOf, recommendedRecords };

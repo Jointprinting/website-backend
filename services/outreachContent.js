@@ -115,9 +115,27 @@ function lintContent({ subject = '', body = '' } = {}) {
   return { score, level, issues };
 }
 
-// Lint every step of a campaign → [{ step, score, level, issues }].
+// Lint every step of a campaign → [{ step, score, level, issues }]. A step
+// running a subject A/B test gets its B arm linted through the same subject
+// rules (body checks are skipped — the body is shared), tagged "Subject B:" so
+// the owner knows which arm tripped.
 function lintSteps(steps = []) {
-  return (Array.isArray(steps) ? steps : []).map((s, i) => ({ step: i, ...lintContent(s || {}) }));
+  return (Array.isArray(steps) ? steps : []).map((s, i) => {
+    const base = lintContent(s || {});
+    const b = s && String(s.subjectB || '').trim();
+    if (b) {
+      const bIssues = lintContent({ subject: s.subjectB, body: 'x' }).issues // dummy body: skip empty-body noise
+        .filter((iss) => iss.code.startsWith('subject') || iss.code === 'spam-words')
+        .map((iss) => ({ ...iss, msg: `Subject B: ${iss.msg}` }));
+      if (bIssues.length) {
+        base.issues = [...base.issues, ...bIssues];
+        const penalty = base.issues.reduce((n, x) => n + (x.level === 'warn' ? 15 : 5), 0);
+        base.score = Math.max(0, 100 - penalty);
+        base.level = base.score >= 80 ? 'ok' : base.score >= 55 ? 'warn' : 'action';
+      }
+    }
+    return { step: i, ...base };
+  });
 }
 
 module.exports = { hashStr, applySpintax, hasSpintax, lintContent, lintSteps };

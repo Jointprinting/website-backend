@@ -39,9 +39,9 @@ const Client = require('../models/Client');
 const sendEmail = require('../utils/sendEmail');
 const { promoteStage } = require('../controllers/crm');
 const { suppress, isSuppressed, isEmail } = require('./suppression');
-const { applySpintax } = require('./outreachContent');
+const { applySpintax, hashStr } = require('./outreachContent');
 const { getSenders } = require('./senderPool');
-const { getAuthStatus } = require('../utils/dnsAuth');
+const { getAuthStatus, recommendedRecords } = require('../utils/dnsAuth');
 const { BUSINESS_TZ, etStartOfToday, etToday } = require('../utils/time');
 
 // Hold cold sends when the sender domain is missing SPF/DMARC (the Gmail/Yahoo
@@ -84,8 +84,11 @@ const LEASE_MS = parseInt(process.env.OUTREACH_LEASE_MS || String(10 * 60 * 1000
 // Inter-send pacing jitter (cron path only) — breaks the "all at :00:00" burst.
 const PACE_MIN_MS = 5000;
 const PACE_MAX_MS = 20000;
-// Physical postal address for the CAN-SPAM footer — set the real one in env.
-const POSTAL_ADDRESS = process.env.OUTREACH_POSTAL_ADDRESS || 'Joint Printing · New Jersey, USA';
+// Postal line for the CAN-SPAM footer. The default deliberately names no
+// city/state — the owner doesn't want recipients knowing where he's based.
+// CAN-SPAM technically wants a valid physical mailing address, so set
+// OUTREACH_POSTAL_ADDRESS to a PO box / virtual address when there is one.
+const POSTAL_ADDRESS = process.env.OUTREACH_POSTAL_ADDRESS || 'Joint Printing · jointprinting.com';
 // Public base URL of THIS API (e.g. https://api.jointprinting.com) — powers the
 // unsubscribe link + open pixel. Without it we fall back to reply-to-opt-out
 // wording (still compliant) and skip open tracking.
@@ -267,6 +270,20 @@ function outreachMessageId(enr, stepIndex) {
 // Strip any leading "Re:" chain so a threaded follow-up subject is exactly
 // "Re: <original>", never "Re: Re: Re: <original>".
 const stripRePrefix = (s) => String(s || '').replace(/^(?:\s*re\s*:\s*)+/i, '').trim();
+
+// Which arm of a subject A/B test an enrollment falls in — a stable hash of its
+// token, so the same company always lands in the same arm (crash-retries and
+// later fresh-subject steps included) and the split stays ~50/50 without state.
+const abVariant = (token) => (hashStr(`${token}:ab`) % 2 === 0 ? 'A' : 'B');
+
+// Force-refresh the sender domain's auth classification (bypasses the 1h DNS
+// cache) — the Studio's "re-check" button after the owner pastes a record.
+async function recheckAuth() {
+  const from = outreachFrom();
+  if (!from) return null;
+  const auth = await getAuthStatus(from, { force: true });
+  return auth ? { ...auth, records: recommendedRecords(auth) } : null;
+}
 
 // Full HTML + plain-text message for one send: rendered body, CAN-SPAM footer
 // (postal address + opt-out), and the open pixel when a public base is set.
@@ -476,7 +493,10 @@ async function engineStatus(now = new Date()) {
   const remainingToday = senders.reduce((a, s) => a + s.remaining, 0);
   const fromLabel = pool.length > 1 ? `${pool.length} inboxes (${pool[0].from} +${pool.length - 1})` : outreachFrom();
 
-  const auth = outreachFrom() ? await getAuthStatus(outreachFrom()).catch(() => null) : null;
+  const authRaw = outreachFrom() ? await getAuthStatus(outreachFrom()).catch(() => null) : null;
+  // Ship the exact still-needed DNS rows alongside the posture, so the Studio
+  // can show "paste this, here" instead of pointing at a doc.
+  const auth = authRaw ? { ...authRaw, records: recommendedRecords(authRaw) } : null;
   const deliverability = await deliverabilityStats(now).catch(() => null);
   return {
     senderConfigured: !!outreachFrom(),
@@ -533,7 +553,7 @@ async function sendTestEmail(to) {
     'This is a test from your Joint Printing outreach engine.',
     '',
     'If it landed in your inbox (not spam or promotions), your sending address is ready — go ahead and enroll leads.',
-    'If it went to spam or never arrived, finish the SPF / DKIM / DMARC setup in docs/DELIVERABILITY.md before starting a campaign.',
+    'If it went to spam or never arrived, finish the SPF / DKIM / DMARC setup first — the Outreach dashboard shows the exact DNS records to paste.',
     '',
     authLine,
     '',
@@ -601,13 +621,22 @@ async function sendOne(enr, campaign, now = new Date(), sender = null) {
   // — unless the step opts out with freshSubject.
   const threads = enr.stepIndex > 0 && !!enr.originMessageId && !step.freshSubject;
   let subject;
+  let variant = '';
   if (threads) {
     subject = `Re: ${stripRePrefix(enr.originSubject)}`.replace(/[\r\n]+/g, ' ').trim();
   } else {
+    // Subject A/B: when the step carries a B variant, a stable half of
+    // enrollments (keyed off the token, NOT random — so retries and follow-up
+    // fresh-subject steps stay in the same arm) get it instead.
+    let subjectTpl = step.subject;
+    if (String(step.subjectB || '').trim()) {
+      variant = abVariant(enr.token);
+      if (variant === 'B') subjectTpl = step.subjectB;
+    }
     // Merge FIRST, then resolve spintax — so a {{merge|fallback}} token is never
     // mistaken for a spin group. Collapse newlines so a weird companyName can't
     // smuggle extra SMTP headers via the subject.
-    subject = applySpintax(renderTemplate(step.subject, ctx), `${spinSeed}:subj`).replace(/[\r\n]+/g, ' ').trim()
+    subject = applySpintax(renderTemplate(subjectTpl, ctx), `${spinSeed}:subj`).replace(/[\r\n]+/g, ' ').trim()
       || `Quick question for ${ctx.companyName || 'you'}`;
   }
   const bodyText = applySpintax(renderTemplate(step.body, ctx), `${spinSeed}:body`);
@@ -639,7 +668,7 @@ async function sendOne(enr, campaign, now = new Date(), sender = null) {
 
     // Advance the enrollment.
     const sentMessageId = (info && info.messageId) || messageId;
-    enr.sends.push({ stepIndex: enr.stepIndex, at: now, subject, messageId: sentMessageId, sender: (sender && sender.label) || '' });
+    enr.sends.push({ stepIndex: enr.stepIndex, at: now, subject, messageId: sentMessageId, sender: (sender && sender.label) || '', variant });
     // Anchor the thread on the FIRST send so every follow-up can reply into it.
     if (!enr.originMessageId) { enr.originMessageId = sentMessageId; enr.originSubject = subject; }
     enr.toEmail = to;
@@ -882,6 +911,7 @@ module.exports = {
   engineStatus,
   sendOne,
   sendTestEmail,
+  recheckAuth,
   newToken,
   pickEmail,
   // pure helpers (unit-tested)
@@ -898,6 +928,7 @@ module.exports = {
   jitteredFollowUpAt,
   variableBatch,
   outreachMessageId,
+  abVariant,
   isRoleEmail,
   deliverabilityStats,
   DAILY_CAP_MAX,

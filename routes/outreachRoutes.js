@@ -26,11 +26,11 @@ const {
   setAutoEnroll,
   runTickNow,
   sendTest,
+  recheckAuthNow,
   trackOpen,
   unsubscribe,
   getFinderStatus,
   findLeads,
-  setAutoAdvance,
   runAutoNow,
   getAnalytics,
   bounceWebhook,
@@ -51,13 +51,14 @@ router.get('/analytics',  getAnalytics);
 router.get('/candidates', getCandidates);
 router.get('/queue',      getQueue);
 router.post('/run-tick',  runTickNow);
-router.post('/test-send', sendTest);   // first-run wizard: send a sample to yourself
+router.post('/test-send', sendTest);        // first-run wizard: send a sample to yourself
+router.post('/auth-recheck', recheckAuthNow); // force-refresh SPF/DKIM/DMARC classification
 
-// Free dispensary lead finder (OSM discovery → website email scrape → import).
-router.get('/find-leads/status',   getFinderStatus);
-router.post('/find-leads',         findLeads);
-router.post('/find-leads/auto',    setAutoAdvance);  // toggle auto-pilot / jump frontier
-router.post('/find-leads/auto/run', runAutoNow);     // run one frontier tick now
+// Free dispensary lead engine (OSM discovery → website email scrape → import).
+// Always on — no toggle; it milks each state dry and advances on its own.
+router.get('/find-leads/status',    getFinderStatus);
+router.post('/find-leads',          findLeads);      // manual one-state sweep (API-only)
+router.post('/find-leads/auto/run', runAutoNow);     // "Refill now" — force a sweep
 
 router.post('/campaigns',            createCampaign);
 router.get('/campaigns/:id',         getCampaign);

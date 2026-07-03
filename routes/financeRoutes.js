@@ -11,6 +11,8 @@ router.use(requireAdmin);
 
 // Literal/report routes first.
 router.get('/config', ctl.config);        // finance vocabulary (categories/COGS/fee rates) from the model — the anti-drift source the Studio reads on mount
+router.post('/categories', ctl.addCategory);            // owner-managed custom categories…
+router.delete('/categories/:name', ctl.removeCategory); // …built-ins stay (they drive P&L math)
 router.get('/summary', ctl.summary);
 router.get('/by-order', ctl.byOrder);
 router.get('/by-month', ctl.byMonth);
