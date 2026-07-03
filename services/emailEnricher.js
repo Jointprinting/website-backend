@@ -53,20 +53,69 @@ function sanitizeEmail(raw) {
   return s;
 }
 
-// Extract every usable email from a page's HTML, mailto:-links first. Pure.
+// ── De-obfuscation (the biggest recall lever) ────────────────────────────────
+// Small-business sites hide emails four common ways; a bare regex over raw HTML
+// misses all of them. These are pure + unit-tested.
+
+// Cloudflare "email protection": <span class="__cf_email__" data-cfemail="HEX">.
+// The hex is the address XOR-encoded, first byte = the XOR key.
+function decodeCfemail(hex) {
+  const h = String(hex || '');
+  if (h.length < 4 || h.length % 2 !== 0 || /[^0-9a-fA-F]/.test(h)) return '';
+  try {
+    const key = parseInt(h.slice(0, 2), 16);
+    let out = '';
+    for (let i = 2; i < h.length; i += 2) out += String.fromCharCode(parseInt(h.slice(i, i + 2), 16) ^ key);
+    return out;
+  } catch { return ''; }
+}
+function decodeCfEmails(html) {
+  const out = [];
+  const re = /data-cfemail=["']([0-9a-fA-F]+)["']/g;
+  let m;
+  while ((m = re.exec(String(html || ''))) !== null) {
+    const dec = decodeCfemail(m[1]);
+    if (dec) out.push(dec);
+  }
+  return out;
+}
+// HTML entities that hide the @ and . (&#64; &commat; &#46; &period; + hex).
+function decodeEntities(s) {
+  return String(s || '')
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => { try { return String.fromCharCode(parseInt(hex, 16)); } catch { return _; } })
+    .replace(/&#(\d+);/g, (_, dec) => { try { return String.fromCharCode(parseInt(dec, 10)); } catch { return _; } })
+    .replace(/&commat;/gi, '@')
+    .replace(/&period;/gi, '.');
+}
+// "info [at] domain [dot] com" / "(at)" / "{dot}" → real @ and . . Bracketed
+// forms are unambiguous; the bare " at … dot … tld" form is only rewritten when
+// the whole email SHAPE is present, so normal prose ("meet at noon") is untouched.
+function deobfuscate(html) {
+  let t = decodeEntities(String(html || ''));
+  t = t
+    .replace(/\s*[[({]\s*at\s*[\])}]\s*/gi, '@')
+    .replace(/\s*[[({]\s*dot\s*[\])}]\s*/gi, '.')
+    .replace(/([a-z0-9._%+\-]+)\s+at\s+([a-z0-9.\-]+)\s+dot\s+([a-z]{2,})\b/gi, '$1@$2.$3');
+  return t;
+}
+
+// Extract every usable email from a page's HTML, mailto:-links first, then
+// Cloudflare-protected, then a regex over both the raw and de-obfuscated text. Pure.
 function extractEmails(html) {
-  const text = String(html || '');
+  const raw = String(html || '');
   const ordered = [];
   const seen = new Set();
-  const add = (raw) => {
-    const e = sanitizeEmail(raw);
+  const add = (candidate) => {
+    const e = sanitizeEmail(candidate);
     if (e && !seen.has(e)) { seen.add(e); ordered.push(e); }
   };
   let m;
   MAILTO_RE.lastIndex = 0;
-  while ((m = MAILTO_RE.exec(text)) !== null) add(decodeURIComponent(m[1]));
-  const bodyMatches = text.match(EMAIL_RE) || [];
-  for (const raw of bodyMatches) add(raw);
+  while ((m = MAILTO_RE.exec(raw)) !== null) { try { add(decodeURIComponent(m[1])); } catch { add(m[1]); } }
+  for (const e of decodeCfEmails(raw)) add(e);        // Cloudflare-protected
+  for (const src of [raw, deobfuscate(raw)]) {         // raw + de-obfuscated body
+    for (const candidate of (src.match(EMAIL_RE) || [])) add(candidate);
+  }
   return ordered;
 }
 
@@ -123,30 +172,78 @@ function findContactLink(html, baseUrl) {
   return '';
 }
 
-// Scrape a website for its best contact email (network). Homepage first, then
-// ONE contact page if needed. Always resolves to a string ('' on any failure) —
-// enrichment must never throw and abort a whole finder run.
+// Same-site links worth following, by path keyword → weight. Wholesale /
+// partnerships pages are especially valuable for MERCH outreach (that's the buyer).
+const LINK_KEYWORDS = [
+  ['wholesale', 10], ['partnership', 9], ['contact-us', 9], ['contact', 8], ['get-in-touch', 8],
+  ['our-team', 7], ['team', 6], ['staff', 6], ['leadership', 6], ['reach', 5], ['connect', 5],
+  ['about-us', 5], ['about', 4], ['locations', 3], ['press', 3], ['careers', 2],
+];
+
+// Collect same-site candidate pages from a homepage, ranked by keyword weight,
+// de-duped, best first. Pure. Returns up to `max` absolute URLs.
+function rankContactLinks(html, baseUrl, max = 4) {
+  const base = (() => { try { return new URL(baseUrl); } catch { return null; } })();
+  if (!base) return [];
+  const baseHost = base.host.replace(/^www\./, '');
+  const re = /href\s*=\s*["']([^"'#]+)["']/gi;
+  const scored = new Map(); // absUrl -> weight (keep highest)
+  let m;
+  while ((m = re.exec(String(html || ''))) !== null) {
+    const href = m[1];
+    if (href.startsWith('mailto:') || href.startsWith('tel:') || href.startsWith('javascript:')) continue;
+    let abs;
+    try { abs = new URL(href, base); } catch { continue; }
+    if (abs.host.replace(/^www\./, '') !== baseHost) continue;
+    const path = (abs.pathname + abs.search).toLowerCase();
+    let weight = 0;
+    for (const [kw, w] of LINK_KEYWORDS) if (path.includes(kw)) { weight = Math.max(weight, w); }
+    if (weight <= 0) continue;
+    const key = abs.origin + abs.pathname;
+    if (!scored.has(key) || scored.get(key) < weight) scored.set(key, weight);
+  }
+  return [...scored.entries()].sort((a, b) => b[1] - a[1]).slice(0, max).map(([u]) => u);
+}
+
+// Scrape a website for its best contact email (network). Homepage → a few
+// keyword-ranked internal pages (contact / wholesale / team / about) → a couple
+// of blind guesses, under a small page budget. Always resolves to a string
+// ('' on any failure) — enrichment must never throw and abort a whole finder run.
 async function enrichWebsite(url) {
   const start = String(url || '').trim();
   if (!start) return '';
+  const host = hostOf(start);
+  const seen = new Set();
+  const tryPage = async (u) => {
+    if (!u || seen.has(u)) return '';
+    seen.add(u);
+    try {
+      const res = await _get(u);
+      if (typeof res.data === 'string' && res.data) return { html: res.data, finalUrl: res.request?.res?.responseUrl || u };
+    } catch { /* dead/slow page — skip */ }
+    return null;
+  };
+  const PAGE_BUDGET = 5;
   try {
-    const host = hostOf(start);
-    const home = await _get(start);
-    if (typeof home.data === 'string' && home.data) {
-      const best = pickBestEmail(extractEmails(home.data), host);
-      if (best) return best;
-      const contactUrl = findContactLink(home.data, home.request?.res?.responseUrl || start);
-      if (contactUrl) {
-        const contact = await _get(contactUrl);
-        if (typeof contact.data === 'string' && contact.data) {
-          const b2 = pickBestEmail(extractEmails(contact.data), host);
-          if (b2) return b2;
-        }
-      }
+    const home = await tryPage(start);
+    if (!home) return '';
+    let best = pickBestEmail(extractEmails(home.html), host);
+    if (best) return best;
+
+    // Ranked internal pages from the homepage, then blind guesses if none.
+    let targets = rankContactLinks(home.html, home.finalUrl, PAGE_BUDGET - 1);
+    if (targets.length === 0) {
+      const origin = (() => { try { return new URL(home.finalUrl).origin; } catch { return ''; } })();
+      if (origin) targets = ['/contact', '/contact-us', '/about', '/wholesale'].map((p) => origin + p);
     }
-  } catch (_err) {
-    // swallow — a dead/slow site just yields no email
-  }
+    for (const t of targets) {
+      if (seen.size >= PAGE_BUDGET) break;
+      const page = await tryPage(t);
+      if (!page) continue;
+      best = pickBestEmail(extractEmails(page.html), host);
+      if (best) return best;
+    }
+  } catch { /* swallow — a dead site just yields no email */ }
   return '';
 }
 
@@ -157,5 +254,9 @@ module.exports = {
   extractEmails,
   pickBestEmail,
   findContactLink,
+  rankContactLinks,
+  decodeCfemail,
+  decodeEntities,
+  deobfuscate,
   hostOf,
 };

@@ -39,28 +39,58 @@ async function _withTimeout(promise, ms) {
   finally { clearTimeout(t); }
 }
 
+// A DNS failure is only meaningful if it's DEFINITIVE (this domain has no mail).
+// A timeout / SERVFAIL / temp-failure says nothing about the domain — caching
+// `false` for those used to permanently blank a good lead's email the first time
+// the resolver hiccuped. Transient → don't cache; a later run retries.
+function isTransientDnsError(e) {
+  const c = e && e.code;
+  return c === 'ETIMEOUT' || c === 'ETIMEDOUT' || c === 'ESERVFAIL'
+    || c === 'ECONNREFUSED' || c === 'ECONNRESET' || c === 'EAI_AGAIN'
+    || (e && e.message === 'dns-timeout');
+}
+
 // Does a domain accept mail? MX record wins; fall back to an A/AAAA record
-// (RFC 5321 implicit MX). Cached. Never throws — a lookup failure = "can't
-// confirm" = not deliverable (fail closed, so we don't email into the void).
+// (RFC 5321 implicit MX). Only DEFINITIVE results are cached — transient DNS
+// failures return "not deliverable for now" without poisoning the cache.
 async function domainAcceptsMail(domain) {
   const d = String(domain || '').trim().toLowerCase();
   if (!d) return false;
   if (_mxCache.has(d)) return _mxCache.get(d);
-  let ok = false;
+  // MX first.
   try {
     const mx = await _withTimeout(dns.resolveMx(d), MX_TIMEOUT_MS);
-    ok = Array.isArray(mx) && mx.length > 0;
-  } catch (_e) {
-    // No MX (or lookup failed) — try an A record as the implicit-MX fallback.
-    try {
-      const a = await _withTimeout(dns.resolve(d), MX_TIMEOUT_MS);
-      ok = Array.isArray(a) && a.length > 0;
-    } catch (_e2) {
-      ok = false;
-    }
+    if (Array.isArray(mx) && mx.length > 0) { _mxCache.set(d, true); return true; }
+    // Resolved but empty → no MX; fall through to the A-record fallback.
+  } catch (e) {
+    if (isTransientDnsError(e)) return false; // do NOT cache — retry next run
+    // else definitive "no MX" → try the A-record fallback below.
   }
-  _mxCache.set(d, ok);
-  return ok;
+  // A/AAAA fallback (implicit MX).
+  try {
+    const a = await _withTimeout(dns.resolve(d), MX_TIMEOUT_MS);
+    const ok = Array.isArray(a) && a.length > 0;
+    _mxCache.set(d, ok);
+    return ok;
+  } catch (e2) {
+    if (isTransientDnsError(e2)) return false;   // transient — do NOT cache
+    _mxCache.set(d, false);                        // definitive: no mail server
+    return false;
+  }
+}
+
+// Throwaway inbox providers — a valid-MX domain that still can't be sold to.
+// Static list (free, no runtime lookup); extend as new ones surface.
+const DISPOSABLE_DOMAINS = new Set([
+  'mailinator.com', 'guerrillamail.com', 'guerrillamailblock.com', '10minutemail.com',
+  'tempmail.com', 'temp-mail.org', 'throwawaymail.com', 'yopmail.com', 'trashmail.com',
+  'getnada.com', 'maildrop.cc', 'sharklasers.com', 'dispostable.com', 'fakeinbox.com',
+  'mailnesia.com', 'mintemail.com', 'tempinbox.com', 'emailondeck.com', 'spamgourmet.com',
+  'tempr.email', 'moakt.com', 'mohmal.com', 'burnermail.io', '33mail.com', 'mailsac.com',
+  'mvrht.com', 'inboxbear.com', 'fakemail.net', 'tmail.ws', 'mailcatch.com',
+]);
+function isDisposableDomain(domain) {
+  return DISPOSABLE_DOMAINS.has(String(domain || '').trim().toLowerCase());
 }
 
 // Verify a batch of DOMAINS → Map(domain → boolean), deduped + concurrency-
@@ -89,7 +119,8 @@ function partitionDeliverable(candidates, mxMap) {
   for (const c of candidates || []) {
     const email = String(c && c.email ? c.email : '').trim().toLowerCase();
     const domain = emailDomain(email);
-    const ok = !!email && !!domain && isLikelyEmail(email) && mxMap.get(domain) === true;
+    const ok = !!email && !!domain && isLikelyEmail(email)
+      && mxMap.get(domain) === true && !isDisposableDomain(domain);
     (ok ? good : bad).push(c);
   }
   return { good, bad };
@@ -101,5 +132,7 @@ module.exports = {
   verifyDomainsMx,
   partitionDeliverable,
   domainAcceptsMail,
+  isTransientDnsError,
+  isDisposableDomain,
   _mxCache,
 };

@@ -33,6 +33,7 @@ async function keysWithPlacedOrders(keys) {
 }
 const { engineStatus, runOutreachTick, newToken, pickEmail, sendBlockReason } = require('../services/outreachEngine');
 const { runFinder, finderStatus } = require('../services/leadFinderRunner');
+const { scoreLead } = require('../services/leadScore');
 const { runFrontierSweep, getState } = require('../services/leadFinderScheduler');
 const { REGIONS, isRegion } = require('../services/dispensaryFinder');
 const { etToday } = require('../utils/time');
@@ -324,8 +325,14 @@ async function getCandidates(req, res) {
       const e = outreachEmail.toLowerCase();
       if (usedEmails.has(e) || seenEmail.has(e)) continue; // de-dupe by email
       seenEmail.add(e);
-      rows.push({ ...c, outreachEmail });
+      // Attach the lead-quality score so the pick-list can lead with the
+      // best/most-reachable leads instead of alphabetically — the whole point of
+      // scoring, which previously only badged the CRM list.
+      const sc = scoreLead(c);
+      rows.push({ ...c, outreachEmail, leadScore: sc.score, leadGrade: sc.grade, leadReasons: sc.reasons });
     }
+    rows.sort((a, b) => (b.leadScore - a.leadScore)
+      || String(a.companyName || '').localeCompare(String(b.companyName || '')));
     res.json({ candidates: rows });
   } catch (e) {
     res.status(400).json({ message: e.message });
