@@ -25,6 +25,7 @@ const {
   unenrollAll,
   setAutoEnroll,
   runTickNow,
+  sendTest,
   trackOpen,
   unsubscribe,
   getFinderStatus,
@@ -50,6 +51,7 @@ router.get('/analytics',  getAnalytics);
 router.get('/candidates', getCandidates);
 router.get('/queue',      getQueue);
 router.post('/run-tick',  runTickNow);
+router.post('/test-send', sendTest);   // first-run wizard: send a sample to yourself
 
 // Free dispensary lead finder (OSM discovery → website email scrape → import).
 router.get('/find-leads/status',   getFinderStatus);

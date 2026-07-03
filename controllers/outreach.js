@@ -35,7 +35,7 @@ async function keysWithPlacedOrders(keys) {
     .select('companyKey').lean();
   return new Set(rows.map((r) => r.companyKey));
 }
-const { engineStatus, runOutreachTick, newToken, pickEmail, sendBlockReason, deliverabilityStats } = require('../services/outreachEngine');
+const { engineStatus, runOutreachTick, sendTestEmail, newToken, pickEmail, sendBlockReason, deliverabilityStats } = require('../services/outreachEngine');
 const { runFinder, finderStatus } = require('../services/leadFinderRunner');
 const { scoreLead } = require('../services/leadScore');
 const { runFrontierSweep, getState } = require('../services/leadFinderScheduler');
@@ -713,6 +713,27 @@ async function runTickNow(req, res) {
   }
 }
 
+// POST /api/outreach/test-send — the first-run wizard's "send a test to yourself"
+// button. Delivers one sample through the real sender identity + SMTP so the
+// operator can eyeball inbox-vs-spam placement before enrolling anyone. Config /
+// validation problems come back as a 400 with a plain-English message (the
+// wizard shows it verbatim); an SMTP failure is a 502 so it reads as "the send
+// itself broke", not "you asked for something invalid".
+async function sendTest(req, res) {
+  const to = (req.body && req.body.to) || '';
+  try {
+    const result = await sendTestEmail(to);
+    res.json(result);
+  } catch (e) {
+    const msg = String(e.message || e);
+    // Pre-flight problems (unset sender/SMTP, bad address) → 400; anything the
+    // transport threw → 502 so the UI can distinguish "fix your input" from
+    // "the mail server rejected it".
+    const preflight = /OUTREACH_EMAIL_FROM|SMTP isn|valid email/i.test(msg);
+    res.status(preflight ? 400 : 502).json({ message: msg });
+  }
+}
+
 // ── Analytics ─────────────────────────────────────────────────────────────────
 
 const US_STATES = new Set([
@@ -1094,6 +1115,7 @@ module.exports = {
   runAutoEnrollTick,
   startAutoEnroll,
   runTickNow,
+  sendTest,
   trackOpen,
   unsubscribe,
   getFinderStatus,
