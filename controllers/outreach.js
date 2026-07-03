@@ -34,7 +34,7 @@ async function keysWithPlacedOrders(keys) {
     .select('companyKey').lean();
   return new Set(rows.map((r) => r.companyKey));
 }
-const { engineStatus, runOutreachTick, newToken, pickEmail, sendBlockReason } = require('../services/outreachEngine');
+const { engineStatus, runOutreachTick, newToken, pickEmail, sendBlockReason, deliverabilityStats } = require('../services/outreachEngine');
 const { runFinder, finderStatus } = require('../services/leadFinderRunner');
 const { scoreLead } = require('../services/leadScore');
 const { runFrontierSweep, getState } = require('../services/leadFinderScheduler');
@@ -49,7 +49,7 @@ const NOT_ARCHIVED = { archived: { $ne: true } };
 function summarizeEnrollments(rows = []) {
   const s = {
     enrolled: 0, active: 0, sent: 0, opened: 0, replied: 0,
-    completed: 0, unsubscribed: 0, stopped: 0, failed: 0, noEmail: 0,
+    completed: 0, unsubscribed: 0, stopped: 0, failed: 0, noEmail: 0, bounced: 0,
   };
   for (const e of rows) {
     if (!e) continue;
@@ -60,6 +60,8 @@ function summarizeEnrollments(rows = []) {
     // The silent killer: enrolled but no address to send to → stopped 'no-email'.
     // Counted separately so the UI can say exactly why nothing is going out.
     if (e.status === 'stopped' && e.stopReason === 'no-email') s.noEmail += 1;
+    // Hard bounces / complaints / invalid addresses — the deliverability signal.
+    if (['bounced', 'invalid-address', 'complaint'].includes(e.stopReason)) s.bounced += 1;
   }
   return s;
 }
@@ -69,7 +71,7 @@ function summarizeEnrollments(rows = []) {
 // isn't sending instead of leaving the owner staring at zeros. Levels:
 // 'ok' (green) | 'warn' (amber) | 'action' (red — needs a decision).
 function campaignHealth(campaign = {}, stats = {}) {
-  const st = { enrolled: 0, active: 0, sent: 0, replied: 0, completed: 0, noEmail: 0, ...stats };
+  const st = { enrolled: 0, active: 0, sent: 0, replied: 0, completed: 0, noEmail: 0, bounced: 0, unsubscribed: 0, ...stats };
   const status = campaign.status || 'draft';
   if (status === 'draft')  return { level: 'warn', label: 'Draft', hint: 'Launch it when the steps read right.' };
   if (status === 'paused') return { level: 'warn', label: 'Paused', hint: 'Sends are halted — resume to continue the drip.' };
@@ -87,6 +89,16 @@ function campaignHealth(campaign = {}, stats = {}) {
   if (st.active === 0 && st.completed > 0) {
     return { level: 'warn', label: 'Sequence complete',
       hint: 'Everyone finished the sequence. Enroll fresh leads, or add a follow-up touch to keep it warm.' };
+  }
+  // Deliverability first — a bouncing/complained-about campaign is torching the
+  // sender's reputation and must be paused before anything else matters.
+  if (st.sent >= 20 && (st.bounced / st.sent) > 0.05) {
+    return { level: 'action', label: `${Math.round((st.bounced / st.sent) * 100)}% bouncing`,
+      hint: `${st.bounced} of ${st.sent} sent bounced or complained — pause and clean the list before you keep sending.` };
+  }
+  if (st.sent >= 20 && (st.unsubscribed / st.sent) > 0.02) {
+    return { level: 'warn', label: 'High unsubscribe rate',
+      hint: `${st.unsubscribed} of ${st.sent} unsubscribed — the list or the pitch may be off-target.` };
   }
   if (st.sent >= 15 && (st.replied / st.sent) < 0.02) {
     return { level: 'warn', label: 'Low reply rate',
@@ -261,7 +273,7 @@ async function getCampaign(req, res) {
     if (!campaign) return res.status(404).json({ message: 'campaign not found' });
     const enrollments = await OutreachEnrollment.find({ campaignId: campaign._id })
       .sort({ updatedAt: -1 }).lean();
-    res.json({ campaign, stats: summarizeEnrollments(enrollments), enrollments, lint: lintSteps(campaign.steps) });
+    res.json({ campaign, stats: summarizeEnrollments(enrollments), enrollments, lint: lintSteps(campaign.steps), stepFunnel: buildStepFunnel(enrollments) });
   } catch (e) {
     res.status(400).json({ message: e.message });
   }
@@ -602,7 +614,7 @@ function weeklyTrend(enrollments = [], nowMs = Date.now(), weeks = 8) {
   const idx = new Map();
   for (let i = weeks - 1; i >= 0; i--) {
     const wk = thisWeek - i * 7 * 86400000;
-    const b = { weekStart: wk, sent: 0, opened: 0, replied: 0 };
+    const b = { weekStart: wk, sent: 0, opened: 0, replied: 0, unsubscribed: 0 };
     idx.set(wk, b); buckets.push(b);
   }
   const bump = (ms, field) => {
@@ -615,8 +627,36 @@ function weeklyTrend(enrollments = [], nowMs = Date.now(), weeks = 8) {
       if (s && s.openedAt) bump(new Date(s.openedAt).getTime(), 'opened');
     }
     if (e.repliedAt) bump(new Date(e.repliedAt).getTime(), 'replied');
+    if (e.unsubscribedAt) bump(new Date(e.unsubscribedAt).getTime(), 'unsubscribed'); // deliverability decay
   }
   return buckets;
+}
+
+// Per-touch drop-off funnel — which STEP of the sequence is dead. For each step
+// index (inferred from the sends themselves, so it works overall or per-campaign):
+// how many were sent that touch, opened it, and — attributed to the LAST touch a
+// lead received — replied or unsubscribed after it. Pure + unit-tested.
+function buildStepFunnel(enrollments = []) {
+  const rows = [];
+  const ensure = (i) => { while (rows.length <= i) rows.push({ step: rows.length, sent: 0, opened: 0, replied: 0, unsubscribed: 0 }); return rows[i]; };
+  for (const e of enrollments) {
+    if (!e) continue;
+    const sends = e.sends || [];
+    const stepsSent = new Set();
+    for (const s of sends) {
+      const si = (s && s.stepIndex) || 0;
+      stepsSent.add(si);
+      if (s && s.openedAt) ensure(si).opened += 1;
+    }
+    for (const si of stepsSent) ensure(si).sent += 1;
+    const lastStep = sends.length ? Math.max(...sends.map((s) => (s && s.stepIndex) || 0)) : -1;
+    if (lastStep >= 0) {
+      const r = ensure(lastStep);
+      if (e.status === 'replied') r.replied += 1;
+      if (e.status === 'unsubscribed') r.unsubscribed += 1;
+    }
+  }
+  return rows;
 }
 
 // GET /api/outreach/analytics — overall funnel, per-state funnel, weekly trend,
@@ -650,6 +690,8 @@ async function getAnalytics(req, res) {
       overall: summarizeEnrollments(enrollments),
       perState: buildStateFunnels(enrollments, stateByKey),
       trend: weeklyTrend(enrollments, Date.now()),
+      stepFunnel: buildStepFunnel(enrollments),
+      deliverability: await deliverabilityStats().catch(() => null),
       coverage: [...coverage.values()],
     });
   } catch (e) {
@@ -913,4 +955,5 @@ module.exports = {
   buildStateFunnels,
   weeklyTrend,
   weekStartMs,
+  buildStepFunnel,
 };
