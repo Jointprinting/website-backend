@@ -351,11 +351,18 @@ const confirm = async (req, res) => {
       party, description: e.summary || '', amount,
       receiptUrl: rec.fileUrl, source: 'receipt',
     };
+    // Same link enrichment the Add-transaction dialog runs (vendorId auto-resolve
+    // + projectNumber denormalization) — WITHOUT it, receipt-booked expenses had
+    // no vendor deep-link and were invisible to per-project reporting until the
+    // next server reboot ran the backfill. Best-effort: on failure, book raw.
+    const enriched = await require('./finances')
+      .enrichTransactionLinks({ ...fields }, { isExpense: type === 'expense' })
+      .catch(() => fields);
     let txn;
     if (rec.transactionId) {
-      txn = await Transaction.findByIdAndUpdate(rec.transactionId, fields, { new: true });
+      txn = await Transaction.findByIdAndUpdate(rec.transactionId, enriched, { new: true });
     }
-    if (!txn) txn = await Transaction.create(fields);
+    if (!txn) txn = await Transaction.create(enriched);
 
     rec.extracted = e;
     rec.status = 'booked';
