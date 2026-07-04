@@ -183,17 +183,56 @@ async function outreachReplies(now) {
   ];
 }
 
+// ── Hub pulse — the live numbers the hub tiles carry ─────────────────────────
+// One cheap sweep so every core tile shows its heartbeat (open orders, today's
+// follow-ups, the outreach drip, this month's money) instead of a static
+// description. Signals say "act on this"; the pulse says "here's where things
+// stand" — both ride the same GET /api/signals the hub already loads.
+async function hubPulse(now = new Date()) {
+  const OutreachEnrollment = require('../models/OutreachEnrollment');
+  const Transaction = require('../models/Transaction');
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  const [openOrders, fuClients, outreachActive, repliesWaiting, monthTxns] = await Promise.all([
+    Order.countDocuments({ status: { $in: ATTENTION_OPEN_STATUSES }, archived: { $ne: true } }),
+    Client.find({ archived: { $ne: true }, nextFollowUp: { $ne: null }, stage: { $nin: FOLLOWUP_CLOSED_STAGES } })
+      .select('nextFollowUp').lean(),
+    OutreachEnrollment.countDocuments({ status: 'active' }),
+    TriageReply.countDocuments({ status: 'new', category: { $in: [...ACTIONABLE_CATEGORIES] } }),
+    Transaction.find({ date: { $gte: monthStart } }).select('type amount isCredit').lean(),
+  ]);
+
+  const { overdue, dueToday } = bucketFollowUps(fuClients, now);
+  // Month money — same sign rules as the ledger (a credit reverses its type).
+  let revenue = 0; let expenses = 0;
+  for (const t of monthTxns) {
+    const amt = (t.isCredit ? -1 : 1) * (Number(t.amount) || 0);
+    if (t.type === 'income') revenue += amt; else expenses += amt;
+  }
+  return {
+    ordersOpen: openOrders,
+    followUpsToday: overdue.length + dueToday.length,
+    outreachActive,
+    repliesWaiting,
+    monthRevenue: Math.round(revenue),
+    monthProfit: Math.round(revenue - expenses),
+  };
+}
+
 // buildSignals — compose all sources; a thrown source drops only its group.
 async function buildSignals({ now = new Date() } = {}) {
   const sources = [ordersAging(now), followUps(now), outreachReplies(now)];
-  const settled = await Promise.allSettled(sources);
+  const [settled, pulse] = await Promise.all([
+    Promise.allSettled(sources),
+    hubPulse(now).catch(() => null), // pulse is garnish — never sinks the feed
+  ]);
   const all = [];
   for (const r of settled) {
     if (r.status === 'fulfilled' && Array.isArray(r.value)) all.push(...r.value);
     // a rejected source is silently dropped (its group simply doesn't appear)
   }
   const { groups, counts } = toGroups(all);
-  return { generatedAt: now.toISOString(), counts, groups };
+  return { generatedAt: now.toISOString(), counts, groups, pulse };
 }
 
 module.exports = {
