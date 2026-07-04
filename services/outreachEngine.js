@@ -81,6 +81,10 @@ const DOMAIN_DAILY_CAP = parseInt(process.env.OUTREACH_DOMAIN_DAILY_CAP || '15',
 // How long a claimed (leased) row is hidden from other workers before it's
 // eligible again — crash-safety without permanently stranding a row.
 const LEASE_MS = parseInt(process.env.OUTREACH_LEASE_MS || String(10 * 60 * 1000), 10);
+// Send-claim priority (highest value first): finish started conversations before
+// opening new cold ones. stepIndex>0 = a follow-up in an active thread; stepIndex
+// 0 = a first touch. Exported pure so the ordering is unit-testable.
+const SEND_PRIORITY_FILTERS = [{ stepIndex: { $gt: 0 } }, { stepIndex: 0 }];
 // Inter-send pacing jitter (cron path only) — breaks the "all at :00:00" burst.
 const PACE_MIN_MS = 5000;
 const PACE_MAX_MS = 20000;
@@ -842,15 +846,22 @@ async function runOutreachTick(now = new Date(), opts = {}) {
     const maxAttempts = budget * 6; // bound the claim loop (some rows guard-skip/defer)
     while (sent < budget && attempts < maxAttempts) {
       attempts += 1;
-      // ATOMIC claim: lease the oldest-due active row so no other worker (a
-      // second instance, or a self-heal tick racing the cron) can grab the same
-      // one and double-send. The lease pushes nextSendAt forward; whatever
-      // sendOne does next sets a definitive nextSendAt (or a terminal status).
-      const enr = await OutreachEnrollment.findOneAndUpdate(
-        { status: 'active', campaignId: { $in: campaignIds }, nextSendAt: { $lte: now } },
-        { $set: { nextSendAt: new Date(now.getTime() + LEASE_MS) } },
-        { sort: { nextSendAt: 1 }, new: true },
-      );
+      // ATOMIC claim, WARM-FIRST: lease the oldest-due active row so no other
+      // worker (a second instance, or a self-heal tick racing the cron) can grab
+      // the same one and double-send. Two passes in priority order — a follow-up
+      // (a conversation already started) always outranks a brand-new first touch
+      // when the daily cap is scarce, so in-flight sequences finish before new
+      // cold opens begin (more replies per send, no warm lead left waiting behind
+      // a backlog of stale first touches). Oldest-due first within each pass.
+      let enr = null;
+      for (const pri of SEND_PRIORITY_FILTERS) {
+        enr = await OutreachEnrollment.findOneAndUpdate(
+          { status: 'active', campaignId: { $in: campaignIds }, nextSendAt: { $lte: now }, ...pri },
+          { $set: { nextSendAt: new Date(now.getTime() + LEASE_MS) } },
+          { sort: { nextSendAt: 1 }, new: true },
+        );
+        if (enr) break;
+      }
       if (!enr) break; // nothing left due
       const campaign = byId.get(String(enr.campaignId));
       if (!campaign) continue;
@@ -938,4 +949,5 @@ module.exports = {
   deliverabilityStats,
   DAILY_CAP_MAX,
   DOMAIN_DAILY_CAP,
+  SEND_PRIORITY_FILTERS,
 };

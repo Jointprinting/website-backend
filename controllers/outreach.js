@@ -35,13 +35,22 @@ async function keysWithPlacedOrders(keys) {
     .select('companyKey').lean();
   return new Set(rows.map((r) => r.companyKey));
 }
-const { engineStatus, runOutreachTick, sendTestEmail, recheckAuth, newToken, pickEmail, sendBlockReason, deliverabilityStats } = require('../services/outreachEngine');
+const { engineStatus, runOutreachTick, sendTestEmail, recheckAuth, newToken, pickEmail, sendBlockReason, deliverabilityStats, DAILY_CAP_MAX } = require('../services/outreachEngine');
 const { runFinder, finderStatus } = require('../services/leadFinderRunner');
 const { scoreLead } = require('../services/leadScore');
 const { runFrontierSweep } = require('../services/leadFinderScheduler');
 const { REGIONS, isRegion } = require('../services/dispensaryFinder');
 
 const NOT_ARCHIVED = { archived: { $ne: true } };
+
+// Keep the auto-enrolled pipeline ~this many days of sending deep. The daily cap
+// bounds real throughput, so enrolling far past this just balloons the "active"
+// pool into a stale backlog and needlessly drains the cold-lead reserve. Target
+// active size = daily cap × pipeline days; auto-enroll only tops up to it.
+const PIPELINE_DAYS = parseInt(process.env.OUTREACH_PIPELINE_DAYS || '7', 10);
+// Never enroll more than this in a single tick (politeness / MX-verify bound).
+const ENROLL_TICK_MAX = parseInt(process.env.OUTREACH_ENROLL_TICK_MAX || '150', 10);
+const pipelineTarget = () => Math.max(0, (Number(DAILY_CAP_MAX) || 50) * PIPELINE_DAYS);
 
 // ── Pure funnel math (unit-tested) ────────────────────────────────────────────
 // One campaign's funnel from its enrollment rows. "opened" and "replied" count
@@ -257,7 +266,25 @@ async function getOverview(req, res) {
     const nextActions = buildNextActions({ engine, campaigns: campaignRows, warmCount: warm.length, coldReserve });
     const st = await OutreachState.findOne({ key: 'engine' }).select('autoEnrollCampaignId').lean().catch(() => null);
 
-    res.json({ engine, campaigns: campaignRows, warm, recent, nextActions, coldReserve,
+    // Today's plan — the plain-English "here's what the engine is doing" readout,
+    // so the owner trusts it without babysitting. Warm follow-ups DUE now (they
+    // send first), new first-touches due, how many are mid-sequence, and the
+    // reserve waiting to be enrolled. Capped by the day's send limit (engine.cap).
+    const planNow = new Date();
+    const [followUpsDue, firstTouchesDue, inSequence] = await Promise.all([
+      OutreachEnrollment.countDocuments({ status: 'active', stepIndex: { $gt: 0 }, nextSendAt: { $lte: planNow } }).catch(() => 0),
+      OutreachEnrollment.countDocuments({ status: 'active', stepIndex: 0, nextSendAt: { $lte: planNow } }).catch(() => 0),
+      OutreachEnrollment.countDocuments({ status: 'active' }).catch(() => 0),
+    ]);
+    const plan = {
+      followUpsDue, firstTouchesDue, dueNow: followUpsDue + firstTouchesDue,
+      inSequence, reserve: coldReserve,
+      dailyCap: (engine && (engine.cap != null ? engine.cap : engine.dailyCap)) || null,
+      sentToday: (engine && engine.sentToday) || 0,
+      pipelineTarget: pipelineTarget(),
+    };
+
+    res.json({ engine, campaigns: campaignRows, warm, recent, nextActions, coldReserve, plan,
       autoEnrollCampaignId: st && st.autoEnrollCampaignId ? String(st.autoEnrollCampaignId) : null });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -321,21 +348,30 @@ async function updateCampaign(req, res) {
   }
 }
 
-// POST /api/outreach/campaigns/:id/launch — the one-click "go". Flips the
-// campaign to 'active' AND kicks a send tick immediately, so touch 1 goes out
-// now (within the send window) instead of waiting up to 15 min for the cron.
-// Everything after that — the follow-up touches, the daily pacing — the engine
-// handles on its own. Returns whether a batch actually fired so the UI can say so.
+// POST /api/outreach/campaigns/:id/launch — the ONE-TAP "always-on". Does all
+// three setup steps at once so the owner never wires it up by hand: flips the
+// campaign to 'active', points continuous auto-enroll at it, fills the pipeline
+// from the reserve now (capacity-matched), then fires touch 1 so the first
+// emails go out within the window instead of waiting up to 15 min for the cron.
+// Everything after — follow-ups, daily pacing, topping the pipeline up — the
+// engine handles itself. Returns what filled + whether a batch fired.
 async function launchCampaign(req, res) {
   try {
     const campaign = await OutreachCampaign.findByIdAndUpdate(
       req.params.id, { $set: { status: 'active' } }, { new: true },
     ).lean();
     if (!campaign) return res.status(404).json({ message: 'campaign not found' });
-    // Kick a tick now; report the result so the UI can show "sent N" or the
-    // exact reason it held (outside window, cap reached, nothing due).
+    // Turn on continuous auto-enroll for THIS campaign (only one at a time).
+    await OutreachState.findOneAndUpdate(
+      { key: 'engine' },
+      { $set: { autoEnrollCampaignId: campaign._id } },
+      { upsert: true },
+    );
+    // Fill the pipeline now so touch 1 has recipients, then kick a tick; report
+    // both so the UI can show "enrolled N · sent M" or the exact reason it held.
+    const filled = await autoFillCampaign(campaign).catch(() => null);
     const tick = await runOutreachTick().catch((e) => ({ error: e.message }));
-    res.json({ campaign, tick });
+    res.json({ campaign, filled, tick, autoEnrollCampaignId: String(campaign._id) });
   } catch (e) {
     res.status(400).json({ message: e.message });
   }
@@ -636,7 +672,16 @@ async function unenrollAll(req, res) {
 // best-lead-first — the same cold-only + suppression + hygiene guards the manual
 // enroll uses, so the auto path can never do anything the owner couldn't. Used by
 // the auto-enroll cron and the "fill now" toggle. Returns { enrolled }.
-async function autoFillCampaign(campaign, { limit = 100 } = {}) {
+async function autoFillCampaign(campaign, { limit } = {}) {
+  // Capacity-matched: with no explicit limit (the auto-enroll cron), only enroll
+  // enough to top the ACTIVE pool up to ~a week of sending — never balloon it.
+  // An explicit limit (a manual burst) bypasses the cap.
+  if (limit == null) {
+    const activeCount = await OutreachEnrollment.countDocuments({ campaignId: campaign._id, status: 'active' });
+    const room = pipelineTarget() - activeCount;
+    if (room <= 0) return { enrolled: 0, skipped: 'pipeline-full', activeCount };
+    limit = Math.min(room, ENROLL_TICK_MAX);
+  }
   // Cold = never personally contacted, has an email, not opted out.
   const clients = await Client.find({ ...NOT_ARCHIVED, doNotEmail: { $ne: true },
     stage: { $in: ['lead', 'contacted'] }, lastContact: null })
@@ -714,7 +759,7 @@ async function runAutoEnrollTick() {
   if (!id) return { skipped: 'off' };
   const campaign = await OutreachCampaign.findById(id).lean();
   if (!campaign || campaign.status !== 'active') return { skipped: 'campaign-inactive' };
-  return autoFillCampaign(campaign, { limit: 100 });
+  return autoFillCampaign(campaign); // capacity-matched (tops the pipeline to ~a week deep)
 }
 
 // POST /api/outreach/campaigns/:id/auto-enroll { enabled } — turn auto-enroll on
@@ -730,7 +775,7 @@ async function setAutoEnroll(req, res) {
       { upsert: true },
     );
     let filled = null;
-    if (enabled && campaign.status === 'active') filled = await autoFillCampaign(campaign, { limit: 100 }).catch(() => null);
+    if (enabled && campaign.status === 'active') filled = await autoFillCampaign(campaign).catch(() => null);
     res.json({ ok: true, autoEnrollCampaignId: enabled ? String(campaign._id) : null, filled });
   } catch (e) {
     res.status(400).json({ message: e.message });

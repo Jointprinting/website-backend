@@ -27,7 +27,23 @@ const {
   jitteredFollowUpAt,
   variableBatch,
   outreachMessageId,
+  SEND_PRIORITY_FILTERS,
 } = require('../outreachEngine');
+
+// ── Send-claim priority: warm follow-ups outrank new cold first touches ───────
+test('SEND_PRIORITY_FILTERS claims follow-ups (stepIndex>0) before first touches', () => {
+  assert.equal(Array.isArray(SEND_PRIORITY_FILTERS), true);
+  assert.equal(SEND_PRIORITY_FILTERS.length, 2);
+  // Pass 1 = follow-ups (a started conversation), pass 2 = new first touches.
+  assert.deepEqual(SEND_PRIORITY_FILTERS[0], { stepIndex: { $gt: 0 } });
+  assert.deepEqual(SEND_PRIORITY_FILTERS[1], { stepIndex: 0 });
+  // A follow-up enrollment matches pass 1 but not pass 2; a first touch the reverse.
+  const matches = (f, stepIndex) => (f.stepIndex.$gt != null ? stepIndex > f.stepIndex.$gt : stepIndex === f.stepIndex);
+  assert.equal(matches(SEND_PRIORITY_FILTERS[0], 2), true);
+  assert.equal(matches(SEND_PRIORITY_FILTERS[0], 0), false);
+  assert.equal(matches(SEND_PRIORITY_FILTERS[1], 0), true);
+  assert.equal(matches(SEND_PRIORITY_FILTERS[1], 2), false);
+});
 
 // ── Warm-up ramp (doubles weekly) ────────────────────────────────────────────
 test('rampCap doubles each week and tops out at the max cap', () => {
