@@ -1110,11 +1110,23 @@ const paymentGaps = async (req, res) => {
         if (costYear[k] == null || y < costYear[k]) costYear[k] = y;
       }
     }
-    const inYear = (key) => {
-      const anchor = saleYear[key] != null ? saleYear[key] : costYear[key];
+    // Anchor priority: first Client-Sales year → earliest cost year → the ORDER's
+    // own date. That last fallback is the fix: an in-progress order with NO ledger
+    // rows yet (invoiced, in production, but neither payment nor cost entered) had
+    // no anchor and fell out of EVERY year view — the loudest "billed, nothing
+    // collected" case this surface exists to nag about.
+    const inYear = (o) => {
+      const key = normalizeOrderNumber(o.orderNumber);
+      let anchor = saleYear[key] != null ? saleYear[key]
+        : costYear[key] != null ? costYear[key]
+        : null;
+      if (anchor == null) {
+        const d = o.orderDate || o.createdAt;
+        if (d) anchor = new Date(d).getUTCFullYear();
+      }
       return anchor === year;
     };
-    const scopedOrders = orders.filter((o) => inYear(normalizeOrderNumber(o.orderNumber)));
+    const scopedOrders = orders.filter(inYear);
     // Keep all txns (the pure fn only pulls the ones matching scopedOrders' keys),
     // so a cross-year cost still nets correctly into its order's figures.
     res.json(paymentGapsForOrders(scopedOrders, txns));
@@ -1399,6 +1411,7 @@ const backfillTransactionLinks = async () => {
 module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears, backfillTransactionLinks, migrateRenamedCategories, config, addCategory, removeCategory };
 module.exports.normalizeCategoryName = normalizeCategoryName;
 module.exports.categoriesWithCustom = categoriesWithCustom;
+module.exports.enrichTransactionLinks = enrichTransactionLinks;
 module.exports.buildLedgerCsv = buildLedgerCsv;
 // Reusable, DB-free finance math for other surfaces (CRM company page, the order
 // view) + tests. All keyed off the SAME Transaction truth via these helpers.
