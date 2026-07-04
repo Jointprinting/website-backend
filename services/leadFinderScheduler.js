@@ -20,8 +20,8 @@ const { nextRegionAfter, isRegion, DEFAULT_REGION, REGIONS, FINDER_VERSION } = r
 
 // Refill when the enrollable-cold-lead pool drops below this…
 const LOW_WATERMARK = parseInt(process.env.LEAD_FINDER_LOW_WATERMARK || '40', 10);
-// …and keep sweeping states until we've added this many enrollable (emailable)
-// leads — email supply is what enrollment consumes, so that's what we top up…
+// …and keep sweeping states until we've added this many new (emailable) leads.
+// Every finder lead has an email — it's a mail-merge engine — so new == sendable.
 const REFILL_TARGET = parseInt(process.env.LEAD_FINDER_REFILL_TARGET || '75', 10);
 // …but never more than this many states in a single run (politeness cap).
 const MAX_REGIONS_PER_RUN = parseInt(process.env.LEAD_FINDER_MAX_REGIONS || '6', 10);
@@ -83,13 +83,13 @@ async function _runFrontierSweep({ force = false, fromStart = false } = {}) {
       return { skipped: 'queue-healthy', available };
     }
     const swept = [];
-    let upgradedEmailable = 0;
+    let upgraded = 0;
     let lastError = '';
     for (const region of stale) {
       try {
         const r = await runFinder({ region, dryRun: false });
-        upgradedEmailable += r.createdEmailable || 0;
-        swept.push(`${r.label} +${r.created}${r.createdEmailable ? ` (${r.createdEmailable}✉)` : ''}`);
+        upgraded += r.created || 0;
+        swept.push(`${r.label} +${r.created}`);
       } catch (err) {
         lastError = err.message;
         swept.push(`${REGIONS[region] ? REGIONS[region].label : region} (error)`);
@@ -99,27 +99,22 @@ async function _runFrontierSweep({ force = false, fromStart = false } = {}) {
     state.lastRunAt = new Date();
     state.lastResult = `coverage upgrade — re-milked ${stale.length} state(s) on the improved finder (${swept.join(', ')})${lastError ? ` — last error: ${lastError}` : ''}`;
     await state.save();
-    return { upgrade: true, available, regionsSwept: stale.length, upgradedEmailable, swept };
+    return { upgrade: true, available, regionsSwept: stale.length, upgraded, swept };
   }
 
   // ── Low pool (or forced): expand the frontier until it's topped back up ──────
-  // Count EMAILABLE new leads toward the target — email supply is what enrollment
-  // draws down. Every sweep also banks the region's phone/visit-only dispensaries
-  // (not counted here; they're worked by call and Field Map, never cold-emailed).
   let region = fromStart ? DEFAULT_REGION
     : (isRegion(state.activeRegion) ? state.activeRegion : DEFAULT_REGION);
   if (fromStart) state.dryStreak = 0;
-  let emailableTotal = 0;
   let importedTotal = 0;
   let regionsSwept = 0;
   const swept = [];
   let lastError = '';
-  while (emailableTotal < REFILL_TARGET && regionsSwept < MAX_REGIONS_PER_RUN) {
+  while (importedTotal < REFILL_TARGET && regionsSwept < MAX_REGIONS_PER_RUN) {
     try {
       const result = await runFinder({ region, dryRun: false });
-      emailableTotal += result.createdEmailable || 0;
       importedTotal += result.created || 0;
-      swept.push(`${result.label} +${result.created}${result.createdEmailable ? ` (${result.createdEmailable}✉)` : ''}`);
+      swept.push(`${result.label} +${result.created}`);
     } catch (err) {
       lastError = err.message;
       swept.push(`${REGIONS[region] ? REGIONS[region].label : region} (error)`);
@@ -132,10 +127,10 @@ async function _runFrontierSweep({ force = false, fromStart = false } = {}) {
   state.dryStreak = 0;
   state.lastRunAt = new Date();
   state.lastResult = importedTotal
-    ? `refilled ${importedTotal} new (${emailableTotal} emailable) across ${regionsSwept} states (${swept.join(', ')}) — ${available} were left`
+    ? `refilled ${importedTotal} new across ${regionsSwept} states (${swept.join(', ')}) — ${available} were left`
     : `swept ${regionsSwept} states, 0 new${lastError ? ` — last error: ${lastError}` : ' (OSM has no new shops there yet)'}`;
   await state.save();
-  return { available, imported: importedTotal, emailable: emailableTotal, regionsSwept, swept, nextRegion: region };
+  return { available, imported: importedTotal, regionsSwept, swept, nextRegion: region };
 }
 
 function startLeadFinderScheduler() {

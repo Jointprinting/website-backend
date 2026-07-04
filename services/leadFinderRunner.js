@@ -93,22 +93,18 @@ async function discoverRegion(regionId, { maxEnrich = DEFAULT_MAX_ENRICH } = {})
   };
 }
 
-// Decide which discovered candidates become CRM leads. Chains/MSOs are dropped
-// (unless disabled — corporate stores don't buy merch locally); every remaining
-// quality dispensary imports WITH OR WITHOUT an email. Emails are de-duped within
-// the batch (one shared inbox, one lead); email-less leads pass through and
-// dedupe by companyKey at import time. This is the yield lever: a phone/visit
-// lead is still a real lead (worked by call + Field Map), it just never enters
-// the cold-email pool. Pure + unit-tested.
+// Decide which discovered candidates become CRM leads. This is a MAIL-MERGE
+// engine — an email is required (no inbox, no cold-email lead, nothing to send).
+// Chains/MSOs are dropped (unless disabled — corporate handles merch, not the
+// store); emails are de-duped within the batch so one shared inbox is queued
+// once. Pure + unit-tested.
 function selectImportable(candidates, { skipChains = true } = {}) {
   const seenEmail = new Set();
   return (candidates || []).filter((c) => {
-    if (!c) return false;
+    if (!c || !c.email) return false;          // mail merge → email required
     if (skipChains && c.chain) return false;
-    if (c.email) {
-      if (seenEmail.has(c.email)) return false; // same inbox already queued this run
-      seenEmail.add(c.email);
-    }
+    if (seenEmail.has(c.email)) return false;  // same inbox already queued this run
+    seenEmail.add(c.email);
     return true;
   });
 }
@@ -119,49 +115,38 @@ async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich } 
   const regionId = isRegion(region) ? region : DEFAULT_REGION;
   const disc = await discoverRegion(regionId, { maxEnrich });
 
-  // Import EVERY quality dispensary — an email is a bonus channel, not a gate.
-  // A shop with only a phone/address is still a real lead: the CRM and the Field
-  // Map work it by CALL and by VISIT, which is most of what a printing pitch runs
-  // on anyway. Email-less leads are simply never enrollable in cold email
-  // (countAvailableColdLeads requires an email, and the outreach engine
-  // double-checks), so deliverability stays fully protected while the finder
-  // becomes a true "every dispensary" engine instead of an email-only trickle.
-  //
-  // Chains / MSOs are still skipped outright (LEAD_FINDER_SKIP_CHAINS=off to
-  // include them) — emailing OR visiting a corporate store is pointless, they
-  // don't buy merch locally. Emails are de-duped within the batch so one shared
-  // inbox (a shop listed twice) is never queued twice; email-less rows dedupe by
-  // companyKey in the importer.
+  // Mail-merge: only shops with a deliverable email become leads (an inbox is
+  // what we send to). Skip big chains / MSOs (LEAD_FINDER_SKIP_CHAINS=off to
+  // include them) — corporate handles merch, not the store — and dedupe by EMAIL
+  // within the batch so one shared inbox is never queued twice.
   const skipChains = process.env.LEAD_FINDER_SKIP_CHAINS !== 'off';
-  const skippedChains = skipChains ? disc.candidates.filter((c) => c.chain).length : 0;
+  const skippedChains = skipChains ? disc.candidates.filter((c) => c.email && c.chain).length : 0;
   const importable = selectImportable(disc.candidates, { skipChains });
   const rows = importable.map((c) => ({
     companyName: c.name,
-    email: c.email || '',        // may be blank — imports as a phone/visit lead
+    email: c.email,
     phone: c.phone || '',
     address: c.address || '',
     source: 'Cold Outreach', // → structured leadSource, so every lead is filterable
   }));
-  const willImportEmailable = importable.filter((c) => c.email).length;
 
   if (dryRun) {
     return {
       dryRun: true, region: regionId, label: disc.label,
       found: disc.found, withEmail: disc.withEmail, enriched: disc.enriched,
-      verified: disc.verified, skippedChains,
-      willImport: rows.length, willImportEmailable,
+      verified: disc.verified, skippedChains, willImport: rows.length,
     };
   }
 
   // Reuse the CRM importer's exact merge policy (fill-blanks, dedupe, no downgrade).
   const mapped = buildMappedRows({ rows });
-  let created = 0, createdEmailable = 0, updated = 0, skipped = 0;
+  let created = 0, updated = 0, skipped = 0;
   const touchedKeys = [];
   for (const m of mapped || []) {
     if (m._skip || !m.companyKey) { skipped += 1; continue; }
     try {
       const { outcome } = await applyMappedRow(m, {});
-      if (outcome === 'created') { created += 1; if (m.email) createdEmailable += 1; }
+      if (outcome === 'created') created += 1;
       else if (outcome === 'updated') updated += 1;
       touchedKeys.push(m.companyKey);
     } catch (_e) {
@@ -178,7 +163,7 @@ async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich } 
   const result = {
     region: regionId, label: disc.label,
     found: disc.found, withEmail: disc.withEmail, enriched: disc.enriched,
-    verified: disc.verified, skippedChains, created, createdEmailable, updated, skipped,
+    verified: disc.verified, skippedChains, created, updated, skipped,
     finderVersion: FINDER_VERSION,
   };
   await LeadFinderRun.create({ ...result, dryRun: false }).catch(() => {});
@@ -268,7 +253,6 @@ async function finderStatus() {
         lastSweptAt,
         lastFound: last ? (last.found || 0) : 0,
         lastNew: last ? (last.created || 0) : 0,
-        lastNewEmailable: last ? (last.createdEmailable || 0) : 0,
         finderVersion: last ? (Number(last.finderVersion) || 0) : null,
         stale,
         recentlySwept,
