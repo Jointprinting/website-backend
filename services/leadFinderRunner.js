@@ -13,7 +13,7 @@
 // Cost: $0. OSM is free/keyless; enrichment only fetches pages the shops publish
 // themselves. A per-run scrape cap keeps a sweep bounded and polite.
 
-const { fetchDispensaries, isRegion, DEFAULT_REGION, REGIONS, NATIONAL_ROLLOUT } = require('./dispensaryFinder');
+const { fetchDispensaries, isRegion, DEFAULT_REGION, REGIONS, NATIONAL_ROLLOUT, FINDER_VERSION } = require('./dispensaryFinder');
 const LeadFinderState = require('../models/LeadFinderState');
 const { enrichWebsite } = require('./emailEnricher');
 const { verifyDomainsMx, partitionDeliverable, emailDomain } = require('./emailVerify');
@@ -93,51 +93,75 @@ async function discoverRegion(regionId, { maxEnrich = DEFAULT_MAX_ENRICH } = {})
   };
 }
 
+// Decide which discovered candidates become CRM leads. Chains/MSOs are dropped
+// (unless disabled — corporate stores don't buy merch locally); every remaining
+// quality dispensary imports WITH OR WITHOUT an email. Emails are de-duped within
+// the batch (one shared inbox, one lead); email-less leads pass through and
+// dedupe by companyKey at import time. This is the yield lever: a phone/visit
+// lead is still a real lead (worked by call + Field Map), it just never enters
+// the cold-email pool. Pure + unit-tested.
+function selectImportable(candidates, { skipChains = true } = {}) {
+  const seenEmail = new Set();
+  return (candidates || []).filter((c) => {
+    if (!c) return false;
+    if (skipChains && c.chain) return false;
+    if (c.email) {
+      if (seenEmail.has(c.email)) return false; // same inbox already queued this run
+      seenEmail.add(c.email);
+    }
+    return true;
+  });
+}
+
 // Full run: discover → (live) import → tag → record. `dryRun` skips all writes
 // but returns the same shape so the UI preview matches reality.
 async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich } = {}) {
   const regionId = isRegion(region) ? region : DEFAULT_REGION;
   const disc = await discoverRegion(regionId, { maxEnrich });
 
-  // Skip big chains / MSOs (emailing a store is pointless — corporate handles
-  // merch). Disable with LEAD_FINDER_SKIP_CHAINS=off. Also dedupe by EMAIL within
-  // the batch so one shared inbox (a chain, or a shop listed twice) is never
-  // emailed twice.
+  // Import EVERY quality dispensary — an email is a bonus channel, not a gate.
+  // A shop with only a phone/address is still a real lead: the CRM and the Field
+  // Map work it by CALL and by VISIT, which is most of what a printing pitch runs
+  // on anyway. Email-less leads are simply never enrollable in cold email
+  // (countAvailableColdLeads requires an email, and the outreach engine
+  // double-checks), so deliverability stays fully protected while the finder
+  // becomes a true "every dispensary" engine instead of an email-only trickle.
+  //
+  // Chains / MSOs are still skipped outright (LEAD_FINDER_SKIP_CHAINS=off to
+  // include them) — emailing OR visiting a corporate store is pointless, they
+  // don't buy merch locally. Emails are de-duped within the batch so one shared
+  // inbox (a shop listed twice) is never queued twice; email-less rows dedupe by
+  // companyKey in the importer.
   const skipChains = process.env.LEAD_FINDER_SKIP_CHAINS !== 'off';
-  const skippedChains = skipChains ? disc.candidates.filter((c) => c.email && c.chain).length : 0;
-  const seenEmail = new Set();
-  const importable = disc.candidates.filter((c) => {
-    if (!c.email) return false;
-    if (skipChains && c.chain) return false;
-    if (seenEmail.has(c.email)) return false; // same inbox already queued this run
-    seenEmail.add(c.email);
-    return true;
-  });
+  const skippedChains = skipChains ? disc.candidates.filter((c) => c.chain).length : 0;
+  const importable = selectImportable(disc.candidates, { skipChains });
   const rows = importable.map((c) => ({
     companyName: c.name,
-    email: c.email,
+    email: c.email || '',        // may be blank — imports as a phone/visit lead
     phone: c.phone || '',
     address: c.address || '',
     source: 'Cold Outreach', // → structured leadSource, so every lead is filterable
   }));
+  const willImportEmailable = importable.filter((c) => c.email).length;
 
   if (dryRun) {
     return {
       dryRun: true, region: regionId, label: disc.label,
       found: disc.found, withEmail: disc.withEmail, enriched: disc.enriched,
-      verified: disc.verified, skippedChains, willImport: rows.length,
+      verified: disc.verified, skippedChains,
+      willImport: rows.length, willImportEmailable,
     };
   }
 
   // Reuse the CRM importer's exact merge policy (fill-blanks, dedupe, no downgrade).
   const mapped = buildMappedRows({ rows });
-  let created = 0, updated = 0, skipped = 0;
+  let created = 0, createdEmailable = 0, updated = 0, skipped = 0;
   const touchedKeys = [];
   for (const m of mapped || []) {
     if (m._skip || !m.companyKey) { skipped += 1; continue; }
     try {
       const { outcome } = await applyMappedRow(m, {});
-      if (outcome === 'created') created += 1;
+      if (outcome === 'created') { created += 1; if (m.email) createdEmailable += 1; }
       else if (outcome === 'updated') updated += 1;
       touchedKeys.push(m.companyKey);
     } catch (_e) {
@@ -154,7 +178,8 @@ async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich } 
   const result = {
     region: regionId, label: disc.label,
     found: disc.found, withEmail: disc.withEmail, enriched: disc.enriched,
-    verified: disc.verified, skippedChains, created, updated, skipped,
+    verified: disc.verified, skippedChains, created, createdEmailable, updated, skipped,
+    finderVersion: FINDER_VERSION,
   };
   await LeadFinderRun.create({ ...result, dryRun: false }).catch(() => {});
   return result;
@@ -185,6 +210,26 @@ async function countAvailableColdLeads() {
   return cold.filter((c) => !excluded.has(c.companyKey)).length;
 }
 
+// Which already-swept states were last covered by an OLDER finder version. The
+// always-on engine re-milks these in the background (bounded per run), so when
+// the finder itself improves — a wider net, better scraping, email-optional
+// import — every state it already touched gets upgraded automatically, with no
+// manual "re-sweep from the start". Oldest-swept first (fairest catch-up order).
+// NEVER includes un-swept states — expanding to those is the frontier's job, on
+// the queue-low path. `limit` caps the batch for politeness. Pure read.
+async function staleRegions(currentVersion = FINDER_VERSION, limit = 0) {
+  const byRegion = await LeadFinderRun.aggregate([
+    { $match: { dryRun: false } },
+    { $sort: { createdAt: -1 } },
+    { $group: { _id: '$region', v: { $first: '$finderVersion' }, at: { $first: '$createdAt' } } },
+  ]);
+  const stale = byRegion
+    .filter((g) => g && g._id && isRegion(g._id) && (Number(g.v) || 0) < currentVersion)
+    .sort((a, b) => new Date(a.at || 0) - new Date(b.at || 0))
+    .map((g) => g._id);
+  return limit > 0 ? stale.slice(0, limit) : stale;
+}
+
 // Status for the Studio: the auto-pilot frontier + recent runs + per-region
 // last-swept, in national-rollout order (so the UI can show the frontier line).
 async function finderStatus() {
@@ -206,6 +251,29 @@ async function finderStatus() {
   const lastByRegion = {};
   for (const g of byRegion) if (g && g._id) lastByRegion[g._id] = g.last;
   const activeRegion = (state && state.activeRegion) || DEFAULT_REGION;
+  let staleCount = 0;
+  const regions = NATIONAL_ROLLOUT
+    .filter((id) => REGIONS[id])
+    .map((id) => {
+      const last = lastByRegion[id] || null;
+      const lastSweptAt = last ? last.createdAt : null;
+      // "Just swept" = a real sweep within the last 6h (one refill cycle), so
+      // the UI can grey the manual button and tell the owner it's done for now.
+      const recentlySwept = lastSweptAt ? (Date.now() - new Date(lastSweptAt).getTime() < 6 * 3600 * 1000) : false;
+      // Swept, but by an older finder — the engine will re-milk it automatically.
+      const stale = !!last && (Number(last.finderVersion) || 0) < FINDER_VERSION;
+      if (stale) staleCount += 1;
+      return {
+        id, label: REGIONS[id].label, last,
+        lastSweptAt,
+        lastFound: last ? (last.found || 0) : 0,
+        lastNew: last ? (last.created || 0) : 0,
+        lastNewEmailable: last ? (last.createdEmailable || 0) : 0,
+        finderVersion: last ? (Number(last.finderVersion) || 0) : null,
+        stale,
+        recentlySwept,
+      };
+    });
   return {
     frontier: {
       activeRegion,
@@ -218,24 +286,17 @@ async function finderStatus() {
       lastRunAt: state ? state.lastRunAt : null,
       lastResult: state ? state.lastResult : '',
     },
-    regions: NATIONAL_ROLLOUT
-      .filter((id) => REGIONS[id])
-      .map((id) => {
-        const last = lastByRegion[id] || null;
-        const lastSweptAt = last ? last.createdAt : null;
-        // "Just swept" = a real sweep within the last 6h (one refill cycle), so
-        // the UI can grey the manual button and tell the owner it's done for now.
-        const recentlySwept = lastSweptAt ? (Date.now() - new Date(lastSweptAt).getTime() < 6 * 3600 * 1000) : false;
-        return {
-          id, label: REGIONS[id].label, last,
-          lastSweptAt,
-          lastFound: last ? (last.found || 0) : 0,
-          lastNew: last ? (last.created || 0) : 0,
-          recentlySwept,
-        };
-      }),
+    // Current finder logic version + how many swept states are still on an older
+    // one (i.e. queued for an automatic background upgrade). Lets the UI say
+    // "sharpening coverage" instead of asking the owner to re-sweep.
+    finderVersion: FINDER_VERSION,
+    staleCount,
+    regions,
     recentRuns: runs,
   };
 }
 
-module.exports = { runFinder, discoverRegion, finderStatus, countAvailableColdLeads, pool };
+module.exports = {
+  runFinder, discoverRegion, finderStatus, countAvailableColdLeads, staleRegions, pool,
+  selectImportable, // pure — unit-tested
+};

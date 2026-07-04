@@ -71,6 +71,16 @@ const NATIONAL_ROLLOUT = [
   'ca', 'or', 'wa', 'mt', 'ak',
 ];
 
+// Bump when the discovery/enrichment/import logic materially improves (a wider
+// Overpass net, better scraping, email-optional import…). Every sweep stamps the
+// run with this. The always-on engine treats a state last swept at an OLDER
+// version as STALE and quietly re-milks it in the background — so an improved
+// finder retroactively upgrades already-covered states with ZERO manual action
+// (the owner never presses "re-sweep"). History (undefined) reads as 0.
+//   v1 → email-gated import (dispensaries needed a scraped email to land)
+//   v2 → email-optional import + cannabis:* detail-tag discovery net
+const FINDER_VERSION = 2;
+
 function regionIds() { return Object.keys(REGIONS); }
 function isRegion(id) { return Object.prototype.hasOwnProperty.call(REGIONS, id); }
 
@@ -114,15 +124,25 @@ function buildOverpassQuery(bbox) {
   node["office"="cannabis"](${b});
   way["office"="cannabis"](${b});
   node["shop"="weed"](${b});
+  node["cannabis:recreational"](${b});
+  way["cannabis:recreational"](${b});
+  node["cannabis:medical"](${b});
+  way["cannabis:medical"](${b});
   node["name"~"dispensary",i](${b});
   way["name"~"dispensary",i](${b});
 );
 out center tags;`;
 }
 
-// The canonical "this IS a cannabis retailer" tag set — trusted outright.
+// The canonical "this IS a cannabis retailer" tag set — trusted outright. Beyond
+// the shop/office tags, a POI carrying OSM's dispensary DETAIL tags
+// (cannabis:recreational / cannabis:medical) is unambiguously a cannabis
+// retailer even when a mapper never added shop=cannabis — a real coverage gap in
+// states like NJ. Any value counts (a medical-only shop is tagged
+// cannabis:recreational=no; it's still a dispensary lead).
 function hasCannabisTag(tags = {}) {
-  return tags.shop === 'cannabis' || tags.shop === 'weed' || tags.office === 'cannabis';
+  return tags.shop === 'cannabis' || tags.shop === 'weed' || tags.office === 'cannabis'
+    || 'cannabis:recreational' in tags || 'cannabis:medical' in tags;
 }
 
 // A closed/dead POI — OSM marks these with lifecycle-prefixed keys (disused:shop,
@@ -270,6 +290,7 @@ module.exports = {
   REGIONS,
   DEFAULT_REGION,
   NATIONAL_ROLLOUT,
+  FINDER_VERSION,
   regionIds,
   isRegion,
   fetchDispensaries,

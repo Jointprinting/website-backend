@@ -13,7 +13,7 @@ const assert = require('node:assert/strict');
 const {
   buildOverpassQuery, osmAddress, normalizeWebsite, parseOverpassElements, isRegion,
   nextRegionAfter, decideFrontier, NATIONAL_ROLLOUT, isQualityLead, isClosedPoi, hasCannabisTag,
-  isBigChain, markChains,
+  isBigChain, markChains, FINDER_VERSION,
 } = require('../dispensaryFinder');
 const {
   sanitizeEmail, extractEmails, pickBestEmail, findContactLink, hostOf,
@@ -22,6 +22,7 @@ const {
 const {
   isTransientDnsError, isDisposableDomain, partitionDeliverable,
 } = require('../emailVerify');
+const { selectImportable } = require('../leadFinderRunner');
 
 // ── Overpass query ───────────────────────────────────────────────────────────
 test('buildOverpassQuery embeds the bbox and asks for JSON + centers', () => {
@@ -127,6 +128,67 @@ test('buildOverpassQuery widens by name but only to "dispensary"', () => {
   const q = buildOverpassQuery([38.85, -75.6, 41.36, -73.88]);
   assert.match(q, /name"~"dispensary",i/);      // widened net
   assert.doesNotMatch(q, /marijuana/);          // deliberately NOT the noisy terms
+});
+
+test('buildOverpassQuery also nets OSM cannabis:* detail tags', () => {
+  const q = buildOverpassQuery([38.85, -75.6, 41.36, -73.88]);
+  // Dispensaries a mapper tagged with details but never shop=cannabis — a real
+  // NJ coverage gap the detail-tag net closes.
+  assert.match(q, /node\["cannabis:recreational"\]/);
+  assert.match(q, /way\["cannabis:medical"\]/);
+});
+
+test('hasCannabisTag trusts cannabis:* detail tags, not just shop=cannabis', () => {
+  assert.equal(hasCannabisTag({ shop: 'cannabis' }), true);
+  assert.equal(hasCannabisTag({ 'cannabis:recreational': 'yes' }), true);
+  // Medical-only shops tag rec=no but are still real dispensary leads.
+  assert.equal(hasCannabisTag({ 'cannabis:recreational': 'no', 'cannabis:medical': 'yes' }), true);
+  assert.equal(hasCannabisTag({ shop: 'bakery' }), false);
+});
+
+test('parseOverpassElements keeps a detail-tagged shop with no shop=cannabis', () => {
+  const rows = parseOverpassElements({
+    elements: [
+      // No shop=cannabis and the name doesn't say "dispensary" — only the detail
+      // tag identifies it. The old net dropped this; the widened one keeps it.
+      { type: 'node', id: 9, tags: { name: 'Garden State Wellness', 'cannabis:recreational': 'yes' } },
+    ],
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].name, 'Garden State Wellness');
+});
+
+test('FINDER_VERSION is a positive integer the engine stamps on every run', () => {
+  assert.equal(Number.isInteger(FINDER_VERSION), true);
+  assert.ok(FINDER_VERSION >= 1);
+});
+
+// ── Import selection (email-optional yield lever) ─────────────────────────────
+test('selectImportable keeps email-LESS dispensaries (phone/visit leads)', () => {
+  const out = selectImportable([
+    { name: 'Emailable Shop', email: 'info@shop.com', chain: false },
+    { name: 'Phone-only Shop', email: '', phone: '555-1212', chain: false }, // kept now
+  ]);
+  assert.equal(out.length, 2);
+  assert.ok(out.some((c) => c.name === 'Phone-only Shop'));
+});
+
+test('selectImportable drops chains and de-dupes shared inboxes', () => {
+  const out = selectImportable([
+    { name: 'Curaleaf X', email: 'a@curaleaf.com', chain: true },   // chain → dropped
+    { name: 'Indie A', email: 'shared@x.com', chain: false },
+    { name: 'Indie B', email: 'shared@x.com', chain: false },       // same inbox → dropped
+    { name: 'Indie C', email: '', chain: false },                   // email-less → kept
+  ]);
+  assert.deepEqual(out.map((c) => c.name), ['Indie A', 'Indie C']);
+});
+
+test('selectImportable can include chains when skipChains is off', () => {
+  const out = selectImportable(
+    [{ name: 'Curaleaf X', email: 'a@curaleaf.com', chain: true }],
+    { skipChains: false },
+  );
+  assert.equal(out.length, 1);
 });
 
 // ── Big-chain / MSO detection ─────────────────────────────────────────────────
