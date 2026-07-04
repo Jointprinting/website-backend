@@ -1155,23 +1155,52 @@ const missingReceipts = async (req, res) => {
     // Match the stored leading-zero variants (^0*<digits>$) like order-actuals does.
     const orRegex = keys.map((k) => new RegExp(`^0*${k}$`));
 
+    // Fold receipts booked under the PROJECT # in under their order — SAME rule as
+    // order-actuals. The owner often enters a cost under the project # (project
+    // #140, invoice #1049), and that receipt must still count so the order isn't
+    // FALSE-FLAGGED as missing it. Collision-safe: a project # shared by two orders
+    // is skipped (don't guess), and a direct order-number match always wins so a
+    // row carrying both identifiers is never folded (or counted) twice.
+    const projByKey = projectNumberByOrderNumber(orders);   // orderKey → projectNumber ('' if ambiguous)
+    const keyByProj = {};
+    for (const [k, pn] of Object.entries(projByKey)) {
+      if (!pn) continue;
+      if (!(pn in keyByProj)) keyByProj[pn] = k;
+      else if (keyByProj[pn] !== k) keyByProj[pn] = null;   // two orders share a project# → don't guess
+    }
+    const projList = Object.keys(keyByProj).filter((pn) => keyByProj[pn]);
+
     // POs link by orderId (ObjectId), so map _id → canonical orderNumber to group
     // them onto the same key the ledger rows use.
     const idToKey = {};
     for (const o of orders) idToKey[String(o._id)] = normalizeOrderNumber(o.orderNumber);
     const [txns, pos] = await Promise.all([
-      Transaction.find({ type: 'expense', orderNumber: { $in: orRegex } })
-        .select('type category orderNumber receiptUrl').lean(),
+      Transaction.find({
+        type: 'expense',
+        $or: [
+          { orderNumber: { $in: orRegex } },
+          ...(projList.length ? [{ projectNumber: { $in: projList } }] : []),
+        ],
+      }).select('type category orderNumber projectNumber receiptUrl').lean(),
       PurchaseOrder.find({ orderId: { $in: orders.map((o) => o._id) }, archived: { $ne: true } })
         .select('orderId blanksProvided').lean(),
     ]);
+    // Re-point project-linked rows onto their order key (direct match wins) so
+    // missingReceiptsForOrders — which buckets by orderNumber — sees them.
+    const foldedTxns = txns.map((t) => {
+      const rk = normalizeOrderNumber(t.orderNumber);
+      if (keys.includes(rk)) return t;                            // direct order match wins
+      const via = keyByProj[String(t.projectNumber || '').trim()];
+      return via ? { ...t, orderNumber: via } : null;            // fold under the order #
+    }).filter(Boolean);
+
     const posByKey = {};
     for (const p of pos) {
       const k = idToKey[String(p.orderId)];
       if (!k) continue;
       (posByKey[k] ||= []).push(p);
     }
-    res.json(missingReceiptsForOrders(orders, txns, posByKey));
+    res.json(missingReceiptsForOrders(orders, foldedTxns, posByKey));
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
