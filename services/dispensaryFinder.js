@@ -203,7 +203,7 @@ function isQualityLead(tags = {}, name = '') {
 // Emailing an individual store is pointless — corporate handles merch — so we
 // skip them and focus on independents. Distinctive tokens only, to avoid false
 // hits (and we only ever test dispensary candidates, so "cookies" = the brand).
-const KNOWN_CHAINS = /\b(curaleaf|trulieve|cresco|sunnyside|rise dispensar[a-z]*|green thumb|verano|zen leaf|ascend|columbia care|cannabist|beyond ?hello|terrascend|apothecarium|the botanist|ethos|theory wellness|revolutionary clinics|garden remedies|planet 13|jushi|nature'?s medicines|cookies)\b/i;
+const KNOWN_CHAINS = /\b(curaleaf|trulieve|cresco|sunnyside|rise dispensar[a-z]*|green thumb|verano|zen leaf|ascend|columbia care|cannabist|beyond ?hello|terrascend|apothecarium|the botanist|ethos|theory wellness|revolutionary clinics|garden remedies|planet 13|jushi|nature'?s medicines|cookies|verilife|med ?men|ayr wellness|insa|mu:?v|fluent|ilera|liberty (cannabis|health)|restore integrative|holistic industries|goodness growth|vireo|cansortium|acreage|gold flora|cookies|stiiizy|the ?source)\b/i;
 
 // A big chain / MSO location? OSM's `brand:wikidata` marks recognized brands
 // outright; otherwise match the known-chain name list against the brand + name.
