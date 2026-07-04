@@ -525,6 +525,9 @@ function daysBetween(aMs, bMs) {
 // and unit-testable.
 function classifyHeadsUp(c, nowMs, todayMs) {
   if (!c) return [];
+  // Snoozed ("remind me later") — hard-hidden from the feed until the date passes,
+  // even a hot deal. It returns on its own once snoozedUntil is in the past.
+  if (c.snoozedUntil && new Date(c.snoozedUntil).getTime() > nowMs) return [];
   const stage = c.stage;
   const closed = CLOSED_STAGES.includes(stage); // won/lost/dormant — out of the funnel
   const items = [];
@@ -773,6 +776,9 @@ async function getToday(req, res) {
       ...NOT_ARCHIVED,
       nextFollowUp: { $ne: null, $lt: cutoff },
       stage: { $nin: CLOSED_STAGES },
+      // Snoozed cards stay out of the call list until their snooze passes, then
+      // return automatically (matches null or a past instant).
+      $or: [{ snoozedUntil: null }, { snoozedUntil: { $lte: new Date() } }],
     })
       .sort({ nextFollowUp: 1 })   // soonest/most-overdue first (oldest date first)
       .lean();
@@ -1303,7 +1309,7 @@ async function getOne(req, res) {
 const PATCHABLE = [
   'companyName', 'clientName', 'email', 'phone', 'paymentTerms',
   'defaultPrinter', 'defaultSupplier', 'defaultMarkup', 'notes',
-  'stage', 'nextFollowUp', 'lastContact', 'address', 'area', 'interestType',
+  'stage', 'nextFollowUp', 'lastContact', 'snoozedUntil', 'address', 'area', 'interestType',
   'dealValue', 'contacts', 'source', 'tags', 'lostReason', 'doNotEmail', 'leadSource',
 ];
 
