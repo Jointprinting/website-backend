@@ -19,7 +19,10 @@ function visibleFilter(req) {
   const want = q.agentId != null ? String(q.agentId) : '';
   if (want === 'all') return {};                          // owner: everything
   if (want && want !== 'me') return { agentId: want };    // owner: one agent's
-  return { agentId: { $in: ['', uid] } };                 // owner: own + legacy ('')
+  // owner: own + legacy. `null` in the $in also matches docs written BEFORE the
+  // agentId field existed (missing field), so pre-agents records are never hidden
+  // from the owner when this filter is applied.
+  return { agentId: { $in: ['', uid, null] } };
 }
 
 // The agentId to STAMP on a record the caller creates. Owner-created records stay

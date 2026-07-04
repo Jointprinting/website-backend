@@ -8,7 +8,10 @@
 const express = require('express');
 const router = express.Router();
 const { requireOwner } = require('../middleware/auth');
-const { listAgents, createAgent, updateAgent, resetAgentPassword } = require('../controllers/admin');
+const {
+  listAgents, createAgent, updateAgent, resetAgentPassword,
+  listAgentOrders, listAgentLeads,
+} = require('../controllers/admin');
 
 router.use(requireOwner);
 
@@ -16,5 +19,8 @@ router.get('/agents', listAgents);
 router.post('/agents', createAgent);
 router.patch('/agents/:id', updateAgent);
 router.post('/agents/:id/password', resetAgentPassword);
+// Owner drill-in: view one agent's book (read-only).
+router.get('/agents/:id/orders', listAgentOrders);
+router.get('/agents/:id/leads', listAgentLeads);
 
 module.exports = router;

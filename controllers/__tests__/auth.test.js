@@ -23,7 +23,7 @@ const bcrypt = require('bcrypt');
 
 const AdminUser = require('../../models/AdminUser');
 const authController = require('../auth');
-const { requireAdmin, requireAuth, requireOwner } = require('../../middleware/auth');
+const { requireAdmin, requireAuth, requireOwner, requireActiveAgent } = require('../../middleware/auth');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const PASSWORD = 'correct-horse-battery-staple';
@@ -257,4 +257,58 @@ test('requireOwner: a legacy token (no role claim) is treated as the owner', () 
   requireOwner({ headers: { authorization: `Bearer ${legacy}` } }, res, () => { next += 1; });
   assert.equal(next, 1);
   assert.equal(res.statusCode, null);
+});
+
+test('roleFrom: a role-less NON-studio token defaults to agent (no fail-open to owner)', () => {
+  const { roleFrom } = require('../../middleware/auth');
+  assert.equal(roleFrom({ sub: 'studio' }), 'owner');       // legacy owner
+  assert.equal(roleFrom({ sub: 'mike' }), 'agent');         // role-less, not studio → least privilege
+  assert.equal(roleFrom({ sub: 'mike', role: 'owner' }), 'owner');
+  assert.equal(roleFrom({ role: 'nonsense' }), 'agent');    // bogus role → agent
+});
+
+// ── requireActiveAgent (agent session revocation) ───────────────────────────────
+
+// findById(...).select(...) is a thenable in mongoose; our double mirrors that.
+function mockFindById(t, userDoc) {
+  t.mock.method(AdminUser, 'findById', () => ({ select: async () => userDoc }));
+}
+
+test('requireActiveAgent: an active agent with a fresh token passes', async (t) => {
+  mockFindById(t, { active: true, credentialsChangedAt: null });
+  const tok = jwt.sign({ sub: 'mike', role: 'agent', uid: 'a1' }, JWT_SECRET, { expiresIn: '7d' });
+  const res = mockRes(); let next = 0;
+  await requireActiveAgent({ headers: { authorization: `Bearer ${tok}` } }, res, () => { next += 1; });
+  assert.equal(next, 1);
+  assert.equal(res.statusCode, null);
+});
+
+test('requireActiveAgent: a DISABLED agent is refused 401 even with a valid token', async (t) => {
+  mockFindById(t, { active: false, credentialsChangedAt: null });
+  const tok = jwt.sign({ sub: 'mike', role: 'agent', uid: 'a1' }, JWT_SECRET, { expiresIn: '7d' });
+  const res = mockRes(); let next = 0;
+  await requireActiveAgent({ headers: { authorization: `Bearer ${tok}` } }, res, () => { next += 1; });
+  assert.equal(next, 0);
+  assert.equal(res.statusCode, 401);
+});
+
+test('requireActiveAgent: a token issued BEFORE a password reset is revoked (401)', async (t) => {
+  // Token was minted "now"; credentials changed 1 minute in the future relative to iat.
+  const tok = jwt.sign({ sub: 'mike', role: 'agent', uid: 'a1' }, JWT_SECRET, { expiresIn: '7d' });
+  const iat = jwt.verify(tok, JWT_SECRET).iat;
+  mockFindById(t, { active: true, credentialsChangedAt: new Date((iat + 60) * 1000) });
+  const res = mockRes(); let next = 0;
+  await requireActiveAgent({ headers: { authorization: `Bearer ${tok}` } }, res, () => { next += 1; });
+  assert.equal(next, 0);
+  assert.equal(res.statusCode, 401);
+});
+
+test('requireActiveAgent: the OWNER is never DB-checked (hot path stays lookup-free)', async (t) => {
+  let lookups = 0;
+  t.mock.method(AdminUser, 'findById', () => { lookups += 1; return { select: async () => null }; });
+  const tok = jwt.sign({ sub: 'studio', role: 'owner', uid: 'o1' }, JWT_SECRET, { expiresIn: '7d' });
+  const res = mockRes(); let next = 0;
+  await requireActiveAgent({ headers: { authorization: `Bearer ${tok}` } }, res, () => { next += 1; });
+  assert.equal(next, 1);
+  assert.equal(lookups, 0, 'owner is not loaded from the DB');
 });

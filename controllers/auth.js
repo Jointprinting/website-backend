@@ -29,6 +29,11 @@ function resolveRole(user) {
 // password" (username enumeration). Same message, same 401, for both.
 const BAD_LOGIN = 'Invalid username or password.';
 
+// A throwaway bcrypt hash we compare against when the username doesn't exist, so
+// an unknown user costs the SAME ~250ms as a real one — no fast-path timing tell.
+// Computed once at boot.
+const DUMMY_HASH = bcrypt.hashSync('unused-timing-equalizer-password', 12);
+
 exports.studioLogin = async (req, res) => {
   try {
     const body = req.body || {};
@@ -41,9 +46,26 @@ exports.studioLogin = async (req, res) => {
     }
 
     const user = await AdminUser.findOne({ username });
-    if (!user) {
-      // First-run hint only when NOTHING is set up; otherwise a generic failure.
-      if (username === 'studio' && (await AdminUser.countDocuments()) === 0) {
+
+    // Per-account lockout after repeated failures (real accounts only).
+    if (user && user.lockedUntil && user.lockedUntil > new Date()) {
+      const minsLeft = Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60000);
+      return res.status(429).json({ message: `Too many failed attempts. Try again in ${minsLeft} min.` });
+    }
+
+    // ALWAYS run bcrypt — against a dummy hash when the user doesn't exist — so an
+    // unknown username costs the same time as a wrong password (no timing oracle).
+    const ok = await bcrypt.compare(password, user ? user.passwordHash : DUMMY_HASH);
+    if (!user || !ok) {
+      if (user) {
+        user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
+        if (user.failedLoginAttempts >= MAX_FAILED) {
+          user.lockedUntil = new Date(Date.now() + LOCKOUT_MINUTES * 60_000);
+          user.failedLoginAttempts = 0;
+        }
+        await user.save();
+      } else if (username === 'studio' && (await AdminUser.countDocuments()) === 0) {
+        // First-run hint only when NOTHING is set up (no enumeration risk then).
         return res.status(401).json({
           message: "Studio password isn't set up yet. Run `npm run set-studio-password` on the server.",
         });
@@ -51,26 +73,10 @@ exports.studioLogin = async (req, res) => {
       return res.status(401).json({ message: BAD_LOGIN });
     }
 
-    // Disabled agent — the owner switched them off.
+    // Password is correct. Only NOW — behind a proven password, so it's not an
+    // enumeration oracle — tell a disabled account why it can't get in.
     if (user.active === false) {
       return res.status(403).json({ message: 'This account is disabled. Ask the owner to re-enable it.' });
-    }
-
-    // Per-account lockout after repeated failures.
-    if (user.lockedUntil && user.lockedUntil > new Date()) {
-      const minsLeft = Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60000);
-      return res.status(429).json({ message: `Too many failed attempts. Try again in ${minsLeft} min.` });
-    }
-
-    const ok = await bcrypt.compare(password, user.passwordHash);
-    if (!ok) {
-      user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
-      if (user.failedLoginAttempts >= MAX_FAILED) {
-        user.lockedUntil = new Date(Date.now() + LOCKOUT_MINUTES * 60_000);
-        user.failedLoginAttempts = 0;
-      }
-      await user.save();
-      return res.status(401).json({ message: BAD_LOGIN });
     }
 
     // Success — reset counters, self-heal the role, count the login.

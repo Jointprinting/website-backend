@@ -113,16 +113,33 @@ async function createMyOrder(req, res) {
     const clientName = String(b.clientName || '').trim();
     if (!companyName && !clientName) return res.status(400).json({ message: 'A company or client name is required.' });
     const status = AGENT_ORDER_STATUSES.includes(b.status) ? b.status : 'quoted';
+    const companyKey = deriveCompanyKey(companyName, clientName);
     const order = await Order.create({
       projectNumber: await nextNumber('project'),
       companyName, clientName,
-      companyKey: deriveCompanyKey(companyName, clientName),
+      companyKey,
       status,
       totalValue: Math.max(0, Number(b.totalValue) || 0),
       notes: String(b.notes || '').trim(),
       orderDate: b.orderDate ? new Date(b.orderDate) : new Date(),
       agentId: stampFor(req),
     });
+
+    // Keep the agent's CRM coherent: if NO company card exists for this key yet,
+    // create one stamped to them (stage 'customer' — they just made a sale), so
+    // the company they sold to shows up in "My Leads". If a card already exists
+    // (theirs or the owner's), we leave it — the order still links to it by key
+    // for the owner's cross-tool views.
+    try {
+      if (companyKey && !(await Client.findOne({ companyKey }).select('_id').lean())) {
+        await Client.create({
+          companyKey, companyName, clientName,
+          stage: 'customer', source: 'agent', leadSource: 'Referral',
+          agentId: stampFor(req),
+        });
+      }
+    } catch (_) { /* best-effort — a lead race just means the card already exists */ }
+
     res.status(201).json({ order: agentOrderShape(order.toObject()) });
   } catch (e) { res.status(400).json({ message: e.message }); }
 }

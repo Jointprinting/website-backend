@@ -8,6 +8,7 @@ const fs = require('fs');
 const mongoose = require('mongoose');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
+const { roleFrom } = require('./middleware/auth');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -233,14 +234,18 @@ const generalApiLimiter = rateLimit({
 
 app.use('/api', generalApiLimiter);
 
-// A validly-signed studio token means the caller is the owner (Studio tooling),
-// so per-IP public throttles shouldn't apply to them. Bad/absent token → treated
-// as anonymous and rate-limited normally. Can't be spoofed with a fake token
-// (verify would throw). Used by the S&S proxy limiter below.
+// The OWNER's Studio tooling (warm/refresh runs) is exempt from the per-IP public
+// throttles. Must be the owner specifically — agents now hold validly-signed
+// tokens too, so a bare signature check would wrongly exempt them from the metered
+// S&S proxy cap. Bad/absent/agent token → treated as anonymous and rate-limited
+// normally. Can't be spoofed (verify would throw).
 function hasValidStudioToken(req) {
   const m = (req.headers.authorization || '').match(/^Bearer\s+(.+)$/i);
   if (!m || !process.env.JWT_SECRET) return false;
-  try { jwt.verify(m[1], process.env.JWT_SECRET); return true; } catch (_) { return false; }
+  try {
+    const decoded = jwt.verify(m[1], process.env.JWT_SECRET);
+    return roleFrom(decoded) === 'owner';
+  } catch (_) { return false; }
 }
 
 // Tighter throttle for the paid S&S catalog proxy (/api/products/ss/*). These

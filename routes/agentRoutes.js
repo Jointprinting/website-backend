@@ -8,13 +8,15 @@
 
 const express = require('express');
 const router = express.Router();
-const { requireAuth } = require('../middleware/auth');
+const { requireActiveAgent } = require('../middleware/auth');
 const {
   me, listMyOrders, createMyOrder, updateMyOrder,
   listMyLeads, createMyLead, updateMyLead,
 } = require('../controllers/agentPortal');
 
-router.use(requireAuth);
+// requireActiveAgent = requireAuth + a live account re-check for agents, so a
+// disabled account or a password reset revokes the session on the next request.
+router.use(requireActiveAgent);
 
 router.get('/me', me);
 

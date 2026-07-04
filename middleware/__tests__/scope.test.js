@@ -20,8 +20,10 @@ test('agent is hard-locked to their own id — query overrides are ignored', () 
   assert.deepEqual(visibleFilter(agent({ agentId: 'owner1' })), { agentId: 'agentA' });
 });
 
-test('owner defaults to own + legacy records', () => {
-  assert.deepEqual(visibleFilter(owner()), { agentId: { $in: ['', 'owner1'] } });
+test('owner defaults to own + legacy records (incl. pre-agents docs with no agentId)', () => {
+  // `null` in the $in also matches documents written BEFORE the agentId field
+  // existed (missing field), so legacy records are never hidden from the owner.
+  assert.deepEqual(visibleFilter(owner()), { agentId: { $in: ['', 'owner1', null] } });
 });
 
 test('owner can view one agent (?agentId) or everything (?agentId=all)', () => {
@@ -30,8 +32,8 @@ test('owner can view one agent (?agentId) or everything (?agentId=all)', () => {
 });
 
 test('a legacy owner token (no uid) still sees all legacy ("") records', () => {
-  // uid null → ['', ''] → effectively agentId in [''] — every current record.
-  assert.deepEqual(visibleFilter(legacy()), { agentId: { $in: ['', ''] } });
+  // uid null → ['', '', null] → agentId in ['', null] — every current + pre-agents record.
+  assert.deepEqual(visibleFilter(legacy()), { agentId: { $in: ['', '', null] } });
 });
 
 // ── stampFor ──────────────────────────────────────────────────────────────────

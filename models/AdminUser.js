@@ -37,6 +37,12 @@ const AdminUserSchema = new mongoose.Schema({
   lastLoginAt: { type: Date },
   failedLoginAttempts: { type: Number, default: 0 },
   lockedUntil: { type: Date },
+  // Session-revocation stamp. Bumped whenever the owner disables the account or
+  // resets its password; any token issued BEFORE this instant is refused by
+  // requireActiveAgent (middleware/auth.js). This is what makes "access stops
+  // immediately" real for agents, closing the gap where a still-valid JWT would
+  // otherwise outlive a deactivation for the token's whole TTL.
+  credentialsChangedAt: { type: Date },
 });
 
 module.exports = mongoose.model('AdminUser', AdminUserSchema);
