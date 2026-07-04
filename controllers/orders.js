@@ -1016,7 +1016,15 @@ const createOrGetProjectForCompany = async (req, res) => {
     const body = req.body || {};
     const companyName = (body.companyName || '').toString().trim();
     const clientName  = (body.clientName  || '').toString().trim();
-    const key = (body.companyKey || '').toString().trim() || deriveCompanyKey(companyName, clientName);
+    const bodyKey = (body.companyKey || '').toString().trim();
+    // The Order model ALWAYS keys an order by deriveCompanyKey(names) (pre-save
+    // hook), so that's the key the project will actually carry. Key the CRM
+    // 'quoting' card and the reuse lookup off that SAME derived key so the project
+    // and its CRM record can never orphan (and the idempotent reuse query finds
+    // the company's existing orders — which are stored under the derived key too,
+    // NOT necessarily the frozen Client identity key the caller passed). Fall back
+    // to an explicit companyKey only when there are no names to derive from.
+    const key = deriveCompanyKey(companyName, clientName) || bodyKey;
     if (!key) return res.status(400).json({ message: 'companyKey (or a company/client name) is required' });
 
     // Ensure the company is also a first-class CRM record at the 'quoting' stage,
@@ -1030,10 +1038,12 @@ const createOrGetProjectForCompany = async (req, res) => {
       console.warn('[orders] ensureCompanyForQuoting skipped:', e.message);
     }
 
-    // Reuse an existing live project for this company -> idempotent re-entry. We
-    // read the company's orders by the canonical companyKey (the same key Orders
-    // store) and pick the one to work, WITHOUT minting a new number.
-    const existingOrders = await Order.find({ companyKey: key }).lean();
+    // Reuse an existing live project for this company -> idempotent re-entry.
+    // Match the canonical (derived) key OR the caller's passed key, so a project
+    // stored under either is reused rather than duplicated — including ones minted
+    // before this reconciliation. Pick the one to work WITHOUT minting a new number.
+    const reuseKeys = [...new Set([key, bodyKey].filter(Boolean))];
+    const existingOrders = await Order.find({ companyKey: { $in: reuseKeys } }).lean();
     const reuse = pickLiveProjectForCompany(existingOrders);
     if (reuse) return res.json({ order: reuse, created: false });
 

@@ -1104,6 +1104,47 @@ function aggregateVendorCard({ vendor, vendorPos, txns, connectedOrders, orderBy
   };
 }
 
+// Re-point every record that referenced a vendor BY its old NAME to a new name,
+// matching by CANONICAL vendorKey (whitespace/case-tolerant, exactly like
+// getVendor + the vendor card) so nothing orphans on a rename or merge:
+//   • POs — vendorName AND the printer receiving-block name (shipToPrinter.name)
+//   • expense Transactions — the counter-party (party), plus an optional hard
+//     vendorId stamp so ledger rows keep resolving to the vendor.
+// A whitespace-flexible anchored regex narrows the query; the exact vendorKey
+// gate is the precise filter (a "Heritage  Screen Printing" variant shares the
+// key and legitimately belongs to the vendor). No-op on a same-key change (pure
+// case/whitespace alias) — the card already matches those records. Returns
+// { posRepointed, txnsRepointed }. Shared by updateVendor (rename) + mergeVendors.
+async function _repointVendorName(oldName, newName, vendorId = null) {
+  const oldKey = vendorKey(oldName);
+  if (!oldName || !newName || !oldKey || oldKey === vendorKey(newName)) {
+    return { posRepointed: 0, txnsRepointed: 0 };
+  }
+  const oldNameRe = new RegExp(`^${String(oldName).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')}$`, 'i');
+  let posRepointed = 0;
+  const candidatePos = await PurchaseOrder.find({
+    $or: [{ vendorName: oldNameRe }, { 'shipToPrinter.name': oldNameRe }],
+  }).select('vendorName shipToPrinter').lean();
+  for (const p of candidatePos) {
+    const set = {};
+    if (vendorKey(p.vendorName) === oldKey) set.vendorName = newName;
+    if (p.shipToPrinter && vendorKey(p.shipToPrinter.name) === oldKey) set['shipToPrinter.name'] = newName;
+    if (Object.keys(set).length === 0) continue;
+    // eslint-disable-next-line no-await-in-loop
+    await PurchaseOrder.updateOne({ _id: p._id }, { $set: set });
+    if (set.vendorName) posRepointed += 1;
+  }
+  const candidateTx = await Transaction.find({ type: 'expense', party: oldNameRe }).select('party').lean();
+  const txIds = candidateTx.filter((t) => vendorKey(t.party) === oldKey).map((t) => t._id);
+  let txnsRepointed = 0;
+  if (txIds.length) {
+    const setTx = vendorId ? { party: newName, vendorId } : { party: newName };
+    const upd = await Transaction.updateMany({ _id: { $in: txIds } }, { $set: setTx });
+    txnsRepointed = upd.modifiedCount != null ? upd.modifiedCount : (upd.nModified || 0);
+  }
+  return { posRepointed, txnsRepointed };
+}
+
 // PATCH /api/orders/vendors/:id — owner edits to a vendor's card: contact/address/
 // ship method/account #/blanksProvided default, and the per-vendor NEXT-PO START
 // (#1). Setting a higher start floors future auto-numbering AND immediately bumps
@@ -1116,6 +1157,12 @@ const updateVendor = async (req, res) => {
   try {
     if (badId(req.params.id)) return res.status(404).json({ message: 'Vendor not found' });
     const body = req.body || {};
+    // Grab the OLD name BEFORE the update so a rename can re-point everything that
+    // still references it (POs + expense Transactions) — otherwise those orphan.
+    const prev = await Vendor.findById(req.params.id).select('name nextPoStart').lean();
+    if (!prev) return res.status(404).json({ message: 'Vendor not found' });
+    const oldName = prev.name || '';
+
     const set = {};
     for (const f of VENDOR_PATCHABLE) {
       if (f in body) set[f] = f === 'blanksProvided' ? !!body[f] : body[f];
@@ -1130,12 +1177,32 @@ const updateVendor = async (req, res) => {
     const vendor = await Vendor.findByIdAndUpdate(req.params.id, { $set: set }, { new: true, runValidators: true }).lean();
     if (!vendor) return res.status(404).json({ message: 'Vendor not found' });
 
+    // ── Rename: re-point orphanable references + carry the PO counter forward ──
+    // The per-vendor PO counter is keyed by NAME, and POs/Transactions reference
+    // the vendor BY name — so a rename would (a) orphan every existing PO/expense
+    // and (b) restart PO numbering from #1 under the new name, colliding with the
+    // owner's real run. Re-point the records, then lift the new-name counter to
+    // the old name's next value so numbering simply continues.
+    let repoint = { posRepointed: 0, txnsRepointed: 0 };
+    if (vendorKey(oldName) !== vendorKey(vendor.name)) {
+      // Read the old name's next PO number BEFORE re-pointing (so the seed-from-POs
+      // fallback still sees them), then carry the counter to the new name.
+      const oldNext = await peekNumber('po', oldName, prev.nextPoStart);
+      repoint = await _repointVendorName(oldName, vendor.name, vendor._id);
+      if (oldNext > 1) await bumpCounterTo('po', oldNext - 1, vendor.name);
+    }
+
     // Raise the atomic per-vendor counter to floor-1 so the very next auto number
     // is exactly the owner-set start (kept collision-safe; never moves it back).
     if (bumpStart && bumpStart > 0) await bumpCounterTo('po', bumpStart - 1, vendor.name);
 
     const nextSeq = await peekNumber('po', vendor.name, vendor.nextPoStart);
-    res.json({ vendor, nextPo: { next: `#${String(nextSeq).padStart(3, '0')}`, nextNumeric: nextSeq, nextPoStart: vendor.nextPoStart || 0 } });
+    res.json({
+      vendor,
+      renamed: repoint.posRepointed || repoint.txnsRepointed
+        ? { from: oldName, to: vendor.name, ...repoint } : undefined,
+      nextPo: { next: `#${String(nextSeq).padStart(3, '0')}`, nextNumeric: nextSeq, nextPoStart: vendor.nextPoStart || 0 },
+    });
   } catch (e) {
     res.status(400).json({ message: e.message });
   }
@@ -1221,51 +1288,11 @@ const mergeVendors = async (req, res) => {
     foldVendorFields(survivor, merged, normalizeOrderNumber);
     await survivor.save();
 
-    // RE-POINT everything that referenced the merged vendor to the survivor's
-    // name. We match by CANONICAL vendorKey, not exact bytes — a PO/receipt saved
-    // with a whitespace variant ("Heritage  Screen Printing", a leading space)
-    // shares the merged vendor's vendorKey and legitimately belongs to it (the
-    // vendor CARD surfaces those via the same whitespace-flexible match), so the
-    // re-point must be just as tolerant or those records orphan on the archive.
-    // A whitespace-flexible anchored regex narrows the query; the exact vendorKey
-    // gate is the precise filter (identical to getVendor). Skip the whole block on
-    // a same-key merge (a pure case/whitespace alias collapse) — the survivor's
-    // card already matches those POs case-insensitively, so nothing orphans.
-    const mergedKeyVal = vendorKey(mergedName);
-    const wsRe = (s) => new RegExp(`^${String(s || '').trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')}$`, 'i');
-    let posRepointed = 0;
-    let txnsRepointed = 0;
-    if (mergedName && mergedKeyVal && mergedKeyVal !== vendorKey(survivorName)) {
-      const mergedNameRe = wsRe(mergedName);
-      // POs: vendorName (and keep the printer receiving-block name in sync where it
-      // equals the old name). Filter to the exact vendorKey so only this printer's
-      // POs move, even though the regex over-matches whitespace variants.
-      const candidatePos = await PurchaseOrder.find({
-        $or: [{ vendorName: mergedNameRe }, { 'shipToPrinter.name': mergedNameRe }],
-      }).select('vendorName shipToPrinter').lean();
-      for (const p of candidatePos) {
-        const set = {};
-        if (vendorKey(p.vendorName) === mergedKeyVal) set.vendorName = survivorName;
-        if (p.shipToPrinter && vendorKey(p.shipToPrinter.name) === mergedKeyVal) set['shipToPrinter.name'] = survivorName;
-        if (Object.keys(set).length === 0) continue;
-        // eslint-disable-next-line no-await-in-loop
-        await PurchaseOrder.updateOne({ _id: p._id }, { $set: set });
-        if (set.vendorName) posRepointed += 1;
-      }
-
-      // Expense Transactions: re-point the counter-party (the dollars paid) AND
-      // the hard vendorId link, so ledger rows keep resolving to the survivor.
-      const candidateTx = await Transaction.find({ type: 'expense', party: mergedNameRe })
-        .select('party').lean();
-      const txIds = candidateTx.filter((t) => vendorKey(t.party) === mergedKeyVal).map((t) => t._id);
-      if (txIds.length) {
-        const txUpd = await Transaction.updateMany(
-          { _id: { $in: txIds } },
-          { $set: { party: survivorName, vendorId: survivor._id } },
-        );
-        txnsRepointed = txUpd.modifiedCount != null ? txUpd.modifiedCount : (txUpd.nModified || 0);
-      }
-    }
+    // RE-POINT everything that referenced the merged vendor to the survivor's name
+    // (POs vendorName + shipToPrinter.name, expense Transactions party + vendorId),
+    // matched by canonical vendorKey so whitespace/case variants don't orphan.
+    // Same code path as a rename — see _repointVendorName.
+    const { posRepointed, txnsRepointed } = await _repointVendorName(mergedName, survivorName, survivor._id);
     // Rows hard-linked to the merged vendor by id (party may have been typed
     // differently) follow the survivor too — never orphan a vendorId link.
     await Transaction.updateMany(
