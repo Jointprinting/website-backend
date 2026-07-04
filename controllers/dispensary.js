@@ -45,10 +45,15 @@ async function listDispensaries(req, res) {
     // fuzzier matchKey (same derivations the CRM itself uses).
     const companyKeys = [...new Set(docs.map((d) => d.companyKey).filter(Boolean))];
     const matchKeys = [...new Set(docs.map((d) => d.matchKey).filter(Boolean))];
+    // Include ARCHIVED matches too. If we hid them, the map showed crm:null for an
+    // archived company, the client sent stage:'lead', and the touch/to-do landed
+    // on the hidden archived record — a silent dead-end (and a stage regression).
+    // Surfacing the match (with `archived`) lets the map show it AND the capture
+    // path unarchive it instead of writing blind.
     const clients = companyKeys.length || matchKeys.length
       ? await Client.find(
-          { archived: { $ne: true }, $or: [{ companyKey: { $in: companyKeys } }, { matchKey: { $in: matchKeys } }] },
-          { companyKey: 1, matchKey: 1, stage: 1, nextFollowUp: 1 }
+          { $or: [{ companyKey: { $in: companyKeys } }, { matchKey: { $in: matchKeys } }] },
+          { companyKey: 1, matchKey: 1, stage: 1, nextFollowUp: 1, archived: 1 }
         ).lean()
       : [];
     const byCompanyKey = new Map();

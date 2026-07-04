@@ -1412,6 +1412,23 @@ async function patchOne(req, res) {
       }
     }
 
+    // Re-engagement unarchives. A logged touch (Field Map "Add opportunity" /
+    // "Log follow-up", CRM row Call/Text/Email) or a freshly scheduled future
+    // follow-up on an archived card means the owner is working it again — bring
+    // it back to the board instead of silently writing history into a hidden
+    // record. Merged losers stay put: a merge is a dedupe decision, not
+    // dormancy, and reviving the loser would recreate the duplicate.
+    const reEngaged = hasLog || ('nextFollowUp' in set && !!set.nextFollowUp);
+    if (reEngaged) {
+      const cur = await Client.findOne({ companyKey: key })
+        .select('archived archivedReason').lean();
+      if (cur && cur.archived && cur.archivedReason !== 'merged') {
+        set.archived = false;
+        set.archivedAt = null;
+        set.archivedReason = '';
+      }
+    }
+
     const update = {};
     if (Object.keys(set).length)  update.$set  = set;
     if (Object.keys(push).length) update.$push = push;
