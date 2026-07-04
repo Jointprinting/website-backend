@@ -2,7 +2,7 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const { studioLogin, verifyToken } = require('../controllers/auth');
-const { requireAdmin } = require('../middleware/auth');
+const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -17,6 +17,8 @@ const loginLimiter = rateLimit({
 });
 
 router.post('/studio-login', loginLimiter, studioLogin);
-router.get('/verify', requireAdmin, verifyToken);
+// Any authenticated account (owner OR agent) can verify its token on app load —
+// the response carries the role so the client renders the right surface.
+router.get('/verify', requireAuth, verifyToken);
 
 module.exports = router;

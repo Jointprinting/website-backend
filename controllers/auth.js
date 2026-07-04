@@ -17,28 +17,49 @@ const TOKEN_TTL = process.env.STUDIO_TOKEN_TTL || '7d';
 const MAX_FAILED = 5;
 const LOCKOUT_MINUTES = 15;
 
+// The owner is always the 'studio' account; any other account is an agent. We
+// resolve role from BOTH the username and any stored role so a legacy 'studio'
+// row (created before roles existed, its role defaulting to 'agent') is still
+// treated — and self-healed — as the owner. Pure + unit-tested.
+function resolveRole(user) {
+  return (user.username === 'studio' || user.role === 'owner') ? 'owner' : 'agent';
+}
+
+// GENERIC failure so a probing attacker can't tell "no such user" from "wrong
+// password" (username enumeration). Same message, same 401, for both.
+const BAD_LOGIN = 'Invalid username or password.';
+
 exports.studioLogin = async (req, res) => {
   try {
-    const { password } = req.body || {};
+    const body = req.body || {};
+    // username+password. A missing username defaults to 'studio' so the owner's
+    // existing password-only client keeps working through the UI transition.
+    const username = String(body.username || 'studio').trim().toLowerCase();
+    const { password } = body;
     if (!password || typeof password !== 'string') {
       return res.status(400).json({ message: 'Password is required.' });
     }
 
-    // Single-user studio: there should only be one row, default username "studio".
-    const user = await AdminUser.findOne({ username: 'studio' });
+    const user = await AdminUser.findOne({ username });
     if (!user) {
-      return res.status(401).json({
-        message:
-          "Studio password isn't set up yet. Run `npm run set-studio-password` on the server.",
-      });
+      // First-run hint only when NOTHING is set up; otherwise a generic failure.
+      if (username === 'studio' && (await AdminUser.countDocuments()) === 0) {
+        return res.status(401).json({
+          message: "Studio password isn't set up yet. Run `npm run set-studio-password` on the server.",
+        });
+      }
+      return res.status(401).json({ message: BAD_LOGIN });
     }
 
-    // Lockout check
+    // Disabled agent — the owner switched them off.
+    if (user.active === false) {
+      return res.status(403).json({ message: 'This account is disabled. Ask the owner to re-enable it.' });
+    }
+
+    // Per-account lockout after repeated failures.
     if (user.lockedUntil && user.lockedUntil > new Date()) {
       const minsLeft = Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60000);
-      return res.status(429).json({
-        message: `Too many failed attempts. Try again in ${minsLeft} min.`,
-      });
+      return res.status(429).json({ message: `Too many failed attempts. Try again in ${minsLeft} min.` });
     }
 
     const ok = await bcrypt.compare(password, user.passwordHash);
@@ -49,24 +70,28 @@ exports.studioLogin = async (req, res) => {
         user.failedLoginAttempts = 0;
       }
       await user.save();
-      return res.status(401).json({ message: 'Wrong password.' });
+      return res.status(401).json({ message: BAD_LOGIN });
     }
 
-    // Success — reset counters
+    // Success — reset counters, self-heal the role, count the login.
+    const role = resolveRole(user);
     user.failedLoginAttempts = 0;
-    // null (not undefined) — assigning undefined to a Mongoose path doesn't
-    // reliably persist the clear.
-    user.lockedUntil = null;
+    user.lockedUntil = null; // null (not undefined) so the clear persists
     user.lastLoginAt = new Date();
+    user.loginCount = (user.loginCount || 0) + 1;
+    if (user.role !== role) user.role = role;
     await user.save();
 
     const token = jwt.sign(
-      { sub: user.username, scope: 'studio' },
+      { sub: user.username, role, uid: String(user._id), scope: 'studio' },
       JWT_SECRET,
       { expiresIn: TOKEN_TTL }
     );
 
-    return res.json({ token, expiresIn: TOKEN_TTL });
+    return res.json({
+      token, expiresIn: TOKEN_TTL, role,
+      username: user.username, displayName: user.displayName || '',
+    });
   } catch (err) {
     console.error('studioLogin error:', err);
     return res.status(500).json({ message: 'Login failed.' });
@@ -74,6 +99,10 @@ exports.studioLogin = async (req, res) => {
 };
 
 exports.verifyToken = (req, res) => {
-  // requireAdmin middleware has already verified the token by the time we get here.
-  return res.json({ ok: true, username: req.adminUser.username });
+  // requireAuth middleware has already verified the token by the time we get here.
+  const u = req.user || req.adminUser || {};
+  return res.json({ ok: true, username: u.username, role: u.role || 'owner', displayName: u.displayName || '' });
 };
+
+// Exported for unit tests (pure role resolution).
+exports.resolveRole = resolveRole;

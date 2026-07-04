@@ -23,7 +23,7 @@ const bcrypt = require('bcrypt');
 
 const AdminUser = require('../../models/AdminUser');
 const authController = require('../auth');
-const { requireAdmin } = require('../../middleware/auth');
+const { requireAdmin, requireAuth, requireOwner } = require('../../middleware/auth');
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const PASSWORD = 'correct-horse-battery-staple';
@@ -68,12 +68,23 @@ test('studioLogin: missing / non-string password → 400 (no DB lookup needed)',
   assert.equal(res2.statusCode, 400);
 });
 
-test('studioLogin: no admin user configured → 401 with setup hint', async (t) => {
+test('studioLogin: first run, nothing configured → 401 with setup hint', async (t) => {
   t.mock.method(AdminUser, 'findOne', async () => null);
+  t.mock.method(AdminUser, 'countDocuments', async () => 0);
   const res = mockRes();
   await authController.studioLogin({ body: { password: PASSWORD } }, res);
   assert.equal(res.statusCode, 401);
   assert.match(res.body.message, /isn't set up|set-studio-password/i);
+});
+
+test('studioLogin: unknown username (accounts exist) → generic 401, no enumeration', async (t) => {
+  t.mock.method(AdminUser, 'findOne', async () => null);
+  t.mock.method(AdminUser, 'countDocuments', async () => 3);
+  const res = mockRes();
+  await authController.studioLogin({ body: { username: 'ghost', password: PASSWORD } }, res);
+  assert.equal(res.statusCode, 401);
+  assert.equal(res.body.message, 'Invalid username or password.');
+  assert.doesNotMatch(res.body.message, /set-studio-password|no such|unknown/i);
 });
 
 test('studioLogin: wrong password → 401 and the failed-attempt counter rises', async (t) => {
@@ -190,4 +201,60 @@ test('a token minted by studioLogin is accepted by requireAdmin', async (t) => {
   requireAdmin(req, mockRes(), () => { nextCalled += 1; });
   assert.equal(nextCalled, 1);
   assert.equal(req.adminUser.username, 'studio');
+});
+
+// ── Roles: owner vs agent (the multi-user foundation) ───────────────────────────
+
+test('resolveRole: studio (or an explicit owner) is owner; everyone else is agent', () => {
+  assert.equal(authController.resolveRole({ username: 'studio' }), 'owner');
+  assert.equal(authController.resolveRole({ username: 'studio', role: 'agent' }), 'owner'); // legacy self-heal
+  assert.equal(authController.resolveRole({ username: 'mike', role: 'owner' }), 'owner');
+  assert.equal(authController.resolveRole({ username: 'mike', role: 'agent' }), 'agent');
+  assert.equal(authController.resolveRole({ username: 'mike' }), 'agent');
+});
+
+test('studioLogin: an AGENT login mints an agent-role token (and self-heals the role)', async (t) => {
+  const user = fakeUser({ username: 'mike', role: 'agent', _id: 'abc123' });
+  t.mock.method(AdminUser, 'findOne', async () => user);
+  const res = mockRes();
+  await authController.studioLogin({ body: { username: 'Mike', password: PASSWORD } }, res);
+  assert.equal(res.statusCode, null);
+  assert.equal(res.body.role, 'agent');
+  const decoded = jwt.verify(res.body.token, JWT_SECRET);
+  assert.equal(decoded.sub, 'mike');
+  assert.equal(decoded.role, 'agent');
+  assert.equal(decoded.uid, 'abc123');
+});
+
+test('studioLogin: a disabled account is refused with 403 even with the right password', async (t) => {
+  const user = fakeUser({ username: 'mike', role: 'agent', active: false });
+  t.mock.method(AdminUser, 'findOne', async () => user);
+  const res = mockRes();
+  await authController.studioLogin({ body: { username: 'mike', password: PASSWORD } }, res);
+  assert.equal(res.statusCode, 403);
+  assert.match(res.body.message, /disabled/i);
+});
+
+test('requireOwner: an AGENT token is rejected 403; requireAuth accepts it', () => {
+  const agentTok = jwt.sign({ sub: 'mike', role: 'agent', uid: 'a1' }, JWT_SECRET, { expiresIn: '7d' });
+  // Owner gate refuses the agent.
+  const ownerRes = mockRes(); let ownerNext = 0;
+  requireOwner({ headers: { authorization: `Bearer ${agentTok}` } }, ownerRes, () => { ownerNext += 1; });
+  assert.equal(ownerNext, 0);
+  assert.equal(ownerRes.statusCode, 403);
+  // Plain auth accepts the agent and exposes the role + id.
+  const authReq = { headers: { authorization: `Bearer ${agentTok}` } };
+  let authNext = 0;
+  requireAuth(authReq, mockRes(), () => { authNext += 1; });
+  assert.equal(authNext, 1);
+  assert.equal(authReq.user.role, 'agent');
+  assert.equal(authReq.user.userId, 'a1');
+});
+
+test('requireOwner: a legacy token (no role claim) is treated as the owner', () => {
+  const legacy = jwt.sign({ sub: 'studio', scope: 'studio' }, JWT_SECRET, { expiresIn: '7d' });
+  const res = mockRes(); let next = 0;
+  requireOwner({ headers: { authorization: `Bearer ${legacy}` } }, res, () => { next += 1; });
+  assert.equal(next, 1);
+  assert.equal(res.statusCode, null);
 });
