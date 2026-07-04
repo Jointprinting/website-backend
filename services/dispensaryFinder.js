@@ -72,14 +72,16 @@ const NATIONAL_ROLLOUT = [
 ];
 
 // Bump when the discovery/enrichment/import logic materially improves (a wider
-// Overpass net, better scraping, email-optional import…). Every sweep stamps the
-// run with this. The always-on engine treats a state last swept at an OLDER
-// version as STALE and quietly re-milks it in the background — so an improved
-// finder retroactively upgrades already-covered states with ZERO manual action
-// (the owner never presses "re-sweep"). History (undefined) reads as 0.
-//   v1 → email-gated import (dispensaries needed a scraped email to land)
-//   v2 → email-optional import + cannabis:* detail-tag discovery net
-const FINDER_VERSION = 2;
+// Overpass net, better scraping…). Every sweep stamps the run with this. The
+// always-on engine treats a state last swept at an OLDER version as STALE and
+// quietly re-milks it in the background — so an improved finder retroactively
+// upgrades already-covered states with ZERO manual action (the owner never
+// presses "re-sweep"). History (undefined) reads as 0.
+//   v1 → email-gated import
+//   v2 → (superseded) email-optional + medical detail tags
+//   v3 → mail-merge: email REQUIRED, RECREATIONAL-only, broadened name net that
+//        also catches rec dispensaries whose name doesn't say "cannabis"
+const FINDER_VERSION = 3;
 
 function regionIds() { return Object.keys(REGIONS); }
 function isRegion(id) { return Object.prototype.hasOwnProperty.call(REGIONS, id); }
@@ -104,16 +106,26 @@ function decideFrontier({ region, created, dryStreak = 0, rollout = NATIONAL_ROL
   return { region, dryStreak: streak, advanced: false };
 }
 
-// One Overpass QL query for cannabis retailers in a bbox. Two nets:
-//   1. TAG-based — the canonical dispensary tags OSM uses (shop=cannabis, etc.).
-//      High precision; trusted outright.
-//   2. NAME-based — shops literally named "…Dispensary". A widening net for
-//      mistagged/untagged shops, but DELIBERATELY narrow: only the word
-//      "dispensary" (a strong dispensary signal), not "cannabis"/"marijuana"
-//      (which pull cafes, doctors, lawyers, museums). Everything from net 2 is
-//      quality-gated in parseOverpassElements (closed-out + non-cannabis
-//      "dispensary" like pharmacy/veterinary are dropped) so coverage grows
-//      WITHOUT dragging in junk leads.
+// The strong cannabis-retail NAME tokens the Overpass name-net widens to. These
+// are the words a rec dispensary uses in its name EVEN WHEN a mapper never tagged
+// it shop=cannabis — so a shop called "Garden State Budtenders" or "420 Bank"
+// gets caught by name alone. Kept to high-signal tokens (no bare "green"/"leaf"/
+// "wellness", which pull spas and florists); everything from the name-net is
+// still junk-gated by NON_CANNABIS_NAME + the medical-only check below. `\b` is
+// dropped here because Overpass's regex engine doesn't support it — the precise
+// JS gate (CANNABIS_NAME) re-applies word boundaries when filtering.
+const OVERPASS_NAME_RE = 'dispensar|cannabis|marijuana|weed|budtender|420|kush|ganja';
+
+// One Overpass QL query for RECREATIONAL cannabis retailers in a bbox. Two nets:
+//   1. TAG-based — the cannabis retail tags OSM uses (shop=cannabis / weed,
+//      office=cannabis, cannabis:recreational). Trusted outright (medical-only
+//      shops are filtered out downstream). Catches dispensaries with ANY name —
+//      the whole point: a mapper-tagged shop is found regardless of what it's
+//      called.
+//   2. NAME-based — shops whose name carries a strong cannabis token
+//      (OVERPASS_NAME_RE). A widening net for untagged shops; quality-gated in
+//      parseOverpassElements (closed-out, medical-only, and non-cannabis matches
+//      like pharmacy/vet/lawn-care are dropped) so coverage grows WITHOUT junk.
 // Nodes AND ways (buildings); `out center` gives a way a lat/lon too. Pure + tested.
 function buildOverpassQuery(bbox) {
   const b = bbox.join(',');
@@ -126,23 +138,35 @@ function buildOverpassQuery(bbox) {
   node["shop"="weed"](${b});
   node["cannabis:recreational"](${b});
   way["cannabis:recreational"](${b});
-  node["cannabis:medical"](${b});
-  way["cannabis:medical"](${b});
-  node["name"~"dispensary",i](${b});
-  way["name"~"dispensary",i](${b});
+  node["name"~"${OVERPASS_NAME_RE}",i](${b});
+  way["name"~"${OVERPASS_NAME_RE}",i](${b});
 );
 out center tags;`;
 }
 
-// The canonical "this IS a cannabis retailer" tag set — trusted outright. Beyond
-// the shop/office tags, a POI carrying OSM's dispensary DETAIL tags
-// (cannabis:recreational / cannabis:medical) is unambiguously a cannabis
-// retailer even when a mapper never added shop=cannabis — a real coverage gap in
-// states like NJ. Any value counts (a medical-only shop is tagged
-// cannabis:recreational=no; it's still a dispensary lead).
+// A cannabis:recreational value that means "yes, this shop sells recreational".
+// OSM uses yes / only / licensed for a rec-licensed shop; "no" means medical-only.
+function isRecCannabis(v) {
+  const s = String(v || '').trim().toLowerCase();
+  return s === 'yes' || s === 'only' || s === 'licensed' || s === 'true';
+}
+
+// MEDICAL-ONLY (not recreational) — the owner sells to rec dispensaries, so these
+// are skipped even when tagged shop=cannabis. The reliable signal is an explicit
+// cannabis:recreational=no (dual-license shops tag it yes/omit it). Pure.
+function isMedicalOnly(tags = {}) {
+  const rec = String(tags['cannabis:recreational'] || '').trim().toLowerCase();
+  return rec === 'no' || rec === 'false' || rec === 'none';
+}
+
+// The canonical "this IS a RECREATIONAL cannabis retailer" tag set — trusted
+// outright. shop=cannabis/weed and office=cannabis in a rec-legal state serve
+// rec; cannabis:recreational=yes/only/licensed is explicit. Medical-only shops
+// (rec=no) are excluded. Pure + unit-tested.
 function hasCannabisTag(tags = {}) {
+  if (isMedicalOnly(tags)) return false;
   return tags.shop === 'cannabis' || tags.shop === 'weed' || tags.office === 'cannabis'
-    || 'cannabis:recreational' in tags || 'cannabis:medical' in tags;
+    || isRecCannabis(tags['cannabis:recreational']);
 }
 
 // A closed/dead POI — OSM marks these with lifecycle-prefixed keys (disused:shop,
@@ -153,19 +177,26 @@ function isClosedPoi(tags = {}) {
   return String(tags['business_status'] || '').toLowerCase() === 'closed';
 }
 
-// Names that say "dispensary" but AREN'T a cannabis dispensary — pharmacies,
-// vets, hospitals, and the head/smoke/vape-shop crowd. These are the junk the
-// wider name-net would otherwise drag in.
-const NON_CANNABIS_NAME = /pharmac|veterinar|hospit|\bmedical\b|\bclinic\b|optical|dental|smoke ?shop|vape|head ?shop|\bglass\b|hydroponic|tobacc|\bpet\b/i;
+// Strong cannabis-retail NAME tokens (the precise JS mirror of OVERPASS_NAME_RE,
+// with word boundaries the Overpass engine can't express). A name-net hit must
+// match one of these to count as a dispensary.
+const CANNABIS_NAME = /dispensar|cannabis|marijuana|\bweed\b|budtender|\b420\b|\bkush\b|ganja/i;
 
-// Is this element a GOOD dispensary lead? Trusted cannabis tag → yes. Otherwise
-// (name-only hit) it must literally be a "…dispensary" and NOT a pharmacy/vet/
-// smoke-shop. Closed POIs are always out. Pure + unit-tested — this is the
-// quality gate that keeps the widened net from wasting the owner's sends.
+// Carries a cannabis token but ISN'T a rec dispensary we'd cold-email — MEDICAL
+// dispensaries/pharmacies, vets, the smoke/vape/head-shop crowd, hydroponic/grow
+// suppliers, and lawn-and-garden "weed" shops (Weed Man, garden centers, feed &
+// nursery). These are the junk the widened name-net would otherwise drag in.
+const NON_CANNABIS_NAME = /pharmac|veterinar|hospit|\bmedical\b|\bmed(ical)? ?(marijuana|cannabis)|\bclinic\b|optical|dental|smoke ?shop|vape|head ?shop|\bglass\b|hydroponic|\bgrow\b|tobacc|\bpet\b|garden ?cent|\bnurser|landscap|\blawn\b|florist|\bfeed\b|weed ?man/i;
+
+// Is this element a GOOD recreational dispensary lead? Closed / medical-only are
+// always out. A trusted rec cannabis TAG → yes (any name). Otherwise a name-net
+// hit must carry a strong cannabis token AND not match the junk/medical gate.
+// Pure + unit-tested — the gate that keeps the widened net from wasting sends.
 function isQualityLead(tags = {}, name = '') {
   if (isClosedPoi(tags)) return false;
+  if (isMedicalOnly(tags)) return false;
   if (hasCannabisTag(tags)) return true;
-  return /dispensary/i.test(name) && !NON_CANNABIS_NAME.test(name);
+  return CANNABIS_NAME.test(name) && !NON_CANNABIS_NAME.test(name);
 }
 
 // The big multi-state chains (MSOs) + notable multi-location retail brands.
@@ -302,6 +333,8 @@ module.exports = {
   isQualityLead,
   isClosedPoi,
   hasCannabisTag,
+  isRecCannabis,
+  isMedicalOnly,
   isBigChain,
   markChains,
   nextRegionAfter,
