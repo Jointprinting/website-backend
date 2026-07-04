@@ -97,6 +97,18 @@ async function computeAgentStats(agent) {
   };
 }
 
+// GET /api/admin/agents/count — a cheap O(1) "do I have any agents?" signal, so
+// the hub can hide the Team tile entirely until the owner actually onboards one
+// (no roster/stats work). Never errors the caller — 0 on any hiccup.
+async function agentCount(_req, res) {
+  try {
+    const count = await AdminUser.countDocuments({ role: 'agent' });
+    res.json({ count });
+  } catch (_) {
+    res.json({ count: 0 });
+  }
+}
+
 // GET /api/admin/agents — the roster with each agent's live rollup.
 async function listAgents(_req, res) {
   try {
@@ -218,7 +230,7 @@ async function listAgentLeads(req, res) {
 }
 
 module.exports = {
-  listAgents, createAgent, updateAgent, resetAgentPassword,
+  listAgents, agentCount, createAgent, updateAgent, resetAgentPassword,
   listAgentOrders, listAgentLeads,
   computeAgentStats, publicAgent, currentMonth, // exported for P4 + tests
 };

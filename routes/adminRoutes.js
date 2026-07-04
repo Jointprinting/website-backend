@@ -9,12 +9,14 @@ const express = require('express');
 const router = express.Router();
 const { requireOwner } = require('../middleware/auth');
 const {
-  listAgents, createAgent, updateAgent, resetAgentPassword,
+  listAgents, agentCount, createAgent, updateAgent, resetAgentPassword,
   listAgentOrders, listAgentLeads,
 } = require('../controllers/admin');
 
 router.use(requireOwner);
 
+// Cheap count first — a fixed path, declared BEFORE any '/agents/:id' routes.
+router.get('/agents/count', agentCount);
 router.get('/agents', listAgents);
 router.post('/agents', createAgent);
 router.patch('/agents/:id', updateAgent);
