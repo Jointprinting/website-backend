@@ -86,6 +86,11 @@ const ClientSchema = new mongoose.Schema({
   stage:        { type: String, enum: CRM_STAGES, default: 'lead', index: true },
   nextFollowUp: { type: Date, default: null, index: true }, // when to call/contact next ("who do I call today")
   lastContact:  { type: Date, default: null },              // when we last touched this company
+  // SNOOZE — "get this out of my face until <date>." Distinct from nextFollowUp (a
+  // plan to contact them): a snoozed card is HARD-hidden from Today + the dashboard
+  // "Needs attention" feed — even a hot deal — until this instant passes, then it
+  // returns on its own. Null = not snoozed. This is the "hold / keep-warm" control.
+  snoozedUntil: { type: Date, default: null, index: true },
   // EXACT street address — the owner found "Area" (a vague region) useless and
   // asked for a real address instead. `area` is kept below for back-compat (so
   // stored regions aren't lost) but is no longer the field we center on; the

@@ -303,3 +303,20 @@ test('a replied (warm) prospect resurfaces even before the owner logs a call', (
   });
   assert.ok(typesFor(c).includes('overdue_followup'), 'a warm lead past its follow-up surfaces');
 });
+
+// ── Snooze hard-hides a card until it expires ─────────────────────────────────
+test('a snoozed card earns no heads-up items until the snooze passes', () => {
+  // Would normally be an overdue, high-value hot-quiet screamer...
+  const base = mkClient({
+    stage: 'quoting', dealValue: 5000, nextFollowUp: daysAhead(-3), lastContact: daysAgo(30),
+  });
+  assert.ok(typesFor(base).length > 0, 'baseline card does earn items');
+
+  // ...but snoozed into the future → completely silent.
+  const snoozed = { ...base, snoozedUntil: daysAhead(5) };
+  assert.deepEqual(typesFor(snoozed), [], 'a future snooze hides everything');
+
+  // A snooze already in the past no longer suppresses (it auto-returns).
+  const expired = { ...base, snoozedUntil: daysAgo(1) };
+  assert.ok(typesFor(expired).length > 0, 'an expired snooze lets the card resurface');
+});
