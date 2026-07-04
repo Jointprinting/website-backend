@@ -50,7 +50,24 @@ app.use(cors({
   },
 }));
 
-app.use(express.json({ limit: '1mb' }));
+// Body parsing. A few routes mount their OWN express.json with a much larger
+// limit (receipts 40mb, orders 100mb, crm/finances 8mb, …) registered further
+// down. Express runs middleware in registration order and the FIRST json parser
+// to touch a request wins (it sets req._body and later parsers no-op), so a
+// blanket global parser here would parse — and 413 — every oversized body before
+// the per-route limit ever ran (the receipt-scan flow posts ~34MB base64 dataURLs
+// and was silently failing as "scan failed"). So the global 1mb fallback SKIPS
+// any prefix that brings its own parser; everything else gets the safe default.
+const OWN_JSON_PREFIXES = [
+  '/api/studio', '/api/site-settings', '/api/orders', '/api/client-logos',
+  '/api/clients', '/api/crm', '/api/outreach', '/api/triage', '/api/public',
+  '/api/jpw', '/api/gdrive', '/api/finances', '/api/receipts',
+];
+const globalJson = express.json({ limit: '1mb' });
+app.use((req, res, next) => {
+  if (OWN_JSON_PREFIXES.some((p) => req.path === p || req.path.startsWith(p + '/'))) return next();
+  return globalJson(req, res, next);
+});
 app.use('/api/studio', express.json({ limit: '100mb' }));
 
 if (!fs.existsSync('uploads')) fs.mkdirSync('uploads');
@@ -65,8 +82,25 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024, files: 10 },
 });
 
+// Last-resort net: a single stray rejected promise (e.g. a public webhook that
+// awaits Mongo during a blip) must not crash the whole single-dyno API. Log and
+// keep serving; the individual handlers still own their own error responses.
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection:', reason && reason.message ? reason.message : reason);
+});
+
 // ── Mongo ──
-mongoose.connect(process.env.MONGO_URI);
+// mongoose does NOT auto-retry the INITIAL connect, and an uncaught rejection
+// here would crash-loop the dyno on a transient Atlas blip. Catch + retry with
+// a short backoff so a 60s hiccup doesn't turn into API downtime.
+function connectMongo(attempt = 1) {
+  mongoose.connect(process.env.MONGO_URI).catch((e) => {
+    const wait = Math.min(30_000, 3_000 * attempt);
+    console.error(`Mongo initial connect failed (attempt ${attempt}): ${e.message} — retrying in ${wait / 1000}s`);
+    setTimeout(() => connectMongo(attempt + 1), wait);
+  });
+}
+connectMongo();
 require('./gridfs');
 const db = mongoose.connection;
 db.on('error', console.error.bind(console, 'MongoDB connection error:'));

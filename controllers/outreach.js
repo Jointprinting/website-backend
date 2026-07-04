@@ -1028,37 +1028,50 @@ async function bounceWebhook(req, res) {
   const provided = req.query.key || req.headers['x-webhook-key'] || (req.body && req.body.key) || '';
   if (String(provided) !== secret) return res.status(401).json({ message: 'bad key' });
 
-  const event = classifyBounceEvent(req.body);
-  const emails = extractBounceEmails(req.body);
-  // Soft/transient → record nothing punitive; a later attempt (with backoff) is fine.
-  if (event === 'soft') return res.json({ ok: true, event, emails: emails.length, suppressed: 0, skipped: 'soft-bounce' });
+  // Public endpoint (secret-guarded): a stray DB error here must return 500, not
+  // become an unhandled rejection that crashes the whole single-dyno API during
+  // a bounce burst. Every await below is inside this guard.
+  try {
+    const event = classifyBounceEvent(req.body);
+    const emails = extractBounceEmails(req.body);
+    // Soft/transient → record nothing punitive; a later attempt (with backoff) is fine.
+    if (event === 'soft') return res.json({ ok: true, event, emails: emails.length, suppressed: 0, skipped: 'soft-bounce' });
 
-  const isComplaint = event === 'complaint';
-  const reason = isComplaint ? 'complaint' : 'hard-bounce';
-  const source = isComplaint ? 'complaint-webhook' : 'bounce-webhook';
-  let suppressed = 0;
-  const now = new Date();
-  for (const email of emails) {
-    // Global address-level suppression first — works even when we have no Client
-    // for this address (a bounced lead we never imported). Distinct reason so the
-    // deliverability circuit-breaker can tell bounces from complaints.
-    await suppress(email, { reason, source });
-    const enrs = await OutreachEnrollment.find({ toEmail: email }).select('companyKey status');
-    const keys = new Set();
-    for (const e of enrs) {
-      keys.add(e.companyKey);
-      if (e.status === 'active') { e.status = 'failed'; e.stopReason = isComplaint ? 'complaint' : 'bounced'; e.nextSendAt = null; await e.save().catch(() => {}); }
+    const isComplaint = event === 'complaint';
+    const reason = isComplaint ? 'complaint' : 'hard-bounce';
+    const source = isComplaint ? 'complaint-webhook' : 'bounce-webhook';
+    let suppressed = 0;
+    const now = new Date();
+    for (const email of emails) {
+      // extractBounceEmails lowercases; enrollment toEmail and Client.email are
+      // stored as scraped/entered (mixed case happens), so match case-insensitively
+      // — otherwise a mixed-case address is suppressed at the address level but its
+      // enrollment never flips to 'bounced' and doNotEmail is never set.
+      const rx = new RegExp('^' + email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
+      // Global address-level suppression first — works even when we have no Client
+      // for this address (a bounced lead we never imported). Distinct reason so the
+      // deliverability circuit-breaker can tell bounces from complaints.
+      await suppress(email, { reason, source });
+      const enrs = await OutreachEnrollment.find({ toEmail: rx }).select('companyKey status');
+      const keys = new Set();
+      for (const e of enrs) {
+        keys.add(e.companyKey);
+        if (e.status === 'active') { e.status = 'failed'; e.stopReason = isComplaint ? 'complaint' : 'bounced'; e.nextSendAt = null; await e.save().catch(() => {}); }
+      }
+      const or = [{ email: rx }, { 'contacts.email': rx }];
+      if (keys.size) or.push({ companyKey: { $in: [...keys] } });
+      const logText = isComplaint ? 'Marked our email as spam — suppressed from outreach' : 'Email bounced — suppressed from outreach';
+      const r = await Client.updateMany(
+        { $or: or, doNotEmail: { $ne: true } },
+        { $set: { doNotEmail: true }, $push: { log: { at: now, text: logText, kind: 'email', dedupKey: `${reason}:${email}` } } },
+      ).catch(() => ({ modifiedCount: 0 }));
+      suppressed += r.modifiedCount || 0;
     }
-    const or = [{ email }, { 'contacts.email': email }];
-    if (keys.size) or.push({ companyKey: { $in: [...keys] } });
-    const logText = isComplaint ? 'Marked our email as spam — suppressed from outreach' : 'Email bounced — suppressed from outreach';
-    const r = await Client.updateMany(
-      { $or: or, doNotEmail: { $ne: true } },
-      { $set: { doNotEmail: true }, $push: { log: { at: now, text: logText, kind: 'email', dedupKey: `${reason}:${email}` } } },
-    ).catch(() => ({ modifiedCount: 0 }));
-    suppressed += r.modifiedCount || 0;
+    res.json({ ok: true, event, emails: emails.length, suppressed });
+  } catch (e) {
+    console.error('[outreach] bounceWebhook error:', e.message);
+    res.status(500).json({ message: e.message });
   }
-  res.json({ ok: true, event, emails: emails.length, suppressed });
 }
 
 // ── Public routes (no auth — token-keyed) ─────────────────────────────────────

@@ -158,11 +158,14 @@ async function applyReplyAutoActions(reply, cls, match) {
   const strong = STRONG_MATCHES.has(match.matchBy);
 
   if (category === 'unsubscribe') {
-    await applyStatusSideEffects(reply, 'do_not_contact'); // suppress + stop (even unmatched)
+    // Address-level suppression fires always (even unmatched); the COMPANY-level
+    // doNotEmail + sequence stop only on a STRONG match — never flip a whole shop
+    // to do-not-contact off a soft same-domain guess (a shared/franchise inbox).
+    await applyStatusSideEffects(reply, 'do_not_contact', { companyLevel: strong });
     return;
   }
   if (category === 'not_interested') {
-    await applyStatusSideEffects(reply, 'not_interested');
+    await applyStatusSideEffects(reply, 'not_interested', { companyLevel: strong });
     return;
   }
   if (category === IGNORE_CATEGORY) return; // machine noise
@@ -230,7 +233,12 @@ async function addReplies(req, res) {
 // The only CRM side effects V1 makes — both reuse existing safe patterns and only
 // fire on a matched company. "do not contact" == the unsubscribe/bounce path
 // (doNotEmail + stop active sequences); "not interested" just halts the sequence.
-async function applyStatusSideEffects(reply, status) {
+// companyLevel: whether the company-wide writes (doNotEmail + stop the shop's
+// sequences) may fire. Defaults true — the MANUAL updateStatus path (the owner
+// looking right at the reply) always acts; the AUTO path passes false on a soft
+// domain-only match so a guess never punishes a whole company. Address-level
+// suppression of the actual sender is unconditional either way.
+async function applyStatusSideEffects(reply, status, { companyLevel = true } = {}) {
   const now = new Date();
   // Address-level suppression is company-independent — it must fire even for an
   // UNMATCHED opt-out (no companyKey), so a stranger who says "stop" is never
@@ -238,7 +246,7 @@ async function applyStatusSideEffects(reply, status) {
   if (status === 'do_not_contact' && reply.fromEmail) {
     await suppress(reply.fromEmail, { reason: 'do-not-contact', source: 'triage' });
   }
-  if (!reply.companyKey) return;
+  if (!companyLevel || !reply.companyKey) return;
   if (status === 'do_not_contact') {
     await Client.updateOne(
       { companyKey: reply.companyKey },

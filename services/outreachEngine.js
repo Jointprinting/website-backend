@@ -588,7 +588,12 @@ async function sendOne(enr, campaign, now = new Date(), sender = null) {
     return 'skipped';
   }
 
-  const to = pickEmail(client) || enr.toEmail;
+  // The live Client wins (the design contract): if the owner cleared a wrong/
+  // undeliverable address off the company card mid-sequence, the engine must
+  // STOP (falls through to stopReason 'no-email' below), not keep mailing the
+  // stale enrollment snapshot. Only fall back to the snapshot when the Client
+  // row itself failed to load (a transient DB hiccup).
+  const to = client ? pickEmail(client) : enr.toEmail;
   if (!to) {
     enr.status = 'stopped';
     enr.stopReason = 'no-email';
