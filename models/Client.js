@@ -68,6 +68,10 @@ const ClientSchema = new mongoose.Schema({
   // duplicate-finder/merge tooling — NOT identity. companyKey stays the identity
   // that lines up with Orders. Indexed so /duplicates can group by it cheaply.
   matchKey:        { type: String, default: '', index: true },
+  // Which account owns this lead — an AdminUser _id (string). '' = the owner's
+  // (all legacy/owner leads). A sales agent's leads carry their id so agents see
+  // only their own CRM and the owner's isn't mixed with theirs.
+  agentId:         { type: String, default: '', index: true },
   companyName:     { type: String, default: '' },
   clientName:      { type: String, default: '' },
   email:           { type: String, default: '' },
