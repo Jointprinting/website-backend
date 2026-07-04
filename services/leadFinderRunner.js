@@ -188,13 +188,23 @@ async function countAvailableColdLeads() {
 // Status for the Studio: the auto-pilot frontier + recent runs + per-region
 // last-swept, in national-rollout order (so the UI can show the frontier line).
 async function finderStatus() {
-  const [runs, state, available] = await Promise.all([
-    LeadFinderRun.find({ dryRun: false }).sort({ createdAt: -1 }).limit(10).lean(),
+  const [byRegion, runs, state, available] = await Promise.all([
+    // The LATEST real run per region — NOT the latest 10 overall. One sweep
+    // writes up to MAX_REGIONS_PER_RUN rows, so a flat limit(10) forgets states
+    // once the engine has covered more than ~1.7 sweeps, reverting their coverage
+    // tiles to "not reached yet" and shuffling the swept count. Group per region
+    // so the map shows every state the engine has actually touched.
+    LeadFinderRun.aggregate([
+      { $match: { dryRun: false } },
+      { $sort: { createdAt: -1 } },
+      { $group: { _id: '$region', last: { $first: '$$ROOT' } } },
+    ]),
+    LeadFinderRun.find({ dryRun: false }).sort({ createdAt: -1 }).limit(10).lean(), // recentRuns feed
     LeadFinderState.findOne({ key: 'frontier' }).lean(),
     countAvailableColdLeads(),
   ]);
   const lastByRegion = {};
-  for (const r of runs) if (!lastByRegion[r.region]) lastByRegion[r.region] = r;
+  for (const g of byRegion) if (g && g._id) lastByRegion[g._id] = g.last;
   const activeRegion = (state && state.activeRegion) || DEFAULT_REGION;
   return {
     frontier: {

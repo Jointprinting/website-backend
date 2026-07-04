@@ -19,6 +19,14 @@ const { getGfs } = require('../gridfs');
 const { startingAt, applyBlankCost } = require('../utils/pricing');
 const { diversifyByCategory } = require('../utils/catalogOrder');
 
+// Public product responses must NEVER carry the raw wholesale blank cost:
+// `priceFrom` (the derived teaser) is the only price the site shows, and leaking
+// `basePrice` reveals the exact markup to any client/competitor with dev tools.
+// The field stays in Mongo (it's how priceFrom is recomputed on a price refresh)
+// — this only strips it on the way out of a public read. Applied at every public
+// product-shaped response below.
+const stripCost = (o) => { if (o && typeof o === 'object') delete o.basePrice; return o; };
+
 function defaultSizeRange(title, category, type) {
   const t = (title || '').toLowerCase();
   if (category === 'Hats')                                                       return { sizeRangeBottom: 'One Size', sizeRangeTop: 'One Size' };
@@ -189,11 +197,11 @@ async function populateImages(product) {
     if (typeof v === 'string') return v;
     return getImageFromGridFS(v);
   };
-  return {
+  return stripCost({
     ...obj,
     productFrontImages: await Promise.all((obj.productFrontImages || []).map(resolve)),
     productBackImages:  await Promise.all((obj.productBackImages  || []).map(resolve)),
-  };
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -226,11 +234,11 @@ exports.getProducts = async (req, res) => {
         const obj = product.toObject();
         const front = obj.productFrontImages?.[0];
         const back  = obj.productBackImages?.[0];
-        return {
+        return stripCost({
           ...obj,
           productFrontImages: [typeof front === 'string' ? front : await getImageFromGridFS(front)],
           productBackImages:  [typeof back  === 'string' ? back  : await getImageFromGridFS(back)],
-        };
+        });
       })
     );
 
@@ -980,6 +988,10 @@ exports.browseSS = async (req, res) => {
       console.warn('browseSS price enrich failed (showing estimates):', e.message);
     }
 
+    // Live SS rows carry basePrice (applyBlankCost stamps it for priceFrom) —
+    // strip it before it leaves the public browse endpoint.
+    (pageSlice || []).forEach(stripCost);
+    (featured || []).forEach(stripCost);
     return res.json({
       products: pageSlice, total, page: p,
       totalPages: Math.ceil(total / l),
@@ -1074,7 +1086,7 @@ exports.getProductByStyleCode = async (req, res) => {
         // and the Mongo import had them blank or stale.
         const baseFrontFiltered = (base.productFrontImages || []).filter(Boolean);
         const liveFront = summary.colors.find((c) => c.front)?.front;
-        return res.status(200).json({
+        return res.status(200).json(stripCost({
           ...base,
           type:                effectiveType,
           ssStyleID:           match.styleID,
@@ -1091,13 +1103,13 @@ exports.getProductByStyleCode = async (req, res) => {
                                  : (liveFront ? [liveFront] : []),
           colorCount:          summary.colors.length,
           dataQuality:         'mongo+live-products',
-        });
+        }));
       }
-      return res.status(200).json({
+      return res.status(200).json(stripCost({
         ...base,
         type: effectiveType,
         brandImage: match?.brandImage || null,
-      });
+      }));
     }
 
     if (!match) {

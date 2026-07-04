@@ -41,7 +41,25 @@ async function getState() {
 // frontier to the first state before sweeping — the "re-sweep the map" action
 // for after the finder itself improves: imports dedupe on company + email, so a
 // re-pass over already-swept states only ADDS shops the older pass missed.
+// In-process overlap guard, mirroring the outreach engine's `_ticking`: a forced
+// "Refill now" sweep takes minutes (states × Overpass × site scrapes). If the 6h
+// cron fires mid-run (or a second tab triggers another force), two invocations
+// would sweep the same states in parallel — doubling the upstream load the
+// per-run politeness cap exists to bound, writing duplicate run rows, and
+// last-writer-wins clobbering the frontier. Only one sweep runs at a time.
+let _sweeping = false;
+
 async function runFrontierSweep({ force = false, fromStart = false } = {}) {
+  if (_sweeping) return { skipped: 'already-running' };
+  _sweeping = true;
+  try {
+    return await _runFrontierSweep({ force, fromStart });
+  } finally {
+    _sweeping = false;
+  }
+}
+
+async function _runFrontierSweep({ force = false, fromStart = false } = {}) {
   const state = await getState();
 
   const available = await countAvailableColdLeads();
