@@ -222,7 +222,12 @@ const listOrders = async (req, res) => {
 // This is the canonical feed for the new project-first UI.
 const listProjects = async (req, res) => {
   try {
-    const orders = await Order.find({})
+    // Exclude archived (soft-deleted / reconcile-reverted) orders — they must
+    // drop out of the working list and header stats, the same way the CRM board
+    // and /attention already exclude them (?archived=1 opts them back in for a
+    // future recover surface).
+    const q = req.query.archived === '1' ? {} : { archived: { $ne: true } };
+    const orders = await Order.find(q)
       .sort({ createdAt: -1 })
       .lean();
 
@@ -453,13 +458,21 @@ const updateOrder = async (req, res) => {
   }
 };
 
-// DELETE /api/orders/:id
+// DELETE /api/orders/:id — SOFT delete (archive). A fat-finger "delete" used to
+// hard-destroy the whole project (quote lines, confirmation, approval token,
+// activity, file metadata) while its Transactions kept pointing at a now-dangling
+// orderNumber — the exact archive-not-delete rule the model already supports and
+// the owner already flagged on the Vendors PO delete. Archived orders drop out of
+// every working surface (list/dashboard already filter them) but stay recoverable.
 const deleteOrder = async (req, res) => {
   try {
-    await Order.findByIdAndDelete(req.params.id);
-    // Its POs must not linger as live rows pointing at a dead order (they'd keep
-    // counting on vendor cards and in PO lists). Soft-archive — not hard-delete —
-    // per the house pattern, so a mistaken order delete stays fully recoverable.
+    await Order.updateOne(
+      { _id: req.params.id },
+      { $set: { archived: true, archivedAt: new Date(), archivedReason: 'manual' } },
+    );
+    // Its POs must not linger as live rows pointing at an archived order (they'd
+    // keep counting on vendor cards and in PO lists). Soft-archive them too, so an
+    // unarchive of the order can restore both.
     await PurchaseOrder.updateMany(
       { orderId: req.params.id, archived: { $ne: true } },
       { $set: { archived: true, archivedAt: new Date(), archivedReason: 'order-deleted' } },
@@ -478,6 +491,9 @@ const dashboard = async (req, res) => {
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
     const [stats] = await Order.aggregate([
+      // Archived (soft-deleted / reverted) orders must not count toward revenue,
+      // open-order, or unpaid totals — they're gone from the working view.
+      { $match: { archived: { $ne: true } } },
       { $group: {
         _id: null,
         revenueAllTime: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, '$totalValue', 0] } },
