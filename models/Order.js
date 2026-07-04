@@ -230,6 +230,10 @@ const OrderSchema = new mongoose.Schema({
   clientName:    { type: String, default: '', index: true },
   companyName:   { type: String, default: '', index: true },
   companyKey:    { type: String, default: '', index: true },
+  // Which account owns this order — an AdminUser _id (string). '' = the owner's
+  // (all legacy/owner-created orders). A sales agent's orders carry their id, so
+  // agents see only their own and the owner's board isn't cluttered with theirs.
+  agentId:       { type: String, default: '', index: true },
   status: {
     type: String,
     enum: ['quoted', 'approved', 'placed', 'in_production', 'shipped', 'delivered', 'cancelled'],

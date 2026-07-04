@@ -7,7 +7,7 @@
     "start": "node server.js",
     "set-studio-password": "node scripts/setStudioPassword.js",
     "migrate-images-r2": "node scripts/migrateImagesToR2.js",
-    "test": "node --test controllers/__tests__/*.test.js services/__tests__/*.test.js"
+    "test": "node --test controllers/__tests__/*.test.js services/__tests__/*.test.js middleware/__tests__/*.test.js"
   },
   "keywords": [],
   "author": "",
