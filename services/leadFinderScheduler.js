@@ -15,15 +15,20 @@
 
 const cron = require('node-cron');
 const LeadFinderState = require('../models/LeadFinderState');
-const { runFinder, countAvailableColdLeads } = require('./leadFinderRunner');
-const { nextRegionAfter, isRegion, DEFAULT_REGION, REGIONS } = require('./dispensaryFinder');
+const { runFinder, countAvailableColdLeads, staleRegions } = require('./leadFinderRunner');
+const { nextRegionAfter, isRegion, DEFAULT_REGION, REGIONS, FINDER_VERSION } = require('./dispensaryFinder');
 
 // Refill when the enrollable-cold-lead pool drops below this…
 const LOW_WATERMARK = parseInt(process.env.LEAD_FINDER_LOW_WATERMARK || '40', 10);
-// …and keep sweeping states until we've added this many new leads…
+// …and keep sweeping states until we've added this many enrollable (emailable)
+// leads — email supply is what enrollment consumes, so that's what we top up…
 const REFILL_TARGET = parseInt(process.env.LEAD_FINDER_REFILL_TARGET || '75', 10);
 // …but never more than this many states in a single run (politeness cap).
 const MAX_REGIONS_PER_RUN = parseInt(process.env.LEAD_FINDER_MAX_REGIONS || '6', 10);
+// When the pool is HEALTHY but the finder has since improved, re-milk at most
+// this many already-swept states per tick to upgrade their coverage in the
+// background (so improvements land with no manual "re-sweep"). Small + polite.
+const MAX_UPGRADE_PER_RUN = parseInt(process.env.LEAD_FINDER_MAX_UPGRADE || '3', 10);
 
 // Get-or-create the singleton frontier state.
 async function getState() {
@@ -63,25 +68,58 @@ async function _runFrontierSweep({ force = false, fromStart = false } = {}) {
   const state = await getState();
 
   const available = await countAvailableColdLeads();
+
+  // ── Healthy pool: nothing to refill. But keep coverage FRESH on its own ──────
+  // If the finder improved since some states were last swept, quietly re-milk a
+  // bounded few (oldest-swept first) so a better finder retroactively upgrades
+  // states it already touched — the owner never has to press "re-sweep". A
+  // forced run skips this and goes straight to a real refill sweep below.
   if (available >= LOW_WATERMARK && !force) {
+    const stale = await staleRegions(FINDER_VERSION, MAX_UPGRADE_PER_RUN);
+    if (!stale.length) {
+      state.lastRunAt = new Date();
+      state.lastResult = `queue healthy — ${available} cold leads ready to enroll; coverage current`;
+      await state.save();
+      return { skipped: 'queue-healthy', available };
+    }
+    const swept = [];
+    let upgradedEmailable = 0;
+    let lastError = '';
+    for (const region of stale) {
+      try {
+        const r = await runFinder({ region, dryRun: false });
+        upgradedEmailable += r.createdEmailable || 0;
+        swept.push(`${r.label} +${r.created}${r.createdEmailable ? ` (${r.createdEmailable}✉)` : ''}`);
+      } catch (err) {
+        lastError = err.message;
+        swept.push(`${REGIONS[region] ? REGIONS[region].label : region} (error)`);
+      }
+    }
+    // An upgrade pass does NOT advance the frontier — it re-milks in place.
     state.lastRunAt = new Date();
-    state.lastResult = `queue healthy — ${available} cold leads ready to enroll`;
+    state.lastResult = `coverage upgrade — re-milked ${stale.length} state(s) on the improved finder (${swept.join(', ')})${lastError ? ` — last error: ${lastError}` : ''}`;
     await state.save();
-    return { skipped: 'queue-healthy', available };
+    return { upgrade: true, available, regionsSwept: stale.length, upgradedEmailable, swept };
   }
 
+  // ── Low pool (or forced): expand the frontier until it's topped back up ──────
+  // Count EMAILABLE new leads toward the target — email supply is what enrollment
+  // draws down. Every sweep also banks the region's phone/visit-only dispensaries
+  // (not counted here; they're worked by call and Field Map, never cold-emailed).
   let region = fromStart ? DEFAULT_REGION
     : (isRegion(state.activeRegion) ? state.activeRegion : DEFAULT_REGION);
   if (fromStart) state.dryStreak = 0;
+  let emailableTotal = 0;
   let importedTotal = 0;
   let regionsSwept = 0;
   const swept = [];
   let lastError = '';
-  while (importedTotal < REFILL_TARGET && regionsSwept < MAX_REGIONS_PER_RUN) {
+  while (emailableTotal < REFILL_TARGET && regionsSwept < MAX_REGIONS_PER_RUN) {
     try {
       const result = await runFinder({ region, dryRun: false });
-      importedTotal += result.created;
-      swept.push(`${result.label} +${result.created}`);
+      emailableTotal += result.createdEmailable || 0;
+      importedTotal += result.created || 0;
+      swept.push(`${result.label} +${result.created}${result.createdEmailable ? ` (${result.createdEmailable}✉)` : ''}`);
     } catch (err) {
       lastError = err.message;
       swept.push(`${REGIONS[region] ? REGIONS[region].label : region} (error)`);
@@ -94,10 +132,10 @@ async function _runFrontierSweep({ force = false, fromStart = false } = {}) {
   state.dryStreak = 0;
   state.lastRunAt = new Date();
   state.lastResult = importedTotal
-    ? `refilled ${importedTotal} new across ${regionsSwept} states (${swept.join(', ')}) — ${available} were left`
+    ? `refilled ${importedTotal} new (${emailableTotal} emailable) across ${regionsSwept} states (${swept.join(', ')}) — ${available} were left`
     : `swept ${regionsSwept} states, 0 new${lastError ? ` — last error: ${lastError}` : ' (OSM has no new shops there yet)'}`;
   await state.save();
-  return { available, imported: importedTotal, regionsSwept, swept, nextRegion: region };
+  return { available, imported: importedTotal, emailable: emailableTotal, regionsSwept, swept, nextRegion: region };
 }
 
 function startLeadFinderScheduler() {
@@ -107,7 +145,7 @@ function startLeadFinderScheduler() {
   cron.schedule('0 */6 * * *', () => {
     runFrontierSweep({ force: false }).catch((e) => console.error('[lead-finder] sweep error:', e.message));
   });
-  console.log(`[lead-finder] engine started — always on, queue-aware refill every 6h (low<${LOW_WATERMARK}, target ${REFILL_TARGET}, ≤${MAX_REGIONS_PER_RUN} states/run)`);
+  console.log(`[lead-finder] engine started — always on, queue-aware refill every 6h (v${FINDER_VERSION}, low<${LOW_WATERMARK}, target ${REFILL_TARGET} emailable, ≤${MAX_REGIONS_PER_RUN} states/run, ≤${MAX_UPGRADE_PER_RUN} auto-upgrades/run)`);
 }
 
 module.exports = { startLeadFinderScheduler, runFrontierSweep, getState };
