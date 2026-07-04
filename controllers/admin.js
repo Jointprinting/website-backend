@@ -41,7 +41,11 @@ function publicAgent(a) {
 // agent's own dashboard (P4) so the owner and the agent see the SAME numbers.
 async function computeAgentStats(agent) {
   const agentId = String(agent._id);
-  const month = agent.goalMonth || currentMonth();
+  // Always measure against the CURRENT calendar month. monthlyGoal is a recurring
+  // monthly target, so a stored goalMonth from when it was set must NOT freeze the
+  // window — otherwise an agent onboarded in May would still see May's numbers in
+  // July, stuck on a permanent "behind pace". goalMonth stays as set-on metadata.
+  const month = currentMonth();
   const [y, m] = month.split('-').map(Number);
   const start = new Date(Date.UTC(y, (m || 1) - 1, 1));
   const end = new Date(Date.UTC(y, (m || 1), 1));
@@ -71,12 +75,22 @@ async function computeAgentStats(agent) {
   const monthFrac = Math.min(1, Math.max(0, (Math.min(now, end) - start) / (end - start)));
   const onPace = goal > 0 ? progress >= monthFrac * 0.9 : null; // within 10% of linear pace
 
+  // ONE canonical pace label both the owner card and the agent hero render, so
+  // "On pace / Ahead / Behind" never disagrees between the two views of the same
+  // numbers. 'none' = no goal set.
+  const expected = goal * monthFrac;
+  const paceLabel = goal <= 0 ? 'none'
+    : progress >= 1 ? 'hit'
+    : salesThisMonth >= expected * 1.1 ? 'ahead'
+    : onPace ? 'on'
+    : 'behind';
+
   return {
     month, goal,
     salesThisMonth: Math.round(salesThisMonth),
     ordersThisMonth,
     progress: Math.round(progress * 100) / 100,
-    onPace, monthFrac: Math.round(monthFrac * 100) / 100,
+    onPace, paceLabel, monthFrac: Math.round(monthFrac * 100) / 100,
     leads: leadCount,
     openOrders,
     totalOrders: orders.length,
@@ -137,7 +151,12 @@ async function updateAgent(req, res) {
     const agent = await AdminUser.findOne({ _id: req.params.id, role: 'agent' });
     if (!agent) return res.status(404).json({ message: 'Agent not found.' });
     if ('displayName' in body) agent.displayName = String(body.displayName || '').trim();
-    if ('active' in body) agent.active = !!body.active;
+    if ('active' in body) {
+      const nowActive = !!body.active;
+      // Disabling revokes their live session on the next request (requireActiveAgent).
+      if (agent.active !== false && nowActive === false) agent.credentialsChangedAt = new Date();
+      agent.active = nowActive;
+    }
     if ('monthlyGoal' in body) agent.monthlyGoal = Math.max(0, Number(body.monthlyGoal) || 0);
     if ('goalMonth' in body && /^\d{4}-\d{2}$/.test(String(body.goalMonth))) agent.goalMonth = String(body.goalMonth);
     // Setting a goal with no month yet → default it to the current month.
@@ -162,6 +181,9 @@ async function resetAgentPassword(req, res) {
     // A reset also clears any active lockout so the agent can get straight back in.
     agent.failedLoginAttempts = 0;
     agent.lockedUntil = null;
+    // Revoke any session issued under the old password (requireActiveAgent), so a
+    // reset truly locks out whoever had the previous one.
+    agent.credentialsChangedAt = new Date();
     await agent.save();
     res.json({ ok: true });
   } catch (e) {
@@ -169,7 +191,34 @@ async function resetAgentPassword(req, res) {
   }
 }
 
+// GET /api/admin/agents/:id/orders — the owner drilling into ONE agent's sales.
+// Read-only; the owner's own Order Tracker stays their projects (this is a
+// separate "manage their book" view, keyed strictly to the agent's id).
+async function listAgentOrders(req, res) {
+  try {
+    const agent = await AdminUser.findOne({ _id: req.params.id, role: 'agent' });
+    if (!agent) return res.status(404).json({ message: 'Agent not found.' });
+    const orders = await Order.find({ agentId: String(agent._id), archived: { $ne: true } })
+      .select('orderNumber projectNumber companyName clientName companyKey status totalValue orderDate createdAt updatedAt')
+      .sort({ updatedAt: -1 }).lean();
+    res.json({ orders: orders.map((o) => ({ ...o, id: String(o._id) })) });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+}
+
+// GET /api/admin/agents/:id/leads — the owner drilling into ONE agent's CRM.
+async function listAgentLeads(req, res) {
+  try {
+    const agent = await AdminUser.findOne({ _id: req.params.id, role: 'agent' });
+    if (!agent) return res.status(404).json({ message: 'Agent not found.' });
+    const leads = await Client.find({ agentId: String(agent._id), archived: { $ne: true } })
+      .select('companyKey companyName clientName phone email stage dealValue nextFollowUp lastContact updatedAt')
+      .sort({ updatedAt: -1 }).lean();
+    res.json({ leads });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+}
+
 module.exports = {
   listAgents, createAgent, updateAgent, resetAgentPassword,
+  listAgentOrders, listAgentLeads,
   computeAgentStats, publicAgent, currentMonth, // exported for P4 + tests
 };

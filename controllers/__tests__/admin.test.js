@@ -9,7 +9,9 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-abc123';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { publicAgent, currentMonth } = require('../admin');
+const { publicAgent, currentMonth, computeAgentStats } = require('../admin');
+const Order = require('../../models/Order');
+const Client = require('../../models/Client');
 
 test('publicAgent NEVER exposes the password hash (or _id as raw)', () => {
   const shaped = publicAgent({
@@ -33,4 +35,18 @@ test('publicAgent: active defaults true unless explicitly false', () => {
 test('currentMonth is a zero-padded YYYY-MM in UTC', () => {
   assert.equal(currentMonth(new Date(Date.UTC(2026, 0, 9))), '2026-01');
   assert.equal(currentMonth(new Date(Date.UTC(2026, 11, 31))), '2026-12');
+});
+
+test('computeAgentStats measures the CURRENT month (never a stale goalMonth) and labels pace', async (t) => {
+  // Mock the two model reads. countDocuments → thenable; find→select→lean→Promise.
+  t.mock.method(Client, 'countDocuments', () => Promise.resolve(4));
+  t.mock.method(Order, 'find', () => ({ select: () => ({ lean: () => Promise.resolve([]) }) }));
+
+  // A goalMonth from years ago must NOT freeze the window — the fix for the stale
+  // "permanent behind pace" bug.
+  const stats = await computeAgentStats({ _id: 'x', monthlyGoal: 0, goalMonth: '2020-01' });
+  assert.equal(stats.month, currentMonth(), 'window is the current month, not the stored goalMonth');
+  assert.equal(stats.paceLabel, 'none', 'no goal → none');
+  assert.equal(stats.leads, 4);
+  assert.equal(stats.ordersThisMonth, 0);
 });
