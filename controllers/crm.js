@@ -54,6 +54,9 @@ const CLOSED_STAGES = ['won', 'lost', 'dormant'];
 const STAGE_RANK = {
   lead: 0, contacted: 1, quoting: 2, won: 5, customer: 5,
 };
+// Pre-customer stages — a won/customer or order-bearing company must never be
+// regressed INTO one of these through an ordinary edit (customer permanence).
+const PRE_CUSTOMER_STAGES = new Set(['lead', 'contacted', 'quoting']);
 // Move `current` toward `target` ONLY if that's a forward move on the funnel and
 // NEITHER stage is a closed/parked end state (lost/dormant). Returns the stage to
 // keep. Never regresses; never touches lost/dormant.
@@ -708,12 +711,18 @@ async function listCrm(req, res) {
     }
 
     const clients = await Client.find(filter).sort({ companyName: 1 }).lean();
+    // Which of these companies have ≥1 PLACED order (⇒ customers)? The Companies
+    // list's ★ / segment split / cleanup-candidate / demote-guard all read this
+    // server-computed flag — the same one getToday/getPipeline/getOne attach —
+    // so it MUST be here too, or a customer parked at 'dormant' mis-files under
+    // "Everyone else" and can be offered for archive. One batched query.
+    const withOrders = await keysWithOrders(clients.map((c) => c.companyKey));
     // Attach a lead-quality grade (A–D) to each row — how actionable the lead is
     // for cold email + road visits (see services/leadScore.js) — so the Companies
     // list can badge and sort by it and the owner works the best leads first.
     const scored = clients.map((c) => {
       const s = scoreLead(c);
-      return { ...c, leadScore: s.score, leadGrade: s.grade, leadReasons: s.reasons };
+      return { ...c, isCustomer: withOrders.has(c.companyKey), leadScore: s.score, leadGrade: s.grade, leadReasons: s.reasons };
     });
     res.json({ clients: scored });
   } catch (e) {
@@ -1386,6 +1395,22 @@ async function patchOne(req, res) {
     }
 
     set.companyKey = key;
+
+    // Customer permanence (ECOSYSTEM.md: "Customer status is permanent … lock the
+    // stage so it can't regress to lead"). Server backstop for the frontend's
+    // demote guard: never let a won/customer OR order-bearing company be dragged/
+    // right-clicked back to a pre-customer stage. The regression is dropped (other
+    // edits in the same patch still apply); dormant/lost stay allowed — those are
+    // deliberate owner closes, and 'dormant' is explicitly fine for a cold customer.
+    if ('stage' in set && PRE_CUSTOMER_STAGES.has(set.stage)) {
+      const current = await Client.findOne({ companyKey: key }).select('stage').lean();
+      const isCustomerStage = current && (current.stage === 'won' || current.stage === 'customer');
+      const hasOrders = (await keysWithOrders([key])).has(key);
+      if (isCustomerStage || hasOrders) {
+        delete set.stage;
+        delete set.lostReason; // stage-coupled clear no longer applies
+      }
+    }
 
     const update = {};
     if (Object.keys(set).length)  update.$set  = set;

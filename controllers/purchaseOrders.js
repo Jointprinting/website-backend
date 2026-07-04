@@ -486,17 +486,20 @@ const updatePo = async (req, res) => {
     if (numberChanged && po.poNumber) await bumpCounterTo('po', po.poNumber, po.vendorName);
 
     if (po.vendorName) {
+      // Fill-blanks-only: profile fields (contact/address/ship) are edited on the
+      // Vendor CARD and must NOT be clobbered with a PO's empty values — re-saving
+      // an old PO (created before those fields existed) used to wipe the vendor's
+      // hand-entered contact/address/shipMethod back to ''. blanksProvided is a
+      // vendor-level DEFAULT, not a per-PO toggle, so only seed it on insert.
+      const set = { name: po.vendorName };
+      if (po.contactName)   set.contactName = po.contactName;
+      if (po.vendorAddress) set.address     = po.vendorAddress;
+      if (po.shipMethod)    set.shipMethod  = po.shipMethod;
       await Vendor.findOneAndUpdate(
         // Case-insensitive, like the createPo lookup — otherwise "heritage"
         // and "Heritage" become two contact-book entries.
         { name: new RegExp(`^${String(po.vendorName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
-        { $set: {
-          name: po.vendorName,
-          contactName: po.contactName || '',
-          address: po.vendorAddress || '',
-          shipMethod: po.shipMethod || '',
-          blanksProvided: !!po.blanksProvided,
-        } },
+        { $set: set, $setOnInsert: { blanksProvided: !!po.blanksProvided } },
         { upsert: true },
       ).catch(() => { /* contact book is best-effort */ });
     }
