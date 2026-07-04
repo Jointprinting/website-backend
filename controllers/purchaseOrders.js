@@ -595,7 +595,11 @@ const listVendors = async (_req, res) => {
       });
     }
     const singles = vendors.filter((v) => !groupedIds.has(String(v._id)));
+    // Attach the usage rollup (POs / spend / orders) to every row — it was
+    // already computed for survivor-picking; surfacing it lets the Vendors list
+    // read as "who do I actually pay, and how much" instead of a bare rolodex.
     const out = [...singles, ...collapsed]
+      .map((v) => ({ ...v, stats: statsOf(v) }))
       .sort((a, b) => String(a.name || '').toLowerCase().localeCompare(String(b.name || '').toLowerCase()));
 
     res.json({ vendors: out });
