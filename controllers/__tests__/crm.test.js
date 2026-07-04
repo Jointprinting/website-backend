@@ -58,9 +58,9 @@ test('stageProbability falls back to 0 for unknown stages', () => {
 
 // ── summarizePipeline ────────────────────────────────────────────────────────
 test('empty / missing input yields zeroes', () => {
-  assert.deepEqual(summarizePipeline([]),        { totalOpenValue: 0, weightedValue: 0 });
-  assert.deepEqual(summarizePipeline(undefined), { totalOpenValue: 0, weightedValue: 0 });
-  assert.deepEqual(summarizePipeline(null),      { totalOpenValue: 0, weightedValue: 0 });
+  assert.deepEqual(summarizePipeline([]),        { totalOpenValue: 0, weightedValue: 0, weightedOpenValue: 0 });
+  assert.deepEqual(summarizePipeline(undefined), { totalOpenValue: 0, weightedValue: 0, weightedOpenValue: 0 });
+  assert.deepEqual(summarizePipeline(null),      { totalOpenValue: 0, weightedValue: 0, weightedOpenValue: 0 });
 });
 
 test('totalOpenValue counts only open stages; weightedValue weights every stage', () => {
@@ -78,10 +78,17 @@ test('totalOpenValue counts only open stages; weightedValue weights every stage'
   const expectedOpen = 1000 + 2000 + 4000; // 7000
   // Weighted = 100 + 500 + 2000 + 5000 + 3000 + 0 + 0
   const expectedWeighted = 100 + 500 + 2000 + 5000 + 3000; // 10600
+  // weightedOpen = the OPEN stages' expected value only: 100 + 500 + 2000 = 2600.
+  // This is the correct "% likely to land" numerator — always ≤ totalOpenValue.
+  const expectedWeightedOpen = 100 + 500 + 2000; // 2600
 
   const out = summarizePipeline(records);
   assert.equal(out.totalOpenValue, expectedOpen);
   assert.equal(out.weightedValue,  expectedWeighted);
+  assert.equal(out.weightedOpenValue, expectedWeightedOpen);
+  // The bug guard: weightedOpen / open is a sane rate ≤ 100% (2600/7000 ≈ 37%),
+  // unlike the old weightedValue / open (10600/7000 = 151%+).
+  assert.ok(out.weightedOpenValue <= out.totalOpenValue, 'weighted-open never exceeds open');
 });
 
 test('non-numeric / missing dealValue is treated as 0', () => {
@@ -256,4 +263,43 @@ test('a 6/22 follow-up IS overdue on the evening of 6/23 ET', () => {
     .find((i) => i.type === 'overdue_followup');
   assert.ok(overdue, 'a past ET day must be overdue');
   assert.match(overdue.message, /1 day overdue/);
+});
+
+// ── Cold-outreach prospects stay OUT of "Needs attention" ─────────────────────
+// The lead-finder creates a CRM card per discovered dispensary so the outreach
+// engine can enroll it. Once cold-emailed, the send logs an 'email' touch — which
+// must NOT make the prospect look "worked" and demand a next step (that flooded the
+// dashboard). A not-yet-warm, owner-untouched, unscheduled prospect earns ZERO items.
+test('an enrolled+emailed cold prospect is suppressed from the heads-up feed', () => {
+  const c = mkClient({
+    stage: 'lead', dealValue: 0, nextFollowUp: null, lastContact: null,
+    tags: ['dispensary', 'cold-email'],
+    // the automated cold send logged an 'email' entry — the trap that used to
+    // defeat the old `everContacted` suppression.
+    log: [{ at: daysAgo(2), text: 'Cold email sent', kind: 'email' }],
+    updatedAt: daysAgo(2),
+  });
+  assert.deepEqual(typesFor(c), [], 'a cold, un-warmed prospect earns no attention items');
+});
+
+test('the owner personally touching a prospect (call) resurfaces it', () => {
+  const c = mkClient({
+    stage: 'lead', dealValue: 0, nextFollowUp: null, lastContact: daysAgo(1),
+    tags: ['dispensary', 'cold-email'],
+    log: [{ at: daysAgo(1), text: 'Called, interested', kind: 'call' }],
+    updatedAt: daysAgo(1),
+  });
+  // A real human touch means it's the owner's lead now → it should ask for a next step.
+  assert.ok(typesFor(c).includes('no_next_step'), 'an owner-touched prospect wants a next step');
+});
+
+test('a replied (warm) prospect resurfaces even before the owner logs a call', () => {
+  // warm-handoff stamps 'warm' + a follow-up on reply; a warm card is never suppressed.
+  const c = mkClient({
+    stage: 'contacted', dealValue: 0, nextFollowUp: daysAhead(-2), lastContact: daysAgo(1),
+    tags: ['dispensary', 'cold-email', 'warm'],
+    log: [{ at: daysAgo(1), text: 'They replied', kind: 'email' }],
+    updatedAt: daysAgo(1),
+  });
+  assert.ok(typesFor(c).includes('overdue_followup'), 'a warm lead past its follow-up surfaces');
 });
