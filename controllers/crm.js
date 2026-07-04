@@ -972,7 +972,7 @@ async function getDashboard(req, res) {
     // One read; we only need the CRM fields (+ timestamps for staleness, + tags
     // so the heads-up engine can down-rank cold/meta-ad leads, + address).
     const docs = await Client.find(filter)
-      .select('companyKey companyName clientName phone contacts dealValue stage address area interestType nextFollowUp lastContact log tags updatedAt')
+      .select('companyKey companyName clientName phone contacts dealValue stage address area interestType nextFollowUp lastContact log tags leadSource snoozedUntil updatedAt')
       .lean();
 
     const now        = new Date();
@@ -1063,11 +1063,24 @@ async function getDashboard(req, res) {
 
     const heads = buildHeadsUp(docs, nowMs, startTodayMs);
 
+    // How many never-worked cold-outreach prospects are cluttering the book — the
+    // count behind the dashboard's one-click "clear cold prospects" purge. Mirrors
+    // the archiveCompanies({coldProspects}) predicate (minus the order check, which
+    // only ever shrinks it — a cold prospect with an order is essentially nil).
+    const coldProspects = docs.filter((c) => {
+      const tags = (c.tags || []).map((t) => String(t).toLowerCase());
+      if (tags.includes('warm')) return false;
+      if (c.lastContact || c.nextFollowUp) return false;
+      if (!['lead', 'contacted'].includes(c.stage)) return false;
+      return c.leadSource === 'Cold Outreach' || tags.includes('dispensary') || tags.includes('cold-email');
+    }).length;
+
     res.json({
       generatedAt: now.toISOString(),
       area: area || null,
       totalCompanies: docs.length,
       customersWithOrders, // authoritative customer count from order reality
+      coldProspects,        // never-worked cold-outreach prospects (one-click purge)
       pipeline: {
         stages,
         totalOpenValue:    summary.totalOpenValue,
@@ -2174,8 +2187,38 @@ async function archiveCompanies(req, res) {
       keys = candidates
         .filter((c) => !withOrders.has(c.companyKey) && !ownerTouched(c))
         .map((c) => c.companyKey);
+    } else if (body.coldProspects === true || body.coldProspects === 'true') {
+      // One-click "clear the cold-outreach book": the lead-finder / mail-merge
+      // prospects the owner never personally worked. STRICT predicate so a real
+      // client or an engaged lead can NEVER be caught:
+      //   • cold-outreach origin (leadSource 'Cold Outreach' OR a dispensary/
+      //     cold-email tag), AND
+      //   • never replied (no 'warm' tag) AND never personally contacted
+      //     (lastContact null) AND nothing scheduled (nextFollowUp null), AND
+      //   • still an early stage (lead/contacted), AND (below) NO order of any kind.
+      // Soft-archive only — reversible, and the outreach engine still re-enrolls
+      // from archived? No: archived drops out of the enroll pool, which is the
+      // intent here (the owner is clearing them, not pausing). A reply still
+      // auto-unarchives via warm-handoff.
+      reason = 'cold-prospect-cleanup';
+      const candidates = await Client.find({
+        ...NOT_ARCHIVED,
+        lastContact: null,
+        nextFollowUp: null,
+        stage: { $in: ['lead', 'contacted'] },
+        tags: { $nin: ['warm'] },
+        $or: [{ leadSource: 'Cold Outreach' }, { tags: { $in: ['dispensary', 'cold-email'] } }],
+      }).select('companyKey').lean();
+      const keyList = candidates.map((c) => c.companyKey);
+      const withOrders = await keysWithAnyOrder(keyList);
+      keys = keyList.filter((k) => !withOrders.has(k));
     } else {
-      return res.status(400).json({ message: 'Provide { keys: [...] } or { deadNoFollowUp: true }' });
+      return res.status(400).json({ message: 'Provide { keys: [...] }, { deadNoFollowUp: true }, or { coldProspects: true }' });
+    }
+
+    // Preview mode — report what WOULD be archived without writing anything.
+    if (body.preview === true || body.preview === 'true') {
+      return res.json({ ok: true, preview: true, wouldArchive: keys.length, keys });
     }
 
     if (!keys.length) return res.json({ ok: true, archived: 0, keys: [] });

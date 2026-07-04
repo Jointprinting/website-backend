@@ -227,6 +227,11 @@ test('isBigChain: known MSOs + brand:wikidata are chains, independents are not',
   assert.equal(isBigChain({}, 'Trulieve Dispensary'), true);
   assert.equal(isBigChain({}, 'Sunnyside Cannabis'), true);
   assert.equal(isBigChain({}, 'RISE Dispensary Paterson'), true);
+  // Newly-added MSOs that had slipped through and polluted the CRM.
+  assert.equal(isBigChain({}, 'Verilife Wharton'), true);
+  assert.equal(isBigChain({}, 'MedMen NYC'), true);
+  assert.equal(isBigChain({}, 'Ayr Wellness'), true);
+  assert.equal(isBigChain({}, 'Fluent Cannabis'), true);
   // A genuine independent — not a chain.
   assert.equal(isBigChain({}, 'Green Leaf Dispensary'), false);
   assert.equal(isBigChain({ brand: '' }, 'Nate’s Corner Dispensary'), false);
