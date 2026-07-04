@@ -536,16 +536,23 @@ const deletePo = async (req, res) => {
 // duplicate group and (b) inform /vendors/duplicates. Leading-zero-safe on order
 // numbers isn't needed here (we count POs/txns, not reconcile to orders).
 async function _vendorUsageByKey() {
-  const [poAgg, txAgg] = await Promise.all([
+  const [poAgg, txAgg, vendors] = await Promise.all([
     PurchaseOrder.aggregate([
       { $match: { archived: { $ne: true } } },
       { $group: { _id: null, rows: { $push: { vendorName: '$vendorName', grandTotal: '$grandTotal', orderId: '$orderId' } } } },
     ]).then((r) => (r[0] && r[0].rows) || []).catch(() => []),
     Transaction.aggregate([
       { $match: { type: 'expense' } },
-      { $group: { _id: null, rows: { $push: { party: '$party', amount: '$amount', isCredit: '$isCredit' } } } },
+      { $group: { _id: null, rows: { $push: { party: '$party', amount: '$amount', isCredit: '$isCredit', vendorId: '$vendorId' } } } },
     ]).then((r) => (r[0] && r[0].rows) || []).catch(() => []),
+    // Live vendors only, so a receipt hard-linked (vendorId) to a live card lands
+    // on that card's key even if its `party` text was typed differently — matching
+    // the detail view (getVendor unions vendorId + name). A link to an archived
+    // vendor falls back to the party name-key below (no regression / no disappear).
+    Vendor.find(NOT_ARCHIVED).select('name').lean().catch(() => []),
   ]);
+  const idToKey = new Map();
+  for (const v of vendors) { const k = vendorKey(v.name); if (k) idToKey.set(String(v._id), k); }
   const byKey = new Map();
   const get = (k) => {
     if (!byKey.has(k)) byKey.set(k, { poCount: 0, poTotal: 0, spend: 0, orderIds: new Set() });
@@ -560,7 +567,9 @@ async function _vendorUsageByKey() {
     if (p.orderId) s.orderIds.add(String(p.orderId));
   }
   for (const t of txAgg) {
-    const k = vendorKey(t.party);
+    // Prefer the durable hard link (vendorId → live card's key); fall back to the
+    // party name-key. Each row counts once, on exactly one vendor.
+    const k = (t.vendorId && idToKey.get(String(t.vendorId))) || vendorKey(t.party);
     if (!k) continue;
     get(k).spend += (t.isCredit ? -1 : 1) * (Number(t.amount) || 0);
   }
