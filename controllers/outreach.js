@@ -954,13 +954,16 @@ async function findLeads(req, res) {
   }
 }
 
-// POST /api/outreach/find-leads/auto/run — force one lead-engine sweep right
-// now (the Studio's "Refill now" button). The engine otherwise runs itself:
-// always on, queue-aware, milking each state dry before advancing the frontier.
-// (The old on/off toggle endpoint is gone — there is nothing to turn off.)
+// POST /api/outreach/find-leads/auto/run { restart? } — force one lead-engine
+// sweep right now (the Studio's "Refill now" button). `restart:true` rewinds
+// the frontier to the first state first — the "re-sweep the map" action for
+// after the finder improves (dedupe makes it purely additive). The engine
+// otherwise runs itself: always on, queue-aware, milking each state dry before
+// advancing. (The old on/off toggle endpoint is gone — nothing to turn off.)
 async function runAutoNow(req, res) {
   try {
-    res.json(await runFrontierSweep({ force: true }));
+    const fromStart = !!(req.body && (req.body.restart === true || req.body.restart === 'true'));
+    res.json(await runFrontierSweep({ force: true, fromStart }));
   } catch (e) {
     res.status(502).json({ message: e.message });
   }

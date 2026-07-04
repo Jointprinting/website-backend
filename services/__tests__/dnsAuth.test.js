@@ -18,13 +18,20 @@ test('green: SPF + DKIM + enforcing DMARC', () => {
   assert.equal(r.issues.length, 0);
 });
 
-test('amber: has SPF + DMARC but DKIM unseen or p=none', () => {
+test('amber: has SPF + DMARC but DKIM unseen', () => {
   const noDkim = classifyAuth({ domain: 'x.com', spf: true, dkim: false, dmarc: true, dmarcPolicy: 'reject' });
   assert.equal(noDkim.level, 'amber');
   assert.equal(noDkim.gateOk, true); // amber still sends
+});
+
+test('green: all three present — p=none does NOT demote (it is the correct starting policy)', () => {
   const pNone = classifyAuth({ domain: 'x.com', spf: true, dkim: true, dmarc: true, dmarcPolicy: 'none' });
-  assert.equal(pNone.level, 'amber');
-  assert.ok(pNone.issues.some((i) => /p=none/i.test(i)));
+  assert.equal(pNone.level, 'green');
+  assert.equal(pNone.gateOk, true);
+  assert.equal(pNone.issues.length, 0);
+  // The optional quarantine upgrade still surfaces through recommendedRecords.
+  const recs = recommendedRecords({ domain: 'x.com', level: 'green', spf: true, dkim: true, dmarc: true, dmarcPolicy: 'none' });
+  assert.deepEqual(recs.map((r) => r.id), ['dmarc-upgrade']);
 });
 
 test('red: missing SPF or DMARC → holds sends', () => {

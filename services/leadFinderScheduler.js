@@ -37,8 +37,11 @@ async function getState() {
 // One lead-engine tick. Queue-aware: no-op when the cold-lead pool is healthy;
 // otherwise sweeps successive states until the pool is refilled (or the per-run
 // cap is hit). `force` bypasses the healthy-queue short-circuit (the Studio's
-// "Refill now" button), so a manual run always sweeps.
-async function runFrontierSweep({ force = false } = {}) {
+// "Refill now" button), so a manual run always sweeps. `fromStart` rewinds the
+// frontier to the first state before sweeping — the "re-sweep the map" action
+// for after the finder itself improves: imports dedupe on company + email, so a
+// re-pass over already-swept states only ADDS shops the older pass missed.
+async function runFrontierSweep({ force = false, fromStart = false } = {}) {
   const state = await getState();
 
   const available = await countAvailableColdLeads();
@@ -49,7 +52,9 @@ async function runFrontierSweep({ force = false } = {}) {
     return { skipped: 'queue-healthy', available };
   }
 
-  let region = isRegion(state.activeRegion) ? state.activeRegion : DEFAULT_REGION;
+  let region = fromStart ? DEFAULT_REGION
+    : (isRegion(state.activeRegion) ? state.activeRegion : DEFAULT_REGION);
+  if (fromStart) state.dryStreak = 0;
   let importedTotal = 0;
   let regionsSwept = 0;
   const swept = [];

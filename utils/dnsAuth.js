@@ -23,8 +23,12 @@ const domainOf = (addr) => {
 };
 
 // Pure classifier: given what resolved, decide the posture + a short reason list.
-//   green  — SPF + DKIM + DMARC present and DMARC enforcing (p != none)
-//   amber  — has the essentials (SPF + DMARC) but DKIM unseen or DMARC p=none
+//   green  — SPF + DKIM + DMARC all present. DMARC p=none does NOT demote:
+//            it's the CORRECT starting policy (Gmail/Yahoo only require a
+//            published record), so calling it "Partial" just confused the owner
+//            whose ESP dashboard showed all-green. Upgrading to quarantine is
+//            optional hardening, surfaced via recommendedRecords.
+//   amber  — has the essentials (SPF + DMARC) but no DKIM selector resolved
 //   red    — missing SPF or DMARC (the two Gmail/Yahoo hard requirements)
 //   unknown — DNS couldn't be reached (never gate on this — could be transient)
 function classifyAuth({ domain = '', reachable = true, spf = false, dkim = false, dmarc = false, dmarcPolicy = '' } = {}) {
@@ -34,12 +38,11 @@ function classifyAuth({ domain = '', reachable = true, spf = false, dkim = false
   const issues = [];
   if (!spf) issues.push('No SPF record (v=spf1) — add your SMTP provider’s include.');
   if (!dmarc) issues.push('No DMARC record at _dmarc — publish at least p=none.');
-  if (!dkim) issues.push('No DKIM selector resolved — publish your provider’s DKIM CNAMEs (or set OUTREACH_DKIM_SELECTOR).');
-  if (dmarc && dmarcPolicy === 'none') issues.push('DMARC is p=none (monitor only) — move to quarantine once clean.');
+  if (!dkim) issues.push('No DKIM selector resolved — publish your provider’s DKIM record (or set OUTREACH_DKIM_SELECTOR to its selector name).');
 
   let level;
   if (!spf || !dmarc) level = 'red';
-  else if (!dkim || dmarcPolicy === 'none') level = 'amber';
+  else if (!dkim) level = 'amber';
   else level = 'green';
 
   // Gate (may we send?) — hold only on a confirmed red (missing SPF/DMARC).
@@ -57,7 +60,10 @@ async function resolveCname(name) {
 }
 
 // Common DKIM selectors to probe when one isn't configured (providers differ).
-const DKIM_SELECTORS = ['default', 'sp', 's1', 's2', 'k1', 'k2', 'sendpulse', 'mail', 'google', 'selector1', 'selector2', 'dkim', 'mandrill'];
+// 'sign' is SendPulse's actual selector (sign._domainkey — verified live on the
+// owner's domain; its absence here is why the dashboard showed DKIM missing
+// while SendPulse showed green). 'mailjet' covers the free-pool provider.
+const DKIM_SELECTORS = ['sign', 'default', 'sp', 's1', 's2', 'k1', 'k2', 'sendpulse', 'mail', 'mailjet', 'google', 'selector1', 'selector2', 'dkim', 'mandrill'];
 
 // Resolve + classify a sending domain's email auth. Best-effort; never throws.
 async function checkDomainAuth(domain, opts = {}) {
