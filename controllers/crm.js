@@ -195,15 +195,25 @@ const OPEN_STAGES = ['lead', 'contacted', 'quoting'];
 function summarizePipeline(records) {
   let totalOpenValue = 0;
   let weightedValue = 0;
+  let weightedOpenValue = 0;
   for (const r of records || []) {
     const val = Number(r && r.dealValue) || 0;
     const stage = r && r.stage;
-    if (OPEN_STAGES.includes(stage)) totalOpenValue += val;
+    if (OPEN_STAGES.includes(stage)) {
+      totalOpenValue += val;
+      weightedOpenValue += val * stageProbability(stage); // forecast of the OPEN pipe only
+    }
     weightedValue += val * stageProbability(stage);
   }
   return {
-    totalOpenValue: Math.round(totalOpenValue * 100) / 100,
-    weightedValue:  Math.round(weightedValue * 100) / 100,
+    totalOpenValue:    Math.round(totalOpenValue * 100) / 100,
+    weightedValue:     Math.round(weightedValue * 100) / 100,
+    // Expected value of the OPEN pipeline (open dealValue × its own stage odds). This
+    // is the correct numerator for "% likely to land": dividing it by totalOpenValue
+    // shares the SAME open-stage set, so the ratio is inherently ≤ 100%. (weightedValue
+    // divided by totalOpenValue was the bug — it mixed realized won/customer revenue,
+    // prob 1, into the numerator while the denominator counted only open stages → 460%.)
+    weightedOpenValue: Math.round(weightedOpenValue * 100) / 100,
   };
 }
 
@@ -539,9 +549,24 @@ function classifyHeadsUp(c, nowMs, todayMs) {
   // bury the real work); a real follow-up date or a deal value still surfaces them.
   const tags = (c.tags || []).map((t) => String(t).toLowerCase());
   const everContacted = lc != null || (c.log || []).some((l) => ['call', 'text', 'email', 'visit'].includes(l && l.kind));
-  const coldDeadWeight = stage === 'lead'
-    && (tags.includes('cold') || tags.includes('meta-ad') || !everContacted)
-    && value < HEADS_UP.HOT_VALUE;
+  // A cold-OUTREACH prospect (the lead-finder / mail-merge produced it) lives in the
+  // CRM only so the outreach engine can enroll it — it is NOT the owner's client
+  // until it REPLIES. Warm-handoff stamps a 'warm' tag + a follow-up on reply; until
+  // then it's the engine's job, not the owner's. Critically, SENDING a cold email
+  // logs an 'email' touch, which would otherwise flip everContacted true and make the
+  // prospect demand a "next step" — flooding the dashboard with hundreds of shops the
+  // owner never chose to work. So a not-yet-warm outreach prospect the owner hasn't
+  // personally touched (call/text/visit) or scheduled is held OUT of the heads-up feed
+  // entirely; it re-enters automatically the moment it replies (→ 'warm') or the owner
+  // sets a follow-up. `ownerTouched` deliberately excludes 'email' so an automated cold
+  // send never counts as the owner working the lead.
+  const ownerTouched = (c.log || []).some((l) => ['call', 'text', 'visit'].includes(l && l.kind));
+  const outreachProspect = !tags.includes('warm')
+    && (tags.includes('cold-email') || tags.includes('dispensary') || tags.includes('cold') || tags.includes('meta-ad'));
+  const outreachPool = outreachProspect && !ownerTouched && c.nextFollowUp == null
+    && stage !== 'customer' && stage !== 'won';
+  const coldDeadWeight = value < HEADS_UP.HOT_VALUE
+    && (outreachPool || (stage === 'lead' && !everContacted));
 
   // Whole-day follow-up vs the owner's today, compared by CALENDAR DAY (see
   // dayDiffFromToday): <0 overdue, 0 due today, >0 upcoming. null = none set.
@@ -1039,9 +1064,10 @@ async function getDashboard(req, res) {
       customersWithOrders, // authoritative customer count from order reality
       pipeline: {
         stages,
-        totalOpenValue: summary.totalOpenValue,
-        weightedValue:  summary.weightedValue,
-        probability:    STAGE_PROBABILITY,
+        totalOpenValue:    summary.totalOpenValue,
+        weightedValue:     summary.weightedValue,
+        weightedOpenValue: summary.weightedOpenValue,
+        probability:       STAGE_PROBABILITY,
       },
       followUps: { overdue, dueToday, dueThisWeek },
       activity:  { touches7, touches30 },
