@@ -276,6 +276,7 @@ const clientRoutes         = require('./routes/clientRoutes');
 const publicApprovalRoutes = require('./routes/publicApprovalRoutes');
 const backupRoutes         = require('./routes/backupRoutes');
 const adminRoutes          = require('./routes/adminRoutes');
+const agentRoutes          = require('./routes/agentRoutes');
 const jpwRoutes            = require('./routes/jpwRoutes');
 const gdriveRoutes         = require('./routes/gdriveRoutes');
 const financeRoutes        = require('./routes/financeRoutes');
@@ -308,6 +309,7 @@ app.use('/api/signals', signalsRoutes);
 app.use('/api/public', express.json(), publicApprovalRoutes);
 app.use('/api/admin/backup', backupRoutes);
 app.use('/api/admin', express.json({ limit: '2mb' }), adminRoutes); // owner-only agent management
+app.use('/api/agent', express.json({ limit: '2mb' }), agentRoutes); // sales-agent portal (self-scoped)
 app.use('/api/jpw', express.json({ limit: '20mb' }), jpwRoutes);
 app.use('/api/gdrive', express.json(), gdriveRoutes);
 app.use('/api/finances', express.json({ limit: '8mb' }), financeRoutes);
