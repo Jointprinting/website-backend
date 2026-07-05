@@ -18,6 +18,11 @@ const {
   classifyHeadsUp,
   buildHeadsUp,
   HEADS_UP,
+  isOutreachPool,
+  isColdDeadWeight,
+  cadenceBucketFor,
+  buildCockpit,
+  CADENCE_BUCKETS,
 } = require('../crm');
 
 // ── Heads-up test scaffolding ────────────────────────────────────────────────
@@ -319,4 +324,107 @@ test('a snoozed card earns no heads-up items until the snooze passes', () => {
   // A snooze already in the past no longer suppresses (it auto-returns).
   const expired = { ...base, snoozedUntil: daysAgo(1) };
   assert.ok(typesFor(expired).length > 0, 'an expired snooze lets the card resurface');
+});
+
+// ── Cadence cockpit (bucket-by-next-action) ──────────────────────────────────
+const bucketOf = (c) => { const e = cadenceBucketFor(c, NOW_MS, START_MS); return e ? e.bucket : null; };
+
+test('isOutreachPool: cold-outreach spam only (untouched, unscheduled, not warm)', () => {
+  // Cold dispensary prospect, never owner-touched, nothing scheduled → engine's job.
+  assert.equal(isOutreachPool(mkClient({
+    stage: 'lead', lastContact: null, nextFollowUp: null,
+    tags: ['dispensary'], log: [{ at: daysAgo(2), kind: 'email' }], // automated cold send doesn't count
+  })), true);
+  // Owner actually called it → no longer the engine's job.
+  assert.equal(isOutreachPool(mkClient({
+    stage: 'lead', lastContact: null, tags: ['dispensary'], log: [{ at: daysAgo(1), kind: 'call' }],
+  })), false);
+  // A scheduled follow-up (e.g. warm-handoff) removes it from the pool.
+  assert.equal(isOutreachPool(mkClient({ stage: 'lead', tags: ['dispensary'], log: [], nextFollowUp: daysAhead(3) })), false);
+  // A genuine untagged lead is NOT outreach spam.
+  assert.equal(isOutreachPool(mkClient({ stage: 'lead', lastContact: null, log: [], tags: [] })), false);
+});
+
+test('isColdDeadWeight (broad): outreach spam OR any sub-hot uncontacted lead', () => {
+  // Cold-outreach dispensary → dead weight.
+  assert.equal(isColdDeadWeight(mkClient({
+    stage: 'lead', dealValue: 0, lastContact: null, nextFollowUp: null,
+    tags: ['dispensary'], log: [{ at: daysAgo(2), kind: 'email' }],
+  })), true);
+  // A bare uncontacted lead → dead weight (broad clause), even scheduled.
+  assert.equal(isColdDeadWeight(mkClient({ stage: 'lead', dealValue: 0, lastContact: null, log: [] })), true);
+  // Owner called it → NOT dead weight.
+  assert.equal(isColdDeadWeight(mkClient({
+    stage: 'lead', dealValue: 0, lastContact: null, tags: ['dispensary'], log: [{ at: daysAgo(1), kind: 'call' }],
+  })), false);
+  // Hot value overrides everything.
+  assert.equal(isColdDeadWeight(mkClient({ stage: 'lead', dealValue: 9999, lastContact: null, tags: ['dispensary'], log: [] })), false);
+});
+
+test('cadence YOUR MOVE: overdue follow-up or a hot deal gone quiet', () => {
+  assert.equal(bucketOf(mkClient({ stage: 'contacted', nextFollowUp: daysAhead(-2) })), 'your_move');
+  // Hot + quiet (never contacted) beats everything, even at stage lead.
+  assert.equal(bucketOf(mkClient({ stage: 'lead', dealValue: 5000, lastContact: null, log: [] })), 'your_move');
+});
+
+test('cadence CALL TODAY: a follow-up booked for today', () => {
+  assert.equal(bucketOf(mkClient({ stage: 'contacted', dealValue: 100, nextFollowUp: daysAhead(0) })), 'call_today');
+});
+
+test('cadence CLOSING SOON: a live quote with no overdue/today follow-up', () => {
+  assert.equal(bucketOf(mkClient({ stage: 'quoting', dealValue: 800, nextFollowUp: null })), 'closing_soon');
+  // A quoting deal with a FUTURE follow-up still reads as closing_soon (a quote's out).
+  assert.equal(bucketOf(mkClient({ stage: 'quoting', dealValue: 800, nextFollowUp: daysAhead(5) })), 'closing_soon');
+});
+
+test('cadence MAKE A MOCKUP: an engaged early lead with nothing scheduled', () => {
+  assert.equal(bucketOf(mkClient({
+    stage: 'contacted', dealValue: 300, nextFollowUp: null, lastContact: daysAgo(2),
+    log: [{ at: daysAgo(2), kind: 'call' }],
+  })), 'make_mockup');
+});
+
+test('cadence keeps a genuine (untagged) new lead in MAKE A MOCKUP — not excluded as spam', () => {
+  // Uncontacted, no tags, nothing scheduled — a real lead the owner should mock up.
+  // (Only tagged cold-outreach spam is filtered out of the worklist.)
+  assert.equal(bucketOf(mkClient({ stage: 'lead', dealValue: 0, lastContact: null, nextFollowUp: null, tags: [], log: [] })), 'make_mockup');
+});
+
+test('cadence ON THE RAILS: a healthy deal with a future step booked', () => {
+  assert.equal(bucketOf(mkClient({ stage: 'contacted', dealValue: 300, nextFollowUp: daysAhead(4), lastContact: daysAgo(1) })), 'on_the_rails');
+});
+
+test('cadence excludes closed, snoozed, and cold dead-weight from the worklist', () => {
+  assert.equal(bucketOf(mkClient({ stage: 'won', dealValue: 5000 })), null);
+  assert.equal(bucketOf(mkClient({ stage: 'lost' })), null);
+  assert.equal(bucketOf(mkClient({ stage: 'quoting', dealValue: 5000, snoozedUntil: daysAhead(5) })), null);
+  // Never-worked cold dispensary prospect → off the worklist entirely.
+  assert.equal(bucketOf(mkClient({ stage: 'lead', dealValue: 0, lastContact: null, nextFollowUp: null, tags: ['dispensary'], log: [] })), null);
+});
+
+test('buildCockpit groups a book into all five buckets, sorts by value, counts', () => {
+  const clients = [
+    mkClient({ companyKey: 'a', stage: 'contacted', nextFollowUp: daysAhead(-1) }),                 // your_move
+    mkClient({ companyKey: 'b', stage: 'lead', dealValue: 9000, lastContact: null, log: [] }),       // your_move (hot)
+    mkClient({ companyKey: 'c', stage: 'contacted', dealValue: 100, nextFollowUp: daysAhead(0) }),   // call_today
+    mkClient({ companyKey: 'd', stage: 'quoting', dealValue: 1200, nextFollowUp: null }),            // closing_soon
+    mkClient({ companyKey: 'e', stage: 'lead', dealValue: 200, nextFollowUp: null, lastContact: daysAgo(3), log: [{ at: daysAgo(3), kind: 'call' }] }), // make_mockup
+    mkClient({ companyKey: 'f', stage: 'contacted', dealValue: 50, nextFollowUp: daysAhead(6), lastContact: daysAgo(1) }), // on_the_rails
+    mkClient({ companyKey: 'g', stage: 'won', dealValue: 5000 }),                                    // excluded
+  ];
+  const { buckets, counts, total } = buildCockpit(clients, NOW_MS, START_MS);
+  assert.deepEqual(Object.keys(buckets).sort(), [...CADENCE_BUCKETS].sort());
+  assert.equal(counts.your_move, 2);
+  assert.equal(counts.call_today, 1);
+  assert.equal(counts.closing_soon, 1);
+  assert.equal(counts.make_mockup, 1);
+  assert.equal(counts.on_the_rails, 1);
+  assert.equal(total, 6); // 'g' (won) excluded
+  // your_move sorted by value desc → the $9k hot deal leads.
+  assert.equal(buckets.your_move[0].companyKey, 'b');
+  // Every entry carries the fields the frontend row needs.
+  const e = buckets.closing_soon[0];
+  assert.equal(e.type, 'closing_soon');
+  assert.equal(e.severity, 'med');
+  assert.ok(e.message && e.name && e.companyKey);
 });
