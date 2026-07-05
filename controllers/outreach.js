@@ -692,6 +692,31 @@ async function resetCampaign(req, res) {
   }
 }
 
+// DELETE /api/outreach/campaigns/:id — remove a campaign entirely (a stale draft
+// or a mis-set-up one). Also deletes its enrollments and, if it was the
+// auto-enroll target, clears that pointer so the engine doesn't chase a deleted
+// campaign. Opt-outs (Suppression) and CRM contacts are untouched. Confirm-gated.
+async function deleteCampaign(req, res) {
+  try {
+    const campaign = await OutreachCampaign.findById(req.params.id).lean();
+    if (!campaign) return res.status(404).json({ message: 'campaign not found' });
+    const confirm = (req.body || {}).confirm;
+    if (confirm !== true && confirm !== 'true') {
+      return res.status(400).json({ message: 'Pass { confirm: true } — this permanently deletes the campaign.' });
+    }
+    const removed = await OutreachEnrollment.deleteMany({ campaignId: campaign._id });
+    // If this campaign was the auto-enroll target, stop pointing the engine at it.
+    await OutreachState.updateOne(
+      { key: 'engine', autoEnrollCampaignId: campaign._id },
+      { $set: { autoEnrollCampaignId: null } },
+    );
+    await OutreachCampaign.deleteOne({ _id: campaign._id });
+    return res.json({ ok: true, deleted: String(campaign._id), removedEnrollments: removed.deletedCount || 0 });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
 // ── Auto-enroll (Wave 7) ──────────────────────────────────────────────────────
 
 // Discover cold candidates and enroll up to `limit` of them into `campaign`,
@@ -1228,6 +1253,7 @@ module.exports = {
   stopEnrollment,
   unenrollAll,
   resetCampaign,
+  deleteCampaign,
   setAutoEnroll,
   runAutoEnrollTick,
   startAutoEnroll,
