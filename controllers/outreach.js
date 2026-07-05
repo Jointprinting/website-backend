@@ -666,6 +666,32 @@ async function unenrollAll(req, res) {
   }
 }
 
+// POST /api/outreach/campaigns/:id/reset — FULL fresh start. Deletes EVERY
+// enrollment for this campaign (including already-sent), so the campaign re-runs
+// cleanly from email 1 the next time auto-enroll refills it. Deliberately narrow
+// about what it does NOT touch:
+//   • Companies stay in the CRM (only the enrollment rows are removed).
+//   • The Suppression list (unsubscribes / bounces) is a SEPARATE collection and
+//     is never touched — anyone who opted out stays permanently protected.
+//   • The sender's warm-up ramp (OutreachState.firstSendAt) and today's daily
+//     cap (sentToday) are preserved on purpose: resetting them would re-throttle
+//     a warmed sender or let it over-send today.
+// Requires an explicit { confirm: true } so a stray request can't wipe the roster.
+async function resetCampaign(req, res) {
+  try {
+    const campaign = await OutreachCampaign.findById(req.params.id).lean();
+    if (!campaign) return res.status(404).json({ message: 'campaign not found' });
+    const confirm = (req.body || {}).confirm;
+    if (confirm !== true && confirm !== 'true') {
+      return res.status(400).json({ message: 'Pass { confirm: true } — reset clears the whole roster.' });
+    }
+    const result = await OutreachEnrollment.deleteMany({ campaignId: campaign._id });
+    return res.json({ ok: true, removed: result.deletedCount || 0 });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
 // ── Auto-enroll (Wave 7) ──────────────────────────────────────────────────────
 
 // Discover cold candidates and enroll up to `limit` of them into `campaign`,
@@ -1201,6 +1227,7 @@ module.exports = {
   markReplied,
   stopEnrollment,
   unenrollAll,
+  resetCampaign,
   setAutoEnroll,
   runAutoEnrollTick,
   startAutoEnroll,
