@@ -513,6 +513,38 @@ function daysBetween(aMs, bMs) {
   return Math.floor((bMs - aMs) / 86400000);
 }
 
+// A not-yet-warm COLD-OUTREACH prospect: the lead-finder / mail-merge produced it,
+// it lives in the CRM only so the engine can enroll it, and it is NOT the owner's
+// to work until it REPLIES (→ 'warm' tag + a follow-up). The owner hasn't
+// personally touched it (call/text/visit — an automated cold 'email' send doesn't
+// count) and nothing is scheduled. This is the narrow "engine's job, not mine"
+// predicate. Pure. The cadence cockpit excludes exactly these, so its buckets stay
+// the OWNER's chosen worklist — a genuine new lead (untagged) still flows through.
+function isOutreachPool(c) {
+  if (!c) return false;
+  const stage = c.stage;
+  const tags = (c.tags || []).map((t) => String(t).toLowerCase());
+  const outreachProspect = !tags.includes('warm')
+    && (tags.includes('cold-email') || tags.includes('dispensary') || tags.includes('cold') || tags.includes('meta-ad'));
+  const ownerTouched = (c.log || []).some((l) => ['call', 'text', 'visit'].includes(l && l.kind));
+  return outreachProspect && !ownerTouched && c.nextFollowUp == null
+    && stage !== 'customer' && stage !== 'won';
+}
+
+// The BROADER heads-up suppression: cold-outreach spam OR a sub-hot bare
+// uncontacted 'lead' with nothing worked yet. Used by classifyHeadsUp to keep the
+// low-signal no_next_step/stale flags from burying real work; a hot value or an
+// explicit follow-up still surfaces the record via the overdue/hot_quiet checks.
+// Pure.
+function isColdDeadWeight(c) {
+  if (!c) return false;
+  const value = Number(c.dealValue) || 0;
+  if (value >= HEADS_UP.HOT_VALUE) return false;
+  const lc = c.lastContact ? new Date(c.lastContact).getTime() : null;
+  const everContacted = lc != null || (c.log || []).some((l) => ['call', 'text', 'email', 'visit'].includes(l && l.kind));
+  return isOutreachPool(c) || (c.stage === 'lead' && !everContacted);
+}
+
 // Inspect one client (a lean POJO with the CRM fields) and return any heads-up
 // items it earns.
 //   nowMs    — current instant (epoch ms): drives elapsed-time signals (stale /
@@ -545,31 +577,11 @@ function classifyHeadsUp(c, nowMs, todayMs) {
   // DOWN-RANK cold / never-worked leads so the feed isn't dominated by them. The
   // "needs attention" feed is for deals in motion (overdue, hot-and-quiet,
   // warm-but-stalled) — a never-contacted cold prospect with no scheduled step is
-  // NOT today's priority. A record is "cold dead-weight" when it's a bare lead
-  // (stage 'lead') that's either tagged 'cold'/'meta-ad' OR has never been
-  // contacted (no lastContact, no human log) AND has nothing scheduled. We
-  // SUPPRESS the low-signal no_next_step/stale flags for those (they'd otherwise
-  // bury the real work); a real follow-up date or a deal value still surfaces them.
-  const tags = (c.tags || []).map((t) => String(t).toLowerCase());
-  const everContacted = lc != null || (c.log || []).some((l) => ['call', 'text', 'email', 'visit'].includes(l && l.kind));
-  // A cold-OUTREACH prospect (the lead-finder / mail-merge produced it) lives in the
-  // CRM only so the outreach engine can enroll it — it is NOT the owner's client
-  // until it REPLIES. Warm-handoff stamps a 'warm' tag + a follow-up on reply; until
-  // then it's the engine's job, not the owner's. Critically, SENDING a cold email
-  // logs an 'email' touch, which would otherwise flip everContacted true and make the
-  // prospect demand a "next step" — flooding the dashboard with hundreds of shops the
-  // owner never chose to work. So a not-yet-warm outreach prospect the owner hasn't
-  // personally touched (call/text/visit) or scheduled is held OUT of the heads-up feed
-  // entirely; it re-enters automatically the moment it replies (→ 'warm') or the owner
-  // sets a follow-up. `ownerTouched` deliberately excludes 'email' so an automated cold
-  // send never counts as the owner working the lead.
-  const ownerTouched = (c.log || []).some((l) => ['call', 'text', 'visit'].includes(l && l.kind));
-  const outreachProspect = !tags.includes('warm')
-    && (tags.includes('cold-email') || tags.includes('dispensary') || tags.includes('cold') || tags.includes('meta-ad'));
-  const outreachPool = outreachProspect && !ownerTouched && c.nextFollowUp == null
-    && stage !== 'customer' && stage !== 'won';
-  const coldDeadWeight = value < HEADS_UP.HOT_VALUE
-    && (outreachPool || (stage === 'lead' && !everContacted));
+  // NOT today's priority. isColdDeadWeight (shared with the cadence cockpit) is the
+  // predicate; we SUPPRESS the low-signal no_next_step/stale flags for those (they'd
+  // otherwise bury the real work). A real follow-up date or a hot value still
+  // surfaces them via the overdue/hot_quiet checks below.
+  const coldDeadWeight = isColdDeadWeight(c);
 
   // Whole-day follow-up vs the owner's today, compared by CALENDAR DAY (see
   // dayDiffFromToday): <0 overdue, 0 due today, >0 upcoming. null = none set.
@@ -674,6 +686,122 @@ function buildHeadsUp(clients, nowMs, todayMs) {
   });
 
   return { items: all.slice(0, HEADS_UP.MAX_ITEMS), counts, total: all.length };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CADENCE COCKPIT — the owner's day, organized by the NEXT ACTION instead of by
+// problem type. Where the heads-up feed answers "what's wrong?", the cockpit
+// answers "what do I DO, and in what order?". Every active company lands in
+// EXACTLY ONE bucket, first match wins in priority order:
+//
+//   your_move    — you owe the next move NOW: an overdue follow-up, or a hot
+//                  deal you've gone quiet on. (Top of the day.)
+//   call_today   — a follow-up you scheduled for today. Pick up the phone.
+//   closing_soon — a live quote is out; nudge it over the line.
+//   make_mockup  — an engaged early lead with nothing scheduled — move it
+//                  forward by getting a mockup in front of them.
+//   on_the_rails — a healthy deal with a future step already booked; nothing to
+//                  do today, shown for reassurance.
+//
+// Closed deals (won/customer/lost/dormant), snoozed cards, and never-worked cold
+// prospects (isColdDeadWeight) are excluded — the cockpit is the LIVE worklist.
+// Pure + unit-tested; caps each bucket so the payload stays small.
+const CADENCE_BUCKETS = ['your_move', 'call_today', 'closing_soon', 'make_mockup', 'on_the_rails'];
+const CADENCE_BUCKET_SEVERITY = {
+  your_move: 'high', call_today: 'high', closing_soon: 'med', make_mockup: 'med', on_the_rails: 'low',
+};
+const CADENCE_BUCKET_CAP = 40;
+
+function cadenceEntry(c, bucket, message) {
+  const name = c.companyName || c.clientName || c.companyKey;
+  const phone = c.phone || ((c.contacts || []).find((x) => x && x.phone) || {}).phone || '';
+  return {
+    // `type` = bucket so the frontend can reuse the heads-up row (icon/color by
+    // type) verbatim; `bucket` is the grouping key.
+    type: bucket, bucket, severity: CADENCE_BUCKET_SEVERITY[bucket],
+    companyKey: c.companyKey, name, phone,
+    value: Number(c.dealValue) || 0, stage: c.stage,
+    message, date: c.nextFollowUp || null,
+  };
+}
+
+// Assign ONE client to its cadence bucket (or null if it's off the live worklist).
+// nowMs / todayMs as in classifyHeadsUp. Pure + unit-tested.
+function cadenceBucketFor(c, nowMs, todayMs) {
+  if (!c) return null;
+  if (c.snoozedUntil && new Date(c.snoozedUntil).getTime() > nowMs) return null;
+  const stage = c.stage;
+  if (CLOSED_STAGES.includes(stage)) return null; // won/customer/lost/dormant — not the worklist
+
+  const value = Number(c.dealValue) || 0;
+  const lc = c.lastContact ? new Date(c.lastContact).getTime() : null;
+  const followDayDiff = c.nextFollowUp != null ? dayDiffFromToday(c.nextFollowUp, new Date(nowMs)) : null;
+
+  // 1) YOUR MOVE — an overdue follow-up (you scheduled it, it's past), or a hot
+  //    deal gone quiet. Always wins, even for a cold lead the owner explicitly
+  //    scheduled or that carries real money.
+  if (followDayDiff != null && followDayDiff < 0) {
+    const d = -followDayDiff;
+    return cadenceEntry(c, 'your_move', `Follow-up ${d === 1 ? '1 day' : `${d} days`} overdue`);
+  }
+  if (value >= HEADS_UP.HOT_VALUE) {
+    const quiet = lc != null ? daysBetween(lc, nowMs) : null;
+    if (lc == null || quiet > HEADS_UP.QUIET_DAYS) {
+      return cadenceEntry(c, 'your_move',
+        lc == null ? `Hot deal (${fmtUsd(value)}) — never contacted` : `Hot deal (${fmtUsd(value)}) quiet ${quiet} days`);
+    }
+  }
+
+  // 2) CALL TODAY — a follow-up you booked for today.
+  if (followDayDiff === 0) return cadenceEntry(c, 'call_today', 'Follow-up due today');
+
+  // Past here, a cold-outreach prospect the owner never chose is the engine's job,
+  // not the owner's — off the worklist. (A genuine untagged new lead still flows to
+  // "make a mockup" below.)
+  if (isOutreachPool(c)) return null;
+
+  // 3) CLOSING SOON — a live quote is out; chase the close.
+  if (stage === 'quoting') {
+    return cadenceEntry(c, 'closing_soon', value > 0 ? `Quote out — ${fmtUsd(value)} on the table` : 'Quote out — follow up to close');
+  }
+
+  // 4) MAKE A MOCKUP — an engaged early lead with nothing scheduled: the natural
+  //    next step is putting a mockup in front of them.
+  if ((stage === 'lead' || stage === 'contacted') && c.nextFollowUp == null) {
+    return cadenceEntry(c, 'make_mockup', 'Send a mockup to move it forward');
+  }
+
+  // 5) ON THE RAILS — a healthy deal with a future step booked. Nothing to do today.
+  if (followDayDiff != null && followDayDiff > 0) {
+    return cadenceEntry(c, 'on_the_rails', `Next step in ${followDayDiff} day${followDayDiff === 1 ? '' : 's'}`);
+  }
+  return null;
+}
+
+// Bucket a whole book of clients into the cockpit. Sorts each bucket by value
+// (desc) then soonest date, caps it, and returns per-bucket counts (full, uncapped).
+// Returns: { buckets: { <key>: [entry...] }, counts: { <key>: n }, total }.
+function buildCockpit(clients, nowMs, todayMs) {
+  const buckets = {};
+  for (const b of CADENCE_BUCKETS) buckets[b] = [];
+  for (const c of clients || []) {
+    const e = cadenceBucketFor(c, nowMs, todayMs);
+    if (e) buckets[e.bucket].push(e);
+  }
+  const counts = {};
+  let total = 0;
+  for (const b of CADENCE_BUCKETS) {
+    buckets[b].sort((a, z) => {
+      if (z.value !== a.value) return z.value - a.value;
+      const ad = a.date ? new Date(a.date).getTime() : Infinity;
+      const zd = z.date ? new Date(z.date).getTime() : Infinity;
+      return ad - zd;
+    });
+    counts[b] = buckets[b].length;
+    total += buckets[b].length;
+    buckets[b] = buckets[b].slice(0, CADENCE_BUCKET_CAP);
+  }
+  return { buckets, counts, total };
 }
 
 // Build a global "find anyone" $or from a free-text query. Matches across the
@@ -1062,6 +1190,7 @@ async function getDashboard(req, res) {
       .sort((a, b) => b.openValue - a.openValue || b.count - a.count);
 
     const heads = buildHeadsUp(docs, nowMs, startTodayMs);
+    const cockpit = buildCockpit(docs, nowMs, startTodayMs);
 
     // How many never-worked cold-outreach prospects are cluttering the book — the
     // count behind the dashboard's one-click "clear cold prospects" purge. Mirrors
@@ -1095,6 +1224,13 @@ async function getDashboard(req, res) {
         items:  heads.items,
         counts: heads.counts,
         total:  heads.total,
+      },
+      // Cadence cockpit — the same live book, grouped by NEXT ACTION so the owner
+      // works top-down (your move → call today → close → mockup → on the rails).
+      cockpit: {
+        buckets: cockpit.buckets,
+        counts:  cockpit.counts,
+        total:   cockpit.total,
       },
     });
   } catch (e) {
@@ -2603,6 +2739,11 @@ module.exports = {
   classifyHeadsUp,
   buildHeadsUp,
   HEADS_UP,
+  isOutreachPool,
+  isColdDeadWeight,
+  cadenceBucketFor,
+  buildCockpit,
+  CADENCE_BUCKETS,
   promoteStage,
   promoteCompanyToCustomerOnPlacement,
   ensureCompanyForQuoting,
