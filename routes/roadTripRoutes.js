@@ -16,7 +16,7 @@ const {
 } = require('../controllers/roadTripLead');
 
 const {
-  listDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, suggest,
+  listDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, suggest, scanOsm,
 } = require('../controllers/dispensary');
 
 const {
@@ -31,6 +31,7 @@ router.use(requireAdmin);
 // ── Nationwide dispensary database ──────────────────────────────────────────
 router.get   ('/dispensaries',              listDispensaries);
 router.get   ('/dispensaries/coverage',     coverage);
+router.post  ('/dispensaries/scan-osm',     scanOsm);   // free OSM viewport sweep
 router.post  ('/dispensaries/ingest/:state', ingest);
 router.post  ('/dispensaries/enrich',       enrich);
 router.post  ('/dispensaries/geocode',      geocode);

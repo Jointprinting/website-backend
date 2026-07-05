@@ -48,7 +48,9 @@ const DispensarySchema = new mongoose.Schema({
   chainName: { type: String, default: '' },
 
   // Provenance / lifecycle
-  source:     { type: String, enum: ['roster', 'google', 'manual'], default: 'roster' },
+  //   'osm' — discovered free via OpenStreetMap (Overpass) as the map is panned;
+  //           community-mapped, so verified:false (not a license-roster row).
+  source:     { type: String, enum: ['roster', 'google', 'manual', 'osm'], default: 'roster' },
   verified:   { type: Boolean, default: true },   // true = backed by a license roster row
   active:     { type: Boolean, default: true },   // false = closed / license inactive
   hidden:     { type: Boolean, default: false },  // admin "not a dispensary" — never shown
