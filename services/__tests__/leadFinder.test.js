@@ -13,7 +13,7 @@ const assert = require('node:assert/strict');
 const {
   buildOverpassQuery, osmAddress, normalizeWebsite, parseOverpassElements, isRegion,
   nextRegionAfter, decideFrontier, NATIONAL_ROLLOUT, isQualityLead, isClosedPoi, hasCannabisTag,
-  isRecCannabis, isMedicalOnly, isBigChain, markChains, FINDER_VERSION,
+  isRecCannabis, isMedicalOnly, isBigChain, markChains, FINDER_VERSION, osmLatLng,
 } = require('../dispensaryFinder');
 const {
   sanitizeEmail, extractEmails, pickBestEmail, findContactLink, hostOf,
@@ -82,6 +82,31 @@ test('parseOverpassElements handles empty / malformed input', () => {
   assert.deepEqual(parseOverpassElements({}), []);
   assert.deepEqual(parseOverpassElements(null), []);
   assert.deepEqual(parseOverpassElements({ elements: 'nope' }), []);
+});
+
+// ── Coordinates for the Field Map ─────────────────────────────────────────────
+test('osmLatLng reads node lat/lon and way center, rejects missing/bad', () => {
+  assert.deepEqual(osmLatLng({ lat: 40.5, lon: -74.2 }), { lat: 40.5, lng: -74.2 });
+  assert.deepEqual(osmLatLng({ center: { lat: 41.1, lon: -73.9 } }), { lat: 41.1, lng: -73.9 });
+  assert.equal(osmLatLng({}), null);
+  assert.equal(osmLatLng({ lat: 40.5 }), null);           // half a coordinate → null
+  assert.equal(osmLatLng({ lat: 'x', lon: 'y' }), null);  // non-finite → null
+});
+
+test('parseOverpassElements carries lat/lng for the map (node + way center)', () => {
+  const rows = parseOverpassElements({
+    elements: [
+      { type: 'node', id: 1, lat: 40.22, lon: -74.76, tags: { name: 'Green Leaf', shop: 'cannabis' } },
+      { type: 'way', id: 2, center: { lat: 39.37, lon: -74.42 }, tags: { name: 'The Botanist', shop: 'cannabis' } },
+      { type: 'node', id: 3, tags: { name: 'No Coords Co', shop: 'cannabis' } }, // kept, but lat/lng null
+    ],
+  });
+  const gl = rows.find((r) => r.name === 'Green Leaf');
+  assert.equal(gl.lat, 40.22); assert.equal(gl.lng, -74.76);
+  const bot = rows.find((r) => r.name === 'The Botanist');
+  assert.equal(bot.lat, 39.37); assert.equal(bot.lng, -74.42);
+  const nc = rows.find((r) => r.name === 'No Coords Co');
+  assert.equal(nc.lat, null); assert.equal(nc.lng, null);
 });
 
 // ── Quality gate — keep the widened net junk-free ─────────────────────────────

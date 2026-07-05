@@ -10,16 +10,47 @@
 const Dispensary = require('../models/Dispensary');
 const Client = require('../models/Client');
 const DispensaryDenylist = require('../models/DispensaryDenylist');
+const OsmScanTile = require('../models/OsmScanTile');
 const { REC_STATES, MEDICAL_ONLY, NO_RETAIL_YET } = require('../services/dispensaryStates');
 const { ingestState, rechainState, geocodeMissing, deriveCompanyKey, matchKey } = require('../services/dispensaryIngest');
 const { enrichBatch } = require('../services/dispensaryEnrich');
 const { detectKnownChain } = require('../services/dispensaryChains');
+const { fetchDispensariesForBbox } = require('../services/dispensaryFinder');
 
 function parseBbox(q) {
   const minLat = parseFloat(q.minLat), maxLat = parseFloat(q.maxLat);
   const minLng = parseFloat(q.minLng), maxLng = parseFloat(q.maxLng);
   if (![minLat, maxLat, minLng, maxLng].every(isFinite)) return null;
   return { minLat, maxLat, minLng, maxLng };
+}
+
+// ── Free OSM viewport scan — pure helpers (unit-tested) ──────────────────────
+const OSM_TILE_DEG = 0.5;        // tile grid: ~35mi squares
+const OSM_MAX_SPAN_DEG = 2.0;    // only scan when zoomed in past ~this span
+const OSM_TILE_TTL_MS = 30 * 24 * 3600 * 1000;  // re-sweep a tile monthly
+const OSM_MATCH_PAD = 0.02;      // ~2km — same storefront cross-source match
+const OSM_SCAN_TIMEOUT_MS = 25_000;  // interactive: don't hang on a slow endpoint
+
+// The grid tile CONTAINING (lat,lng), as a stable string key. Snapped to the
+// tile's SW corner at fixed precision so float noise can't split one tile in two.
+function tileKeyFor(lat, lng, tileDeg = OSM_TILE_DEG) {
+  const snap = (v) => Math.floor(v / tileDeg) * tileDeg;
+  return `${snap(lat).toFixed(2)}_${snap(lng).toFixed(2)}`;
+}
+
+// Is the viewport too wide to sweep? (A whole-region bbox would pull thousands
+// of elements and hammer Overpass — we only scan once the user is zoomed in.)
+function bboxTooLarge(bbox, maxSpan = OSM_MAX_SPAN_DEG) {
+  return (bbox.maxLat - bbox.minLat) > maxSpan || (bbox.maxLng - bbox.minLng) > maxSpan;
+}
+
+// Best-effort 2-letter state from an assembled "..., City ST 07102" address
+// (osmAddress emits "City ST zip" with no comma before the state) — the trailing
+// 2-letter token, with or without a following ZIP. 'US' when nothing parses
+// (state is a required Dispensary field, mostly for the coverage rollup). Pure.
+function stateFromAddress(addr) {
+  const m = String(addr || '').match(/\b([A-Z]{2})\b(?:\s+\d{5}(?:-\d{4})?)?\s*$/);
+  return (m && m[1]) || 'US';
 }
 
 // ── GET /api/roadtrip/dispensaries?minLat&maxLat&minLng&maxLng[&chain=..] ────
@@ -370,4 +401,97 @@ async function suggest(req, res) {
   }
 }
 
-module.exports = { listDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, suggest, rankProspects, haversineMi };
+// ── POST /api/roadtrip/dispensaries/scan-osm {minLat,maxLat,minLng,maxLng} ───
+// FREE dispensary discovery as the Field Map is panned. Queries OpenStreetMap
+// (Overpass — no API key, no billing) for the viewport, upserts finds into our
+// own Dispensary DB (source:'osm', unverified), and cross-matches so a store we
+// already know isn't duplicated. Tile-throttled: each ~0.5° tile hits Overpass
+// at most once every 30 days; panning a worked area is served from the DB. This
+// replaces the paid Google "sweep" and the per-state manual roster loading —
+// dispensaries just appear as you drive the map, at zero cost.
+async function scanOsm(req, res) {
+  try {
+    const bbox = parseBbox(req.body || {}) || parseBbox(req.query || {});
+    if (!bbox) return res.status(400).json({ message: 'minLat/maxLat/minLng/maxLng are required.' });
+    if (bboxTooLarge(bbox)) return res.json({ skipped: 'too-wide', added: 0, attached: 0 });
+
+    const centerLat = (bbox.minLat + bbox.maxLat) / 2;
+    const centerLng = (bbox.minLng + bbox.maxLng) / 2;
+    const tileKey = tileKeyFor(centerLat, centerLng);
+
+    // Tile throttle — recently swept → serve from the DB, don't re-hit Overpass.
+    const prior = await OsmScanTile.findOne({ tileKey }).lean();
+    if (prior && (Date.now() - new Date(prior.scannedAt).getTime()) < OSM_TILE_TTL_MS) {
+      return res.json({ cached: true, added: 0, attached: 0, tileKey });
+    }
+
+    // Overpass bbox order is [south, west, north, east].
+    const candidates = await fetchDispensariesForBbox(
+      [bbox.minLat, bbox.minLng, bbox.maxLat, bbox.maxLng],
+      { timeoutMs: OSM_SCAN_TIMEOUT_MS },
+    );
+
+    let added = 0, attached = 0;
+    for (const c of candidates) {
+      if (c.lat == null || c.lng == null) continue; // no coords → can't pin it
+      const mk = matchKey(c.name);
+      // Cross-source dedup: a known store (roster/google/earlier osm) at ~this
+      // spot with the same match key is the SAME storefront. Fill any missing
+      // phone/website from OSM (free enrichment) instead of a duplicate pin.
+      const near = await Dispensary.findOne({
+        matchKey: mk,
+        lat: { $gte: c.lat - OSM_MATCH_PAD, $lte: c.lat + OSM_MATCH_PAD },
+        lng: { $gte: c.lng - OSM_MATCH_PAD, $lte: c.lng + OSM_MATCH_PAD },
+      });
+      if (near) {
+        let changed = false;
+        if (!near.phone && c.phone) { near.phone = c.phone; changed = true; }
+        if (!near.website && c.website) { near.website = c.website; changed = true; }
+        if (changed) { await near.save(); attached++; }
+        continue;
+      }
+      const dedupeKey = c.osmId ? `osm:${c.osmId}` : `osm:${mk}|${c.lat.toFixed(4)},${c.lng.toFixed(4)}`;
+      const chainName = detectKnownChain(c.name) || '';
+      await Dispensary.updateOne(
+        { dedupeKey },
+        {
+          $set: {
+            state: stateFromAddress(c.address),
+            name: c.name,
+            address: c.address,
+            lat: c.lat, lng: c.lng,
+            phone: c.phone || '', website: c.website || '',
+            source: 'osm', verified: false, active: true,
+            isChain: !!chainName || !!c.chain,
+            chainName,
+            companyKey: deriveCompanyKey(c.name),
+            matchKey: mk,
+          },
+          $setOnInsert: { hidden: false },  // never un-hide a store the owner rejected
+        },
+        { upsert: true },
+      );
+      added++;
+    }
+
+    await OsmScanTile.updateOne(
+      { tileKey },
+      { $set: { tileKey, scannedAt: new Date(), found: candidates.length, imported: added } },
+      { upsert: true },
+    );
+
+    res.json({ added, attached, found: candidates.length, tileKey });
+  } catch (err) {
+    console.error('[dispensary] scanOsm error:', err.message);
+    // Soft failure: the map already shows its DB pins. A flaky Overpass endpoint
+    // must never surface as a red error to someone prospecting in the field.
+    res.status(200).json({ added: 0, attached: 0, error: 'osm-scan-unavailable' });
+  }
+}
+
+module.exports = {
+  listDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, suggest, scanOsm,
+  rankProspects, haversineMi,
+  // pure — unit-tested
+  tileKeyFor, bboxTooLarge, stateFromAddress,
+};

@@ -231,6 +231,16 @@ function markChains(candidates, { threshold = 3 } = {}) {
   });
 }
 
+// An element's coordinates. Nodes carry lat/lon directly; ways/relations queried
+// with `out center` carry them under `.center`. Returns null when neither exists
+// (a lead we can't place on the map). Pure.
+function osmLatLng(el = {}) {
+  const lat = el.lat != null ? el.lat : el.center?.lat;
+  const lng = el.lon != null ? el.lon : el.center?.lon;
+  if (lat == null || lng == null || !isFinite(lat) || !isFinite(lng)) return null;
+  return { lat: Number(lat), lng: Number(lng) };
+}
+
 // Assemble the OSM address tags into the single "123 Main St, City ST 07102"
 // string the CRM stores (and that services/outreachEngine.cityFromAddress can
 // parse a city out of). Missing pieces are simply omitted. Pure.
@@ -274,9 +284,14 @@ function parseOverpassElements(json) {
     const key = `${name.toLowerCase()}|${address.toLowerCase()}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    const coords = osmLatLng(el);
     out.push({
       name,
       address,
+      // Coordinates so the Field Map can drop a pin (null when OSM has none —
+      // the email/lead-finder path ignores these, the map path skips them).
+      lat: coords ? coords.lat : null,
+      lng: coords ? coords.lng : null,
       website: normalizeWebsite(tags.website || tags['contact:website'] || tags['website:official']),
       phone: String(tags.phone || tags['contact:phone'] || tags['phone:mobile'] || '').trim(),
       // OSM sometimes carries the email outright — a free hit, no scrape needed.
@@ -290,31 +305,38 @@ function parseOverpassElements(json) {
   return markChains(out);
 }
 
-// Discover dispensaries in a region (network). Tries each Overpass endpoint in
-// turn; returns { region, label, candidates }. Throws only if every endpoint
-// fails, so the caller can surface a clean error.
-async function fetchDispensaries(regionId = DEFAULT_REGION) {
-  const id = isRegion(regionId) ? regionId : DEFAULT_REGION;
-  const region = REGIONS[id];
-  const query = buildOverpassQuery(region.bbox);
+// Discover dispensaries in an ARBITRARY bbox (network). Tries each Overpass
+// endpoint in turn; returns the parsed candidates. Throws only if every endpoint
+// fails, so the caller can surface a clean error. `bbox` is [south, west, north,
+// east]. A shorter timeout suits interactive callers (the Field Map viewport
+// scan) where a hung endpoint shouldn't block the request for 90s.
+async function fetchDispensariesForBbox(bbox, { timeoutMs = OVERPASS_TIMEOUT_MS } = {}) {
+  const query = buildOverpassQuery(bbox);
   let lastErr = null;
   for (const endpoint of OVERPASS_ENDPOINTS) {
     try {
       const res = await axios.post(endpoint, `data=${encodeURIComponent(query)}`, {
-        timeout: OVERPASS_TIMEOUT_MS,
+        timeout: timeoutMs,
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': POLITE_UA },
         validateStatus: () => true,
         maxContentLength: 25 * 1024 * 1024,
       });
-      if (res.status === 200 && res.data) {
-        return { region: id, label: region.label, candidates: parseOverpassElements(res.data) };
-      }
+      if (res.status === 200 && res.data) return parseOverpassElements(res.data);
       lastErr = new Error(`Overpass ${endpoint} → HTTP ${res.status}`);
     } catch (err) {
       lastErr = err;
     }
   }
   throw lastErr || new Error('All Overpass endpoints failed');
+}
+
+// Discover dispensaries in a named REGION (network). Thin wrapper over the bbox
+// fetch. Returns { region, label, candidates }.
+async function fetchDispensaries(regionId = DEFAULT_REGION) {
+  const id = isRegion(regionId) ? regionId : DEFAULT_REGION;
+  const region = REGIONS[id];
+  const candidates = await fetchDispensariesForBbox(region.bbox);
+  return { region: id, label: region.label, candidates };
 }
 
 module.exports = {
@@ -325,8 +347,10 @@ module.exports = {
   regionIds,
   isRegion,
   fetchDispensaries,
+  fetchDispensariesForBbox,
   // pure — unit-tested
   buildOverpassQuery,
+  osmLatLng,
   osmAddress,
   normalizeWebsite,
   parseOverpassElements,
