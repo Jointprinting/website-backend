@@ -23,6 +23,7 @@ const {
   markReplied,
   stopEnrollment,
   unenrollAll,
+  resetCampaign,
   setAutoEnroll,
   runTickNow,
   sendTest,
@@ -66,6 +67,7 @@ router.patch('/campaigns/:id',       updateCampaign);
 router.post('/campaigns/:id/launch', launchCampaign);
 router.post('/campaigns/:id/enroll', enrollCompanies);
 router.post('/campaigns/:id/unenroll-all', unenrollAll);
+router.post('/campaigns/:id/reset', resetCampaign); // full fresh start — clears the roster
 router.post('/campaigns/:id/auto-enroll', setAutoEnroll);
 
 router.post('/enrollments/:id/replied', markReplied);
