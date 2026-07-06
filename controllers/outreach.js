@@ -60,7 +60,7 @@ const pipelineTarget = () => Math.max(0, (Number(DAILY_CAP_MAX) || 50) * PIPELIN
 function summarizeEnrollments(rows = []) {
   const s = {
     enrolled: 0, active: 0, sent: 0, opened: 0, replied: 0,
-    completed: 0, unsubscribed: 0, stopped: 0, failed: 0, noEmail: 0, bounced: 0,
+    completed: 0, unsubscribed: 0, stopped: 0, failed: 0, noEmail: 0, bounced: 0, suppressed: 0,
   };
   for (const e of rows) {
     if (!e) continue;
@@ -71,6 +71,10 @@ function summarizeEnrollments(rows = []) {
     // The silent killer: enrolled but no address to send to → stopped 'no-email'.
     // Counted separately so the UI can say exactly why nothing is going out.
     if (e.status === 'stopped' && e.stopReason === 'no-email') s.noEmail += 1;
+    // Already opted out / bounced / complained somewhere before, so the engine
+    // refused to send again — the spam-safety guard. Broken out so "72 enrolled,
+    // 0 sent" reads as "held by suppression", not "broken".
+    if (e.stopReason === 'suppressed') s.suppressed += 1;
     // Hard bounces / complaints / invalid addresses — the deliverability signal.
     if (['bounced', 'invalid-address', 'complaint'].includes(e.stopReason)) s.bounced += 1;
   }
