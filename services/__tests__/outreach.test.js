@@ -145,13 +145,15 @@ test('cityFromAddress handles the common address shapes', () => {
 });
 
 // ── Message composition (CAN-SPAM) ───────────────────────────────────────────
-test('composeMessage carries the postal address + an opt-out in html AND text', () => {
+test('composeMessage footer is a bare Unsubscribe with NO postal address', () => {
   const { html, text } = composeMessage({ bodyText: 'Hi there.\n\nSecond para.', token: 'tok123' });
-  assert.match(html, /Joint Printing/);
-  assert.match(text, /Joint Printing/);
+  // Opt-out present in both parts.
   assert.match(html, /[Uu]nsubscribe/);
   assert.match(text, /[Uu]nsubscribe/i);
-  // Two paragraphs render as two <p> blocks.
+  // Owner's call: no street / postal line leaks into the footer.
+  assert.doesNotMatch(html, /Elliot|Voorhees|NJ 0804|Joint Printing ·/i);
+  assert.doesNotMatch(text, /Elliot|Voorhees|NJ 0804|Joint Printing ·/i);
+  // Two paragraphs render as two <p> blocks, plus the footer <p>.
   assert.equal((html.match(/<p /g) || []).length >= 3, true); // 2 body + footer
 });
 
