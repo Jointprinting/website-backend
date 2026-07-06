@@ -16,6 +16,7 @@
 const { fetchDispensaries, isRegion, DEFAULT_REGION, REGIONS, NATIONAL_ROLLOUT, FINDER_VERSION } = require('./dispensaryFinder');
 const { getVertical, verticalPoolFilter, verticalRunMatch, frontierStateKey, otherVerticalTags, DEFAULT_VERTICAL_ID } = require('./leadVerticals');
 const LeadFinderState = require('../models/LeadFinderState');
+const { cityFromAddress } = require('./outreachEngine');
 const { enrichWebsite } = require('./emailEnricher');
 const { verifyDomainsMx, partitionDeliverable, emailDomain } = require('./emailVerify');
 const LeadFinderRun = require('../models/LeadFinderRun');
@@ -93,6 +94,29 @@ async function discoverRegion(regionId, { maxEnrich = DEFAULT_MAX_ENRICH, vertic
   };
 }
 
+// City → key-suffix slug ("Egg Harbor Township" → 'eggharbortownship'). Same
+// normalization deriveCompanyKey applies to names, so suffixed keys look native.
+const citySlug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+// deriveCompanyKey is NAME-only, so "Green Leaf" in Newark and "Green Leaf" in
+// Denver collapse into ONE Client — the second find silently merges into (and
+// cross-wires the contact data of) the first. Orders key on the shared
+// deriveCompanyKey, so that helper must not change; instead the FINDER
+// disambiguates ITS OWN import keys: when a client already exists under the
+// bare key with a provably DIFFERENT city, the new lead imports under
+// `${baseKey}-${cityslug}`. Same city → it IS the same shop re-found (keep the
+// bare key so re-sweeps keep deduping onto the same record). Either city
+// unknown → can't prove a conflict, keep the bare key (fill-blanks merge is the
+// safe default; a wrong split is worse than a conservative merge). The suffix
+// derives from the LEAD's own city, so every future re-find of the Denver shop
+// lands on the same suffixed record. Pure + unit-tested.
+function disambiguateKey(baseKey, newCity, existingCity) {
+  const a = citySlug(newCity);
+  const b = citySlug(existingCity);
+  if (!a || !b || a === b) return baseKey;
+  return `${baseKey}-${a}`;
+}
+
 // Decide which discovered candidates become CRM leads. This is a MAIL-MERGE
 // engine — an email is required (no inbox, no cold-email lead, nothing to send).
 // Chains/MSOs are dropped (unless disabled — corporate handles merch, not the
@@ -144,6 +168,45 @@ async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich, v
 
   // Reuse the CRM importer's exact merge policy (fill-blanks, dedupe, no downgrade).
   const mapped = buildMappedRows({ rows });
+
+  // Same-name/different-city collision guard: one batched lookup of the batch's
+  // bare keys, then re-key any lead whose bare key is already held by a client
+  // in ANOTHER city (see disambiguateKey). Done between mapping and applying so
+  // applyMappedRow's find-by-companyKey lands on the right record — the merge
+  // policy itself stays untouched.
+  const bareKeys = [...new Set((mapped || []).filter((m) => m && !m._skip && m.companyKey).map((m) => m.companyKey))];
+  const existingClients = bareKeys.length
+    ? await Client.find({ companyKey: { $in: bareKeys } }).select('companyKey address area').lean()
+    : [];
+  const existingByKey = new Map(existingClients.map((c) => [c.companyKey, c]));
+  for (const m of mapped || []) {
+    if (!m || m._skip || !m.companyKey) continue;
+    const ex = existingByKey.get(m.companyKey);
+    if (!ex) continue;
+    const key = disambiguateKey(m.companyKey, cityFromAddress(m.address), cityFromAddress(ex.address || ex.area));
+    if (key !== m.companyKey) {
+      m.companyKey = key;
+      m.rowIdentity = key; // the log-dedup identity follows the record it lands on
+    }
+  }
+  // WITHIN-batch collisions too: a whole state imports as one batch, so "Green
+  // Leaf" Newark and "Green Leaf" Trenton often arrive together with no existing
+  // client to compare against — the second would silently fill-blanks-merge into
+  // the first. First occurrence keeps its key; a later same-key row in a
+  // provably different city gets the suffix.
+  const firstCityByKey = new Map();
+  for (const m of mapped || []) {
+    if (!m || m._skip || !m.companyKey) continue;
+    const base = m.companyKey;
+    const city = cityFromAddress(m.address);
+    if (!firstCityByKey.has(base)) { firstCityByKey.set(base, city); continue; }
+    const key = disambiguateKey(base, city, firstCityByKey.get(base));
+    if (key !== base) {
+      m.companyKey = key;
+      m.rowIdentity = key;
+    }
+  }
+
   let created = 0, updated = 0, skipped = 0;
   const touchedKeys = [];
   for (const m of mapped || []) {
@@ -225,8 +288,15 @@ async function countAvailableColdLeads({ vertical } = {}) {
 // NEVER includes un-swept states — expanding to those is the frontier's job, on
 // the queue-low path. `limit` caps the batch for politeness. Pure read.
 async function staleRegions(currentVersion = FINDER_VERSION, limit = 0, vertical = DEFAULT_VERTICAL_ID) {
+  // Error rows (a sweep that THREW — see leadFinderScheduler.noteRegionFailure)
+  // are excluded from the version bookkeeping: they carry finderVersion 0, so
+  // counting them would (a) let one failed attempt mask a region's real, older
+  // coverage version, and (b) make the healthy-pool upgrade path retry a broken
+  // region forever — retries of FAILURES are the frontier ledger's job, which is
+  // capped. This aggregation reads "the last sweep that actually produced data".
+  // ($in with null also matches legacy rows missing the field.)
   const byRegion = await LeadFinderRun.aggregate([
-    { $match: { dryRun: false, ...verticalRunMatch(vertical) } },
+    { $match: { dryRun: false, error: { $in: ['', null] }, ...verticalRunMatch(vertical) } },
     { $sort: { createdAt: -1 } },
     { $group: { _id: '$region', v: { $first: '$finderVersion' }, at: { $first: '$createdAt' } } },
   ]);
@@ -242,15 +312,25 @@ async function staleRegions(currentVersion = FINDER_VERSION, limit = 0, vertical
 async function finderStatus({ vertical } = {}) {
   const v = getVertical(vertical);
   const runMatch = verticalRunMatch(v.id);
-  const [byRegion, runs, state, available] = await Promise.all([
+  const [byRegion, byRegionError, runs, state, available] = await Promise.all([
     // The LATEST real run per region — NOT the latest 10 overall. One sweep
     // writes up to MAX_REGIONS_PER_RUN rows, so a flat limit(10) forgets states
     // once the engine has covered more than ~1.7 sweeps, reverting their coverage
     // tiles to "not reached yet" and shuffling the swept count. Group per region
     // so the map shows every state the engine has actually touched. Scoped to this
     // vertical's runs (dispensary also matches legacy rows — see verticalRunMatch).
+    // Error rows are kept OUT of the coverage stats (a failed sweep found
+    // nothing — zeroing a state's real numbers with it would lie the other way)…
     LeadFinderRun.aggregate([
-      { $match: { dryRun: false, ...runMatch } },
+      { $match: { dryRun: false, error: { $in: ['', null] }, ...runMatch } },
+      { $sort: { createdAt: -1 } },
+      { $group: { _id: '$region', last: { $first: '$$ROOT' } } },
+    ]),
+    // …and surfaced separately: the latest FAILED attempt per region, so the map
+    // can honestly distinguish "we tried and it broke" (lastError below) from
+    // "the frontier never reached it" (no run rows at all).
+    LeadFinderRun.aggregate([
+      { $match: { dryRun: false, error: { $nin: ['', null] }, ...runMatch } },
       { $sort: { createdAt: -1 } },
       { $group: { _id: '$region', last: { $first: '$$ROOT' } } },
     ]),
@@ -260,6 +340,8 @@ async function finderStatus({ vertical } = {}) {
   ]);
   const lastByRegion = {};
   for (const g of byRegion) if (g && g._id) lastByRegion[g._id] = g.last;
+  const lastErrorByRegion = {};
+  for (const g of byRegionError) if (g && g._id) lastErrorByRegion[g._id] = g.last;
   const activeRegion = (state && state.activeRegion) || DEFAULT_REGION;
   let staleCount = 0;
   const regions = NATIONAL_ROLLOUT
@@ -273,6 +355,13 @@ async function finderStatus({ vertical } = {}) {
       // Swept, but by an older finder — the engine will re-milk it automatically.
       const stale = !!last && (Number(last.finderVersion) || 0) < v.finderVersion;
       if (stale) staleCount += 1;
+      // Honesty about failures: a FAILED attempt NEWER than the last clean sweep
+      // (or with no clean sweep at all) is surfaced, so "swept: 0 leads" and
+      // "the sweep itself broke" and "never reached" read as three different
+      // things on the coverage map. The retry ledger (leadFinderScheduler) will
+      // re-attempt it; this is just the honest label meanwhile.
+      const lastErr = lastErrorByRegion[id] || null;
+      const errIsCurrent = !!lastErr && (!lastSweptAt || new Date(lastErr.createdAt) > new Date(lastSweptAt));
       return {
         id, label: REGIONS[id].label, last,
         lastSweptAt,
@@ -281,6 +370,8 @@ async function finderStatus({ vertical } = {}) {
         finderVersion: last ? (Number(last.finderVersion) || 0) : null,
         stale,
         recentlySwept,
+        lastError: errIsCurrent ? (lastErr.error || 'sweep failed') : '',
+        lastErrorAt: errIsCurrent ? lastErr.createdAt : null,
       };
     });
   return {
@@ -309,5 +400,5 @@ async function finderStatus({ vertical } = {}) {
 
 module.exports = {
   runFinder, discoverRegion, finderStatus, countAvailableColdLeads, staleRegions, pool,
-  selectImportable, // pure — unit-tested
+  selectImportable, disambiguateKey, // pure — unit-tested
 };

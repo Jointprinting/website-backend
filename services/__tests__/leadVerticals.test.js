@@ -15,61 +15,75 @@ const {
   VERTICAL_IDS, DEFAULT_VERTICAL_ID, getVertical, isVertical, otherVerticalTags,
   verticalPoolFilter, verticalRunMatch, frontierStateKey, verticalOptions,
   breweryIsQualityLead, breweryIsBigChain, hasBreweryTag, isMacroBrewery,
-  smokeIsQualityLead, isSmokeChain, isFuelStation, VERTICALS,
+  smokeIsQualityLead, isSmokeChain, isFuelStation, medicalIsQualityLead, VERTICALS,
 } = require('../leadVerticals');
 const { buildOverpassQuery, parseOverpassElements } = require('../dispensaryFinder');
 
 // ── Registry ─────────────────────────────────────────────────────────────────
-test('registry: dispensary is the default; brewery + smoke-vape are present', () => {
+test('registry: dispensary is the default; brewery + smoke-vape + medical are present', () => {
   assert.equal(DEFAULT_VERTICAL_ID, 'dispensary');
-  assert.deepEqual(VERTICAL_IDS.sort(), ['brewery', 'dispensary', 'smoke-vape']);
+  assert.deepEqual(VERTICAL_IDS.sort(), ['brewery', 'dispensary', 'medical', 'smoke-vape']);
   assert.equal(isVertical('brewery'), true);
+  assert.equal(isVertical('medical'), true);
   assert.equal(isVertical('nope'), false);
   // Unknown / empty resolves to the default (dispensary), never throws.
   assert.equal(getVertical('nope').id, 'dispensary');
   assert.equal(getVertical(undefined).id, 'dispensary');
   assert.equal(getVertical('brewery').id, 'brewery');
+  assert.equal(getVertical('medical').id, 'medical');
 });
 
 test('verticalOptions lists every vertical with its default/experimental flags', () => {
   const opts = verticalOptions();
-  assert.equal(opts.length, 3);
+  assert.equal(opts.length, 4);
   const disp = opts.find((o) => o.id === 'dispensary');
   assert.equal(disp.isDefault, true);
   const smoke = opts.find((o) => o.id === 'smoke-vape');
   assert.equal(smoke.experimental, true);
   assert.equal(opts.find((o) => o.id === 'brewery').isDefault, false);
+  // Medical is a deliberate owner-chosen market, not an experiment — and it must
+  // never become the default (the rec dispensary campaign stays the core).
+  const med = opts.find((o) => o.id === 'medical');
+  assert.equal(med.isDefault, false);
+  assert.equal(med.experimental, false);
 });
 
 test('verticalPoolFilter: default is the catch-all, others draw only their tag', () => {
   // Dispensary (default) = "NOT tagged for another vertical" → existing pool
-  // unchanged, so adding breweries never removes a dispensary campaign's leads.
-  assert.deepEqual(verticalPoolFilter('dispensary'), { tags: { $nin: ['brewery', 'smoke-vape'] } });
+  // unchanged, so adding breweries/medical never removes a dispensary campaign's
+  // leads ($nin only grows with tags nothing carries yet).
+  assert.deepEqual(verticalPoolFilter('dispensary'), { tags: { $nin: ['brewery', 'smoke-vape', 'medical'] } });
   assert.deepEqual(verticalPoolFilter('brewery'), { tags: 'brewery' });
   assert.deepEqual(verticalPoolFilter('smoke-vape'), { tags: 'smoke-vape' });
+  assert.deepEqual(verticalPoolFilter('medical'), { tags: 'medical' });
   // Unknown → default behavior.
-  assert.deepEqual(verticalPoolFilter('nope'), { tags: { $nin: ['brewery', 'smoke-vape'] } });
+  assert.deepEqual(verticalPoolFilter('nope'), { tags: { $nin: ['brewery', 'smoke-vape', 'medical'] } });
 });
 
 test('verticalRunMatch: dispensary also matches LEGACY (pre-vertical) run rows', () => {
   // $nin matches absent values, so old runs (no vertical field) still count as
   // dispensary coverage — the frontier + map never lose their history.
-  assert.deepEqual(verticalRunMatch('dispensary'), { vertical: { $nin: ['brewery', 'smoke-vape'] } });
+  assert.deepEqual(verticalRunMatch('dispensary'), { vertical: { $nin: ['brewery', 'smoke-vape', 'medical'] } });
   assert.deepEqual(verticalRunMatch('brewery'), { vertical: 'brewery' });
+  assert.deepEqual(verticalRunMatch('medical'), { vertical: 'medical' });
 });
 
 test('frontierStateKey: dispensary keeps the original key, others are namespaced', () => {
   assert.equal(frontierStateKey('dispensary'), 'frontier');
   assert.equal(frontierStateKey('brewery'), 'frontier:brewery');
   assert.equal(frontierStateKey('smoke-vape'), 'frontier:smoke-vape');
+  assert.equal(frontierStateKey('medical'), 'frontier:medical');
 });
 
 test('otherVerticalTags: every vertical tag EXCEPT the given one (first-touch ownership)', () => {
   // The finder claims a company for vertical X only if it carries none of THESE,
-  // so a lead found under two verticals can't migrate pools or double-tag.
-  assert.deepEqual(otherVerticalTags('dispensary').sort(), ['brewery', 'smoke-vape'].sort());
-  assert.deepEqual(otherVerticalTags('brewery').sort(), ['dispensary', 'smoke-vape'].sort());
+  // so a lead found under two verticals can't migrate pools or double-tag —
+  // critically, a shop can never be claimed by BOTH dispensary and medical.
+  assert.deepEqual(otherVerticalTags('dispensary').sort(), ['brewery', 'medical', 'smoke-vape']);
+  assert.deepEqual(otherVerticalTags('brewery').sort(), ['dispensary', 'medical', 'smoke-vape']);
+  assert.deepEqual(otherVerticalTags('medical').sort(), ['brewery', 'dispensary', 'smoke-vape']);
   assert.ok(!otherVerticalTags('brewery').includes('brewery'));
+  assert.ok(!otherVerticalTags('medical').includes('medical'));
 });
 
 // ── Breweries ────────────────────────────────────────────────────────────────
@@ -127,6 +141,65 @@ test('isSmokeChain flags brands, operators, and brand:wikidata', () => {
   assert.equal(isSmokeChain({ operator: 'Sheetz' }, 'Store #5'), true);
   assert.equal(isSmokeChain({}, 'QuikTrip'), true);
   assert.equal(isSmokeChain({}, "Manny's Corner Deli"), false);
+});
+
+// ── Medical dispensaries ─────────────────────────────────────────────────────
+test('medical quality gate: keeps EXACTLY the medical-only shops the rec gate drops', () => {
+  // The two medical-only OSM shapes → in (any name; the tag is trusted).
+  assert.equal(medicalIsQualityLead({ shop: 'cannabis', 'cannabis:recreational': 'no' }, 'Compassion Center'), true);
+  assert.equal(medicalIsQualityLead({ shop: 'cannabis', 'cannabis:medical': 'yes' }, 'MedOnly Rx'), true);
+  // Rec + dual-license shops belong to the DEFAULT dispensary vertical — out.
+  assert.equal(medicalIsQualityLead({ shop: 'cannabis' }, 'Green Leaf'), false);
+  assert.equal(medicalIsQualityLead({ 'cannabis:recreational': 'yes' }, 'The Green Room'), false);
+  assert.equal(medicalIsQualityLead({ 'cannabis:medical': 'yes', 'cannabis:recreational': 'yes' }, 'Dual Shop'), false);
+  // Closed POI → out even with the medical tag.
+  assert.equal(medicalIsQualityLead({ 'cannabis:medical': 'yes', 'disused:shop': 'cannabis' }, 'Gone Meds'), false);
+  // No name-only path: "medical" in a NAME is how the rec junk-gate spots
+  // pharmacies/clinics — never trusted here as "is a med dispensary".
+  assert.equal(medicalIsQualityLead({}, 'Riverside Medical Marijuana Clinic'), false);
+  assert.equal(medicalIsQualityLead({}, 'CVS Pharmacy Dispensary'), false);
+});
+
+test('medical vertical reuses the rec MSO chain gate (same corporations run both)', () => {
+  const med = VERTICALS.medical;
+  assert.equal(med.isBigChain({ brand: 'Curaleaf' }, 'Curaleaf Bellmawr'), true);
+  assert.equal(med.isBigChain({}, 'Trulieve Dispensary'), true);
+  assert.equal(med.isBigChain({}, 'Nate’s Compassion Center'), false);
+});
+
+test('medical registry entry: own tag/frontier, dispensary-mirroring shape', () => {
+  const med = VERTICALS.medical;
+  assert.equal(med.tag, 'medical');
+  assert.equal(med.label, 'Medical dispensaries');
+  assert.equal(Number.isInteger(med.finderVersion) && med.finderVersion >= 1, true);
+  assert.equal(typeof med.overpassSelectors, 'function');
+  assert.equal(typeof med.isQualityLead, 'function');
+});
+
+test('buildOverpassQuery(medical) nets the cannabis tags INCLUDING cannabis:medical', () => {
+  const q = buildOverpassQuery([38.85, -75.6, 41.36, -73.88], VERTICALS.medical);
+  // Same cannabis map the rec query reads…
+  assert.match(q, /shop"="cannabis"/);
+  assert.match(q, /node\["cannabis:recreational"\]/); // rec=no shapes carry this tag
+  // …plus the explicitly-medical net the rec query deliberately leaves out.
+  assert.match(q, /node\["cannabis:medical"\]/);
+  assert.match(q, /way\["cannabis:medical"\]/);
+});
+
+test('parseOverpassElements(medical) keeps med-only shops, drops rec + junk', () => {
+  const rows = parseOverpassElements({
+    elements: [
+      // Medical-only (rec=no) — the dispensary vertical drops this; medical keeps it.
+      { type: 'node', id: 1, tags: { name: 'Compassion Center', shop: 'cannabis', 'cannabis:recreational': 'no', 'addr:city': 'Trenton', 'addr:state': 'NJ' } },
+      // Medical-only (medical=yes, no rec tag) — the other common OSM shape.
+      { type: 'node', id: 2, tags: { name: 'Healing Buds', shop: 'cannabis', 'cannabis:medical': 'yes' } },
+      // A rec shop → belongs to the default vertical, dropped here.
+      { type: 'node', id: 3, tags: { name: 'Green Leaf', shop: 'cannabis' } },
+      // Closed medical shop → dropped.
+      { type: 'node', id: 4, tags: { name: 'Old Meds', 'cannabis:medical': 'yes', 'disused:shop': 'cannabis' } },
+    ],
+  }, VERTICALS.medical);
+  assert.deepEqual(rows.map((r) => r.name).sort(), ['Compassion Center', 'Healing Buds']);
 });
 
 // ── Generic finder is retargeted by the vertical ─────────────────────────────

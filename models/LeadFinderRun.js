@@ -7,9 +7,10 @@ const mongoose = require('mongoose');
 const LeadFinderRunSchema = new mongoose.Schema({
   region:   { type: String, default: '', index: true },
   // Which business VERTICAL this sweep hunted (services/leadVerticals.js) —
-  // 'dispensary' (default), 'brewery', 'smoke-vape'. Legacy rows have no value →
-  // read as 'dispensary' (all history predates multi-vertical). Indexed so the
-  // per-vertical frontier can find its own last-swept-per-region cheaply.
+  // 'dispensary' (default), 'brewery', 'smoke-vape', 'medical'. Legacy rows have
+  // no value → read as 'dispensary' (all history predates multi-vertical).
+  // Indexed so the per-vertical frontier can find its own last-swept-per-region
+  // cheaply.
   vertical: { type: String, default: 'dispensary', index: true },
   dryRun:   { type: Boolean, default: false },
   found:    { type: Number, default: 0 },   // dispensaries discovered in OSM
@@ -24,6 +25,10 @@ const LeadFinderRunSchema = new mongoose.Schema({
   // stamped below the current dispensaryFinder.FINDER_VERSION so improvements
   // propagate automatically. Undefined on legacy rows → read as 0 (stale).
   finderVersion: { type: Number, default: 0, index: true },
+  // Non-empty ⇒ this sweep THREW (Overpass down / timed out) and produced NO
+  // coverage — written by leadFinderScheduler.noteRegionFailure so the coverage
+  // map can distinguish "tried and failed" from "never reached". Error rows are
+  // excluded from version/coverage bookkeeping (see leadFinderRunner.staleRegions).
   error:    { type: String, default: '' },
 }, { timestamps: true });
 

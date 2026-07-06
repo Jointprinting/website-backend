@@ -27,10 +27,22 @@ const OVERPASS_ENDPOINTS = [
 ];
 
 const POLITE_UA = 'JointPrintingLeadFinder/1.0 (+https://jointprinting.com)';
-const OVERPASS_TIMEOUT_MS = 90_000;
+// The Overpass QL query below carries its own [timeout:90] — the SERVER's budget.
+// The axios timeout must sit ABOVE it (not equal/below), or axios aborts the
+// socket right as Overpass is flushing a large-but-successful response (or a
+// partial-with-remark one) — which is exactly what was happening on dense states:
+// the server finished at ~89s and the client had already given up. 100s gives the
+// server's 90s budget room to complete plus transfer time.
+const OVERPASS_QUERY_TIMEOUT_S = 90;
+const OVERPASS_TIMEOUT_MS = 100_000;
 
 // Bounding boxes: [south, west, north, east]. NJ first; neighbors staged for the
-// "expand when NJ is dry" rollout. Rec-legal states are prioritized.
+// "expand when NJ is dry" rollout. All 50 states + DC are mapped so the national
+// rollout can genuinely cover the country (medical-heavy states matter now that
+// medical dispensaries are their own vertical — see services/leadVerticals.js).
+// Boxes are deliberately simple rectangles; they may bleed over borders, which is
+// fine — parse-level dedupe by name+address and import-level dedupe by companyKey
+// make an overlap harmless, while a too-tight box would MISS shops.
 const REGIONS = {
   nj: { label: 'New Jersey',   bbox: [38.85, -75.60, 41.36, -73.88] },
   ny: { label: 'New York',     bbox: [40.48, -79.77, 45.02, -71.85] },
@@ -57,6 +69,33 @@ const REGIONS = {
   wa: { label: 'Washington',   bbox: [45.54, -124.85, 49.00, -116.92] },
   mt: { label: 'Montana',      bbox: [44.36, -116.05, 49.00, -104.04] },
   ak: { label: 'Alaska',       bbox: [51.21, -179.15, 71.44, -129.98] },
+  // ── The rest of the map (rollout priority lives in NATIONAL_ROLLOUT below) ──
+  ok: { label: 'Oklahoma',     bbox: [33.62, -103.00, 37.00, -94.43] },
+  fl: { label: 'Florida',      bbox: [24.40, -87.63, 31.00, -79.97] },
+  dc: { label: 'Washington DC',bbox: [38.79, -77.12, 39.00, -76.90] },
+  nh: { label: 'New Hampshire',bbox: [42.70, -72.56, 45.31, -70.60] },
+  wv: { label: 'West Virginia',bbox: [37.20, -82.65, 40.64, -77.72] },
+  ky: { label: 'Kentucky',     bbox: [36.50, -89.57, 39.15, -81.96] },
+  nc: { label: 'North Carolina',bbox: [33.84, -84.32, 36.59, -75.46] },
+  sc: { label: 'South Carolina',bbox: [32.03, -83.35, 35.22, -78.54] },
+  ga: { label: 'Georgia',      bbox: [30.36, -85.61, 35.00, -80.75] },
+  tn: { label: 'Tennessee',    bbox: [34.98, -90.31, 36.68, -81.65] },
+  in: { label: 'Indiana',      bbox: [37.77, -88.10, 41.76, -84.78] },
+  wi: { label: 'Wisconsin',    bbox: [42.49, -92.89, 47.08, -86.25] },
+  ia: { label: 'Iowa',         bbox: [40.36, -96.64, 43.50, -90.14] },
+  ar: { label: 'Arkansas',     bbox: [33.00, -94.62, 36.50, -89.64] },
+  la: { label: 'Louisiana',    bbox: [28.92, -94.04, 33.02, -88.82] },
+  ms: { label: 'Mississippi',  bbox: [30.17, -91.66, 35.01, -88.10] },
+  al: { label: 'Alabama',      bbox: [30.14, -88.48, 35.01, -84.89] },
+  tx: { label: 'Texas',        bbox: [25.84, -106.65, 36.50, -93.51] },
+  ut: { label: 'Utah',         bbox: [37.00, -114.05, 42.00, -109.04] },
+  ks: { label: 'Kansas',       bbox: [36.99, -102.05, 40.00, -94.59] },
+  ne: { label: 'Nebraska',     bbox: [39.99, -104.05, 43.00, -95.31] },
+  sd: { label: 'South Dakota', bbox: [42.48, -104.06, 45.95, -96.44] },
+  nd: { label: 'North Dakota', bbox: [45.94, -104.05, 49.00, -96.55] },
+  id: { label: 'Idaho',        bbox: [41.99, -117.24, 49.00, -111.04] },
+  wy: { label: 'Wyoming',      bbox: [40.99, -111.06, 45.01, -104.05] },
+  hi: { label: 'Hawaii',       bbox: [18.86, -160.30, 22.30, -154.75] },
 };
 const DEFAULT_REGION = 'nj';
 
@@ -65,10 +104,24 @@ const DEFAULT_REGION = 'nj';
 // queue-aware refill run sweeps successive frontier states along this list —
 // WRAPPING at the end, so it periodically loops back to catch newly opened
 // dispensaries. Only ids present in REGIONS are valid.
+//
+// The first 25 keep their historical order (the live frontier resumes wherever
+// it is — reordering would make it skip or re-tread states). The appended tail
+// is ordered by MARKET SIZE first — Oklahoma has more dispensaries than any
+// other state (its famously open license regime), then Florida's huge medical
+// market — and then roughly by proximity to already-covered ground / remaining
+// market size, so each frontier step milks the richest nearby ground next.
 const NATIONAL_ROLLOUT = [
   'nj', 'ny', 'pa', 'ct', 'de', 'md', 'ma', 'ri', 'vt', 'me',
   'va', 'oh', 'mi', 'il', 'mn', 'mo', 'az', 'co', 'nm', 'nv',
   'ca', 'or', 'wa', 'mt', 'ak',
+  'ok', 'fl',                                            // biggest new markets first
+  'dc', 'nh', 'wv', 'ky',                                // adjacent to covered ground
+  'nc', 'sc', 'ga', 'tn',                                // southeast corridor
+  'in', 'wi', 'ia', 'ar',                                // midwest fill-in
+  'la', 'ms', 'al', 'tx',                                // gulf south
+  'ut', 'ks', 'ne', 'sd', 'nd',                          // plains/mountain
+  'id', 'wy', 'hi',                                      // thinnest markets last
 ];
 
 // Bump when the discovery/enrichment/import logic materially improves (a wider
@@ -81,7 +134,12 @@ const NATIONAL_ROLLOUT = [
 //   v2 → (superseded) email-optional + medical detail tags
 //   v3 → mail-merge: email REQUIRED, RECREATIONAL-only, broadened name net that
 //        also catches rec dispensaries whose name doesn't say "cannabis"
-const FINDER_VERSION = 3;
+//   v4 → tile-splitting recovery for dense states (NY/CA sweeps that used to
+//        time out now return; earlier v3 "coverage" of those states was
+//        effectively empty) + a longer axios budget so Overpass can finish
+//        instead of being aborted mid-flush. Re-milking every state under v4
+//        is exactly the point of the bump.
+const FINDER_VERSION = 4;
 
 function regionIds() { return Object.keys(REGIONS); }
 function isRegion(id) { return Object.prototype.hasOwnProperty.call(REGIONS, id); }
@@ -136,13 +194,13 @@ const OVERPASS_NAME_RE = 'dispensar|cannabis|marijuana|weed|budtender|420|kush|g
 function buildOverpassQuery(bbox, vertical) {
   const b = bbox.join(',');
   if (vertical && vertical.id !== 'dispensary' && typeof vertical.overpassSelectors === 'function') {
-    return `[out:json][timeout:90];
+    return `[out:json][timeout:${OVERPASS_QUERY_TIMEOUT_S}];
 (
 ${vertical.overpassSelectors(b)}
 );
 out center tags;`;
   }
-  return `[out:json][timeout:90];
+  return `[out:json][timeout:${OVERPASS_QUERY_TIMEOUT_S}];
 (
   node["shop"="cannabis"](${b});
   way["shop"="cannabis"](${b});
@@ -331,12 +389,30 @@ function parseOverpassElements(json, vertical) {
   return markChains(out);
 }
 
-// Discover dispensaries in an ARBITRARY bbox (network). Tries each Overpass
-// endpoint in turn; returns the parsed candidates. Throws only if every endpoint
-// fails, so the caller can surface a clean error. `bbox` is [south, west, north,
-// east]. A shorter timeout suits interactive callers (the Field Map viewport
-// scan) where a hung endpoint shouldn't block the request for 90s.
-async function fetchDispensariesForBbox(bbox, { timeoutMs = OVERPASS_TIMEOUT_MS, vertical } = {}) {
+// Split a bbox [south, west, north, east] into its 4 quadrants (SW, SE, NW, NE).
+// The quadrants tile the parent EXACTLY — shared mid edges, no gaps, no overlap
+// beyond those edges — so a split-and-union sweep covers the same ground as the
+// parent request. Pure + unit-tested.
+function splitBbox(bbox) {
+  const [s, w, n, e] = bbox;
+  const midLat = (s + n) / 2;
+  const midLng = (w + e) / 2;
+  return [
+    [s, w, midLat, midLng],       // SW
+    [s, midLng, midLat, e],       // SE
+    [midLat, w, n, midLng],       // NW
+    [midLat, midLng, n, e],       // NE
+  ];
+}
+
+// How many times a failing bbox may be quartered: depth 2 → a state degrades to
+// at most 16 tiles. Deep enough that even NY/CA fit per-tile; shallow enough
+// that a dead endpoint can't fan out into an unbounded request storm.
+const MAX_SPLIT_DEPTH = 2;
+
+// ONE Overpass request for a bbox, trying each endpoint in turn so one being
+// down/rate-limited doesn't stall the sweep. Throws only if every endpoint fails.
+async function fetchBboxOnce(bbox, { timeoutMs = OVERPASS_TIMEOUT_MS, vertical } = {}) {
   const query = buildOverpassQuery(bbox, vertical);
   let lastErr = null;
   for (const endpoint of OVERPASS_ENDPOINTS) {
@@ -354,6 +430,58 @@ async function fetchDispensariesForBbox(bbox, { timeoutMs = OVERPASS_TIMEOUT_MS,
     }
   }
   throw lastErr || new Error('All Overpass endpoints failed');
+}
+
+// Discover dispensaries in an ARBITRARY bbox (network). `bbox` is [south, west,
+// north, east]. A shorter timeout suits interactive callers (the Field Map
+// viewport scan) where a hung endpoint shouldn't block the request for 90s.
+//
+// DENSE-STATE RECOVERY: when the whole-bbox request fails on every endpoint
+// (Overpass timeout, 429/504, network), the cause on a big state is almost
+// always that the result set is too large for one query — so instead of giving
+// up (which used to mark NY/CA "swept: 0 found"), split the bbox into 4
+// quadrants and recurse (max depth 2 → up to 16 tiles), unioning the tiles and
+// de-duping by OSM id. A quadrant that STILL fails at max depth is skipped while
+// its siblings' results are kept — partial coverage beats total failure. Only
+// when the parent AND every quadrant fail (endpoint truly down) does the error
+// propagate, so the scheduler still sees a real failure as a failure.
+async function fetchDispensariesForBbox(bbox, { timeoutMs = OVERPASS_TIMEOUT_MS, vertical, _depth = 0 } = {}) {
+  let parentErr;
+  try {
+    return await fetchBboxOnce(bbox, { timeoutMs, vertical });
+  } catch (err) {
+    parentErr = err;
+  }
+  if (_depth >= MAX_SPLIT_DEPTH) throw parentErr;
+  const seen = new Set();
+  const out = [];
+  let okTiles = 0;
+  // Sequential on purpose (one in-flight Overpass request at a time) — this is
+  // the recovery path for an already-strained server; parallel quadrants would
+  // just re-trigger the rate-limit that got us here.
+  for (const quad of splitBbox(bbox)) {
+    try {
+      const rows = await fetchDispensariesForBbox(quad, { timeoutMs, vertical, _depth: _depth + 1 });
+      okTiles += 1;
+      for (const c of rows) {
+        // Union across tiles: a shop sitting on a shared tile edge (or in a
+        // slightly-overlapping way geometry) can come back from two quadrants —
+        // its OSM id is the stable identity. Name+address is the fallback for
+        // the rare element without one.
+        const key = c.osmId || `${String(c.name).toLowerCase()}|${String(c.address).toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(c);
+      }
+    } catch (_e) {
+      // Skip the dead quadrant; the siblings' coverage still counts.
+    }
+  }
+  if (!okTiles) throw parentErr;
+  // Re-run the repeated-brand pass over the UNION: a regional chain spread
+  // 2-per-tile would dodge the per-tile threshold otherwise. markChains never
+  // clears an existing flag, so per-tile verdicts are preserved.
+  return markChains(out);
 }
 
 // Discover leads in a named REGION (network). Thin wrapper over the bbox fetch.
@@ -376,6 +504,7 @@ module.exports = {
   fetchDispensaries,
   fetchDispensariesForBbox,
   // pure — unit-tested
+  splitBbox,
   buildOverpassQuery,
   osmLatLng,
   osmAddress,

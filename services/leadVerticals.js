@@ -4,8 +4,9 @@
 // one KIND of business on the free OpenStreetMap/Overpass map: which OSM tags mark
 // it, a widening name-net, a quality gate that keeps junk out, and a big-chain
 // filter (emailing a corporate location is pointless — HQ handles merch). Each
-// campaign targets one vertical, so the same free engine can hunt dispensaries,
-// breweries, or corner-store/smoke-shop leads without touching a paid API.
+// campaign targets one vertical, so the same free engine can hunt rec
+// dispensaries, medical dispensaries, breweries, or corner-store/smoke-shop
+// leads without touching a paid API.
 //
 // dispensaries stays the DEFAULT and its behavior is unchanged — this vertical
 // simply wraps the exact gates that already live (and are unit-tested) in
@@ -24,6 +25,7 @@ const {
   isQualityLead: dispensaryIsQualityLead,
   isBigChain: dispensaryIsBigChain,
   isClosedPoi,
+  isMedicalOnly,
   FINDER_VERSION: DISPENSARY_FINDER_VERSION,
 } = require('./dispensaryFinder');
 
@@ -187,8 +189,64 @@ const smokeVape = {
   isBigChain: isSmokeChain,
 };
 
+// ── MEDICAL DISPENSARIES ─────────────────────────────────────────────────────
+// The other half of the cannabis map. The default dispensary vertical is
+// REC-only by owner decision — but medical dispensaries buy print/merch too, so
+// rather than widening that gate (and pitching med shops rec-flavored copy), the
+// owner chose to hunt them as their OWN vertical with its own campaigns. This is
+// exactly the shape a vertical exists for: the same free engine, a different
+// gate, a separate tagged pool ('medical') so enrollment can't cross the streams
+// — and first-touch-wins ownership so a dual-license shop found by the rec sweep
+// is never re-claimed here (nor vice versa).
+//
+// Discovery reuses the cannabis TAG net (same shops, same map) plus the explicit
+// cannabis:medical detail tag the rec query deliberately leaves out. The rec
+// query's NAME-net is intentionally NOT reused: this vertical's gate trusts only
+// medical-only TAGS (below), so name-only hits could never pass it — shipping
+// them from Overpass would be pure wasted volume in exactly the dense states
+// where volume already hurts.
+function medicalOverpassSelectors(b) {
+  return [
+    `  node["shop"="cannabis"](${b});`,
+    `  way["shop"="cannabis"](${b});`,
+    `  node["office"="cannabis"](${b});`,
+    `  way["office"="cannabis"](${b});`,
+    `  node["shop"="weed"](${b});`,
+    `  node["cannabis:recreational"](${b});`,          // catches rec=no (medical-only) shapes
+    `  way["cannabis:recreational"](${b});`,
+    `  node["cannabis:medical"](${b});`,               // the explicitly-medical net
+    `  way["cannabis:medical"](${b});`,
+  ].join('\n');
+}
+
+// Is this a good MEDICAL-dispensary lead? The exact mirror-image of the rec
+// gate: keep ONLY the medical-only shops isMedicalOnly identifies (rec=no, or
+// cannabis:medical with no affirmative rec tag) — the very shops the dispensary
+// vertical drops. Everything rec or dual-licensed stays with the rec vertical
+// (first-touch-wins would protect them anyway; not even competing is cleaner).
+// Closed POIs are out as everywhere; there is no name-only path — "medical" in
+// a NAME is what the rec junk-gate uses to spot pharmacies/clinics, far too
+// noisy to TRUST as "is a med dispensary". Pure + unit-tested.
+function medicalIsQualityLead(tags = {}, name = '') {
+  if (isClosedPoi(tags)) return false;
+  return isMedicalOnly(tags);
+}
+
+const medical = {
+  id: 'medical',
+  label: 'Medical dispensaries',
+  short: 'medical dispensaries',
+  tag: 'medical',
+  finderVersion: 1,
+  overpassSelectors: medicalOverpassSelectors,
+  isQualityLead: medicalIsQualityLead,
+  // The same MSOs run the medical storefronts (Curaleaf/Trulieve are medical-
+  // heavy) — corporate handles their merch, so the rec chain gate applies as-is.
+  isBigChain: dispensaryIsBigChain,
+};
+
 // ── Registry ─────────────────────────────────────────────────────────────────
-const VERTICALS = { dispensary, brewery, 'smoke-vape': smokeVape };
+const VERTICALS = { dispensary, brewery, 'smoke-vape': smokeVape, medical };
 const VERTICAL_IDS = Object.keys(VERTICALS);
 const DEFAULT_VERTICAL_ID = 'dispensary';
 const NON_DEFAULT_VERTICAL_IDS = VERTICAL_IDS.filter((id) => id !== DEFAULT_VERTICAL_ID);
@@ -284,4 +342,5 @@ module.exports = {
   smokeIsQualityLead,
   isSmokeChain,
   isFuelStation,
+  medicalIsQualityLead,
 };

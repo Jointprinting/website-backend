@@ -35,7 +35,7 @@ async function keysWithPlacedOrders(keys) {
     .select('companyKey').lean();
   return new Set(rows.map((r) => r.companyKey));
 }
-const { engineStatus, runOutreachTick, sendTestEmail, recheckAuth, newToken, pickEmail, sendBlockReason, deliverabilityStats, DAILY_CAP_MAX } = require('../services/outreachEngine');
+const { engineStatus, runOutreachTick, sendTestEmail, recheckAuth, newToken, pickEmail, sendBlockReason, deliverabilityStats, cityFromAddress, openPixelEnabled, DAILY_CAP_MAX } = require('../services/outreachEngine');
 const { runFinder, finderStatus } = require('../services/leadFinderRunner');
 const { scoreLead } = require('../services/leadScore');
 const { runFrontierSweep } = require('../services/leadFinderScheduler');
@@ -812,10 +812,41 @@ async function deleteCampaign(req, res) {
 
 // ── Auto-enroll (Wave 7) ──────────────────────────────────────────────────────
 
+// Round-robin `rows` across their cities: one from the best city, one from the
+// next, … then back around. Pure city-spread for the daily enroll draw —
+// best-leadScore-first alone clusters a whole day's sends in one town (OSM maps
+// towns unevenly, so one well-mapped city dominates the top of the scoreboard),
+// which both reads as spam to a shared local ISP/mail filter and burns the
+// day's cap on one market. Rules:
+//   • Rows arrive best-score-first; WITHIN a city that order is preserved
+//     (buckets keep arrival order), so each city still leads with its best shop.
+//   • Cities take turns in first-appearance order — the city holding the single
+//     best lead still goes first, it just can't go five-in-a-row.
+//   • Unknown-city rows (unparseable address) form their own bucket drawn LAST:
+//     they're the least-hygienic records, and they'd otherwise soak up turns.
+// `cityOf` extracts the city from a row (default: row.city). Pure + unit-tested.
+function interleaveByCity(rows = [], cityOf = (r) => r && r.city) {
+  const buckets = new Map(); // normalized city → rows, in arrival (score) order
+  const unknown = [];
+  for (const r of rows || []) {
+    const city = String(cityOf(r) || '').trim().toLowerCase();
+    if (!city) { unknown.push(r); continue; }
+    if (!buckets.has(city)) buckets.set(city, []);
+    buckets.get(city).push(r);
+  }
+  const queues = [...buckets.values()];
+  const out = [];
+  for (let i = 0; queues.some((q) => i < q.length); i++) {
+    for (const q of queues) if (i < q.length) out.push(q[i]);
+  }
+  return out.concat(unknown);
+}
+
 // Discover cold candidates and enroll up to `limit` of them into `campaign`,
-// best-lead-first — the same cold-only + suppression + hygiene guards the manual
-// enroll uses, so the auto path can never do anything the owner couldn't. Used by
-// the auto-enroll cron and the "fill now" toggle. Returns { enrolled }.
+// best-lead-first with a per-city spread — the same cold-only + suppression +
+// hygiene guards the manual enroll uses, so the auto path can never do anything
+// the owner couldn't. Used by the auto-enroll cron and the "fill now" toggle.
+// Returns { enrolled }.
 async function autoFillCampaign(campaign, { limit } = {}) {
   // Capacity-matched: with no explicit limit (the auto-enroll cron), only enroll
   // enough to top the ACTIVE pool up to ~a week of sending — never balloon it.
@@ -845,10 +876,16 @@ async function autoFillCampaign(campaign, { limit } = {}) {
   const usedEmails = new Set(allEnrollments.map((e) => String(e.toEmail || '').toLowerCase()).filter(Boolean));
   const suppressed = await suppressedSet(clients.map((c) => pickEmail(c)));
 
-  // Best-scored leads first, take up to `limit` eligible.
-  const scored = clients.map((c) => ({ c, sc: scoreLead(c).score })).sort((a, b) => b.sc - a.sc);
+  // Best-scored leads first — then SPREAD across cities (round-robin) so one
+  // heavily-mapped town can't monopolize a day's sends; within each city it's
+  // still best-score-first. Same city parser the merge templates use
+  // ({{city}}), so the spread agrees with what the emails themselves say.
+  const scored = clients
+    .map((c) => ({ c, sc: scoreLead(c).score, city: cityFromAddress(c.address || c.area) }))
+    .sort((a, b) => b.sc - a.sc);
+  const spread = interleaveByCity(scored, (r) => r.city);
   const eligible = [];
-  for (const { c } of scored) {
+  for (const { c } of spread) {
     if (eligible.length >= limit) break;
     const email = String(pickEmail(c) || '').toLowerCase();
     const reason = enrollBlockReason(c, enrolledSet.has(c.companyKey), customerKeys.has(c.companyKey), email ? suppressed.has(email) : false);
@@ -1131,9 +1168,13 @@ async function getAnalytics(req, res) {
       })
       .filter(Boolean);
 
-    // Finder coverage per region: latest snapshot + cumulative imported.
+    // Finder coverage per region: latest snapshot + cumulative imported. Rows
+    // with `error` set are failed sweeps (they found nothing by definition) —
+    // skip them so an errored latest attempt doesn't zero out a region's real
+    // last-known coverage. The finder-status endpoint reports failures.
     const coverage = new Map();
     for (const r of finderRuns) {
+      if (r.error) continue;
       if (!coverage.has(r.region)) {
         coverage.set(r.region, {
           region: r.region, found: r.found, withEmail: r.withEmail, verified: r.verified || 0,
@@ -1150,6 +1191,11 @@ async function getAnalytics(req, res) {
       trend: weeklyTrend(enrollments, nowMs),
       stepFunnel: buildStepFunnel(enrollments),
       deliverability: await deliverabilityStats().catch(() => null),
+      // Whether the open pixel is actually embedded in sends (OUTREACH_OPEN_PIXEL
+      // — off by default). When false, every "opened" count above is structurally
+      // zero; the UI should present open rates as "tracking off", not as a
+      // damning 0%. Replies/clicks are the real signals either way.
+      openTracking: openPixelEnabled(),
       coverage: [...coverage.values()],
       // Per-campaign breakdown (each campaign's own funnel/health/steps/trend).
       campaigns: perCampaign,
@@ -1488,6 +1534,7 @@ module.exports = {
   // exported for tests
   summarizeEnrollments,
   summarizeAbTest,
+  interleaveByCity,
   campaignHealth,
   buildNextActions,
   enrollBlockReason,
