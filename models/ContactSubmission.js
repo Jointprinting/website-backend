@@ -14,9 +14,9 @@ const ContactSubmissionSchema = new mongoose.Schema({
   name:         { type: String, required: true, trim: true, maxlength: 200 },
   companyName:  { type: String, required: true, trim: true, maxlength: 200 },
   email:        { type: String, required: true, trim: true, lowercase: true, maxlength: 320 },
-  // Phone is required for print quotes (enforced in the controller) but optional
-  // for JP Webworks web-design leads, so the model itself no longer requires it.
-  phone:        { type: String, trim: true, maxlength: 40, default: '' },
+  // Required for every lead type — both the merch and JP Webworks controllers
+  // enforce it, so the model requires it too.
+  phone:        { type: String, required: true, trim: true, maxlength: 40 },
   quantity:     { type: String, trim: true, maxlength: 80 },
   inHandDate:   { type: String, trim: true, maxlength: 40 },
   notes:        { type: String, trim: true, maxlength: 5000 },

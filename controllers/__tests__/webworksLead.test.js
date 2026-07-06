@@ -14,29 +14,30 @@ const assert = require('node:assert/strict');
 
 const { validateWebworksPayload, composeWebworksNotes } = require('../email');
 
-test('accepts a minimal lead (name + business + email, no phone)', () => {
+test('accepts a complete lead (name + business + email + phone)', () => {
   const { errors, cleaned } = validateWebworksPayload({
-    name: '  Sam Rivera ', companyName: 'Rivera Roofing', email: 'SAM@Rivera.com ',
+    name: '  Sam Rivera ', companyName: 'Rivera Roofing', email: 'SAM@Rivera.com ', phone: '(555) 123-4567',
   });
   assert.deepEqual(errors, []);
   assert.equal(cleaned.name, 'Sam Rivera');
   assert.equal(cleaned.companyName, 'Rivera Roofing');
-  assert.equal(cleaned.phone, ''); // optional — absent is fine
+  assert.equal(cleaned.phone, '(555) 123-4567');
 });
 
 test('accepts businessName as an alias for companyName', () => {
   const { errors, cleaned } = validateWebworksPayload({
-    name: 'Sam', businessName: 'Rivera Roofing', email: 'sam@rivera.com',
+    name: 'Sam', businessName: 'Rivera Roofing', email: 'sam@rivera.com', phone: '5551234567',
   });
   assert.deepEqual(errors, []);
   assert.equal(cleaned.companyName, 'Rivera Roofing');
 });
 
-test('requires name, business name, and email', () => {
+test('requires name, business name, email, and phone', () => {
   const { errors } = validateWebworksPayload({});
   assert.ok(errors.includes('name is required'));
   assert.ok(errors.includes('business name is required'));
   assert.ok(errors.includes('email is required'));
+  assert.ok(errors.includes('phone is required'));
 });
 
 test('rejects an invalid email and a garbage phone', () => {
