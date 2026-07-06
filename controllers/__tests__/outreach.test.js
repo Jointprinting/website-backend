@@ -258,6 +258,26 @@ test('buildNextActions: no active campaign but reserve → launch nudge', () => 
   assert.ok(a.some((x) => /launch one/i.test(x.text)));
 });
 
+test('buildNextActions: active campaign + Gmail sync OFF → loud reply-auto-stop warning', () => {
+  const base = {
+    engine: { senderConfigured: true, authGate: true, auth: { level: 'green' }, deliverability: { tripped: false } },
+    campaigns: [{ _id: 'c1', name: 'Dispo', status: 'active', health: { level: 'ok' } }],
+    warmCount: 0, coldReserve: 5,
+  };
+  // Sync off while sending → red action item pointing at the replies view.
+  const off = buildNextActions({ ...base, replySyncOn: false });
+  const warn = off.find((x) => /replies are not being auto-detected/i.test(x.text));
+  assert.ok(warn, 'expected the reply-sync warning');
+  assert.equal(warn.level, 'action');
+  assert.deepEqual(warn.cta, { view: 'replies' });
+  // Sync on (or omitted → default true, the legacy shape) → no warning.
+  assert.equal(buildNextActions({ ...base, replySyncOn: true }).some((x) => /auto-detected/i.test(x.text)), false);
+  assert.equal(buildNextActions(base).some((x) => /auto-detected/i.test(x.text)), false);
+  // No active campaign → nothing is sending, so no warning even when sync is off.
+  const idle = buildNextActions({ ...base, campaigns: [], replySyncOn: false });
+  assert.equal(idle.some((x) => /auto-detected/i.test(x.text)), false);
+});
+
 // ── test-send handler (first-run wizard) ─────────────────────────────────────
 // A tiny res double so we can assert the status/JSON without Express.
 function mockRes() {

@@ -9,6 +9,12 @@ const mongoose = require('mongoose');
 const OutreachStateSchema = new mongoose.Schema({
   key:         { type: String, required: true, unique: true }, // always 'engine'
   firstSendAt: { type: Date, default: null },
+  // PER-INBOX warm-up anchors: { <senderLabel>: Date }. Each inbox in the pool
+  // ramps from ITS OWN first send — so adding a fresh inbox months in starts it
+  // at 10/day like a new address should, instead of inheriting the pool's age
+  // and blasting at full cap from day one (which would burn the new mailbox).
+  // Keys are sanitized sender labels (dots/dollars → '_', see senderKey()).
+  senderFirstSendAt: { type: Object, default: {} },
   last_run_at: { type: Date, default: null },
   last_result: { type: String, default: '' },
   // O(1) daily-sent counter (ET day). Avoids re-aggregating every enrollment's

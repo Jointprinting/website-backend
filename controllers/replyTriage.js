@@ -15,6 +15,7 @@ const OutreachState = require('../models/OutreachState');
 const Client = require('../models/Client');
 const {
   classifyReply,
+  classifyBounceNdr,
   matchReply,
   parseOooResume,
   parseFromHeader,
@@ -30,6 +31,7 @@ const {
 } = require('../services/replyTriage');
 const { warmFromEnrollment } = require('../services/warmHandoff');
 const { suppress } = require('../services/suppression');
+const { getSenders } = require('../services/senderPool');
 
 const IGNORE_CATEGORY = 'bounce_auto_ignore';
 const VALID_SOURCES = ['manual', 'import', 'gmail'];
@@ -168,7 +170,17 @@ async function applyReplyAutoActions(reply, cls, match) {
     await applyStatusSideEffects(reply, 'not_interested', { companyLevel: strong });
     return;
   }
-  if (category === IGNORE_CATEGORY) return; // machine noise
+  if (category === IGNORE_CATEGORY) {
+    // Not ALL machine mail is ignorable. Google Workspace SMTP reports dead
+    // mailboxes as Delivery Status Notification EMAILS (not send-time errors),
+    // so this inbox is the only place hard bounces are visible on Gmail SMTP.
+    // Parse the failed recipient out of the NDR and run the same hard-bounce
+    // path the provider webhook uses — suppress + stop + doNotEmail — so a dead
+    // address never gets touches 2/3/4 and the circuit-breaker sees real data.
+    // Soft failures (mailbox full, greylist) are left alone. Best-effort.
+    await ingestNdrBounce(reply).catch((e) => console.warn('[triage] NDR bounce ingest failed:', e.message));
+    return;
+  }
   if (cls.ooo || category === 'auto_reply_ooo') {
     if (strong && match.enrollmentId) {
       const resumeAt = parseOooResume(reply.snippet, reply.receivedAt);
@@ -184,6 +196,47 @@ async function applyReplyAutoActions(reply, cls, match) {
   if (HUMAN_WARM.has(category) && strong && match.enrollmentId) {
     const enr = await OutreachEnrollment.findById(match.enrollmentId);
     if (enr) await warmFromEnrollment(enr, { source: 'triage' });
+  }
+}
+
+// Domains WE send/reply from — excluded when parsing failed recipients out of an
+// NDR (our own addresses appear in the quoted original message).
+function ourSendingDomains() {
+  const doms = new Set();
+  const add = (addr) => { const d = domainOf(addr); if (d) doms.add(d); };
+  try { getSenders().forEach((s) => { add(s.from); add(s.replyTo); }); } catch { /* pool unavailable → env only */ }
+  add(process.env.OUTREACH_EMAIL_FROM);
+  add(process.env.OUTREACH_REPLY_TO);
+  add(process.env.EMAIL_FROM);
+  return [...doms];
+}
+
+// Turn a hard-bounce NDR into the exact suppression the provider webhook would
+// have applied: address-level Suppression + stop active sequences + doNotEmail.
+// GUARDED: only fires for addresses we actually emailed (a toEmail on some
+// enrollment) — a random address quoted inside a forwarded NDR is never touched.
+async function ingestNdrBounce(reply) {
+  const ndr = classifyBounceNdr(reply, ourSendingDomains());
+  if (!ndr.isBounce || !ndr.hard || !ndr.emails.length) return;
+  for (const email of ndr.emails) {
+    const rx = new RegExp(`^${escapeRegex(email)}$`, 'i');
+    const enrs = await OutreachEnrollment.find({ toEmail: rx }).select('companyKey status').lean();
+    if (!enrs.length) continue; // not an address we ever sent to → leave it alone
+    await suppress(email, { reason: 'hard-bounce', source: 'gmail-ndr' });
+    const keys = new Set();
+    for (const e of enrs) {
+      keys.add(e.companyKey);
+      if (e.status === 'active') {
+        await OutreachEnrollment.updateOne(
+          { _id: e._id, status: 'active' },
+          { $set: { status: 'failed', stopReason: 'bounced', nextSendAt: null } },
+        ).catch(() => {});
+      }
+    }
+    if (keys.size) {
+      await Client.updateMany({ companyKey: { $in: [...keys] } }, { $set: { doNotEmail: true } }).catch(() => {});
+    }
+    console.log(`[triage] NDR hard bounce → suppressed ${email} (${keys.size} compan${keys.size === 1 ? 'y' : 'ies'})`);
   }
 }
 

@@ -41,6 +41,7 @@ const { scoreLead } = require('../services/leadScore');
 const { runFrontierSweep } = require('../services/leadFinderScheduler');
 const { REGIONS, isRegion } = require('../services/dispensaryFinder');
 const { isVertical, verticalPoolFilter, verticalOptions, DEFAULT_VERTICAL_ID } = require('../services/leadVerticals');
+const { isGmailConfigured } = require('../services/replyTriage');
 
 const NOT_ARCHIVED = { archived: { $ne: true } };
 
@@ -165,9 +166,10 @@ function campaignHealth(campaign = {}, stats = {}) {
 // getOverview already has, so the operator always knows the single most-important
 // next move instead of scanning cards. Pure + unit-tested. Levels rank
 // action > warm > info > ok; the first item is the "next best action" banner.
-function buildNextActions({ engine = {}, campaigns = [], warmCount = 0, coldReserve = 0, autoEnrollOn = false } = {}) {
+function buildNextActions({ engine = {}, campaigns = [], warmCount = 0, coldReserve = 0, autoEnrollOn = false, replySyncOn = true } = {}) {
   const actions = [];
   const add = (level, text, cta = null) => actions.push({ level, text, cta });
+  const anyActiveCampaign = campaigns.some((c) => c.status === 'active');
 
   if (!engine.senderConfigured) {
     add('action', 'Set OUTREACH_EMAIL_FROM on the API to a dedicated cold-sending address — the engine is holding until then.');
@@ -178,13 +180,21 @@ function buildNextActions({ engine = {}, campaigns = [], warmCount = 0, coldRese
   if (engine.deliverability && engine.deliverability.tripped) {
     add('action', `Sending auto-paused — ${engine.deliverability.reason}. Clean the list, then it resumes on its own.`, { view: 'analytics' });
   }
+  // Reply auto-stop is the difference between a smart drip and an embarrassing
+  // one: without Gmail sync, replies aren't detected, so the sequence keeps
+  // firing at people who already answered (the day-14 "closing the loop" hits a
+  // buyer mid-conversation). This failure is otherwise silent — say it loudly
+  // whenever cold email is actually flowing.
+  if (anyActiveCampaign && !replySyncOn) {
+    add('action', 'Replies are NOT being auto-detected (Gmail sync is off) — the drip keeps emailing people who already answered. Connect the outreach inbox (GMAIL_TRIAGE_* on the API) or log replies by hand the moment they arrive.', { view: 'replies' });
+  }
   if (warmCount > 0) {
     add('warm', `${warmCount} warm lead${warmCount === 1 ? '' : 's'} replied or opening — follow up today.`, { view: 'replies' });
   }
   for (const c of campaigns) {
     if (c.health && c.health.level === 'action') add('action', `“${c.name}”: ${c.health.hint}`, { view: 'campaigns', campaignId: String(c._id) });
   }
-  const anyActive = campaigns.some((c) => c.status === 'active');
+  const anyActive = anyActiveCampaign;
   if (!anyActive && coldReserve > 0) {
     add('info', `${coldReserve} cold lead${coldReserve === 1 ? '' : 's'} in reserve and no active campaign — launch one to start sending.`, { view: 'campaigns' });
   } else if (anyActive && coldReserve >= 20 && !autoEnrollOn) {
@@ -293,7 +303,11 @@ async function getOverview(req, res) {
       ...NOT_ARCHIVED, doNotEmail: { $ne: true }, stage: { $in: ['lead', 'contacted'] }, lastContact: null,
       ...(enrolledKeys.length ? { companyKey: { $nin: enrolledKeys } } : {}),
     }).catch(() => 0);
-    const nextActions = buildNextActions({ engine, campaigns: campaignRows, warmCount: warm.length, coldReserve, autoEnrollOn });
+    const nextActions = buildNextActions({
+      engine, campaigns: campaignRows, warmCount: warm.length, coldReserve, autoEnrollOn,
+      // Reply auto-stop only works when Gmail sync is on — surface it loudly if not.
+      replySyncOn: isGmailConfigured(),
+    });
 
     // Today's plan — the plain-English "here's what the engine is doing" readout,
     // so the owner trusts it without babysitting. Warm follow-ups DUE now (they
