@@ -18,6 +18,7 @@ const {
   classifyHeadsUp,
   buildHeadsUp,
   HEADS_UP,
+  isEngineManagedCold,
   isOutreachPool,
   isColdDeadWeight,
   cadenceBucketFor,
@@ -329,17 +330,40 @@ test('a snoozed card earns no heads-up items until the snooze passes', () => {
 // ── Cadence cockpit (bucket-by-next-action) ──────────────────────────────────
 const bucketOf = (c) => { const e = cadenceBucketFor(c, NOW_MS, START_MS); return e ? e.bucket : null; };
 
-test('isOutreachPool: cold-outreach spam only (untouched, unscheduled, not warm)', () => {
-  // Cold dispensary prospect, never owner-touched, nothing scheduled → engine's job.
-  assert.equal(isOutreachPool(mkClient({
+test('isEngineManagedCold: engine-managed cold prospect, regardless of a stamped follow-up', () => {
+  // Cold dispensary prospect, never owner-touched → the engine's job.
+  assert.equal(isEngineManagedCold(mkClient({
     stage: 'lead', lastContact: null, nextFollowUp: null,
     tags: ['dispensary'], log: [{ at: daysAgo(2), kind: 'email' }], // automated cold send doesn't count
   })), true);
+  // THE FIX: an engine/importer-stamped follow-up date does NOT make it the owner's —
+  // still engine-managed (this is what used to leak cold leads into "call today").
+  assert.equal(isEngineManagedCold(mkClient({
+    stage: 'lead', tags: ['dispensary'], log: [], nextFollowUp: daysAhead(0),
+  })), true);
+  // leadSource 'Cold Outreach' (finder-imported, untagged) also counts.
+  assert.equal(isEngineManagedCold(mkClient({
+    stage: 'lead', tags: [], leadSource: 'Cold Outreach', log: [], nextFollowUp: daysAhead(-1),
+  })), true);
   // Owner actually called it → no longer the engine's job.
-  assert.equal(isOutreachPool(mkClient({
+  assert.equal(isEngineManagedCold(mkClient({
     stage: 'lead', lastContact: null, tags: ['dispensary'], log: [{ at: daysAgo(1), kind: 'call' }],
   })), false);
-  // A scheduled follow-up (e.g. warm-handoff) removes it from the pool.
+  // A reply flips it 'warm' → the owner's now, not the engine's.
+  assert.equal(isEngineManagedCold(mkClient({
+    stage: 'lead', tags: ['dispensary', 'warm'], log: [], nextFollowUp: daysAhead(0),
+  })), false);
+  // A genuine untagged lead is NOT engine-managed cold.
+  assert.equal(isEngineManagedCold(mkClient({ stage: 'lead', lastContact: null, log: [], tags: [] })), false);
+});
+
+test('isOutreachPool: engine-managed cold AND nothing scheduled (heads-up dead-weight slice)', () => {
+  // Cold dispensary prospect, never owner-touched, nothing scheduled → engine's job.
+  assert.equal(isOutreachPool(mkClient({
+    stage: 'lead', lastContact: null, nextFollowUp: null,
+    tags: ['dispensary'], log: [{ at: daysAgo(2), kind: 'email' }],
+  })), true);
+  // A scheduled follow-up narrows it OUT of this pool (but NOT out of isEngineManagedCold).
   assert.equal(isOutreachPool(mkClient({ stage: 'lead', tags: ['dispensary'], log: [], nextFollowUp: daysAhead(3) })), false);
   // A genuine untagged lead is NOT outreach spam.
   assert.equal(isOutreachPool(mkClient({ stage: 'lead', lastContact: null, log: [], tags: [] })), false);
@@ -400,6 +424,31 @@ test('cadence excludes closed, snoozed, and cold dead-weight from the worklist',
   assert.equal(bucketOf(mkClient({ stage: 'quoting', dealValue: 5000, snoozedUntil: daysAhead(5) })), null);
   // Never-worked cold dispensary prospect → off the worklist entirely.
   assert.equal(bucketOf(mkClient({ stage: 'lead', dealValue: 0, lastContact: null, nextFollowUp: null, tags: ['dispensary'], log: [] })), null);
+});
+
+test('cadence: a stamped follow-up on an engine-managed cold lead never drags it onto the day', () => {
+  // THE BUG: cold mail-merge dispensary leads carried an engine/import-stamped
+  // follow-up date and surfaced as "call today"/"your move". They must stay OFF the
+  // cockpit — the outreach engine owns them until they reply or the owner works them.
+  assert.equal(bucketOf(mkClient({
+    stage: 'lead', dealValue: 0, lastContact: null, tags: ['dispensary'], log: [], nextFollowUp: daysAhead(0),
+  })), null, 'cold lead w/ follow-up today is NOT call_today');
+  assert.equal(bucketOf(mkClient({
+    stage: 'contacted', dealValue: 0, lastContact: null, tags: ['dispensary'], log: [], nextFollowUp: daysAhead(-3),
+  })), null, 'cold lead w/ overdue follow-up is NOT your_move');
+  // Finder-imported (leadSource) cold lead with a stamped date → also excluded.
+  assert.equal(bucketOf(mkClient({
+    stage: 'lead', dealValue: 0, lastContact: null, leadSource: 'Cold Outreach', log: [], nextFollowUp: daysAhead(0),
+  })), null, 'finder-sourced cold lead w/ follow-up is off the worklist');
+
+  // But the moment it goes WARM (a reply), the follow-up IS the owner's → call_today.
+  assert.equal(bucketOf(mkClient({
+    stage: 'contacted', dealValue: 0, tags: ['dispensary', 'warm'], log: [], nextFollowUp: daysAhead(0),
+  })), 'call_today', 'a warm reply surfaces normally');
+  // And once the owner personally works it (a call log), it flows in too.
+  assert.equal(bucketOf(mkClient({
+    stage: 'contacted', dealValue: 0, tags: ['dispensary'], log: [{ at: daysAgo(1), kind: 'call' }], nextFollowUp: daysAhead(-2),
+  })), 'your_move', 'an owner-worked cold lead surfaces normally');
 });
 
 test('buildCockpit groups a book into all five buckets, sorts by value, counts', () => {
