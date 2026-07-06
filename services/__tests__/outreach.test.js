@@ -14,6 +14,8 @@ const assert = require('node:assert/strict');
 
 const {
   rampCap,
+  senderKey,
+  senderRampDays,
   isWithinSendWindow,
   renderTemplate,
   buildMergeContext,
@@ -67,6 +69,40 @@ test('rampCap: no first send yet (or garbage) → week-one pace; cap wins early'
   assert.equal(rampCap(NaN, 500), 10);
   assert.equal(rampCap(21, 50), 50);   // week-four geometric (80) clamped to a 50 cap
   assert.equal(rampCap(0, 5), 5);      // cap below the 10 floor still wins
+});
+
+// ── PER-INBOX warm-up: each pool inbox ramps from ITS OWN first send ──────────
+test('senderKey sanitizes labels into legal Mongo map keys', () => {
+  assert.equal(senderKey('gw1'), 'gw1');
+  assert.equal(senderKey('gw.1'), 'gw_1');      // dots are illegal in Mongo keys
+  assert.equal(senderKey('a$b.c'), 'a_b_c');
+  assert.equal(senderKey(''), 'primary');       // blank → the legacy primary
+  assert.equal(senderKey(null), 'primary');
+});
+
+test('senderRampDays: anchored inbox → its own age; unanchored → null', () => {
+  const now = new Date('2026-07-06T12:00:00Z');
+  const anchors = {
+    gw1: new Date('2026-06-06T12:00:00Z'),  // 30 days old
+    gw_2: new Date('2026-07-05T12:00:00Z'), // 1 day old (stored under sanitized key)
+  };
+  assert.equal(senderRampDays(anchors, 'gw1', now), 30);
+  assert.equal(senderRampDays(anchors, 'gw.2', now), 1);   // label sanitizes to the stored key
+  assert.equal(senderRampDays(anchors, 'brand-new', now), null); // never sent
+  assert.equal(senderRampDays({}, 'gw1', now), null);
+  assert.equal(senderRampDays(null, 'gw1', now), null);
+  assert.equal(senderRampDays({ gw1: 'garbage' }, 'gw1', now), null); // bad date → null, never NaN
+  // Clock skew (anchor in the future) clamps to 0, never negative.
+  assert.equal(senderRampDays({ gw1: new Date('2026-07-07T12:00:00Z') }, 'gw1', now), 0);
+});
+
+test('per-inbox ramp: a NEW inbox added to an old pool starts at 10/day, not full cap', () => {
+  const now = new Date('2026-07-06T12:00:00Z');
+  const anchors = { gw1: new Date('2026-04-01T12:00:00Z') }; // gw1 is ~13 weeks old
+  // The old inbox is fully ramped…
+  assert.equal(rampCap(senderRampDays(anchors, 'gw1', now), 40), 40);
+  // …the new inbox is unanchored → callers treat null as day 0 → week-one pace.
+  assert.equal(rampCap(senderRampDays(anchors, 'gw2', now) ?? 0, 40), 10);
 });
 
 // ── Send window (business timezone, DST-proof) ───────────────────────────────

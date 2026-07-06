@@ -16,6 +16,7 @@ const {
   CATEGORIES,
   STATUSES,
   classifyReply,
+  classifyBounceNdr,
   matchReply,
   parseOooResume,
   suggestedActionFor,
@@ -274,4 +275,53 @@ test('gmailQuery targets recent inbound, not our own mail or chats', () => {
   assert.match(q, /-from:me/);
   assert.match(q, /-in:chats/);
   assert.match(gmailQuery({ windowDays: 2 }), /newer_than:2d/);
+});
+
+// ── Async bounce NDRs (Gmail SMTP reports dead mailboxes as EMAILS) ───────────
+test('classifyBounceNdr: a Gmail hard-bounce NDR yields the failed recipient', () => {
+  const ndr = classifyBounceNdr({
+    fromEmail: 'mailer-daemon@googlemail.com',
+    subject: 'Delivery Status Notification (Failure)',
+    snippet: "Your message wasn't delivered to buds@deadshop.com because the address couldn't be found. Address not found.",
+  }, ['jointprintingshop.com', 'jointprinting.com']);
+  assert.equal(ndr.isBounce, true);
+  assert.equal(ndr.hard, true);
+  assert.deepEqual(ndr.emails, ['buds@deadshop.com']);
+});
+
+test('classifyBounceNdr: SOFT failures (mailbox full / deferred) never suppress', () => {
+  const full = classifyBounceNdr({
+    fromEmail: 'mailer-daemon@googlemail.com',
+    subject: 'Delivery Status Notification (Delay)',
+    snippet: 'Delivery to info@busyshop.com delayed — mailbox full. Will retry.',
+  }, []);
+  assert.equal(full.isBounce, true);
+  assert.equal(full.hard, false); // soft → do nothing
+  // Ambiguous (bounce shape, no permanent signal) → also NOT hard.
+  const vague = classifyBounceNdr({
+    fromEmail: 'postmaster@somewhere.com',
+    subject: 'Undeliverable: quick question',
+    snippet: 'Message could not be delivered.',
+  }, []);
+  assert.equal(vague.isBounce, true);
+  assert.equal(vague.hard, false);
+});
+
+test('classifyBounceNdr: our own domains + daemons are never the failed recipient', () => {
+  const ndr = classifyBounceNdr({
+    fromEmail: 'mailer-daemon@googlemail.com',
+    subject: 'Mail delivery failed: returning message',
+    snippet: 'From: nate@jointprintingshop.com To: gone@shop.com — user unknown. Contact postmaster@shop.com.',
+  }, ['jointprintingshop.com']);
+  assert.equal(ndr.hard, true);
+  assert.deepEqual(ndr.emails, ['gone@shop.com']); // ours + postmaster filtered out
+});
+
+test('classifyBounceNdr: a normal human reply is not a bounce', () => {
+  const r = classifyBounceNdr({
+    fromEmail: 'owner@shop.com',
+    subject: 'Re: quick question',
+    snippet: 'Sure, send me prices.',
+  }, []);
+  assert.deepEqual(r, { isBounce: false, hard: false, emails: [] });
 });

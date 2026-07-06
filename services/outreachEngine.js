@@ -132,6 +132,27 @@ function rampCap(daysSinceFirstSend, maxCap = DAILY_CAP_MAX) {
   return Math.min(geometric, maxCap);
 }
 
+// PER-INBOX warm-up. Each inbox in the pool ramps from ITS OWN first send, not
+// the pool's — otherwise an inbox added months in would inherit the pool's age
+// and blast at full cap from day one, burning the fresh mailbox (the exact
+// failure warming exists to prevent). PURE pieces:
+
+// Sender labels become Mongo map keys — dots/dollars are illegal there.
+const senderKey = (label) => String(label || '').replace(/[.$]/g, '_') || 'primary';
+
+// Days since THIS inbox's first send, for the ramp:
+//   • its own anchor when stamped (the normal case),
+//   • else null — meaning "never sent": the caller seeds a pre-pool inbox from
+//     the global anchor (it was sending before per-inbox anchors existed), and a
+//     genuinely new inbox starts at day 0 (10/day) like any fresh address.
+function senderRampDays(senderMap, label, now = new Date()) {
+  const at = senderMap && senderMap[senderKey(label)];
+  if (!at) return null;
+  const t = new Date(at).getTime();
+  if (!Number.isFinite(t)) return null;
+  return Math.max(0, Math.floor((now - t) / 86400000));
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
 const domainOfEmail = (e) => { const s = String(e || '').trim().toLowerCase(); const i = s.lastIndexOf('@'); return i >= 0 ? s.slice(i + 1) : ''; };
 
@@ -513,6 +534,38 @@ async function sentTodayBySender(now = new Date()) {
   return map;
 }
 
+// Resolve each pool inbox's warm-up age in days → Map(label → days), seeding
+// anchors as needed:
+//   • anchored inbox → its own age (the normal case);
+//   • PRE-POOL inbox (has historical sends but predates per-inbox anchors) →
+//     seeded from the global firstSendAt, persisted, so its cap never regresses;
+//   • genuinely NEW inbox → 0 (10/day week one), anchored on its first send.
+async function senderWarmupDays(senders, state, now = new Date()) {
+  const anchors = (state && state.senderFirstSendAt) || {};
+  const globalFirst = state && state.firstSendAt ? new Date(state.firstSendAt) : null;
+  const out = new Map();
+  for (let i = 0; i < senders.length; i++) {
+    const s = senders[i];
+    let days = senderRampDays(anchors, s.label, now);
+    if (days == null && globalFirst) {
+      // Unanchored. If this inbox has EVER sent (its label on any send — or the
+      // legacy ''-label sends, which belong to the primary), it predates
+      // per-inbox anchors: inherit the global anchor instead of re-warming.
+      const labels = i === 0 ? [s.label, ''] : [s.label];
+      const sentBefore = await OutreachEnrollment.exists({ 'sends.sender': { $in: labels } }).catch(() => null);
+      if (sentBefore) {
+        days = Math.max(0, Math.floor((now - globalFirst) / 86400000));
+        await OutreachState.updateOne(
+          { key: 'engine', [`senderFirstSendAt.${senderKey(s.label)}`]: { $exists: false } },
+          { $set: { [`senderFirstSendAt.${senderKey(s.label)}`]: globalFirst } },
+        ).catch(() => {});
+      }
+    }
+    out.set(s.label, days == null ? 0 : days);
+  }
+  return out;
+}
+
 // Engine status snapshot for the Studio (Outreach tab header + overview).
 async function engineStatus(now = new Date()) {
   const state = await OutreachState.findOne({ key: 'engine' }).lean();
@@ -521,14 +574,21 @@ async function engineStatus(now = new Date()) {
   const days = daysSince == null ? 0 : daysSince;
   const sentToday = await getSentToday(now);
 
-  // Sender pool: per-inbox ramped cap + today's count; total is the sum.
+  // Sender pool: per-inbox ramped cap (each from ITS OWN warm-up age) + today's
+  // count; total is the sum.
   const pool = getSenders();
+  const warmDays = await senderWarmupDays(pool, state, now).catch(() => new Map());
   const sentBySender = await sentTodayBySender(now).catch(() => new Map());
   const legacyCount = sentBySender.get('') || 0;
   const senders = pool.map((s, i) => {
-    const c = rampCap(days, s.dailyCap);
+    const d = warmDays.get(s.label) ?? 0;
+    const c = rampCap(d, s.dailyCap);
     const used = (sentBySender.get(s.label) || 0) + (i === 0 ? legacyCount : 0);
-    return { label: s.label, from: s.from, cap: c, sentToday: used, remaining: Math.max(0, c - used) };
+    return {
+      label: s.label, from: s.from, cap: c, sentToday: used,
+      remaining: Math.max(0, c - used),
+      rampWeek: Math.floor(d / 7) + 1, // this inbox's own warm-up week
+    };
   });
   const cap = senders.reduce((a, s) => a + s.cap, 0);
   const dailyCapMax = pool.reduce((a, s) => a + s.dailyCap, 0) || DAILY_CAP_MAX;
@@ -791,6 +851,15 @@ async function sendOne(enr, campaign, now = new Date(), sender = null) {
       { $setOnInsert: { firstSendAt: now } },
       { upsert: true },
     ).catch(() => {});
+    // …and anchor THIS inbox's own ramp on ITS first send (per-inbox warm-up:
+    // a new inbox added to the pool ramps 10→20→40 from here, not pool age).
+    {
+      const label = senderKey((sender && sender.label) || 'primary');
+      await OutreachState.updateOne(
+        { key: 'engine', [`senderFirstSendAt.${label}`]: { $exists: false } },
+        { $set: { [`senderFirstSendAt.${label}`]: now } },
+      ).catch(() => {});
+    }
 
     // Write the touch back into the CRM so every surface sees it. This is a
     // POST-send write: its failure must NEVER bubble to the send catch below — the
@@ -901,20 +970,20 @@ async function runOutreachTick(now = new Date(), opts = {}) {
     const campaignIds = campaigns.map((c) => c._id);
 
     const state = await OutreachState.findOne({ key: 'engine' }).lean();
-    const daysSince = state && state.firstSendAt
-      ? Math.floor((now - new Date(state.firstSendAt)) / 86400000) : null;
-    const days = daysSince == null ? 0 : daysSince;
 
     // Sender POOL: total daily capacity = sum of each inbox's (warm-up-ramped)
     // cap. Per-inbox remaining tracks that inbox's own daily count so we round-
     // robin without overshooting any one — the free way to send more per day.
+    // Each inbox ramps from ITS OWN first send (senderWarmupDays), so a fresh
+    // inbox added to the pool starts at 10/day instead of inheriting pool age.
     const senders = getSenders();
+    const warmDays = await senderWarmupDays(senders, state, now);
     const sentBySender = await sentTodayBySender(now);
     const legacyCount = sentBySender.get('') || 0; // pre-pool / untagged sends → the primary
     const remaining = new Map();
     let cap = 0;
     senders.forEach((s, i) => {
-      const effCap = rampCap(days, s.dailyCap);
+      const effCap = rampCap(warmDays.get(s.label) ?? 0, s.dailyCap);
       cap += effCap;
       const used = (sentBySender.get(s.label) || 0) + (i === 0 ? legacyCount : 0);
       remaining.set(s.label, Math.max(0, effCap - used));
@@ -1051,6 +1120,8 @@ module.exports = {
   pickEmail,
   // pure helpers (unit-tested)
   rampCap,
+  senderKey,
+  senderRampDays,
   isWithinSendWindow,
   renderTemplate,
   buildMergeContext,

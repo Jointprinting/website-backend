@@ -133,6 +133,42 @@ function parseOooResume(text, now = new Date()) {
   return DEFAULT;
 }
 
+// ── Bounce NDR ingestion (async bounces on Gmail SMTP) ───────────────────────
+// Google Workspace SMTP reports most dead mailboxes ASYNCHRONOUSLY: the send is
+// accepted on the wire, then a "Delivery Status Notification" EMAIL lands in the
+// inbox. Those classify as bounce_auto_ignore — and ignoring them entirely means
+// a dead address keeps receiving touches 2/3/4 (a strong spam signal) and the
+// bounce circuit-breaker never sees the failure. classifyBounceNdr() turns an
+// NDR into { isBounce, hard, emails } so the controller can suppress + stop on
+// HARD failures only. Soft failures (mailbox full, greylist, deferred) must
+// never kill a good lead — the drip's backoff already handles them. PURE.
+
+const NDR_FROM = /(mailer-daemon|postmaster)/i;
+const NDR_SUBJECT = /(delivery (?:status notification|has failed|failure)|undeliverable|returned mail|mail delivery (?:failed|subsystem)|failure notice|message not delivered|delivery incomplete)/i;
+const NDR_HARD = /(address (?:not found|unknown|rejected)|user (?:unknown|not found)|no such (?:user|recipient|address)|does(?:n'?t| not) exist|mailbox (?:unavailable|not found|does not exist)|recipient (?:not found|rejected)|address rejected|account .{0,40}disabled|550[- ]?5\.1\.1|\b5\.1\.[0-9]\b|permanent(?:ly)? (?:fail|error|reject))/i;
+const NDR_SOFT = /(mailbox (?:is )?full|over quota|quota exceeded|try again later|temporar(?:y|ily)|deferred|greylist|\b4\.\d\.\d\b|rate limit|server busy)/i;
+const NDR_JUNK_LOCAL = /(mailer-daemon|postmaster|no-?reply|do-?not-?reply|abuse|bounce)/i;
+
+function classifyBounceNdr({ subject = '', snippet = '', fromEmail = '' } = {}, ourDomains = []) {
+  const from = String(fromEmail || '').toLowerCase();
+  const subj = String(subject || '');
+  const body = String(snippet || '');
+  const isBounce = NDR_FROM.test(from) || NDR_SUBJECT.test(subj);
+  if (!isBounce) return { isBounce: false, hard: false, emails: [] };
+  const hay = `${subj}\n${body}`;
+  // Hard only when a permanent signal is present AND no transient one — when in
+  // doubt, do nothing (the conservative default for anything that kills a lead).
+  const hard = NDR_HARD.test(hay) && !NDR_SOFT.test(hay);
+  // The failed recipient(s): every address in the NDR that isn't a daemon and
+  // isn't on OUR sending/replying domains (those appear in the quoted original).
+  const ours = new Set((ourDomains || []).map((d) => String(d || '').toLowerCase()).filter(Boolean));
+  const emails = [...new Set((hay.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) || [])
+    .map((e) => e.toLowerCase())
+    .filter((e) => !NDR_JUNK_LOCAL.test(e.split('@')[0] || ''))
+    .filter((e) => !ours.has(e.split('@')[1] || '')))];
+  return { isBounce: true, hard, emails };
+}
+
 // ── Matching ─────────────────────────────────────────────────────────────────
 
 const normEmail = (e) => String(e == null ? '' : e).trim().toLowerCase();
@@ -292,6 +328,7 @@ module.exports = {
   isValidCategory,
   isValidStatus,
   classifyReply,
+  classifyBounceNdr,
   parseOooResume,
   parseFromHeader,
   gmailQuery,
