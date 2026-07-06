@@ -1064,9 +1064,10 @@ function buildStepFunnel(enrollments = []) {
 // and finder coverage per state. Powers the Studio's Analytics view.
 async function getAnalytics(req, res) {
   try {
-    const [enrollments, finderRuns] = await Promise.all([
+    const [enrollments, finderRuns, campaigns] = await Promise.all([
       OutreachEnrollment.find({}).lean(),
       LeadFinderRun.find({ dryRun: false }).sort({ createdAt: -1 }).limit(300).lean(),
+      OutreachCampaign.find({}).sort({ createdAt: -1 }).lean(),
     ]);
 
     const keys = [...new Set(enrollments.map((e) => e.companyKey))];
@@ -1074,6 +1075,44 @@ async function getAnalytics(req, res) {
       ? await Client.find({ companyKey: { $in: keys } }).select('companyKey address area').lean()
       : [];
     const stateByKey = new Map(clients.map((c) => [c.companyKey, parseState(c.address || c.area)]));
+
+    // Group enrollments by campaign once for the per-campaign breakdown (same
+    // grouping getOverview uses, so the two views can never disagree).
+    const byCampaign = new Map();
+    for (const e of enrollments) {
+      const k = String(e.campaignId);
+      if (!byCampaign.has(k)) byCampaign.set(k, []);
+      byCampaign.get(k).push(e);
+    }
+
+    // Fixed "now" so the overall trend and every per-campaign trend share the
+    // exact same 8 week buckets (otherwise a slow request could straddle a week).
+    const nowMs = Date.now();
+
+    // Per-campaign analytics — each campaign gets its OWN funnel, health verdict,
+    // A/B split, per-touch drop-off, weekly trend, and geography, computed from the
+    // very same pure helpers as the overview. Include every non-archived campaign,
+    // plus any archived one that still carries sends, so no history is orphaned.
+    const perCampaign = campaigns
+      .map((c) => {
+        const rows = byCampaign.get(String(c._id)) || [];
+        if ((c.status === 'archived') && rows.length === 0) return null;
+        const stats = summarizeEnrollments(rows);
+        return {
+          id: String(c._id),
+          name: c.name,
+          status: c.status || 'draft',
+          vertical: c.vertical || null,
+          createdAt: c.createdAt,
+          stats,
+          health: campaignHealth(c, stats),
+          abTest: summarizeAbTest(rows),
+          stepFunnel: buildStepFunnel(rows),
+          trend: weeklyTrend(rows, nowMs),
+          perState: buildStateFunnels(rows, stateByKey),
+        };
+      })
+      .filter(Boolean);
 
     // Finder coverage per region: latest snapshot + cumulative imported.
     const coverage = new Map();
@@ -1088,12 +1127,15 @@ async function getAnalytics(req, res) {
     }
 
     res.json({
+      // Overview roll-up (everything, all campaigns combined).
       overall: summarizeEnrollments(enrollments),
       perState: buildStateFunnels(enrollments, stateByKey),
-      trend: weeklyTrend(enrollments, Date.now()),
+      trend: weeklyTrend(enrollments, nowMs),
       stepFunnel: buildStepFunnel(enrollments),
       deliverability: await deliverabilityStats().catch(() => null),
       coverage: [...coverage.values()],
+      // Per-campaign breakdown (each campaign's own funnel/health/steps/trend).
+      campaigns: perCampaign,
     });
   } catch (e) {
     res.status(500).json({ message: e.message });

@@ -88,11 +88,14 @@ const SEND_PRIORITY_FILTERS = [{ stepIndex: { $gt: 0 } }, { stepIndex: 0 }];
 // Inter-send pacing jitter (cron path only) — breaks the "all at :00:00" burst.
 const PACE_MIN_MS = 5000;
 const PACE_MAX_MS = 20000;
-// Postal line for the CAN-SPAM footer. The default deliberately names no
-// city/state — the owner doesn't want recipients knowing where he's based.
-// CAN-SPAM technically wants a valid physical mailing address, so set
-// OUTREACH_POSTAL_ADDRESS to a PO box / virtual address when there is one.
-const POSTAL_ADDRESS = process.env.OUTREACH_POSTAL_ADDRESS || 'Joint Printing · jointprinting.com';
+// Owner's call: the footer carries NO postal address — just a bare "Unsubscribe".
+// We do NOT read OUTREACH_POSTAL_ADDRESS here on purpose: even if that env var is
+// still set on the host (it was previously the owner's home address), nothing is
+// printed, so the address can never leak into a cold email. (CAN-SPAM technically
+// wants a valid physical mailing address on commercial mail; if a PO box / virtual
+// address is ever adopted, set POSTAL_ADDRESS to it and prepend `${POSTAL_ADDRESS}
+// <br>` back into composeMessage's footer.)
+const POSTAL_ADDRESS = '';
 // Public base URL of THIS API (e.g. https://api.jointprinting.com) — powers the
 // unsubscribe link + open pixel. Without it we fall back to reply-to-opt-out
 // wording (still compliant) and skip open tracking.
@@ -289,26 +292,34 @@ async function recheckAuth() {
   return auth ? { ...auth, records: recommendedRecords(auth) } : null;
 }
 
-// Full HTML + plain-text message for one send: rendered body, CAN-SPAM footer
-// (postal address + opt-out), and the open pixel when a public base is set.
+// Full HTML + plain-text message for one send: rendered body, a bare "Unsubscribe"
+// footer (owner's call — no postal address printed), and the open pixel when a
+// public base is set. If OUTREACH_POSTAL_ADDRESS is ever set to a real PO box /
+// virtual address, prepend `${POSTAL_ADDRESS}<br>` back into the footer for
+// stricter CAN-SPAM compliance.
 function composeMessage({ bodyText, token }) {
   const unsub = unsubscribeUrl(token);
+  // Just the word "Unsubscribe" — a link when we have a public base, else a
+  // reply-based opt-out (still a functional, honored unsubscribe path).
   const optOutHtml = unsub
-    ? `Don&#39;t want these? <a href="${unsub}" style="color:#888;">Unsubscribe</a> and we won&#39;t email again.`
-    : 'Don&#39;t want these? Reply &quot;unsubscribe&quot; and we&#39;ll take you off the list.';
+    ? `<a href="${unsub}" style="color:#999;text-decoration:underline;">Unsubscribe</a>`
+    : 'Reply &quot;unsubscribe&quot; to opt out.';
   const optOutText = unsub
-    ? `Don't want these? Unsubscribe: ${unsub}`
-    : `Don't want these? Reply "unsubscribe" and we'll take you off the list.`;
+    ? `Unsubscribe: ${unsub}`
+    : `Reply "unsubscribe" to opt out.`;
+  // A postal address is only printed if one is explicitly configured.
+  const postalHtml = POSTAL_ADDRESS ? `${escapeHtml(POSTAL_ADDRESS)}<br>` : '';
+  const postalText = POSTAL_ADDRESS ? `${POSTAL_ADDRESS}\n` : '';
   const pixel = openPixelEnabled() ? openPixelUrl(token) : '';
   const html = [
     `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#222;">`,
     bodyToHtml(bodyText),
     `<p style="margin:1.5em 0 0 0;font-size:11px;line-height:1.5;color:#999;">`,
-    `${escapeHtml(POSTAL_ADDRESS)}<br>${optOutHtml}</p>`,
+    `${postalHtml}${optOutHtml}</p>`,
     pixel ? `<img src="${pixel}" width="1" height="1" alt="">` : '', // no display:none
     `</div>`,
   ].join('');
-  const text = `${String(bodyText || '')}\n\n--\n${POSTAL_ADDRESS}\n${optOutText}\n`;
+  const text = `${String(bodyText || '')}\n\n--\n${postalText}${optOutText}\n`;
   return { html, text };
 }
 
