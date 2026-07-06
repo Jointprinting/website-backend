@@ -513,22 +513,35 @@ function daysBetween(aMs, bMs) {
   return Math.floor((bMs - aMs) / 86400000);
 }
 
-// A not-yet-warm COLD-OUTREACH prospect: the lead-finder / mail-merge produced it,
-// it lives in the CRM only so the engine can enroll it, and it is NOT the owner's
-// to work until it REPLIES (→ 'warm' tag + a follow-up). The owner hasn't
-// personally touched it (call/text/visit — an automated cold 'email' send doesn't
-// count) and nothing is scheduled. This is the narrow "engine's job, not mine"
-// predicate. Pure. The cadence cockpit excludes exactly these, so its buckets stay
-// the OWNER's chosen worklist — a genuine new lead (untagged) still flows through.
-function isOutreachPool(c) {
+// An engine-managed COLD-OUTREACH prospect the owner hasn't personally engaged: the
+// lead-finder / mail-merge produced it (tagged cold-email/dispensary/cold/meta-ad, or
+// leadSource 'Cold Outreach'), it lives in the CRM only so the outreach engine can
+// enroll & drip it, and it is NOT the owner's to work until it REPLIES (→ 'warm' tag)
+// or the owner personally touches it (a call/text/visit log — an automated cold
+// 'email' send doesn't count). Deliberately IGNORES nextFollowUp: the engine and the
+// importer stamp follow-up dates on these leads, and an engine-stamped date is NOT an
+// owner-scheduled action — treating one as such is exactly the "stepping on its own
+// toes" bug where cold mail-merge leads surfaced as "call today". Pure. The cadence
+// cockpit excludes exactly these, so its buckets stay the OWNER's chosen worklist — a
+// genuine new lead (untagged) still flows through.
+function isEngineManagedCold(c) {
   if (!c) return false;
   const stage = c.stage;
   const tags = (c.tags || []).map((t) => String(t).toLowerCase());
   const outreachProspect = !tags.includes('warm')
-    && (tags.includes('cold-email') || tags.includes('dispensary') || tags.includes('cold') || tags.includes('meta-ad'));
+    && (tags.includes('cold-email') || tags.includes('dispensary') || tags.includes('cold')
+      || tags.includes('meta-ad') || c.leadSource === 'Cold Outreach');
   const ownerTouched = (c.log || []).some((l) => ['call', 'text', 'visit'].includes(l && l.kind));
-  return outreachProspect && !ownerTouched && c.nextFollowUp == null
-    && stage !== 'customer' && stage !== 'won';
+  return outreachProspect && !ownerTouched && stage !== 'customer' && stage !== 'won';
+}
+
+// The narrower "engine's job AND nothing scheduled" slice: engine-managed cold with no
+// follow-up date at all. Used by classifyHeadsUp's dead-weight suppression, which only
+// ever gates the no_next_step / stale flags — both of which already presuppose no
+// scheduled step. The cadence cockpit uses the broader isEngineManagedCold above so an
+// engine-stamped follow-up can't leak a cold lead back onto the owner's worklist. Pure.
+function isOutreachPool(c) {
+  return isEngineManagedCold(c) && c.nextFollowUp == null;
 }
 
 // The BROADER heads-up suppression: cold-outreach spam OR a sub-hot bare
@@ -733,6 +746,14 @@ function cadenceBucketFor(c, nowMs, todayMs) {
   const stage = c.stage;
   if (CLOSED_STAGES.includes(stage)) return null; // won/customer/lost/dormant — not the worklist
 
+  // Engine-managed cold-outreach prospects the owner never personally engaged are the
+  // OUTREACH ENGINE's job, not the owner's — off the cockpit entirely, even if the
+  // engine/importer stamped a follow-up date on them (that date is not an owner-chosen
+  // action). They rejoin the worklist the moment they go warm (a reply adds the 'warm'
+  // tag) or the owner works them (a call/text/visit log). Checked BEFORE your_move /
+  // call_today so a stamped follow-up can't drag a cold lead onto the owner's day.
+  if (isEngineManagedCold(c)) return null;
+
   const value = Number(c.dealValue) || 0;
   const lc = c.lastContact ? new Date(c.lastContact).getTime() : null;
   const followDayDiff = c.nextFollowUp != null ? dayDiffFromToday(c.nextFollowUp, new Date(nowMs)) : null;
@@ -754,11 +775,6 @@ function cadenceBucketFor(c, nowMs, todayMs) {
 
   // 2) CALL TODAY — a follow-up you booked for today.
   if (followDayDiff === 0) return cadenceEntry(c, 'call_today', 'Follow-up due today');
-
-  // Past here, a cold-outreach prospect the owner never chose is the engine's job,
-  // not the owner's — off the worklist. (A genuine untagged new lead still flows to
-  // "make a mockup" below.)
-  if (isOutreachPool(c)) return null;
 
   // 3) CLOSING SOON — a live quote is out; chase the close.
   if (stage === 'quoting') {
@@ -2739,6 +2755,7 @@ module.exports = {
   classifyHeadsUp,
   buildHeadsUp,
   HEADS_UP,
+  isEngineManagedCold,
   isOutreachPool,
   isColdDeadWeight,
   cadenceBucketFor,

@@ -144,7 +144,7 @@ function campaignHealth(campaign = {}, stats = {}) {
 // getOverview already has, so the operator always knows the single most-important
 // next move instead of scanning cards. Pure + unit-tested. Levels rank
 // action > warm > info > ok; the first item is the "next best action" banner.
-function buildNextActions({ engine = {}, campaigns = [], warmCount = 0, coldReserve = 0 } = {}) {
+function buildNextActions({ engine = {}, campaigns = [], warmCount = 0, coldReserve = 0, autoEnrollOn = false } = {}) {
   const actions = [];
   const add = (level, text, cta = null) => actions.push({ level, text, cta });
 
@@ -166,9 +166,11 @@ function buildNextActions({ engine = {}, campaigns = [], warmCount = 0, coldRese
   const anyActive = campaigns.some((c) => c.status === 'active');
   if (!anyActive && coldReserve > 0) {
     add('info', `${coldReserve} cold lead${coldReserve === 1 ? '' : 's'} in reserve and no active campaign — launch one to start sending.`, { view: 'campaigns' });
-  } else if (anyActive && coldReserve >= 20) {
-    // Enrolling happens in the Campaigns enroll dialog (the Lead engine tab is a
-    // progress readout) — point the button where the action actually lives.
+  } else if (anyActive && coldReserve >= 20 && !autoEnrollOn) {
+    // Only nudge to hand-enroll when auto-enroll is OFF — with it on, the engine
+    // tops the pipeline up on its own, so this would just be noise. Enrolling
+    // happens in the Campaigns enroll dialog (the Lead engine is a progress
+    // readout), so point the button where the action actually lives.
     add('info', `${coldReserve} cold leads waiting — enroll a fresh batch to keep the drip full.`, { view: 'campaigns' });
   } else if (anyActive && coldReserve === 0 && warmCount === 0) {
     add('info', 'Lead pool ran dry — the lead engine refills it automatically; check its progress.', { view: 'import' });
@@ -259,12 +261,18 @@ async function getOverview(req, res) {
       .slice(0, 25);
 
     // The single ranked to-do list the Dashboard leads with — cold-lead reserve
-    // is a cheap count of never-personally-contacted leads (the enrollable pool).
+    // is the FRESH enrollable pool: never-personally-contacted leads that AREN'T
+    // already enrolled in a campaign. Excluding the enrolled ones is what makes
+    // the count drop after you enroll (and keeps the "cold leads waiting" nudge
+    // from firing on leads that are already in the sequence).
+    const st = await OutreachState.findOne({ key: 'engine' }).select('autoEnrollCampaignId').lean().catch(() => null);
+    const autoEnrollOn = !!(st && st.autoEnrollCampaignId);
+    const enrolledKeys = await OutreachEnrollment.distinct('companyKey').catch(() => []);
     const coldReserve = await Client.countDocuments({
       ...NOT_ARCHIVED, doNotEmail: { $ne: true }, stage: { $in: ['lead', 'contacted'] }, lastContact: null,
+      ...(enrolledKeys.length ? { companyKey: { $nin: enrolledKeys } } : {}),
     }).catch(() => 0);
-    const nextActions = buildNextActions({ engine, campaigns: campaignRows, warmCount: warm.length, coldReserve });
-    const st = await OutreachState.findOne({ key: 'engine' }).select('autoEnrollCampaignId').lean().catch(() => null);
+    const nextActions = buildNextActions({ engine, campaigns: campaignRows, warmCount: warm.length, coldReserve, autoEnrollOn });
 
     // Today's plan — the plain-English "here's what the engine is doing" readout,
     // so the owner trusts it without babysitting. Warm follow-ups DUE now (they
