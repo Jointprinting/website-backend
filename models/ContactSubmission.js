@@ -14,12 +14,26 @@ const ContactSubmissionSchema = new mongoose.Schema({
   name:         { type: String, required: true, trim: true, maxlength: 200 },
   companyName:  { type: String, required: true, trim: true, maxlength: 200 },
   email:        { type: String, required: true, trim: true, lowercase: true, maxlength: 320 },
-  phone:        { type: String, required: true, trim: true, maxlength: 40 },
+  // Phone is required for print quotes (enforced in the controller) but optional
+  // for JP Webworks web-design leads, so the model itself no longer requires it.
+  phone:        { type: String, trim: true, maxlength: 40, default: '' },
   quantity:     { type: String, trim: true, maxlength: 80 },
   inHandDate:   { type: String, trim: true, maxlength: 40 },
   notes:        { type: String, trim: true, maxlength: 5000 },
   shipToState:  { type: String, trim: true, maxlength: 100, default: '' },
   seenByAdmin:  { type: Boolean, default: false, index: true },
+
+  // Which business the lead is for: 'contact' = Joint Printing merch inquiry
+  // (the default), 'webworks' = a JP Webworks website lead. Lets the Studio
+  // Inquiries inbox badge + route the two without a second collection.
+  source:       { type: String, enum: ['contact', 'webworks'], default: 'contact', index: true },
+  // JP Webworks-only lead details (empty for merch inquiries).
+  webworks: {
+    businessType:   { type: String, trim: true, maxlength: 160, default: '' },
+    currentWebsite: { type: String, trim: true, maxlength: 300, default: '' },
+    planInterest:   { type: String, trim: true, maxlength: 40,  default: '' },
+    serviceArea:    { type: String, trim: true, maxlength: 160, default: '' },
+  },
 
   selectedProducts: [{
     style:     String,
