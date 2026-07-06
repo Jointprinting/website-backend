@@ -127,8 +127,21 @@ const OVERPASS_NAME_RE = 'dispensar|cannabis|marijuana|weed|budtender|420|kush|g
 //      parseOverpassElements (closed-out, medical-only, and non-cannabis matches
 //      like pharmacy/vet/lawn-care are dropped) so coverage grows WITHOUT junk.
 // Nodes AND ways (buildings); `out center` gives a way a lat/lon too. Pure + tested.
-function buildOverpassQuery(bbox) {
+//
+// `vertical` (optional) retargets the query to another business type — a brewery,
+// a bodega/smoke shop — by swapping in that vertical's selectors (see
+// services/leadVerticals.js). The DEFAULT (no vertical, or the dispensary
+// vertical) keeps the original cannabis net verbatim, so the live dispensary
+// sweep and every existing test are byte-for-byte unchanged.
+function buildOverpassQuery(bbox, vertical) {
   const b = bbox.join(',');
+  if (vertical && vertical.id !== 'dispensary' && typeof vertical.overpassSelectors === 'function') {
+    return `[out:json][timeout:90];
+(
+${vertical.overpassSelectors(b)}
+);
+out center tags;`;
+  }
   return `[out:json][timeout:90];
 (
   node["shop"="cannabis"](${b});
@@ -269,7 +282,14 @@ function normalizeWebsite(raw) {
 // Overpass JSON → candidate leads. One per named element; unnamed elements are
 // dropped (a lead with no company name is useless). De-dupes by lowercased
 // name+address within the batch. Pure + testable.
-function parseOverpassElements(json) {
+//
+// `vertical` (optional) swaps the quality + chain gates for another business
+// type's (see services/leadVerticals.js). The DEFAULT (no vertical, or the
+// dispensary vertical) uses the original cannabis gates verbatim.
+function parseOverpassElements(json, vertical) {
+  const useVertical = vertical && vertical.id !== 'dispensary';
+  const qualityGate = useVertical ? vertical.isQualityLead : isQualityLead;
+  const chainGate = useVertical ? vertical.isBigChain : isBigChain;
   const elements = (json && Array.isArray(json.elements)) ? json.elements : [];
   const seen = new Set();
   const out = [];
@@ -277,9 +297,9 @@ function parseOverpassElements(json) {
     const tags = el.tags || {};
     const name = String(tags.name || tags['official_name'] || tags['brand'] || '').trim();
     if (!name) continue;
-    // Quality gate: trusted cannabis tag, or a genuine (non-pharmacy) "dispensary"
-    // by name, and never a closed POI. Keeps the widened net junk-free.
-    if (!isQualityLead(tags, name)) continue;
+    // Quality gate: a trusted tag for the vertical, or a genuine name-net hit,
+    // never a closed POI. Keeps the widened net junk-free.
+    if (!qualityGate(tags, name)) continue;
     const address = osmAddress(tags);
     const key = `${name.toLowerCase()}|${address.toLowerCase()}`;
     if (seen.has(key)) continue;
@@ -298,7 +318,7 @@ function parseOverpassElements(json) {
       email: String(tags.email || tags['contact:email'] || '').trim().toLowerCase(),
       osmId: el.type && el.id != null ? `${el.type}/${el.id}` : '',
       brand: String(tags.brand || '').trim(),
-      chain: isBigChain(tags, name), // big MSO / recognized chain → skipped at import
+      chain: chainGate(tags, name), // big chain / MSO → skipped at import
     });
   }
   // Second pass: flag regional chains whose brand simply repeats a lot in the batch.
@@ -310,8 +330,8 @@ function parseOverpassElements(json) {
 // fails, so the caller can surface a clean error. `bbox` is [south, west, north,
 // east]. A shorter timeout suits interactive callers (the Field Map viewport
 // scan) where a hung endpoint shouldn't block the request for 90s.
-async function fetchDispensariesForBbox(bbox, { timeoutMs = OVERPASS_TIMEOUT_MS } = {}) {
-  const query = buildOverpassQuery(bbox);
+async function fetchDispensariesForBbox(bbox, { timeoutMs = OVERPASS_TIMEOUT_MS, vertical } = {}) {
+  const query = buildOverpassQuery(bbox, vertical);
   let lastErr = null;
   for (const endpoint of OVERPASS_ENDPOINTS) {
     try {
@@ -321,7 +341,7 @@ async function fetchDispensariesForBbox(bbox, { timeoutMs = OVERPASS_TIMEOUT_MS 
         validateStatus: () => true,
         maxContentLength: 25 * 1024 * 1024,
       });
-      if (res.status === 200 && res.data) return parseOverpassElements(res.data);
+      if (res.status === 200 && res.data) return parseOverpassElements(res.data, vertical);
       lastErr = new Error(`Overpass ${endpoint} → HTTP ${res.status}`);
     } catch (err) {
       lastErr = err;
@@ -330,12 +350,13 @@ async function fetchDispensariesForBbox(bbox, { timeoutMs = OVERPASS_TIMEOUT_MS 
   throw lastErr || new Error('All Overpass endpoints failed');
 }
 
-// Discover dispensaries in a named REGION (network). Thin wrapper over the bbox
-// fetch. Returns { region, label, candidates }.
-async function fetchDispensaries(regionId = DEFAULT_REGION) {
+// Discover leads in a named REGION (network). Thin wrapper over the bbox fetch.
+// `vertical` (optional) retargets discovery to another business type; default is
+// dispensaries. Returns { region, label, candidates }.
+async function fetchDispensaries(regionId = DEFAULT_REGION, { vertical } = {}) {
   const id = isRegion(regionId) ? regionId : DEFAULT_REGION;
   const region = REGIONS[id];
-  const candidates = await fetchDispensariesForBbox(region.bbox);
+  const candidates = await fetchDispensariesForBbox(region.bbox, { vertical });
   return { region: id, label: region.label, candidates };
 }
 

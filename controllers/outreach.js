@@ -40,6 +40,7 @@ const { runFinder, finderStatus } = require('../services/leadFinderRunner');
 const { scoreLead } = require('../services/leadScore');
 const { runFrontierSweep } = require('../services/leadFinderScheduler');
 const { REGIONS, isRegion } = require('../services/dispensaryFinder');
+const { isVertical, verticalPoolFilter, verticalOptions, DEFAULT_VERTICAL_ID } = require('../services/leadVerticals');
 
 const NOT_ARCHIVED = { archived: { $ne: true } };
 
@@ -293,6 +294,9 @@ async function getOverview(req, res) {
     };
 
     res.json({ engine, campaigns: campaignRows, warm, recent, nextActions, coldReserve, plan,
+      // The selectable business verticals (Dispensaries default, Breweries, …) so
+      // the campaign editor can offer them without a separate round-trip.
+      verticals: verticalOptions(),
       autoEnrollCampaignId: st && st.autoEnrollCampaignId ? String(st.autoEnrollCampaignId) : null });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -303,12 +307,15 @@ async function getOverview(req, res) {
 // to 'active' once the steps read right).
 async function createCampaign(req, res) {
   try {
-    const { name, description = '', steps = [] } = req.body || {};
+    const { name, description = '', steps = [], vertical } = req.body || {};
     if (!name || !String(name).trim()) return res.status(400).json({ message: 'name required' });
     const campaign = await OutreachCampaign.create({
       name: String(name).trim(),
       description: String(description || ''),
       steps: sanitizeSteps(steps),
+      // Which business type this campaign targets (the finder hunts it, enrollment
+      // draws only its pool). Unknown/absent → dispensaries (the default).
+      vertical: isVertical(vertical) ? vertical : DEFAULT_VERTICAL_ID,
     });
     res.json({ campaign, lint: lintSteps(campaign.steps) });
   } catch (e) {
@@ -342,6 +349,7 @@ async function updateCampaign(req, res) {
     if ('name' in body) set.name = String(body.name || '').trim();
     if ('description' in body) set.description = String(body.description || '');
     if ('steps' in body) set.steps = sanitizeSteps(body.steps);
+    if ('vertical' in body && isVertical(body.vertical)) set.vertical = body.vertical;
     if ('status' in body) {
       if (!OutreachCampaign.CAMPAIGN_STATUSES.includes(body.status)) {
         return res.status(400).json({ message: `invalid status "${body.status}"` });
@@ -386,12 +394,18 @@ async function launchCampaign(req, res) {
     // finder self-throttles + advances regions, so this can't run up any cost or
     // hammer anything. This is what makes Launch "work from nothing": press it with
     // an empty reserve and it goes and finds leads for you.
+    // Reserve check is PER-VERTICAL: a brewery campaign needs brewery leads, so a
+    // full dispensary reserve mustn't stop the brewery finder from kicking. And
+    // the kick targets THIS campaign's vertical, so Launch on a brand-new vertical
+    // goes and finds that kind of lead from nothing.
     const reserve = await Client.countDocuments({
       ...NOT_ARCHIVED, doNotEmail: { $ne: true }, stage: { $in: ['lead', 'contacted'] }, lastContact: null,
+      ...verticalPoolFilter(campaign.vertical),
     }).catch(() => null);
     const finderKicked = reserve === 0;
     if (finderKicked) {
-      runFrontierSweep({ force: true }).catch((e) => console.error('[outreach] launch finder kick:', e.message));
+      runFrontierSweep({ force: true, vertical: campaign.vertical })
+        .catch((e) => console.error('[outreach] launch finder kick:', e.message));
     }
     res.json({ campaign, filled, tick, finderKicked, autoEnrollCampaignId: String(campaign._id) });
   } catch (e) {
@@ -456,6 +470,13 @@ async function getCandidates(req, res) {
     find.stage = stage ? stage : { $in: ['lead', 'contacted'] };
     find.lastContact = null; // cold = never personally contacted, always
     if (leadSource) find.leadSource = leadSource;
+    // Scope the enroll list to the campaign's vertical pool, so a brewery
+    // campaign only ever offers brewery leads (dispensary = the catch-all pool, so
+    // its enroll list is unchanged). No campaign → the full cold pool.
+    if (campaignId) {
+      const camp = await OutreachCampaign.findById(campaignId).select('vertical').lean().catch(() => null);
+      Object.assign(find, verticalPoolFilter(camp ? camp.vertical : DEFAULT_VERTICAL_ID));
+    }
     if (q) {
       const rx = new RegExp(String(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
       find.$or = [{ companyName: rx }, { clientName: rx }, { email: rx }, { address: rx }, { area: rx }];
@@ -755,9 +776,11 @@ async function autoFillCampaign(campaign, { limit } = {}) {
     if (room <= 0) return { enrolled: 0, skipped: 'pipeline-full', activeCount };
     limit = Math.min(room, ENROLL_TICK_MAX);
   }
-  // Cold = never personally contacted, has an email, not opted out.
+  // Cold = never personally contacted, has an email, not opted out — and in THIS
+  // campaign's vertical pool (a brewery campaign never enrolls a dispensary lead;
+  // dispensary is the catch-all, so its pool is unchanged).
   const clients = await Client.find({ ...NOT_ARCHIVED, doNotEmail: { $ne: true },
-    stage: { $in: ['lead', 'contacted'] }, lastContact: null })
+    stage: { $in: ['lead', 'contacted'] }, lastContact: null, ...verticalPoolFilter(campaign.vertical) })
     .select('companyKey companyName clientName email phone address area stage leadSource contacts lastContact')
     .limit(1500).lean();
   if (!clients.length) return { enrolled: 0 };
@@ -1047,7 +1070,10 @@ async function getAnalytics(req, res) {
 // suggested next region to expand into.
 async function getFinderStatus(req, res) {
   try {
-    res.json(await finderStatus());
+    // Optional ?vertical= scopes the coverage map to one business type; default is
+    // dispensaries (the historical view — unchanged when the param is absent).
+    const vertical = req.query && isVertical(req.query.vertical) ? req.query.vertical : undefined;
+    res.json(await finderStatus({ vertical }));
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -1065,7 +1091,8 @@ async function findLeads(req, res) {
     }
     const dryRun = body.dryRun === true || body.dryRun === 'true';
     const maxEnrich = Number.isFinite(Number(body.maxEnrich)) ? Number(body.maxEnrich) : undefined;
-    const result = await runFinder({ region, dryRun, maxEnrich });
+    const vertical = isVertical(body.vertical) ? body.vertical : undefined;
+    const result = await runFinder({ region, dryRun, maxEnrich, vertical });
     res.json(result);
   } catch (e) {
     res.status(502).json({ message: `Lead finder failed: ${e.message}` });
@@ -1081,7 +1108,8 @@ async function findLeads(req, res) {
 async function runAutoNow(req, res) {
   try {
     const fromStart = !!(req.body && (req.body.restart === true || req.body.restart === 'true'));
-    res.json(await runFrontierSweep({ force: true, fromStart }));
+    const vertical = req.body && isVertical(req.body.vertical) ? req.body.vertical : undefined;
+    res.json(await runFrontierSweep({ force: true, fromStart, vertical }));
   } catch (e) {
     res.status(502).json({ message: e.message });
   }

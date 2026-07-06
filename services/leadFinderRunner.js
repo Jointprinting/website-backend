@@ -14,6 +14,7 @@
 // themselves. A per-run scrape cap keeps a sweep bounded and polite.
 
 const { fetchDispensaries, isRegion, DEFAULT_REGION, REGIONS, NATIONAL_ROLLOUT, FINDER_VERSION } = require('./dispensaryFinder');
+const { getVertical, verticalPoolFilter, verticalRunMatch, frontierStateKey, DEFAULT_VERTICAL_ID } = require('./leadVerticals');
 const LeadFinderState = require('../models/LeadFinderState');
 const { enrichWebsite } = require('./emailEnricher');
 const { verifyDomainsMx, partitionDeliverable, emailDomain } = require('./emailVerify');
@@ -26,7 +27,6 @@ const { buildMappedRows, applyMappedRow } = require('../controllers/crm');
 
 const DEFAULT_MAX_ENRICH = parseInt(process.env.LEAD_FINDER_MAX_ENRICH || '80', 10);
 const ENRICH_CONCURRENCY = parseInt(process.env.LEAD_FINDER_CONCURRENCY || '4', 10);
-const FINDER_TAG = 'dispensary';
 
 // Run `worker` over `items` with at most `concurrency` in flight. Resolves to the
 // results array (worker must not throw — enrichWebsite already swallows).
@@ -46,8 +46,8 @@ async function pool(items, concurrency, worker) {
 // Discover + enrich a region into import-ready rows. Returns
 // { region, label, found, candidates, withEmail, enriched }. No DB writes — the
 // caller decides dry-run vs live.
-async function discoverRegion(regionId, { maxEnrich = DEFAULT_MAX_ENRICH } = {}) {
-  const { region, label, candidates } = await fetchDispensaries(regionId);
+async function discoverRegion(regionId, { maxEnrich = DEFAULT_MAX_ENRICH, vertical } = {}) {
+  const { region, label, candidates } = await fetchDispensaries(regionId, { vertical });
 
   // Split: already have an email (free, from OSM) vs. need a scrape (have a
   // website but no email). No website + no email → unreachable, still counted.
@@ -110,10 +110,14 @@ function selectImportable(candidates, { skipChains = true } = {}) {
 }
 
 // Full run: discover → (live) import → tag → record. `dryRun` skips all writes
-// but returns the same shape so the UI preview matches reality.
-async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich } = {}) {
+// but returns the same shape so the UI preview matches reality. `vertical`
+// retargets the whole run to another business type (default: dispensaries) — it
+// discovers that vertical's leads, stamps them with that vertical's CRM tag, and
+// records the run under that vertical + its own finder version.
+async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich, vertical: verticalId = DEFAULT_VERTICAL_ID } = {}) {
+  const vertical = getVertical(verticalId);
   const regionId = isRegion(region) ? region : DEFAULT_REGION;
-  const disc = await discoverRegion(regionId, { maxEnrich });
+  const disc = await discoverRegion(regionId, { maxEnrich, vertical });
 
   // Mail-merge: only shops with a deliverable email become leads (an inbox is
   // what we send to). Skip big chains / MSOs (LEAD_FINDER_SKIP_CHAINS=off to
@@ -132,7 +136,7 @@ async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich } 
 
   if (dryRun) {
     return {
-      dryRun: true, region: regionId, label: disc.label,
+      dryRun: true, region: regionId, vertical: vertical.id, label: disc.label,
       found: disc.found, withEmail: disc.withEmail, enriched: disc.enriched,
       verified: disc.verified, skippedChains, willImport: rows.length,
     };
@@ -154,17 +158,19 @@ async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich } 
     }
   }
 
-  // Tag every imported company so the whole finder-sourced set is one CRM filter.
+  // Tag every imported company with the VERTICAL's tag so its cold pool is a
+  // single CRM filter — and so enrollment only ever draws that vertical's leads
+  // into that vertical's campaigns (a brewery campaign never emails a dispensary).
   if (touchedKeys.length) {
-    await Client.updateMany({ companyKey: { $in: touchedKeys } }, { $addToSet: { tags: FINDER_TAG } })
+    await Client.updateMany({ companyKey: { $in: touchedKeys } }, { $addToSet: { tags: vertical.tag } })
       .catch(() => {});
   }
 
   const result = {
-    region: regionId, label: disc.label,
+    region: regionId, vertical: vertical.id, label: disc.label,
     found: disc.found, withEmail: disc.withEmail, enriched: disc.enriched,
     verified: disc.verified, skippedChains, created, updated, skipped,
-    finderVersion: FINDER_VERSION,
+    finderVersion: vertical.finderVersion,
   };
   await LeadFinderRun.create({ ...result, dryRun: false }).catch(() => {});
   return result;
@@ -175,9 +181,13 @@ async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich } 
 // (lastContact null), has an email, isn't opted out/archived, isn't a customer
 // by order reality, and isn't already enrolled in a campaign. The auto-pilot
 // refills whenever this drops below the watermark, so supply tracks sending.
-async function countAvailableColdLeads() {
+async function countAvailableColdLeads({ vertical } = {}) {
+  // Scope to the vertical's own pool when asked (the scheduler gates each
+  // vertical's refill on ITS supply, so a full dispensary pool can't starve a new
+  // brewery campaign). No vertical → the whole cold pool (the general status number).
+  const poolFilter = vertical ? verticalPoolFilter(vertical) : {};
   const clients = await Client.find({
-    archived: { $ne: true }, doNotEmail: { $ne: true }, lastContact: null,
+    archived: { $ne: true }, doNotEmail: { $ne: true }, lastContact: null, ...poolFilter,
   }).select('companyKey email contacts').lean();
   const cold = clients.filter((c) =>
     (c.email && String(c.email).trim()) ||
@@ -202,9 +212,9 @@ async function countAvailableColdLeads() {
 // manual "re-sweep from the start". Oldest-swept first (fairest catch-up order).
 // NEVER includes un-swept states — expanding to those is the frontier's job, on
 // the queue-low path. `limit` caps the batch for politeness. Pure read.
-async function staleRegions(currentVersion = FINDER_VERSION, limit = 0) {
+async function staleRegions(currentVersion = FINDER_VERSION, limit = 0, vertical = DEFAULT_VERTICAL_ID) {
   const byRegion = await LeadFinderRun.aggregate([
-    { $match: { dryRun: false } },
+    { $match: { dryRun: false, ...verticalRunMatch(vertical) } },
     { $sort: { createdAt: -1 } },
     { $group: { _id: '$region', v: { $first: '$finderVersion' }, at: { $first: '$createdAt' } } },
   ]);
@@ -217,21 +227,24 @@ async function staleRegions(currentVersion = FINDER_VERSION, limit = 0) {
 
 // Status for the Studio: the auto-pilot frontier + recent runs + per-region
 // last-swept, in national-rollout order (so the UI can show the frontier line).
-async function finderStatus() {
+async function finderStatus({ vertical } = {}) {
+  const v = getVertical(vertical);
+  const runMatch = verticalRunMatch(v.id);
   const [byRegion, runs, state, available] = await Promise.all([
     // The LATEST real run per region — NOT the latest 10 overall. One sweep
     // writes up to MAX_REGIONS_PER_RUN rows, so a flat limit(10) forgets states
     // once the engine has covered more than ~1.7 sweeps, reverting their coverage
     // tiles to "not reached yet" and shuffling the swept count. Group per region
-    // so the map shows every state the engine has actually touched.
+    // so the map shows every state the engine has actually touched. Scoped to this
+    // vertical's runs (dispensary also matches legacy rows — see verticalRunMatch).
     LeadFinderRun.aggregate([
-      { $match: { dryRun: false } },
+      { $match: { dryRun: false, ...runMatch } },
       { $sort: { createdAt: -1 } },
       { $group: { _id: '$region', last: { $first: '$$ROOT' } } },
     ]),
-    LeadFinderRun.find({ dryRun: false }).sort({ createdAt: -1 }).limit(10).lean(), // recentRuns feed
-    LeadFinderState.findOne({ key: 'frontier' }).lean(),
-    countAvailableColdLeads(),
+    LeadFinderRun.find({ dryRun: false, ...runMatch }).sort({ createdAt: -1 }).limit(10).lean(), // recentRuns feed
+    LeadFinderState.findOne({ key: frontierStateKey(v.id) }).lean(),
+    countAvailableColdLeads({ vertical: v.id }),
   ]);
   const lastByRegion = {};
   for (const g of byRegion) if (g && g._id) lastByRegion[g._id] = g.last;
@@ -246,7 +259,7 @@ async function finderStatus() {
       // the UI can grey the manual button and tell the owner it's done for now.
       const recentlySwept = lastSweptAt ? (Date.now() - new Date(lastSweptAt).getTime() < 6 * 3600 * 1000) : false;
       // Swept, but by an older finder — the engine will re-milk it automatically.
-      const stale = !!last && (Number(last.finderVersion) || 0) < FINDER_VERSION;
+      const stale = !!last && (Number(last.finderVersion) || 0) < v.finderVersion;
       if (stale) staleCount += 1;
       return {
         id, label: REGIONS[id].label, last,
@@ -259,6 +272,8 @@ async function finderStatus() {
       };
     });
   return {
+    vertical: v.id,
+    verticalLabel: v.label,
     frontier: {
       activeRegion,
       activeLabel: REGIONS[activeRegion] ? REGIONS[activeRegion].label : activeRegion,
@@ -273,7 +288,7 @@ async function finderStatus() {
     // Current finder logic version + how many swept states are still on an older
     // one (i.e. queued for an automatic background upgrade). Lets the UI say
     // "sharpening coverage" instead of asking the owner to re-sweep.
-    finderVersion: FINDER_VERSION,
+    finderVersion: v.finderVersion,
     staleCount,
     regions,
     recentRuns: runs,
