@@ -242,7 +242,8 @@ function validateWebworksPayload(body) {
   if (!companyName) errors.push('business name is required');
   if (!email)       errors.push('email is required');
   if (email && !validator.isEmail(email)) errors.push('email is invalid');
-  if (phone && !isPlausiblePhone(phone)) errors.push('phone format is invalid');
+  if (!phone) errors.push('phone is required');
+  else if (!isPlausiblePhone(phone)) errors.push('phone format is invalid');
   if (notes.length > 5000) errors.push('notes is too long');
 
   return {
