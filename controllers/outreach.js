@@ -1096,8 +1096,11 @@ async function getAnalytics(req, res) {
     const perCampaign = campaigns
       .map((c) => {
         const rows = byCampaign.get(String(c._id)) || [];
-        if ((c.status === 'archived') && rows.length === 0) return null;
         const stats = summarizeEnrollments(rows);
+        // Drop an archived campaign only if it never actually SENT — keep archived
+        // ones that carry send history (they still have analytics worth reading),
+        // and never surface an archived campaign that was enrolled but sent nothing.
+        if (c.status === 'archived' && stats.sent === 0) return null;
         return {
           id: String(c._id),
           name: c.name,
