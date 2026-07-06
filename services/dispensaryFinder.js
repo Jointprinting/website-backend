@@ -169,7 +169,13 @@ function isRecCannabis(v) {
 // cannabis:recreational=no (dual-license shops tag it yes/omit it). Pure.
 function isMedicalOnly(tags = {}) {
   const rec = String(tags['cannabis:recreational'] || '').trim().toLowerCase();
-  return rec === 'no' || rec === 'false' || rec === 'none';
+  if (rec === 'no' || rec === 'false' || rec === 'none') return true;
+  // A shop tagged cannabis:medical (yes/only) with NO affirmative recreational tag
+  // is a medical-only dispensary — a very common OSM shape the rec=no check misses.
+  // The owner sells to REC shops, so skip it.
+  const med = String(tags['cannabis:medical'] || '').trim().toLowerCase();
+  if ((med === 'yes' || med === 'only' || med === 'licensed') && !isRecCannabis(tags['cannabis:recreational'])) return true;
+  return false;
 }
 
 // The canonical "this IS a RECREATIONAL cannabis retailer" tag set — trusted

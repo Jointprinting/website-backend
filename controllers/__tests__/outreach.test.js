@@ -87,6 +87,26 @@ test('campaignHealth: sequence complete → warn (enroll fresh leads)', () => {
   assert.equal(h.label, 'Sequence complete');
 });
 
+test('campaignHealth: all held by suppression → action naming suppressed + Requeue', () => {
+  // The exact "72 enrolled · 0 sent · 0 active" case: name suppressed, point at Requeue.
+  const h = campaignHealth({ status: 'active' }, { enrolled: 72, active: 0, sent: 0, suppressed: 66, noEmail: 0, failed: 0 });
+  assert.equal(h.level, 'action');
+  assert.match(h.label, /66 held/);
+  assert.match(h.hint, /Requeue dropped/);
+});
+
+test('campaignHealth: all sends failed → action naming failures + Requeue', () => {
+  const h = campaignHealth({ status: 'active' }, { enrolled: 30, active: 0, sent: 0, failed: 30, noEmail: 0, suppressed: 0 });
+  assert.equal(h.level, 'action');
+  assert.match(h.label, /30 sends failed/);
+});
+
+test('campaignHealth: roster exhausted (some sent, none active/completed) is NOT false-green', () => {
+  const h = campaignHealth({ status: 'active' }, { enrolled: 10, active: 0, sent: 10, completed: 0, replied: 0 });
+  assert.equal(h.level, 'warn');
+  assert.equal(h.label, 'Roster exhausted');
+});
+
 test('campaignHealth: healthy active drip → ok', () => {
   const h = campaignHealth({ status: 'active' }, { enrolled: 20, active: 15, sent: 5, replied: 1 });
   assert.equal(h.level, 'ok');

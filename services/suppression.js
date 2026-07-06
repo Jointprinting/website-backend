@@ -61,4 +61,22 @@ async function suppressedSet(emails = []) {
   }
 }
 
-module.exports = { suppress, isSuppressed, suppressedSet, normEmail, domainOf, isEmail };
+// Remove every suppression written by a given SOURCE, returning the freed
+// addresses. Used by recovery tooling to undo the inline SMTP heuristic's
+// auto-suppressions (source 'smtp-bounce') WITHOUT touching the authoritative
+// provider-webhook bounces ('bounce-webhook' / 'complaint-webhook') or opt-outs
+// ('unsubscribe-link'). Never throws.
+async function removeBySource(source) {
+  if (!source) return [];
+  try {
+    const rows = await Suppression.find({ source }).select('email').lean();
+    const emails = rows.map((r) => r.email).filter(Boolean);
+    if (emails.length) await Suppression.deleteMany({ source });
+    return emails;
+  } catch (err) {
+    console.warn('[suppression] removeBySource failed:', err.message);
+    return [];
+  }
+}
+
+module.exports = { suppress, isSuppressed, suppressedSet, removeBySource, normEmail, domainOf, isEmail };

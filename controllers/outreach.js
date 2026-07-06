@@ -17,7 +17,7 @@ const Client = require('../models/Client');
 const Order = require('../models/Order');
 const { PLACED_STATUSES } = require('../models/Order');
 const { warmFromEnrollment } = require('../services/warmHandoff');
-const { suppress, suppressedSet } = require('../services/suppression');
+const { suppress, isSuppressed, suppressedSet, removeBySource } = require('../services/suppression');
 const { lintSteps } = require('../services/outreachContent');
 const { verifyDomainsMx, emailDomain } = require('../services/emailVerify');
 
@@ -108,24 +108,40 @@ function summarizeAbTest(rows = []) {
 // isn't sending instead of leaving the owner staring at zeros. Levels:
 // 'ok' (green) | 'warn' (amber) | 'action' (red — needs a decision).
 function campaignHealth(campaign = {}, stats = {}) {
-  const st = { enrolled: 0, active: 0, sent: 0, replied: 0, completed: 0, noEmail: 0, bounced: 0, unsubscribed: 0, ...stats };
+  const st = { enrolled: 0, active: 0, sent: 0, replied: 0, completed: 0, noEmail: 0, bounced: 0, unsubscribed: 0, suppressed: 0, failed: 0, stopped: 0, ...stats };
   const status = campaign.status || 'draft';
   if (status === 'draft')  return { level: 'warn', label: 'Draft', hint: 'Launch it when the steps read right.' };
   if (status === 'paused') return { level: 'warn', label: 'Paused', hint: 'Sends are halted — resume to continue the drip.' };
   if (status === 'archived') return { level: 'warn', label: 'Archived', hint: 'This campaign is retired.' };
   if (st.enrolled === 0) return { level: 'warn', label: 'No leads yet', hint: 'Enroll companies to start the sequence.' };
-  // Active but nothing is (or can be) sending — say precisely why.
-  if (st.noEmail > 0 && st.sent === 0) {
-    return { level: 'action', label: `${st.noEmail} missing email`,
-      hint: `${st.noEmail} enrolled ${st.noEmail === 1 ? 'lead has' : 'leads have'} no email address, so nothing can send. Enroll a fresh batch (the enroll list only offers leads with emails), or add addresses to these.` };
-  }
+  // Active but nothing is (or can be) sending — name the REAL dominant reason from
+  // the stopped-reason breakdown, so the owner never stares at "0 sent, 0 active"
+  // with a wrong or generic cause.
   if (st.active === 0 && st.sent === 0) {
+    if (st.suppressed > 0 && st.suppressed >= st.noEmail && st.suppressed >= st.failed) {
+      return { level: 'action', label: `${st.suppressed} held (suppressed)`,
+        hint: `${st.suppressed} ${st.suppressed === 1 ? 'lead was' : 'leads were'} held because the address opted out / bounced before — OR a SENDER-side error (bad SMTP, unverified sender) wrongly suppressed them. If sends were failing, fix the sender and hit “Requeue dropped” to resume; real opt-outs stay blocked.` };
+    }
+    if (st.failed > 0 && st.failed >= st.noEmail) {
+      return { level: 'action', label: `${st.failed} send${st.failed === 1 ? '' : 's'} failed`,
+        hint: `${st.failed} ${st.failed === 1 ? 'lead' : 'leads'} couldn’t send. If your sender/SMTP was down or unverified, fix it and hit “Requeue dropped” — real bounces stay blocked.` };
+    }
+    if (st.noEmail > 0) {
+      return { level: 'action', label: `${st.noEmail} missing email`,
+        hint: `${st.noEmail} enrolled ${st.noEmail === 1 ? 'lead has' : 'leads have'} no usable email, so nothing can send. Enroll a fresh batch — the enroll list only offers leads with emails.` };
+    }
     return { level: 'action', label: 'Nothing sending',
-      hint: 'Every enrolled lead stopped before a send (missing email, unsubscribed, or became a customer). Enroll fresh leads to start the drip.' };
+      hint: 'Every enrolled lead stopped before a send (opted out, became a customer, or an address issue). Enroll fresh leads to start the drip.' };
   }
   if (st.active === 0 && st.completed > 0) {
     return { level: 'warn', label: 'Sequence complete',
       hint: 'Everyone finished the sequence. Enroll fresh leads, or add a follow-up touch to keep it warm.' };
+  }
+  // Nothing active, some sent, none completed → the roster bounced/opted-out/failed
+  // mid-sequence. Don't fall through to a false-green "Sending · 0 in sequence".
+  if (st.active === 0) {
+    return { level: 'warn', label: 'Roster exhausted',
+      hint: `No one is still in sequence (${st.sent} sent, ${st.replied} replied). Enroll fresh leads to keep it going.` };
   }
   // Deliverability first — a bouncing/complained-about campaign is torching the
   // sender's reputation and must be paused before anything else matters.
@@ -284,10 +300,14 @@ async function getOverview(req, res) {
     // send first), new first-touches due, how many are mid-sequence, and the
     // reserve waiting to be enrolled. Capped by the day's send limit (engine.cap).
     const planNow = new Date();
+    // Only ACTIVE campaigns send, so the plan counts must exclude a paused/draft
+    // campaign's active enrollments (they aren't "due" / "in sequence" for sending).
+    const activeCampaignIds = campaigns.filter((c) => c.status === 'active').map((c) => c._id);
+    const inActive = { campaignId: { $in: activeCampaignIds } };
     const [followUpsDue, firstTouchesDue, inSequence] = await Promise.all([
-      OutreachEnrollment.countDocuments({ status: 'active', stepIndex: { $gt: 0 }, nextSendAt: { $lte: planNow } }).catch(() => 0),
-      OutreachEnrollment.countDocuments({ status: 'active', stepIndex: 0, nextSendAt: { $lte: planNow } }).catch(() => 0),
-      OutreachEnrollment.countDocuments({ status: 'active' }).catch(() => 0),
+      OutreachEnrollment.countDocuments({ status: 'active', ...inActive, stepIndex: { $gt: 0 }, nextSendAt: { $lte: planNow } }).catch(() => 0),
+      OutreachEnrollment.countDocuments({ status: 'active', ...inActive, stepIndex: 0, nextSendAt: { $lte: planNow } }).catch(() => 0),
+      OutreachEnrollment.countDocuments({ status: 'active', ...inActive }).catch(() => 0),
     ]);
     const plan = {
       followUpsDue, firstTouchesDue, dueNow: followUpsDue + firstTouchesDue,
@@ -406,7 +426,12 @@ async function launchCampaign(req, res) {
       ...NOT_ARCHIVED, doNotEmail: { $ne: true }, stage: { $in: ['lead', 'contacted'] }, lastContact: null,
       ...verticalPoolFilter(campaign.vertical),
     }).catch(() => null);
-    const finderKicked = reserve === 0;
+    // Kick the finder when the reserve is dry OR when the fill enrolled NOBODY — a
+    // reserve that's all no-email/suppressed/customer counts >0 but yields 0
+    // enrollments, so "Launch from nothing" would otherwise silently send nothing
+    // and never self-heal. Either way, go find fresh leads for this vertical.
+    const filledCount = (filled && filled.enrolled) || 0;
+    const finderKicked = reserve === 0 || filledCount === 0;
     if (finderKicked) {
       runFrontierSweep({ force: true, vertical: campaign.vertical })
         .catch((e) => console.error('[outreach] launch finder kick:', e.message));
@@ -541,7 +566,11 @@ async function enrollCompanies(req, res) {
     if (!keys.length) return res.status(400).json({ message: 'companyKeys required' });
 
     const [clients, existing, customerKeys, allEnrollments] = await Promise.all([
-      Client.find({ companyKey: { $in: keys } }).lean(),
+      // Scope to the campaign's vertical, same as the auto-enroll path — so a raw
+      // API call or a dialog left open after the campaign's vertical changed can't
+      // enroll a brewery lead into a dispensary campaign (wrong-vertical pitch).
+      // Out-of-vertical keys simply aren't returned → reported skipped 'not-found'.
+      Client.find({ companyKey: { $in: keys }, ...verticalPoolFilter(campaign.vertical) }).lean(),
       OutreachEnrollment.find({ campaignId: campaign._id, companyKey: { $in: keys } })
         .select('companyKey').lean(),
       keysWithPlacedOrders(keys),
@@ -634,10 +663,13 @@ async function enrollCompanies(req, res) {
 // oldest-due first, with enough context to read as a checklist.
 async function getQueue(req, res) {
   try {
-    const rows = await OutreachEnrollment.find({ status: 'active' })
-      .sort({ nextSendAt: 1 }).limit(100).lean();
-    const campaigns = await OutreachCampaign.find({ _id: { $in: [...new Set(rows.map((r) => String(r.campaignId)))] } }).lean();
+    // Only ACTIVE campaigns actually send, so the queue must not show a paused /
+    // draft campaign's rows as "due now" (the engine skips them) — that inflated
+    // "due now" and misled the owner about what's going out.
+    const campaigns = await OutreachCampaign.find({ status: 'active' }).lean();
     const byId = new Map(campaigns.map((c) => [String(c._id), c]));
+    const rows = await OutreachEnrollment.find({ status: 'active', campaignId: { $in: campaigns.map((c) => c._id) } })
+      .sort({ nextSendAt: 1 }).limit(100).lean();
     const queue = rows.map((e) => {
       const c = byId.get(String(e.campaignId));
       const step = c ? (c.steps || [])[e.stepIndex] : null;
@@ -1224,6 +1256,78 @@ async function bounceWebhook(req, res) {
   }
 }
 
+// POST /api/outreach/recover-sends { confirm: true }
+// Undo the damage a SENDER-SIDE failure did before the recipient-only bounce
+// classification landed: the old engine treated any 5xx (auth / relay / unverified
+// sender / quota) as a dead recipient, so it auto-suppressed the address, flagged
+// the company doNotEmail, and failed the enrollment — potentially the whole list on
+// one misconfiguration. This reverses ONLY that inline heuristic's marks:
+//   • Suppression source 'smtp-bounce'          (NOT webhook bounces/complaints/opt-outs)
+//   • doNotEmail set via log 'outreach-bounce:*' (only when no real suppression remains)
+//   • enrollment stopReason 'invalid-address' / 'smtp-error'
+// and requeues the freed leads. Confirm-gated + idempotent; an address still held by
+// a real bounce/complaint/unsubscribe is left blocked.
+async function recoverSenderFailures(req, res) {
+  try {
+    if (!(req.body && (req.body.confirm === true || req.body.confirm === 'true'))) {
+      return res.status(400).json({ message: 'confirm required — this requeues leads dropped by sender-side send errors' });
+    }
+    // 1) Drop the inline heuristic's auto-suppressions. Anything still suppressed
+    //    afterward is held by an authoritative source (webhook / unsubscribe).
+    const freed = await removeBySource('smtp-bounce');
+    const stillSuppressed = await suppressedSet(freed);
+
+    // 2) Clear doNotEmail on companies the inline path flagged — but only when the
+    //    address is no longer suppressed by a real source.
+    const flagged = await Client.find({
+      doNotEmail: true,
+      log: { $elemMatch: { dedupKey: { $regex: '^outreach-bounce:' } } },
+    }).select('companyKey email contacts').lean();
+    const now = new Date();
+    const unblockKeys = flagged
+      .filter((c) => { const em = String(pickEmail(c) || '').toLowerCase(); return !(em && stillSuppressed.has(em)); })
+      .map((c) => c.companyKey);
+    let companiesUnblocked = 0;
+    if (unblockKeys.length) {
+      const r = await Client.updateMany(
+        { companyKey: { $in: unblockKeys } },
+        { $set: { doNotEmail: false },
+          $push: { log: { at: now, text: 'Re-enabled for outreach — the earlier drop was a sender-side error, not a real bounce', kind: 'email', dedupKey: `outreach-recover:${now.getTime()}` } } },
+      ).catch(() => ({ modifiedCount: 0 }));
+      companiesUnblocked = r.modifiedCount || 0;
+    }
+
+    // 3) Requeue the enrollments that were failed by a sender-side error, unless the
+    //    address is still genuinely suppressed. Fresh jittered send time so the drip
+    //    resumes without a clump.
+    const failed = await OutreachEnrollment.find({
+      status: 'failed', stopReason: { $in: ['invalid-address', 'smtp-error'] },
+    });
+    let enrollmentsRequeued = 0;
+    for (const enr of failed) {
+      const em = String(enr.toEmail || '').toLowerCase();
+      if (em && (stillSuppressed.has(em) || await isSuppressed(em))) continue;
+      enr.status = 'active';
+      enr.stopReason = '';
+      enr.lastError = '';
+      enr.sendAttempts = 0;
+      enr.nextSendAt = new Date(now.getTime() + Math.floor(Math.random() * 90 * 60 * 1000));
+      await enr.save().catch(() => {});
+      enrollmentsRequeued += 1;
+    }
+
+    res.json({
+      ok: true,
+      freedSuppressions: freed.length,
+      stillSuppressed: stillSuppressed.size,
+      companiesUnblocked,
+      enrollmentsRequeued,
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
 // ── Public routes (no auth — token-keyed) ─────────────────────────────────────
 
 // 1×1 transparent PNG for the open pixel.
@@ -1321,6 +1425,7 @@ module.exports = {
   runAutoNow,
   getAnalytics,
   bounceWebhook,
+  recoverSenderFailures,
   // exported for tests
   summarizeEnrollments,
   summarizeAbTest,

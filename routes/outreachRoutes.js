@@ -36,6 +36,7 @@ const {
   runAutoNow,
   getAnalytics,
   bounceWebhook,
+  recoverSenderFailures,
 } = require('../controllers/outreach');
 
 // ── Public (token-keyed, embedded in the emails themselves) ──
@@ -53,6 +54,7 @@ router.get('/analytics',  getAnalytics);
 router.get('/candidates', getCandidates);
 router.get('/queue',      getQueue);
 router.post('/run-tick',  runTickNow);
+router.post('/recover-sends', recoverSenderFailures); // requeue leads dropped by a sender-side error
 router.post('/test-send', sendTest);        // first-run wizard: send a sample to yourself
 router.post('/auth-recheck', recheckAuthNow); // force-refresh SPF/DKIM/DMARC classification
 

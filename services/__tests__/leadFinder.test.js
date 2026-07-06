@@ -184,6 +184,12 @@ test('isRecCannabis / isMedicalOnly read the recreational flag', () => {
   assert.equal(isMedicalOnly({ 'cannabis:recreational': 'no' }), true);
   assert.equal(isMedicalOnly({ 'cannabis:recreational': 'yes' }), false);
   assert.equal(isMedicalOnly({ shop: 'cannabis' }), false); // unspecified ≠ medical-only
+  // A shop tagged cannabis:medical=yes with NO affirmative recreational tag is
+  // medical-only (common OSM shape) — must be skipped (owner sells to REC shops).
+  assert.equal(isMedicalOnly({ shop: 'cannabis', 'cannabis:medical': 'yes' }), true);
+  // …but a dual-license shop (medical + recreational yes) is a valid rec lead.
+  assert.equal(isMedicalOnly({ 'cannabis:medical': 'yes', 'cannabis:recreational': 'yes' }), false);
+  assert.equal(isQualityLead({ shop: 'cannabis', 'cannabis:medical': 'yes' }, 'MedOnly Rx'), false);
 });
 
 test('isQualityLead catches an oddly-named rec shop, drops medical-only + junk', () => {

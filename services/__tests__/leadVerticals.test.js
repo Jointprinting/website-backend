@@ -12,7 +12,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
-  VERTICAL_IDS, DEFAULT_VERTICAL_ID, getVertical, isVertical,
+  VERTICAL_IDS, DEFAULT_VERTICAL_ID, getVertical, isVertical, otherVerticalTags,
   verticalPoolFilter, verticalRunMatch, frontierStateKey, verticalOptions,
   breweryIsQualityLead, breweryIsBigChain, hasBreweryTag, isMacroBrewery,
   smokeIsQualityLead, isSmokeChain, isFuelStation, VERTICALS,
@@ -62,6 +62,14 @@ test('frontierStateKey: dispensary keeps the original key, others are namespaced
   assert.equal(frontierStateKey('dispensary'), 'frontier');
   assert.equal(frontierStateKey('brewery'), 'frontier:brewery');
   assert.equal(frontierStateKey('smoke-vape'), 'frontier:smoke-vape');
+});
+
+test('otherVerticalTags: every vertical tag EXCEPT the given one (first-touch ownership)', () => {
+  // The finder claims a company for vertical X only if it carries none of THESE,
+  // so a lead found under two verticals can't migrate pools or double-tag.
+  assert.deepEqual(otherVerticalTags('dispensary').sort(), ['brewery', 'smoke-vape'].sort());
+  assert.deepEqual(otherVerticalTags('brewery').sort(), ['dispensary', 'smoke-vape'].sort());
+  assert.ok(!otherVerticalTags('brewery').includes('brewery'));
 });
 
 // ── Breweries ────────────────────────────────────────────────────────────────
