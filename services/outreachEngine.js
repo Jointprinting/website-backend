@@ -1138,6 +1138,10 @@ module.exports = {
   abVariant,
   isRoleEmail,
   deliverabilityStats,
+  // Whether the open-tracking pixel is actually being embedded (OFF by default —
+  // see the comment on the const). Analytics reports this so the UI can label a
+  // 0% open rate as "tracking off", not "nobody opens your emails".
+  openPixelEnabled,
   DAILY_CAP_MAX,
   DOMAIN_DAILY_CAP,
   SEND_PRIORITY_FILTERS,

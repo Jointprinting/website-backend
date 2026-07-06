@@ -13,6 +13,14 @@
 // a fresh brewery campaign. A tick sweeps every ACTIVE vertical — dispensaries
 // (always, the core business) plus any vertical that has an active campaign.
 //
+// FAILURE LEDGER: a state whose sweep THROWS is never silently abandoned. The
+// frontier still advances (one bad state can't wedge the run), but the failure
+// is recorded — an error LeadFinderRun row for the coverage map, plus a
+// consecutive-failure count on the vertical's state doc — and the NEXT sweep
+// retries errored states FIRST, before expanding into fresh ground. Capped at
+// MAX_REGION_ATTEMPTS per finder version so a permanently broken region parks
+// instead of looping.
+//
 // Free ($0 — OSM + own-site scraping). ALWAYS ON — there is no toggle. The
 // owner wants leads to stack up behind the scenes without operating anything;
 // the queue-aware gate above is the only throttle. Pattern mirrors
@@ -20,6 +28,7 @@
 
 const cron = require('node-cron');
 const LeadFinderState = require('../models/LeadFinderState');
+const LeadFinderRun = require('../models/LeadFinderRun');
 const OutreachCampaign = require('../models/OutreachCampaign');
 const { runFinder, countAvailableColdLeads, staleRegions } = require('./leadFinderRunner');
 const { nextRegionAfter, isRegion, DEFAULT_REGION, REGIONS } = require('./dispensaryFinder');
@@ -36,6 +45,57 @@ const MAX_REGIONS_PER_RUN = parseInt(process.env.LEAD_FINDER_MAX_REGIONS || '6',
 // this many already-swept states per tick to upgrade their coverage in the
 // background (so improvements land with no manual "re-sweep"). Small + polite.
 const MAX_UPGRADE_PER_RUN = parseInt(process.env.LEAD_FINDER_MAX_UPGRADE || '3', 10);
+// How many times an ERRORED region is retried (per finder version) before it's
+// parked. 3 attempts distinguishes "Overpass had a bad day" (recovers on retry)
+// from "this region is genuinely broken for this finder" (stop burning the
+// sweep budget on it). A finder-version bump wipes the ledger and un-parks.
+const MAX_REGION_ATTEMPTS = parseInt(process.env.LEAD_FINDER_MAX_REGION_ATTEMPTS || '3', 10);
+
+// Which errored regions the next sweep should retry FIRST, before advancing the
+// frontier into fresh ground. `failedRegions` is the per-vertical state doc's
+// region→consecutive-failure-count ledger. The old behavior — log "(error)" and
+// advance anyway — meant one Overpass timeout on a big state (NY, CA…) skipped
+// it until the frontier WRAPPED the whole country, i.e. silently dropped the
+// biggest markets. Least-tried first (fairest), capped so a permanently broken
+// region can't loop forever. Pure + unit-tested.
+function retryableFailedRegions(failedRegions = {}, { maxAttempts = MAX_REGION_ATTEMPTS } = {}) {
+  return Object.entries(failedRegions || {})
+    .map(([region, count]) => [region, Number(count) || 0])
+    .filter(([region, count]) => isRegion(region) && count > 0 && count < maxAttempts)
+    .sort((a, b) => a[1] - b[1])
+    .map(([region]) => region);
+}
+
+// A sweep that THREW never covered its state — record that honestly. Writes a
+// LeadFinderRun audit row with `error` set (and finderVersion 0: no coverage was
+// produced), so the Studio's coverage map can tell "we tried and it FAILED"
+// apart from "the frontier never reached it". Also bumps the state doc's
+// consecutive-failure count for the region so the next sweep retries it first
+// (the caller saves the state doc). Never throws — an audit failure must not
+// mask the sweep's own error handling.
+async function noteRegionFailure(state, region, verticalId, err) {
+  const failed = { ...(state.failedRegions || {}) };
+  failed[region] = (Number(failed[region]) || 0) + 1;
+  state.failedRegions = failed;
+  state.markModified('failedRegions');
+  await LeadFinderRun.create({
+    region,
+    vertical: verticalId,
+    dryRun: false,
+    finderVersion: 0,
+    error: String((err && err.message) || err || 'sweep failed').slice(0, 500),
+  }).catch(() => {});
+}
+
+// The mirror image: a region swept CLEANLY, so it leaves the failure ledger
+// (its next error starts a fresh count — the ledger tracks CONSECUTIVE fails).
+function clearRegionFailure(state, region) {
+  if (!state.failedRegions || !(region in state.failedRegions)) return;
+  const failed = { ...state.failedRegions };
+  delete failed[region];
+  state.failedRegions = failed;
+  state.markModified('failedRegions');
+}
 
 // Get-or-create the per-vertical frontier state (dispensary keeps the original
 // 'frontier' key — no migration; others get 'frontier:<id>').
@@ -86,6 +146,15 @@ async function _sweepVertical({ force = false, fromStart = false, vertical: vert
   const state = await getState(v.id);
   const available = await countAvailableColdLeads({ vertical: v.id });
 
+  // The failure ledger is scoped to ONE finder version: a version bump means the
+  // fetch/gate logic changed, so old failures (and old retry caps) no longer
+  // describe this finder — wipe and start fresh.
+  if ((Number(state.failedRegionsVersion) || 0) !== v.finderVersion) {
+    state.failedRegions = {};
+    state.failedRegionsVersion = v.finderVersion;
+    state.markModified('failedRegions');
+  }
+
   // ── Healthy pool: nothing to refill. But keep coverage FRESH on its own ──────
   // If the finder improved since some states were last swept, quietly re-milk a
   // bounded few (oldest-swept first) so a better finder retroactively upgrades
@@ -107,9 +176,12 @@ async function _sweepVertical({ force = false, fromStart = false, vertical: vert
         const r = await runFinder({ region, vertical: v.id, dryRun: false });
         upgraded += r.created || 0;
         swept.push(`${r.label} +${r.created}`);
+        clearRegionFailure(state, region);
       } catch (err) {
         lastError = err.message;
         swept.push(`${REGIONS[region] ? REGIONS[region].label : region} (error)`);
+        // Honest coverage + retry-first next sweep (same ledger the frontier uses).
+        await noteRegionFailure(state, region, v.id, err);
       }
     }
     // An upgrade pass does NOT advance the frontier — it re-milks in place.
@@ -120,34 +192,48 @@ async function _sweepVertical({ force = false, fromStart = false, vertical: vert
   }
 
   // ── Low pool (or forced): expand the frontier until it's topped back up ──────
-  let region = fromStart ? DEFAULT_REGION
+  let frontier = fromStart ? DEFAULT_REGION
     : (isRegion(state.activeRegion) ? state.activeRegion : DEFAULT_REGION);
   if (fromStart) state.dryStreak = 0;
+  // ERRORED states first: a state whose last sweep THREW was never actually
+  // covered — retrying it beats advancing into fresh ground (otherwise one
+  // Overpass hiccup silently drops NY/CA until the frontier wraps the country).
+  // Bounded by the same states-per-run politeness cap; capped attempts per
+  // finder version so a broken region eventually parks instead of looping.
+  const retryQueue = retryableFailedRegions(state.failedRegions);
   let importedTotal = 0;
   let regionsSwept = 0;
   const swept = [];
   let lastError = '';
   while (importedTotal < REFILL_TARGET && regionsSwept < MAX_REGIONS_PER_RUN) {
+    const fromRetry = retryQueue.length > 0;
+    const region = fromRetry ? retryQueue.shift() : frontier;
     try {
       const result = await runFinder({ region, vertical: v.id, dryRun: false });
       importedTotal += result.created || 0;
       swept.push(`${result.label} +${result.created}`);
+      clearRegionFailure(state, region);
     } catch (err) {
       lastError = err.message;
       swept.push(`${REGIONS[region] ? REGIONS[region].label : region} (error)`);
+      // Record the failure (audit row + retry ledger) — but still move on below:
+      // one bad state must not wedge THIS run; the ledger retries it NEXT run.
+      await noteRegionFailure(state, region, v.id, err);
     }
-    region = nextRegionAfter(region); // resume from the NEXT state next time
+    // Retries live BEHIND the frontier — only a frontier sweep advances it (a
+    // retried state advancing the pointer would skip un-swept ground).
+    if (!fromRetry) frontier = nextRegionAfter(region); // resume from the NEXT state next time
     regionsSwept += 1;
   }
 
-  state.activeRegion = region;
+  state.activeRegion = frontier;
   state.dryStreak = 0;
   state.lastRunAt = new Date();
   state.lastResult = importedTotal
     ? `refilled ${importedTotal} new ${v.short} across ${regionsSwept} states (${swept.join(', ')}) — ${available} were left`
     : `swept ${regionsSwept} states, 0 new ${v.short}${lastError ? ` — last error: ${lastError}` : ' (OSM has no new shops there yet)'}`;
   await state.save();
-  return { vertical: v.id, available, imported: importedTotal, regionsSwept, swept, nextRegion: region };
+  return { vertical: v.id, available, imported: importedTotal, regionsSwept, swept, nextRegion: frontier };
 }
 
 // Public single-vertical entry (the Studio "Refill now" + the launch kick). Guards
@@ -183,4 +269,7 @@ function startLeadFinderScheduler() {
   console.log(`[lead-finder] engine started — always on, queue-aware refill every 6h per active vertical (low<${LOW_WATERMARK}, target ${REFILL_TARGET} emailable, ≤${MAX_REGIONS_PER_RUN} states/run, ≤${MAX_UPGRADE_PER_RUN} auto-upgrades/run)`);
 }
 
-module.exports = { startLeadFinderScheduler, runFrontierSweep, runAllFrontierSweeps, activeVerticalIds, getState };
+module.exports = {
+  startLeadFinderScheduler, runFrontierSweep, runAllFrontierSweeps, activeVerticalIds, getState,
+  retryableFailedRegions, // pure — unit-tested
+};

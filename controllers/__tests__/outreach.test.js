@@ -340,3 +340,50 @@ test('enrollBlockReason: personally-contacted companies are blocked at the WRITE
   assert.equal(enrollBlockReason({ ...lead, lastContact: new Date() }, false, false), 'already-contacted');
   assert.equal(enrollBlockReason({ ...lead, lastContact: null }, false, false), '');
 });
+
+// ── Per-city spread in the daily enroll draw ─────────────────────────────────
+const { interleaveByCity } = require('../outreach');
+
+test('interleaveByCity: round-robins across cities, preserving order within each', () => {
+  // Arrival order = best-score-first (Newark holds ranks 1–3, so plain
+  // best-first would send all of Newark before anyone else).
+  const rows = [
+    { name: 'nwk-1', city: 'Newark' },
+    { name: 'nwk-2', city: 'Newark' },
+    { name: 'nwk-3', city: 'Newark' },
+    { name: 'trn-1', city: 'Trenton' },
+    { name: 'cmd-1', city: 'Camden' },
+    { name: 'trn-2', city: 'Trenton' },
+  ];
+  assert.deepEqual(interleaveByCity(rows).map((r) => r.name), [
+    'nwk-1', 'trn-1', 'cmd-1',   // one from each city, best-city first
+    'nwk-2', 'trn-2',            // second round (Camden is spent)
+    'nwk-3',                     // Newark's tail drains last
+  ]);
+});
+
+test('interleaveByCity: unknown-city leads form their own bucket, drawn LAST', () => {
+  const rows = [
+    { name: 'mystery-1', city: '' },       // best score but no parseable city
+    { name: 'nwk-1', city: 'Newark' },
+    { name: 'mystery-2' },                 // missing entirely
+    { name: 'trn-1', city: 'Trenton' },
+  ];
+  assert.deepEqual(interleaveByCity(rows).map((r) => r.name),
+    ['nwk-1', 'trn-1', 'mystery-1', 'mystery-2']);
+});
+
+test('interleaveByCity: city matching is case/space-insensitive; custom accessor; empty in → empty out', () => {
+  // "newark" and "Newark " are ONE bucket — otherwise casing would fake spread.
+  const rows = [
+    { name: 'a', city: 'Newark ' },
+    { name: 'b', city: 'newark' },
+    { name: 'c', city: 'Trenton' },
+  ];
+  assert.deepEqual(interleaveByCity(rows).map((r) => r.name), ['a', 'c', 'b']);
+  // The enroll path passes a custom accessor ({ c, sc, city } wrappers).
+  const wrapped = [{ v: 1, town: 'X' }, { v: 2, town: 'Y' }, { v: 3, town: 'X' }];
+  assert.deepEqual(interleaveByCity(wrapped, (r) => r.town).map((r) => r.v), [1, 2, 3]);
+  assert.deepEqual(interleaveByCity([]), []);
+  assert.deepEqual(interleaveByCity(), []);
+});

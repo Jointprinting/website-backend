@@ -12,8 +12,9 @@ const assert = require('node:assert/strict');
 
 const {
   buildOverpassQuery, osmAddress, normalizeWebsite, parseOverpassElements, isRegion,
-  nextRegionAfter, decideFrontier, NATIONAL_ROLLOUT, isQualityLead, isClosedPoi, hasCannabisTag,
-  isRecCannabis, isMedicalOnly, isBigChain, markChains, FINDER_VERSION, osmLatLng,
+  nextRegionAfter, decideFrontier, NATIONAL_ROLLOUT, REGIONS, isQualityLead, isClosedPoi,
+  hasCannabisTag, isRecCannabis, isMedicalOnly, isBigChain, markChains, FINDER_VERSION,
+  osmLatLng, splitBbox,
 } = require('../dispensaryFinder');
 const {
   sanitizeEmail, extractEmails, pickBestEmail, findContactLink, hostOf,
@@ -22,7 +23,8 @@ const {
 const {
   isTransientDnsError, isDisposableDomain, partitionDeliverable,
 } = require('../emailVerify');
-const { selectImportable } = require('../leadFinderRunner');
+const { selectImportable, disambiguateKey } = require('../leadFinderRunner');
+const { retryableFailedRegions } = require('../leadFinderScheduler');
 
 // ── Overpass query ───────────────────────────────────────────────────────────
 test('buildOverpassQuery embeds the bbox and asks for JSON + centers', () => {
@@ -351,10 +353,95 @@ test('hostOf strips www and lowercases', () => {
   assert.equal(hostOf('not a url'), '');
 });
 
+// ── Tile-splitting (dense-state timeout recovery) ─────────────────────────────
+test('splitBbox quarters a bbox into 4 exact quadrants (no gaps, no overlap)', () => {
+  const parent = [38.85, -75.60, 41.36, -73.88]; // [south, west, north, east]
+  const quads = splitBbox(parent);
+  assert.equal(quads.length, 4);
+  const midLat = (parent[0] + parent[2]) / 2;
+  const midLng = (parent[1] + parent[3]) / 2;
+  // Every quadrant sits inside the parent and touches the shared mid lines.
+  for (const [s, w, n, e] of quads) {
+    assert.ok(s < n && w < e, 'quadrant is a real box');
+    assert.ok(s >= parent[0] && n <= parent[2] && w >= parent[1] && e <= parent[3], 'inside the parent');
+    assert.ok(s === parent[0] || s === midLat, 'south edge is parent south or the mid latitude');
+    assert.ok(n === parent[2] || n === midLat, 'north edge is parent north or the mid latitude');
+    assert.ok(w === parent[1] || w === midLng, 'west edge is parent west or the mid longitude');
+    assert.ok(e === parent[3] || e === midLng, 'east edge is parent east or the mid longitude');
+  }
+  // The four tile EXACTLY: total area equals the parent's (no gap, no overlap
+  // beyond the shared edges) and each quadrant is a quarter of it.
+  const area = ([s, w, n, e]) => (n - s) * (e - w);
+  const total = quads.reduce((sum, q) => sum + area(q), 0);
+  assert.ok(Math.abs(total - area(parent)) < 1e-12);
+  for (const q of quads) assert.ok(Math.abs(area(q) - area(parent) / 4) < 1e-12);
+  // All four corner cells are distinct (SW/SE/NW/NE), so the union is the parent.
+  assert.equal(new Set(quads.map((q) => q.join(','))).size, 4);
+});
+
+// ── Frontier failure ledger (errored states are retried, not abandoned) ───────
+test('retryableFailedRegions: retries errored states, least-tried first', () => {
+  // ny failed twice, ca once → ca (fewer attempts) is retried first.
+  assert.deepEqual(retryableFailedRegions({ ny: 2, ca: 1 }), ['ca', 'ny']);
+  // Empty / missing ledger → nothing to retry.
+  assert.deepEqual(retryableFailedRegions({}), []);
+  assert.deepEqual(retryableFailedRegions(undefined), []);
+});
+
+test('retryableFailedRegions: caps attempts and ignores junk entries', () => {
+  // At the cap (3 by default) a region is PARKED — a permanently broken bbox
+  // must not loop forever (a finder-version bump wipes the ledger and un-parks).
+  assert.deepEqual(retryableFailedRegions({ ny: 3, ca: 1 }), ['ca']);
+  assert.deepEqual(retryableFailedRegions({ ny: 5 }), []);
+  assert.deepEqual(retryableFailedRegions({ ny: 2 }, { maxAttempts: 2 }), []);
+  // Unknown regions and zero/garbage counts never enter the retry queue.
+  assert.deepEqual(retryableFailedRegions({ zz: 1, ny: 'x', ca: 0 }), []);
+});
+
+// ── Same-name/different-city identity guard ──────────────────────────────────
+test('disambiguateKey: a different city suffixes the key; same/unknown keeps it', () => {
+  // "Green Leaf" already exists in Newark; the Denver find gets its own key.
+  assert.equal(disambiguateKey('green-leaf', 'Denver', 'Newark'), 'green-leaf-denver');
+  // Same city → the SAME shop re-found → keep the bare key (re-sweeps dedupe).
+  assert.equal(disambiguateKey('green-leaf', 'Newark', 'Newark'), 'green-leaf');
+  // City normalization: case/spacing/punctuation never fake a difference.
+  assert.equal(disambiguateKey('green-leaf', 'EGG HARBOR Township', 'Egg Harbor Township'), 'green-leaf');
+  assert.equal(disambiguateKey('green-leaf', "St. Mary's", 'st marys'), 'green-leaf');
+  // Either city unknown → can't prove a conflict → conservative merge (bare key).
+  assert.equal(disambiguateKey('green-leaf', '', 'Newark'), 'green-leaf');
+  assert.equal(disambiguateKey('green-leaf', 'Denver', ''), 'green-leaf');
+  assert.equal(disambiguateKey('green-leaf', '', ''), 'green-leaf');
+  // The suffix is the normalized city slug, so future re-finds land on it too.
+  assert.equal(disambiguateKey('green-leaf', 'Egg Harbor Township', 'Trenton'), 'green-leaf-eggharbortownship');
+});
+
 // ── Auto-advancing frontier ──────────────────────────────────────────────────
 test('NATIONAL_ROLLOUT starts at NJ and every id is a real region', () => {
   assert.equal(NATIONAL_ROLLOUT[0], 'nj');
   for (const id of NATIONAL_ROLLOUT) assert.equal(isRegion(id), true, `unknown region "${id}"`);
+});
+
+test('the state map covers all 50 states + DC, each exactly once in the rollout', () => {
+  // 50 states + DC = 51 regions; the frontier must be able to reach every one.
+  assert.equal(Object.keys(REGIONS).length, 51);
+  assert.equal(NATIONAL_ROLLOUT.length, 51);
+  assert.equal(new Set(NATIONAL_ROLLOUT).size, 51, 'no region repeats in the rollout');
+  // Every bbox is a real [south, west, north, east] rectangle.
+  for (const [id, r] of Object.entries(REGIONS)) {
+    const [s, w, n, e] = r.bbox;
+    assert.ok(s < n, `${id}: south < north`);
+    assert.ok(w < e, `${id}: west < east`);
+  }
+  // The original 25 keep their historical order (the live frontier resumes in
+  // place); Oklahoma leads the appended tail (most dispensaries of any state),
+  // then Florida.
+  assert.deepEqual(NATIONAL_ROLLOUT.slice(0, 25), [
+    'nj', 'ny', 'pa', 'ct', 'de', 'md', 'ma', 'ri', 'vt', 'me',
+    'va', 'oh', 'mi', 'il', 'mn', 'mo', 'az', 'co', 'nm', 'nv',
+    'ca', 'or', 'wa', 'mt', 'ak',
+  ]);
+  assert.equal(NATIONAL_ROLLOUT[25], 'ok');
+  assert.equal(NATIONAL_ROLLOUT[26], 'fl');
 });
 
 test('nextRegionAfter steps forward and wraps at the end', () => {
