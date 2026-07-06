@@ -371,7 +371,21 @@ async function launchCampaign(req, res) {
     // both so the UI can show "enrolled N · sent M" or the exact reason it held.
     const filled = await autoFillCampaign(campaign).catch(() => null);
     const tick = await runOutreachTick().catch((e) => ({ error: e.message }));
-    res.json({ campaign, filled, tick, autoEnrollCampaignId: String(campaign._id) });
+
+    // If the cold-lead reserve is dry, kick the FREE lead-finder in the background
+    // (don't await — an OSM/Overpass sweep is slow) so dispensaries flow in and the
+    // 30-min auto-enroll cron feeds this campaign on its own. Non-blocking, and the
+    // finder self-throttles + advances regions, so this can't run up any cost or
+    // hammer anything. This is what makes Launch "work from nothing": press it with
+    // an empty reserve and it goes and finds leads for you.
+    const reserve = await Client.countDocuments({
+      ...NOT_ARCHIVED, doNotEmail: { $ne: true }, stage: { $in: ['lead', 'contacted'] }, lastContact: null,
+    }).catch(() => null);
+    const finderKicked = reserve === 0;
+    if (finderKicked) {
+      runFrontierSweep({ force: true }).catch((e) => console.error('[outreach] launch finder kick:', e.message));
+    }
+    res.json({ campaign, filled, tick, finderKicked, autoEnrollCampaignId: String(campaign._id) });
   } catch (e) {
     res.status(400).json({ message: e.message });
   }
