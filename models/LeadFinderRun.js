@@ -6,6 +6,11 @@ const mongoose = require('mongoose');
 // JpwSchedulerState/JpwApiUsage.
 const LeadFinderRunSchema = new mongoose.Schema({
   region:   { type: String, default: '', index: true },
+  // Which business VERTICAL this sweep hunted (services/leadVerticals.js) —
+  // 'dispensary' (default), 'brewery', 'smoke-vape'. Legacy rows have no value →
+  // read as 'dispensary' (all history predates multi-vertical). Indexed so the
+  // per-vertical frontier can find its own last-swept-per-region cheaply.
+  vertical: { type: String, default: 'dispensary', index: true },
   dryRun:   { type: Boolean, default: false },
   found:    { type: Number, default: 0 },   // dispensaries discovered in OSM
   withEmail:{ type: Number, default: 0 },   // had an email (from OSM or scrape)

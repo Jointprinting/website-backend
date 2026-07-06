@@ -8,6 +8,11 @@
 // it refills more; sit idle, it stays quiet. NJ → NY → PA → … → wraps at the end
 // to re-catch newly opened shops.
 //
+// MULTI-VERTICAL: each business vertical (dispensaries, breweries, …) sweeps on
+// its OWN frontier and its OWN supply gate, so a full dispensary pool can't starve
+// a fresh brewery campaign. A tick sweeps every ACTIVE vertical — dispensaries
+// (always, the core business) plus any vertical that has an active campaign.
+//
 // Free ($0 — OSM + own-site scraping). ALWAYS ON — there is no toggle. The
 // owner wants leads to stack up behind the scenes without operating anything;
 // the queue-aware gate above is the only throttle. Pattern mirrors
@@ -15,8 +20,10 @@
 
 const cron = require('node-cron');
 const LeadFinderState = require('../models/LeadFinderState');
+const OutreachCampaign = require('../models/OutreachCampaign');
 const { runFinder, countAvailableColdLeads, staleRegions } = require('./leadFinderRunner');
-const { nextRegionAfter, isRegion, DEFAULT_REGION, REGIONS, FINDER_VERSION } = require('./dispensaryFinder');
+const { nextRegionAfter, isRegion, DEFAULT_REGION, REGIONS } = require('./dispensaryFinder');
+const { getVertical, isVertical, frontierStateKey, DEFAULT_VERTICAL_ID } = require('./leadVerticals');
 
 // Refill when the enrollable-cold-lead pool drops below this…
 const LOW_WATERMARK = parseInt(process.env.LEAD_FINDER_LOW_WATERMARK || '40', 10);
@@ -30,44 +37,54 @@ const MAX_REGIONS_PER_RUN = parseInt(process.env.LEAD_FINDER_MAX_REGIONS || '6',
 // background (so improvements land with no manual "re-sweep"). Small + polite.
 const MAX_UPGRADE_PER_RUN = parseInt(process.env.LEAD_FINDER_MAX_UPGRADE || '3', 10);
 
-// Get-or-create the singleton frontier state.
-async function getState() {
+// Get-or-create the per-vertical frontier state (dispensary keeps the original
+// 'frontier' key — no migration; others get 'frontier:<id>').
+async function getState(verticalId = DEFAULT_VERTICAL_ID) {
+  const key = frontierStateKey(verticalId);
   return LeadFinderState.findOneAndUpdate(
-    { key: 'frontier' },
-    { $setOnInsert: { key: 'frontier', activeRegion: DEFAULT_REGION } },
+    { key },
+    { $setOnInsert: { key, activeRegion: DEFAULT_REGION } },
     { upsert: true, new: true, setDefaultsOnInsert: true },
   );
 }
 
-// One lead-engine tick. Queue-aware: no-op when the cold-lead pool is healthy;
-// otherwise sweeps successive states until the pool is refilled (or the per-run
-// cap is hit). `force` bypasses the healthy-queue short-circuit (the Studio's
-// "Refill now" button), so a manual run always sweeps. `fromStart` rewinds the
-// frontier to the first state before sweeping — the "re-sweep the map" action
-// for after the finder itself improves: imports dedupe on company + email, so a
-// re-pass over already-swept states only ADDS shops the older pass missed.
+// Which verticals to sweep this tick: dispensaries always (the core business +
+// backward-compatible always-on), plus any vertical with an ACTIVE campaign — so
+// launching a brewery campaign turns the brewery sweep on by itself.
+async function activeVerticalIds() {
+  const ids = await OutreachCampaign.distinct('vertical', { status: 'active' }).catch(() => []);
+  const set = new Set([DEFAULT_VERTICAL_ID]);
+  for (const id of ids) if (isVertical(id)) set.add(id);
+  return [...set];
+}
+
 // In-process overlap guard, mirroring the outreach engine's `_ticking`: a forced
 // "Refill now" sweep takes minutes (states × Overpass × site scrapes). If the 6h
 // cron fires mid-run (or a second tab triggers another force), two invocations
 // would sweep the same states in parallel — doubling the upstream load the
 // per-run politeness cap exists to bound, writing duplicate run rows, and
-// last-writer-wins clobbering the frontier. Only one sweep runs at a time.
+// last-writer-wins clobbering the frontier. Only one sweep operation runs at a
+// time (across all verticals — they sweep sequentially inside one tick).
 let _sweeping = false;
-
-async function runFrontierSweep({ force = false, fromStart = false } = {}) {
+async function withGuard(fn) {
   if (_sweeping) return { skipped: 'already-running' };
   _sweeping = true;
   try {
-    return await _runFrontierSweep({ force, fromStart });
+    return await fn();
   } finally {
     _sweeping = false;
   }
 }
 
-async function _runFrontierSweep({ force = false, fromStart = false } = {}) {
-  const state = await getState();
-
-  const available = await countAvailableColdLeads();
+// Sweep ONE vertical. `force` bypasses the healthy-queue short-circuit (the
+// Studio's "Refill now"), so a manual run always sweeps. `fromStart` rewinds that
+// vertical's frontier to the first state — the "re-sweep the map" action for after
+// the finder improves: imports dedupe on company + email, so a re-pass over
+// already-swept states only ADDS shops the older pass missed.
+async function _sweepVertical({ force = false, fromStart = false, vertical: verticalId = DEFAULT_VERTICAL_ID } = {}) {
+  const v = getVertical(verticalId);
+  const state = await getState(v.id);
+  const available = await countAvailableColdLeads({ vertical: v.id });
 
   // ── Healthy pool: nothing to refill. But keep coverage FRESH on its own ──────
   // If the finder improved since some states were last swept, quietly re-milk a
@@ -75,19 +92,19 @@ async function _runFrontierSweep({ force = false, fromStart = false } = {}) {
   // states it already touched — the owner never has to press "re-sweep". A
   // forced run skips this and goes straight to a real refill sweep below.
   if (available >= LOW_WATERMARK && !force) {
-    const stale = await staleRegions(FINDER_VERSION, MAX_UPGRADE_PER_RUN);
+    const stale = await staleRegions(v.finderVersion, MAX_UPGRADE_PER_RUN, v.id);
     if (!stale.length) {
       state.lastRunAt = new Date();
-      state.lastResult = `queue healthy — ${available} cold leads ready to enroll; coverage current`;
+      state.lastResult = `queue healthy — ${available} cold ${v.short} ready to enroll; coverage current`;
       await state.save();
-      return { skipped: 'queue-healthy', available };
+      return { vertical: v.id, skipped: 'queue-healthy', available };
     }
     const swept = [];
     let upgraded = 0;
     let lastError = '';
     for (const region of stale) {
       try {
-        const r = await runFinder({ region, dryRun: false });
+        const r = await runFinder({ region, vertical: v.id, dryRun: false });
         upgraded += r.created || 0;
         swept.push(`${r.label} +${r.created}`);
       } catch (err) {
@@ -99,7 +116,7 @@ async function _runFrontierSweep({ force = false, fromStart = false } = {}) {
     state.lastRunAt = new Date();
     state.lastResult = `coverage upgrade — re-milked ${stale.length} state(s) on the improved finder (${swept.join(', ')})${lastError ? ` — last error: ${lastError}` : ''}`;
     await state.save();
-    return { upgrade: true, available, regionsSwept: stale.length, upgraded, swept };
+    return { vertical: v.id, upgrade: true, available, regionsSwept: stale.length, upgraded, swept };
   }
 
   // ── Low pool (or forced): expand the frontier until it's topped back up ──────
@@ -112,7 +129,7 @@ async function _runFrontierSweep({ force = false, fromStart = false } = {}) {
   let lastError = '';
   while (importedTotal < REFILL_TARGET && regionsSwept < MAX_REGIONS_PER_RUN) {
     try {
-      const result = await runFinder({ region, dryRun: false });
+      const result = await runFinder({ region, vertical: v.id, dryRun: false });
       importedTotal += result.created || 0;
       swept.push(`${result.label} +${result.created}`);
     } catch (err) {
@@ -127,20 +144,43 @@ async function _runFrontierSweep({ force = false, fromStart = false } = {}) {
   state.dryStreak = 0;
   state.lastRunAt = new Date();
   state.lastResult = importedTotal
-    ? `refilled ${importedTotal} new across ${regionsSwept} states (${swept.join(', ')}) — ${available} were left`
-    : `swept ${regionsSwept} states, 0 new${lastError ? ` — last error: ${lastError}` : ' (OSM has no new shops there yet)'}`;
+    ? `refilled ${importedTotal} new ${v.short} across ${regionsSwept} states (${swept.join(', ')}) — ${available} were left`
+    : `swept ${regionsSwept} states, 0 new ${v.short}${lastError ? ` — last error: ${lastError}` : ' (OSM has no new shops there yet)'}`;
   await state.save();
-  return { available, imported: importedTotal, regionsSwept, swept, nextRegion: region };
+  return { vertical: v.id, available, imported: importedTotal, regionsSwept, swept, nextRegion: region };
+}
+
+// Public single-vertical entry (the Studio "Refill now" + the launch kick). Guards
+// against overlap. Defaults to dispensaries.
+async function runFrontierSweep({ force = false, fromStart = false, vertical = DEFAULT_VERTICAL_ID } = {}) {
+  return withGuard(() => _sweepVertical({ force, fromStart, vertical }));
+}
+
+// Sweep every ACTIVE vertical this tick (the cron path). One guard around the
+// whole set so the verticals sweep sequentially, never in parallel.
+async function runAllFrontierSweeps({ force = false } = {}) {
+  return withGuard(async () => {
+    const ids = await activeVerticalIds();
+    const results = {};
+    for (const id of ids) {
+      try {
+        results[id] = await _sweepVertical({ force, vertical: id });
+      } catch (err) {
+        results[id] = { vertical: id, error: err.message };
+      }
+    }
+    return { verticals: ids, results };
+  });
 }
 
 function startLeadFinderScheduler() {
-  // Every 6 hours, always on. The tick self-gates on queue depth, so it's a
-  // cheap no-op when the pool is full — but it refills promptly (within hours,
-  // not a week) once sending draws the pool down.
+  // Every 6 hours, always on. The tick self-gates on each vertical's queue depth,
+  // so it's a cheap no-op when the pools are full — but it refills promptly
+  // (within hours, not a week) once sending draws a pool down.
   cron.schedule('0 */6 * * *', () => {
-    runFrontierSweep({ force: false }).catch((e) => console.error('[lead-finder] sweep error:', e.message));
+    runAllFrontierSweeps({ force: false }).catch((e) => console.error('[lead-finder] sweep error:', e.message));
   });
-  console.log(`[lead-finder] engine started — always on, queue-aware refill every 6h (v${FINDER_VERSION}, low<${LOW_WATERMARK}, target ${REFILL_TARGET} emailable, ≤${MAX_REGIONS_PER_RUN} states/run, ≤${MAX_UPGRADE_PER_RUN} auto-upgrades/run)`);
+  console.log(`[lead-finder] engine started — always on, queue-aware refill every 6h per active vertical (low<${LOW_WATERMARK}, target ${REFILL_TARGET} emailable, ≤${MAX_REGIONS_PER_RUN} states/run, ≤${MAX_UPGRADE_PER_RUN} auto-upgrades/run)`);
 }
 
-module.exports = { startLeadFinderScheduler, runFrontierSweep, getState };
+module.exports = { startLeadFinderScheduler, runFrontierSweep, runAllFrontierSweeps, activeVerticalIds, getState };

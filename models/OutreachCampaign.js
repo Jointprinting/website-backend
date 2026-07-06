@@ -35,6 +35,11 @@ const OutreachCampaignSchema = new mongoose.Schema({
   description: { type: String, default: '' },
   status:      { type: String, enum: CAMPAIGN_STATUSES, default: 'draft', index: true },
   steps:       { type: [StepSchema], default: [] },
+  // The business VERTICAL this campaign targets (services/leadVerticals.js) —
+  // which kind of lead the free finder hunts for it and which tagged pool its
+  // enrollment draws from. Defaults to 'dispensary' (the historical + default
+  // vertical), so every existing campaign keeps behaving exactly as before.
+  vertical:    { type: String, default: 'dispensary', index: true },
 }, { timestamps: true });
 
 OutreachCampaignSchema.statics.CAMPAIGN_STATUSES = CAMPAIGN_STATUSES;
