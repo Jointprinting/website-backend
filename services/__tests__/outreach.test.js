@@ -23,6 +23,7 @@ const {
   bodyToHtml,
   pickEmail,
   isPermanentSmtpError,
+  isBadRecipientError,
   transientBackoffMs,
   jitteredFollowUpAt,
   variableBatch,
@@ -197,6 +198,32 @@ test('isPermanentSmtpError: temporary / unknown = NOT permanent (retry)', () => 
   assert.equal(isPermanentSmtpError({ message: 'socket hang up' }), false);
   assert.equal(isPermanentSmtpError(null), false);
   assert.equal(isPermanentSmtpError({}), false);
+});
+
+test('isBadRecipientError: genuine dead-mailbox rejections → true (safe to suppress)', () => {
+  assert.equal(isBadRecipientError({ responseCode: 550, message: 'No such user' }), true);
+  assert.equal(isBadRecipientError({ message: '550 5.1.1 recipient rejected' }), true);
+  assert.equal(isBadRecipientError({ responseCode: 550, message: 'mailbox unavailable' }), true);
+  assert.equal(isBadRecipientError({ message: 'User unknown in virtual mailbox table' }), true);
+  assert.equal(isBadRecipientError({ message: 'Recipient address rejected: does not exist' }), true);
+  // A bare 550 with no sender-side keyword defaults to "mailbox unavailable".
+  assert.equal(isBadRecipientError({ responseCode: 550, message: 'requested action not taken' }), true);
+});
+
+test('isBadRecipientError: SENDER-side / transient 5xx → FALSE (never poison the lead)', () => {
+  // THE BUG: these used to be treated as dead recipients and suppress + doNotEmail
+  // every lead when the sender was misconfigured. They must NOT suppress now.
+  assert.equal(isBadRecipientError({ responseCode: 550, message: 'Sender address rejected: not verified' }), false);
+  assert.equal(isBadRecipientError({ responseCode: 550, message: 'Relay access denied' }), false);
+  assert.equal(isBadRecipientError({ responseCode: 535, message: 'Authentication failed' }), false);
+  assert.equal(isBadRecipientError({ message: '5.7.1 not authorized' }), false);
+  assert.equal(isBadRecipientError({ responseCode: 554, message: 'blocked using Spamhaus' }), false);
+  assert.equal(isBadRecipientError({ responseCode: 552, message: 'mailbox quota exceeded' }), false);
+  // Transient / connection — also never suppress.
+  assert.equal(isBadRecipientError({ responseCode: 421, message: 'service unavailable, try again' }), false);
+  assert.equal(isBadRecipientError({ code: 'ETIMEDOUT', message: 'connection timed out' }), false);
+  assert.equal(isBadRecipientError(null), false);
+  assert.equal(isBadRecipientError({}), false);
 });
 
 // ── Wave 3: engine hardening (pacing / backoff / idempotency) ─────────────────

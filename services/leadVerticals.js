@@ -199,6 +199,15 @@ const NON_DEFAULT_VERTICAL_TAGS = VERTICAL_IDS
   .filter((id) => id !== DEFAULT_VERTICAL_ID)
   .map((id) => VERTICALS[id].tag);
 
+// Every OTHER vertical's CRM tag (all verticals except `id`). The finder uses this
+// for FIRST-TOUCH-WINS ownership: a company already tagged by another vertical is
+// never re-claimed, so a lead found under two verticals can't migrate pools or get
+// double-tagged. Pure.
+function otherVerticalTags(id) {
+  const vid = isVertical(id) ? id : DEFAULT_VERTICAL_ID;
+  return VERTICAL_IDS.filter((x) => x !== vid).map((x) => VERTICALS[x].tag);
+}
+
 // Resolve a vertical id (or unknown/empty) to its definition, defaulting to
 // dispensary. Pure.
 function getVertical(id) {
@@ -262,6 +271,7 @@ module.exports = {
   NON_DEFAULT_VERTICAL_TAGS,
   getVertical,
   isVertical,
+  otherVerticalTags,
   frontierStateKey,
   verticalPoolFilter,
   verticalRunMatch,

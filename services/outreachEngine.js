@@ -370,6 +370,33 @@ function isPermanentSmtpError(err) {
   return /(no such (user|recipient|mailbox|address)|user unknown|mailbox (unavailable|not found|does not exist)|recipient (address )?rejected|address rejected|does not exist|invalid recipient|account (is )?(disabled|closed)|relay access denied)/.test(msg);
 }
 
+// Does this send error genuinely mean THIS RECIPIENT's mailbox is bad (so we may
+// suppress the address + flag the company)? MUCH narrower than isPermanentSmtpError:
+// a sender-side failure (auth, unverified/rejected sender, relay denied, quota,
+// rate-limit, reputation/policy block, SPF/DKIM/DMARC, connection/timeout) is NOT
+// the recipient's fault — treating one as a bounce is exactly how a single sender
+// misconfiguration poisons an entire list (suppress + doNotEmail every lead in one
+// tick). We EXCLUDE those first, then require an explicit bad-mailbox signal. Bare
+// 5xx with no recipient signal is left to the authoritative provider bounce webhook.
+// Pure + unit-tested.
+function isBadRecipientError(err) {
+  if (!err) return false;
+  const msg = String(err.message || err.response || '').toLowerCase();
+  // Sender-side / transient / reputation — never the recipient's fault.
+  if (/(relay (access )?denied|not authenticated|authentication (failed|required|credentials|unsuccessful)|auth(entication)? (failed|error)|\b535\b|\b530\b|not verified|unverified|sender (address )?(rejected|not verified|verification)|\b5\.7\.\d+\b|\bquota\b|rate ?limit|too many|greylist|throttl|blocked|blacklist|blocklist|spamhaus|barracuda|\bspf\b|\bdkim\b|\bdmarc\b|policy|reputation|connection|econnrefused|etimedout|esocket|timed? ?out|\b421\b|\b45\d\b|temporar|try again)/.test(msg)) {
+    return false;
+  }
+  // Explicit bad-destination-mailbox signals (RFC 3463 5.1.x, or plain-language).
+  if (/\b5\.1\.\d+\b/.test(msg)) return true;
+  if (/(no such (user|recipient|mailbox|address)|user (unknown|not found|doesn'?t exist)|mailbox (unavailable|not found|does not exist|disabled)|recipient (address )?rejected|address rejected|no mailbox|does not exist|invalid recipient|unknown recipient|account (is )?(disabled|closed|terminated))/.test(msg)) {
+    return true;
+  }
+  // A bare 550/551/553 that survived the sender-side exclusion above is, in
+  // practice, "mailbox unavailable". Anything else → not proven recipient-bad.
+  const code = Number(err.responseCode != null ? err.responseCode : err.code);
+  return code === 550 || code === 551 || code === 553;
+}
+
 // ── Engine ───────────────────────────────────────────────────────────────────
 
 async function countSentSince(since) {
@@ -580,25 +607,51 @@ async function sendTestEmail(to) {
 // identity `sender` (else the primary/legacy from + global SMTP). Returns
 // 'sent' | 'skipped' | 'error'.
 async function sendOne(enr, campaign, now = new Date(), sender = null) {
+  // Re-check the enrollment is STILL ours to send: a reply / opt-out can flip it
+  // to replied / stopped in the window between the atomic claim and this send.
+  // Emailing someone who just replied is the worst look — re-read live status.
+  const fresh = await OutreachEnrollment.findById(enr._id).select('status').lean();
+  if (!fresh || fresh.status !== 'active') return 'skipped';
+
   const client = await Client.findOne({ companyKey: enr.companyKey });
 
-  // Live-guard: stop (don't send) when the company left cold-outreach land.
-  const block = sendBlockReason(client);
-  if (block) {
-    enr.status = block === 'do-not-email' ? 'unsubscribed' : 'stopped';
-    enr.stopReason = block;
-    if (block === 'do-not-email') enr.unsubscribedAt = now;
+  // A MISSING Client is not a reason to permanently kill a good lead (replica lag,
+  // a companyKey mismatch). Only a LOADED client that's genuinely off-limits
+  // (archived / do-not-email / customer / lost) stops the sequence; a null client
+  // falls back to the enrollment's own address snapshot below.
+  if (client) {
+    const block = sendBlockReason(client);
+    if (block) {
+      enr.status = block === 'do-not-email' ? 'unsubscribed' : 'stopped';
+      enr.stopReason = block;
+      if (block === 'do-not-email') enr.unsubscribedAt = now;
+      await enr.save();
+      return 'skipped';
+    }
+  }
+
+  // The live Client wins (owner edits beat the enroll-time snapshot); fall back to
+  // the snapshot only when the row didn't load.
+  const to = client ? pickEmail(client) : enr.toEmail;
+  if (!to) {
+    if (!client) {
+      // Couldn't load the company AND no snapshot address → TRANSIENT; retry later
+      // rather than permanently drop a lead over a DB hiccup / key drift.
+      enr.sendAttempts = (enr.sendAttempts || 0) + 1;
+      enr.nextSendAt = new Date(now.getTime() + transientBackoffMs(enr.sendAttempts));
+      await enr.save();
+      return 'error';
+    }
+    enr.status = 'stopped';
+    enr.stopReason = 'no-email';
     await enr.save();
     return 'skipped';
   }
 
-  // The live Client wins (the design contract): if the owner cleared a wrong/
-  // undeliverable address off the company card mid-sequence, the engine must
-  // STOP (falls through to stopReason 'no-email' below), not keep mailing the
-  // stale enrollment snapshot. Only fall back to the snapshot when the Client
-  // row itself failed to load (a transient DB hiccup).
-  const to = client ? pickEmail(client) : enr.toEmail;
-  if (!to) {
+  // Never hand a syntactically-invalid address to the transport — a malformed
+  // address parses to an empty domain and slips past the enroll-time MX check
+  // (fail-open), then burns 5 SMTP attempts. Treat it as no-email up front.
+  if (!isEmail(to)) {
     enr.status = 'stopped';
     enr.stopReason = 'no-email';
     await enr.save();
@@ -611,6 +664,25 @@ async function sendOne(enr, campaign, now = new Date(), sender = null) {
   if (await isSuppressed(to)) {
     enr.status = 'stopped';
     enr.stopReason = 'suppressed';
+    enr.nextSendAt = null;
+    await enr.save();
+    return 'skipped';
+  }
+
+  // AT-MOST-ONCE PER ADDRESS, across every campaign and vertical: if any OTHER
+  // enrollment has already sent to this exact inbox (a shop listed twice, or one
+  // inbox shared by two companies, or the same lead re-found under a second
+  // vertical), do NOT send again. A duplicate cold email to the same inbox is the
+  // fastest route to a spam flag. Case-insensitive; the in-memory enroll-time
+  // guard is best-effort, THIS is the authoritative backstop at the send.
+  const dupe = await OutreachEnrollment.exists({
+    _id: { $ne: enr._id },
+    toEmail: new RegExp(`^${String(to).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+    'sends.0': { $exists: true },
+  });
+  if (dupe) {
+    enr.status = 'stopped';
+    enr.stopReason = 'duplicate-email';
     enr.nextSendAt = null;
     await enr.save();
     return 'skipped';
@@ -709,27 +781,41 @@ async function sendOne(enr, campaign, now = new Date(), sender = null) {
       { upsert: true },
     ).catch(() => {});
 
-    // Write the touch back into the CRM so every surface sees it.
-    const stepNo = `${enr.sends.length ? enr.sends[enr.sends.length - 1].stepIndex + 1 : 1}/${(campaign.steps || []).length}`;
-    client.log.push({
-      at: now,
-      text: `Cold email sent — “${subject}” (${campaign.name} · step ${stepNo})`,
-      kind: 'email',
-      dedupKey: `outreach:${enr._id}:${enr.sends[enr.sends.length - 1].stepIndex}`,
-    });
-    client.lastContact = now;
-    client.stage = promoteStage(client.stage, 'contacted');
-    await client.save();
+    // Write the touch back into the CRM so every surface sees it. This is a
+    // POST-send write: its failure must NEVER bubble to the send catch below — the
+    // email already went out, so a thrown client.save() (e.g. a legacy company doc
+    // that no longer validates) would be misread as a send error, re-queued, and
+    // DELIVERED AGAIN. Isolate it; skip when the live client didn't load.
+    if (client) {
+      try {
+        const stepNo = `${enr.sends.length ? enr.sends[enr.sends.length - 1].stepIndex + 1 : 1}/${(campaign.steps || []).length}`;
+        client.log.push({
+          at: now,
+          text: `Cold email sent — “${subject}” (${campaign.name} · step ${stepNo})`,
+          kind: 'email',
+          dedupKey: `outreach:${enr._id}:${enr.sends[enr.sends.length - 1].stepIndex}`,
+        });
+        client.lastContact = now;
+        client.stage = promoteStage(client.stage, 'contacted');
+        await client.save();
+      } catch (crmErr) {
+        console.warn(`[outreach] post-send CRM write failed for ${enr.companyKey} (email already delivered, not re-sending):`, crmErr.message);
+      }
+    }
 
     return 'sent';
   } catch (err) {
     enr.sendAttempts = (enr.sendAttempts || 0) + 1;
     enr.lastError = String(err.message || err).slice(0, 500);
-    // A PERMANENT rejection (5xx / "no such user") means the address is dead —
-    // retrying just burns the daily cap and dents reputation. Stop this
-    // enrollment AND flag the company doNotEmail so no OTHER campaign wastes a
-    // send on it either. (Temporary 4xx errors fall through to the retry path.)
-    if (isPermanentSmtpError(err)) {
+    // ONLY a genuine bad-RECIPIENT rejection (that mailbox is dead) may suppress
+    // the address + flag the company. A sender-side failure (auth, unverified
+    // sender, relay denied, quota, reputation/policy, connection) is NOT the
+    // recipient's fault — it must never poison a good lead, or one sender
+    // misconfiguration wipes the whole list in a single tick. Sender-side +
+    // transient errors fall through to the backoff/retry path below and NEVER
+    // suppress. (Hard bounces are also caught authoritatively by the provider
+    // bounce webhook.)
+    if (isBadRecipientError(err)) {
       enr.status = 'failed';
       enr.stopReason = 'invalid-address';
       enr.nextSendAt = null;
@@ -747,10 +833,12 @@ async function sendOne(enr, campaign, now = new Date(), sender = null) {
       console.warn(`[outreach] permanent bounce for ${enr.companyKey} (${to}) — suppressed`);
       return 'skipped';
     }
-    // TRANSIENT error (greylist / timeout / rate limit): back off with a growing
-    // delay (30m → 2h → 6h) instead of retrying every tick and hammering the MX.
-    // Only give up after 5 attempts — one temporary hiccup must not permanently
-    // fail a good lead.
+    // TRANSIENT or SENDER-SIDE error (greylist / timeout / rate limit / auth /
+    // relay / unverified sender): back off with a growing delay (30m → 2h → 6h)
+    // instead of retrying every tick. Give up on THIS enrollment after 5 attempts
+    // — but NEVER suppress the address or flag the company, because the problem is
+    // very likely the sender, not the lead. The tick-level breaker below halts the
+    // whole run first when failures are systemic, so we rarely reach 5 here.
     if (enr.sendAttempts >= 5) {
       enr.status = 'failed';
       enr.stopReason = 'smtp-error';
@@ -843,6 +931,13 @@ async function runOutreachTick(now = new Date(), opts = {}) {
     const pace = opts.pace === true; // cron paces sends; manual "run now" fires immediately
 
     let sent = 0, skipped = 0, errors = 0, domainDeferred = 0, attempts = 0;
+    // Send-failure circuit breaker: if this many sends fail IN A ROW with nothing
+    // delivered, the sender itself is almost certainly broken (bad SMTP creds,
+    // unverified sender, provider outage) — halt the whole tick so we don't churn
+    // the entire list into 'failed'. Leads that already errored this tick are on a
+    // backoff (still active); everyone else is untouched.
+    const FAIL_BREAKER = 5;
+    let consecErrors = 0, halted = false;
     const maxAttempts = budget * 6; // bound the claim loop (some rows guard-skip/defer)
     while (sent < budget && attempts < maxAttempts) {
       attempts += 1;
@@ -886,10 +981,23 @@ async function runOutreachTick(now = new Date(), opts = {}) {
       const r = await sendOne(enr, campaign, now, sender);
       if (r === 'sent') {
         sent += 1;
+        consecErrors = 0;
         remaining.set(sender.label, (remaining.get(sender.label) || 1) - 1);
         if (dom) domainCounts.set(dom, (domainCounts.get(dom) || 0) + 1);
       } else if (r === 'skipped') skipped += 1;
-      else errors += 1;
+      else {
+        errors += 1;
+        consecErrors += 1;
+        // Nothing has delivered and failures are stacking up → the sender is
+        // broken, not the leads. Stop now and shout, rather than fail the list.
+        if (consecErrors >= FAIL_BREAKER && sent === 0) { halted = true; break; }
+      }
+    }
+
+    if (halted) {
+      await recordRun(`HELD: ${errors} sends failed in a row, 0 delivered — halted to protect the list. Check the sender (OUTREACH_EMAIL_FROM / SMTP creds / sender verification / DNS).`);
+      console.error(`[outreach] tick HALTED — ${errors} consecutive send failures, 0 delivered. Sender likely misconfigured.`);
+      return { skipped: 'send-failures', errors, sent: 0 };
     }
 
     if (sent) await bumpSentToday(sent, now);
@@ -940,6 +1048,7 @@ module.exports = {
   sendBlockReason,
   bodyToHtml,
   isPermanentSmtpError,
+  isBadRecipientError,
   transientBackoffMs,
   jitteredFollowUpAt,
   variableBatch,

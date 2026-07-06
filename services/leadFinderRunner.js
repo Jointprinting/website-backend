@@ -14,7 +14,7 @@
 // themselves. A per-run scrape cap keeps a sweep bounded and polite.
 
 const { fetchDispensaries, isRegion, DEFAULT_REGION, REGIONS, NATIONAL_ROLLOUT, FINDER_VERSION } = require('./dispensaryFinder');
-const { getVertical, verticalPoolFilter, verticalRunMatch, frontierStateKey, DEFAULT_VERTICAL_ID } = require('./leadVerticals');
+const { getVertical, verticalPoolFilter, verticalRunMatch, frontierStateKey, otherVerticalTags, DEFAULT_VERTICAL_ID } = require('./leadVerticals');
 const LeadFinderState = require('../models/LeadFinderState');
 const { enrichWebsite } = require('./emailEnricher');
 const { verifyDomainsMx, partitionDeliverable, emailDomain } = require('./emailVerify');
@@ -161,9 +161,16 @@ async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich, v
   // Tag every imported company with the VERTICAL's tag so its cold pool is a
   // single CRM filter — and so enrollment only ever draws that vertical's leads
   // into that vertical's campaigns (a brewery campaign never emails a dispensary).
+  // FIRST-TOUCH WINS: never claim a company already owned by ANOTHER vertical, so
+  // a lead found under two verticals can't migrate pools or carry two vertical
+  // tags (which would strand it, or — via the dispensary catch-all — pitch it the
+  // wrong vertical). Whoever finds it first keeps it.
   if (touchedKeys.length) {
-    await Client.updateMany({ companyKey: { $in: touchedKeys } }, { $addToSet: { tags: vertical.tag } })
-      .catch(() => {});
+    const claimed = otherVerticalTags(vertical.id);
+    await Client.updateMany(
+      { companyKey: { $in: touchedKeys }, ...(claimed.length ? { tags: { $nin: claimed } } : {}) },
+      { $addToSet: { tags: vertical.tag } },
+    ).catch(() => {});
   }
 
   const result = {
@@ -187,7 +194,12 @@ async function countAvailableColdLeads({ vertical } = {}) {
   // brewery campaign). No vertical → the whole cold pool (the general status number).
   const poolFilter = vertical ? verticalPoolFilter(vertical) : {};
   const clients = await Client.find({
-    archived: { $ne: true }, doNotEmail: { $ne: true }, lastContact: null, ...poolFilter,
+    // Mirror the ACTUAL enroll selector (autoFillCampaign): only leads at stage
+    // lead/contacted enroll, so counting advanced/terminal stages here would
+    // over-report "available", keep the refill gate satisfied, and silently starve
+    // the drip. (Suppression is still applied at enroll; this fixes the big skew.)
+    archived: { $ne: true }, doNotEmail: { $ne: true }, lastContact: null,
+    stage: { $in: ['lead', 'contacted'] }, ...poolFilter,
   }).select('companyKey email contacts').lean();
   const cold = clients.filter((c) =>
     (c.email && String(c.email).trim()) ||
