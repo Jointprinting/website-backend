@@ -16,8 +16,24 @@ const {
   pushOneToSpider, pushBatchToSpider, updateAdSignal,
   runScheduledJob,
 } = require('../controllers/jpwLead');
+const {
+  listSites, createSite, getSite, updateSite, deleteSite, getPublicSite,
+} = require('../controllers/jpwSites');
+
+// PUBLIC site read — the ONE unauthenticated route here, so it must register
+// BEFORE the admin gate. /webworks/p/<slug> preview pages render from it; the
+// controller only serves preview/live sites (drafts 404), so nothing half-built
+// is ever reachable.
+router.get('/sites/public/:slug', getPublicSite);
 
 router.use(requireAdmin);
+
+// ── Websites builder (Studio → JP Webworks → Websites) ────────────────────────
+router.get('/sites',        listSites);
+router.post('/sites',       createSite);
+router.get('/sites/:id',    getSite);
+router.put('/sites/:id',    updateSite);
+router.delete('/sites/:id', deleteSite);
 
 // Cold Call Tree state — backend-persisted edits + notes (formerly localStorage)
 const { getState: getCcState, updateState: updateCcState } = require('../controllers/coldCallState');
