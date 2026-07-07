@@ -369,3 +369,66 @@ test('composeMessage places the signature between body and footer in BOTH parts'
   const own = composeMessage({ bodyText: 'See jointprinting.com — Nate', token: 'tok9' });
   assert.equal(/(^|\n)Nate\n/.test(own.text.replace('— Nate', '')), false);
 });
+
+// ── Auto roster hygiene (bounce-spike re-verification) ────────────────────────
+const { campaignBounceSignal, shouldRunHygiene, pickInvalidEnrollments } = require('../outreachEngine');
+
+test('campaignBounceSignal counts sent + real bounces, not hygiene-prevented ones', () => {
+  const rows = [
+    { status: 'active', sends: [{ at: new Date() }] },                        // sent, fine
+    { status: 'failed', stopReason: 'invalid-address', sends: [] },           // touch-1 SMTP bounce
+    { status: 'failed', stopReason: 'bounced', sends: [{ at: new Date() }] }, // webhook hard bounce
+    { status: 'failed', stopReason: 'complaint', sends: [{ at: new Date() }] }, // spam complaint
+    { status: 'stopped', stopReason: 'invalid-address', sends: [] },          // hygiene drop — a bounce PREVENTED
+    { status: 'active', sends: [] },                                          // still waiting
+    null,                                                                     // garbage row ignored
+  ];
+  assert.deepEqual(campaignBounceSignal(rows), { sent: 3, bounced: 3 });
+  assert.deepEqual(campaignBounceSignal([]), { sent: 0, bounced: 0 });
+  assert.deepEqual(campaignBounceSignal(), { sent: 0, bounced: 0 });
+});
+
+test('shouldRunHygiene trips only on a real spike (≥2 bounced AND ≥5% of ≥10 sent)', () => {
+  assert.equal(shouldRunHygiene({ sent: 20, bounced: 2 }), true);    // the owner's exact card: 2 of 20
+  assert.equal(shouldRunHygiene({ sent: 9, bounced: 3 }), false);    // sample too small
+  assert.equal(shouldRunHygiene({ sent: 40, bounced: 1 }), false);   // one fluke isn't a spike
+  assert.equal(shouldRunHygiene({ sent: 100, bounced: 4 }), false);  // 4% — under the rate bar
+  assert.equal(shouldRunHygiene({ sent: 100, bounced: 5 }), true);   // exactly 5% trips
+  assert.equal(shouldRunHygiene({ sent: 0, bounced: 0 }), false);
+  assert.equal(shouldRunHygiene({}), false);
+  assert.equal(shouldRunHygiene(), false);
+});
+
+test('shouldRunHygiene runs at most once per campaign per 24h', () => {
+  const now = new Date('2026-07-07T12:00:00Z');
+  const spike = { sent: 20, bounced: 2 };
+  assert.equal(shouldRunHygiene(spike, null, now), true);                              // never ran
+  assert.equal(shouldRunHygiene(spike, new Date('2026-07-07T02:00:00Z'), now), false); // 10h ago — fresh
+  assert.equal(shouldRunHygiene(spike, new Date('2026-07-06T11:00:00Z'), now), true);  // 25h ago — stale
+  assert.equal(shouldRunHygiene(spike, 'not-a-date', now), true);                      // garbage stamp ≈ never ran
+});
+
+test('pickInvalidEnrollments drops only DEFINITIVE dead-MX domains (fail-open otherwise)', () => {
+  const rows = [
+    { toEmail: 'a@dead.com' },
+    { toEmail: 'B@Dead.com' },   // domain match is case-insensitive
+    { toEmail: 'c@alive.com' },  // domain verified fine → keep
+    { toEmail: 'd@unknown.com' },// never checked / transient DNS → fail-open, keep
+    { toEmail: '' },             // no address → nothing to verify
+    null,
+  ];
+  const mx = new Map([['dead.com', false], ['alive.com', true]]);
+  assert.deepEqual(pickInvalidEnrollments(rows, mx).map((e) => e.toEmail), ['a@dead.com', 'B@Dead.com']);
+  assert.deepEqual(pickInvalidEnrollments([], mx), []);
+  assert.deepEqual(pickInvalidEnrollments(), []);
+});
+
+test('looksLikeDnsOutage: a mostly-dead verdict on a real sample is a resolver problem', () => {
+  const { looksLikeDnsOutage } = require('../outreachEngine');
+  assert.equal(looksLikeDnsOutage(50, 50), true);   // everything "dead" at once
+  assert.equal(looksLikeDnsOutage(6, 10), true);    // >half of a real sample
+  assert.equal(looksLikeDnsOutage(5, 10), false);   // exactly half — plausible rot
+  assert.equal(looksLikeDnsOutage(4, 4), false);    // tiny sample — believable, drop them
+  assert.equal(looksLikeDnsOutage(2, 3), false);    // small absolute count
+  assert.equal(looksLikeDnsOutage(0, 0), false);
+});

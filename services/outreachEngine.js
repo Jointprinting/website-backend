@@ -23,6 +23,10 @@
 //     doNotEmail, archived, closed/parked stage, became a customer → stop.
 //   • CAN-SPAM footer on every send: postal address + unsubscribe link (plus
 //     List-Unsubscribe headers when OUTREACH_PUBLIC_API_BASE is configured).
+//   • AUTO roster hygiene: when a campaign's bounces spike, the not-yet-
+//     contacted roster is re-verified against live MX and dead addresses are
+//     dropped + suppressed automatically (runRosterHygiene, once/24h/campaign)
+//     — the machine cleans the list instead of assigning the owner a chore.
 //
 // Every send is written back into the CRM: a log touch (kind 'email') on the
 // company, lastContact bumped, stage nudged lead→contacted via the same
@@ -39,6 +43,7 @@ const Client = require('../models/Client');
 const sendEmail = require('../utils/sendEmail');
 const { promoteStage } = require('../controllers/crm');
 const { suppress, isSuppressed, isEmail } = require('./suppression');
+const { verifyDomainsMx, emailDomain } = require('./emailVerify');
 const { applySpintax, hashStr } = require('./outreachContent');
 const { getSenders } = require('./senderPool');
 const { getAuthStatus, recommendedRecords } = require('../utils/dnsAuth');
@@ -517,6 +522,150 @@ async function deliverabilityStats(now = new Date(), { force = false } = {}) {
     maxBounceRate: MAX_BOUNCE_RATE, maxComplaintRate: MAX_COMPLAINT_RATE };
   _dstatsCache = { at: nowMs, val };
   return val;
+}
+
+// ── Auto roster hygiene (bounce-spike re-verification) ──────────────────────
+// When an ACTIVE campaign's bounces spike, don't tell the owner to "clean the
+// list" — clean it. The addresses that actually bounced are already suppressed
+// as they happen (webhook / SMTP path above); this pass handles the REST of the
+// roster: every lead still WAITING for touch 1 gets its address domain
+// re-verified against live MX, and the definitively dead ones are dropped +
+// suppressed BEFORE they can bounce too. Mid-sequence leads are left alone —
+// an address that already received a step proved deliverable. Auto-enroll then
+// refills the freed slots from the reserve, so the pipeline stays full with no
+// chore landing on the owner.
+const HYGIENE_MIN_BOUNCED = 2;   // absolute floor — one fluke isn't a spike
+const HYGIENE_MIN_SENT    = 10;  // need a real sample before reacting
+const HYGIENE_BOUNCE_RATE = 0.05; // ≥5% of sent bounced → the list is suspect
+const HYGIENE_COOLDOWN_MS = 24 * 60 * 60 * 1000; // at most once per campaign per day
+
+// One campaign's bounce signal from its enrollment rows. Sent/bounced are
+// counted exactly the way controllers/outreach.js summarizeEnrollments does
+// (kept local — the controller imports this engine, so importing it back would
+// be a require cycle): sent = companies with ≥1 send; bounced = hard bounces /
+// complaints / dead addresses, EXCLUDING never-sent rows this very hygiene pass
+// stopped (status 'stopped' + 'invalid-address' + zero sends) — those are
+// bounces PREVENTED, and counting them would hold the trip wire down forever.
+// PURE + unit-tested.
+function campaignBounceSignal(rows = []) {
+  let sent = 0, bounced = 0;
+  for (const e of rows || []) {
+    if (!e) continue;
+    if ((e.sends || []).length > 0) sent += 1;
+    if (['bounced', 'invalid-address', 'complaint'].includes(e.stopReason)
+      && !(e.status === 'stopped' && e.stopReason === 'invalid-address' && !(e.sends || []).length)) {
+      bounced += 1;
+    }
+  }
+  return { sent, bounced };
+}
+
+// Should the hygiene pass run for a campaign with this bounce signal right now?
+// Trips only on a real spike — ≥2 bounced AND ≥5% of ≥10 sent — and at most
+// once per 24h per campaign (lastHygieneAt; an unparseable stamp reads as
+// "never ran", fail-open like the rest of hygiene). PURE + unit-tested.
+function shouldRunHygiene(signal = {}, lastHygieneAt = null, now = new Date()) {
+  const sent = Number((signal || {}).sent) || 0;
+  const bounced = Number((signal || {}).bounced) || 0;
+  if (sent < HYGIENE_MIN_SENT) return false;
+  if (bounced < HYGIENE_MIN_BOUNCED) return false;
+  if (bounced / sent < HYGIENE_BOUNCE_RATE) return false;
+  if (lastHygieneAt) {
+    const t = new Date(lastHygieneAt).getTime();
+    if (Number.isFinite(t) && now.getTime() - t < HYGIENE_COOLDOWN_MS) return false; // ran recently
+  }
+  return true;
+}
+
+// Which waiting enrollments sit on a domain with NO working mail server, given
+// the domain→ok map from verifyDomainsMx. Only a DEFINITIVE false drops a row —
+// an unknown / unchecked / transiently-failing domain (absent from the map) is
+// left alone, the same fail-open stance as the enroll-time MX check. PURE +
+// unit-tested.
+function pickInvalidEnrollments(enrollments = [], mxMap = new Map()) {
+  return (enrollments || []).filter((e) => {
+    const dom = emailDomain(String((e && e.toEmail) || '').toLowerCase());
+    return !!dom && mxMap.get(dom) === false;
+  });
+}
+
+// Sanity valve: if MORE THAN HALF of a real sample comes back dead at once, the
+// far likelier story is a resolver outage than a list that rotted overnight —
+// verifyDomainsMx reports a transient DNS failure the same as "no MX" (false),
+// and unlike the enroll path (which merely skips a lead for now), hygiene
+// PERMANENTLY suppresses the address. Mass-suppressing a good roster on a DNS
+// hiccup would be exactly the poison-the-list failure the send path guards
+// against (see isBadRecipientError), so a suspicious spread holds the drops;
+// the next pass retries with healthy DNS. PURE + unit-tested.
+function looksLikeDnsOutage(badCount, checkedCount) {
+  const bad = Number(badCount) || 0;
+  const checked = Number(checkedCount) || 0;
+  return bad >= 5 && bad * 2 > checked;
+}
+
+// Run the hygiene pass across the given ACTIVE campaigns (the tick's already-
+// loaded list). For each campaign whose bounce signal trips: atomically claim
+// the 24h stamp (so a racing tick or second worker can't double-run it),
+// re-verify the still-waiting roster's domains via the same MX seam the
+// enroll paths use, then stop + suppress the dead ones. The ADDRESS is
+// suppressed (reason 'mx-invalid') so no future campaign re-enrolls it, but the
+// company is deliberately NOT doNotEmail'd — a better address may be found
+// later. Returns [{ campaignId, checked, dropped }] for the tick result.
+// NEVER throws — hygiene is a bonus pass and must not break sending.
+async function runRosterHygiene(campaigns = [], now = new Date()) {
+  const out = [];
+  for (const campaign of campaigns || []) {
+    try {
+      // Cheap pre-gate: a fresh stamp skips without touching the enrollments.
+      if (campaign.lastHygieneAt
+        && now.getTime() - new Date(campaign.lastHygieneAt).getTime() < HYGIENE_COOLDOWN_MS) continue;
+      const rows = await OutreachEnrollment.find({ campaignId: campaign._id })
+        .select('status stopReason toEmail sends.at').lean();
+      if (!shouldRunHygiene(campaignBounceSignal(rows), campaign.lastHygieneAt, now)) continue;
+
+      // ATOMIC stamp claim — only wins while the stamp is still stale, so two
+      // overlapping ticks can never both run the pass for one campaign.
+      const cutoff = new Date(now.getTime() - HYGIENE_COOLDOWN_MS);
+      const claimed = await OutreachCampaign.findOneAndUpdate(
+        { _id: campaign._id, $or: [{ lastHygieneAt: null }, { lastHygieneAt: { $lte: cutoff } }] },
+        { $set: { lastHygieneAt: now } },
+        { new: true },
+      );
+      if (!claimed) continue; // another worker beat us to it
+
+      // Target set: leads still WAITING for touch 1 ('active', zero sends).
+      const waiting = rows.filter((e) => e.status === 'active' && !(e.sends || []).length);
+      let dropped = 0;
+      if (waiting.length) {
+        const domains = waiting.map((e) => emailDomain(String(e.toEmail || '').toLowerCase()));
+        const mxMap = await verifyDomainsMx(domains).catch(() => new Map()); // deduped per domain
+        const bad = pickInvalidEnrollments(waiting, mxMap);
+        // A whole-roster "everything is dead" verdict is a resolver problem, not
+        // a list problem — hold the drops (the 24h stamp already advanced, so
+        // tomorrow's pass retries with healthy DNS) rather than mass-suppress.
+        if (looksLikeDnsOutage(bad.length, waiting.length)) {
+          console.warn(`[outreach] hygiene: "${campaign.name}" — ${bad.length}/${waiting.length} waiting domains look dead at once; treating it as a DNS outage, dropping nothing`);
+          out.push({ campaignId: String(campaign._id), checked: waiting.length, dropped: 0, held: bad.length });
+          continue;
+        }
+        for (const e of bad) {
+          // Guarded write: a reply / opt-out / send that raced us wins.
+          const r = await OutreachEnrollment.updateOne(
+            { _id: e._id, status: 'active', 'sends.0': { $exists: false } },
+            { $set: { status: 'stopped', stopReason: 'invalid-address', nextSendAt: null } },
+          ).catch(() => ({ modifiedCount: 0 }));
+          if (!r.modifiedCount) continue;
+          await suppress(e.toEmail, { reason: 'mx-invalid', source: 'auto-hygiene' });
+          dropped += 1;
+        }
+      }
+      out.push({ campaignId: String(campaign._id), checked: waiting.length, dropped });
+      console.log(`[outreach] hygiene: "${campaign.name}" bounce spike — re-verified ${waiting.length} waiting lead${waiting.length === 1 ? '' : 's'}, dropped ${dropped} dead address${dropped === 1 ? '' : 'es'}`);
+    } catch (e) {
+      console.warn(`[outreach] hygiene pass failed for campaign ${campaign && campaign._id}:`, e.message);
+    }
+  }
+  return out;
 }
 
 // Increment the daily counter by `n` for today's ET day (no-op if the stored day
@@ -1113,14 +1262,25 @@ async function runOutreachTick(now = new Date(), opts = {}) {
     }
 
     if (sent) await bumpSentToday(sent, now);
+
+    // Roster hygiene, right after sends: when a campaign's bounces spike,
+    // re-verify its still-waiting roster and drop the dead addresses
+    // automatically (once per campaign per 24h) — the machine cleans the list
+    // instead of asking the owner to. Self-guarded; never breaks the tick.
+    const hygiene = await runRosterHygiene(campaigns, now);
+    const hygieneNote = hygiene.length
+      ? `; hygiene: ${hygiene.map((h) => `dropped ${h.dropped}/${h.checked} waiting`).join(', ')}`
+      : '';
+
     const worked = sent || skipped || errors || domainDeferred;
-    const result = worked
+    const result = (worked
       ? `sent ${sent}, skipped ${skipped}, errors ${errors}${domainDeferred ? `, domain-deferred ${domainDeferred}` : ''} (cap ${cap}, sentToday ${sentToday + sent})`
-      : `idle: nothing due (cap ${cap}, sentToday ${sentToday})`;
+      : `idle: nothing due (cap ${cap}, sentToday ${sentToday})`) + hygieneNote;
     if (sent || skipped || errors) console.log(`[outreach] tick: ${result}`);
     // Always record an in-window tick, so "last run" tracks the live engine.
     await recordRun(result);
-    return { sent, skipped, errors, domainDeferred, cap, sentToday: sentToday + sent };
+    return { sent, skipped, errors, domainDeferred, cap, sentToday: sentToday + sent,
+      ...(hygiene.length ? { hygiene } : {}) };
   } finally {
     _ticking = false;
   }
@@ -1171,6 +1331,13 @@ module.exports = {
   abVariant,
   isRoleEmail,
   deliverabilityStats,
+  // Auto roster hygiene (bounce-spike re-verify): the async pass + its pure,
+  // unit-tested decision core.
+  runRosterHygiene,
+  campaignBounceSignal,
+  shouldRunHygiene,
+  pickInvalidEnrollments,
+  looksLikeDnsOutage,
   // Whether the open-tracking pixel is actually being embedded (OFF by default —
   // see the comment on the const). Analytics reports this so the UI can label a
   // 0% open rate as "tracking off", not "nobody opens your emails".

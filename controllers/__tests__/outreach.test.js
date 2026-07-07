@@ -216,10 +216,62 @@ test('buildStepFunnel is empty for no data', () => {
   assert.deepEqual(buildStepFunnel(), []);
 });
 
-test('campaignHealth flags a high bounce rate as action (deliverability first)', () => {
+test('campaignHealth: only a genuinely bad list (≥12% of ≥30 sent) is still action', () => {
+  // 4/30 = 13.3% at real volume — past what auto-hygiene can save; the owner
+  // has to pause and rebuild the list source.
   const h = campaignHealth({ status: 'active' }, { enrolled: 40, active: 10, sent: 30, replied: 1, bounced: 4 });
   assert.equal(h.level, 'action');
   assert.match(h.label, /bouncing/);
+  assert.match(h.hint, /Pause the campaign/);
+});
+
+test('campaignHealth: moderate bounces → warn that reports the automation, not a chore', () => {
+  // The owner's exact card: 2 of 20 bounced. The machine already suppressed the
+  // bounced addresses and auto-enroll refills the roster — say so instead of
+  // the old "pause and clean the list before you keep sending".
+  const h = campaignHealth({ status: 'active' }, { enrolled: 40, active: 20, sent: 20, replied: 1, bounced: 2 });
+  assert.equal(h.level, 'warn');
+  assert.match(h.label, /auto-cleaned/);
+  assert.match(h.hint, /auto-removed/);
+  assert.match(h.hint, /auto-enroll refills/);
+  assert.match(h.hint, /no action needed yet/i);
+  assert.doesNotMatch(h.hint, /pause and clean/i);
+  assert.doesNotMatch(h.hint, /re-verified/); // hygiene hasn't run → don't claim it did
+});
+
+test('campaignHealth: mentions the roster re-verify (and drop count) only when hygiene ran recently', () => {
+  const now = new Date('2026-07-07T12:00:00Z');
+  const stats = { enrolled: 40, active: 20, sent: 20, replied: 1, bounced: 2, cleaned: 3 };
+  // Hygiene stamped 12h ago → report the re-verify + how many it dropped.
+  const fresh = campaignHealth({ status: 'active', lastHygieneAt: new Date('2026-07-07T00:00:00Z') }, stats, now);
+  assert.equal(fresh.level, 'warn');
+  assert.match(fresh.hint, /re-verified the waiting roster/);
+  assert.match(fresh.hint, /dropping 3 dead addresses/);
+  // Stamped 3 days ago → stale; the current numbers postdate it, so don't claim it.
+  const stale = campaignHealth({ status: 'active', lastHygieneAt: new Date('2026-07-04T00:00:00Z') }, stats, now);
+  assert.doesNotMatch(stale.hint, /re-verified/);
+});
+
+test('campaignHealth bounce thresholds: warn from ≥5% of ≥10 sent; action only at ≥12% of ≥30', () => {
+  const mk = (sent, bounced) => campaignHealth({ status: 'active' }, { enrolled: 200, active: 10, sent, bounced, replied: 3 });
+  assert.equal(mk(10, 1).level, 'warn');     // 10% of 10 — the warn floor
+  assert.equal(mk(9, 5).level, 'ok');        // under the 10-sent sample floor
+  assert.equal(mk(100, 4).level, 'ok');      // 4% — below the warn rate
+  assert.equal(mk(29, 4).level, 'warn');     // 13.8% but under the 30-sent action floor
+  assert.equal(mk(100, 11).level, 'warn');   // 11% — high, still auto-managed
+  assert.equal(mk(100, 12).level, 'action'); // 12% at volume — a genuinely bad list
+});
+
+test('summarizeEnrollments: hygiene-dropped rows count as cleaned, not bounced', () => {
+  const rows = [
+    { status: 'stopped', stopReason: 'invalid-address', sends: [] },             // hygiene drop (pre-send)
+    { status: 'failed', stopReason: 'invalid-address', sends: [] },              // SMTP bounce on touch 1
+    { status: 'failed', stopReason: 'bounced', sends: [{ at: new Date() }] },    // webhook hard bounce
+    { status: 'failed', stopReason: 'complaint', sends: [{ at: new Date() }] },  // spam complaint
+  ];
+  const s = summarizeEnrollments(rows);
+  assert.equal(s.cleaned, 1);
+  assert.equal(s.bounced, 3);
 });
 
 test('campaignHealth flags a high unsubscribe rate as warn', () => {
