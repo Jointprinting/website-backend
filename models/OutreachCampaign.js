@@ -46,6 +46,13 @@ const OutreachCampaignSchema = new mongoose.Schema({
   // burning half the volume on the losing subject. Cleared by editing the step.
   abWinner:    { type: String, enum: ['', 'A', 'B'], default: '' },
   abWinnerAt:  { type: Date, default: null },
+  // When the engine's automatic roster hygiene last ran for this campaign
+  // (services/outreachEngine.js runRosterHygiene): on a bounce spike, the
+  // not-yet-contacted roster is re-verified against live MX and dead addresses
+  // are dropped + suppressed automatically. This stamp bounds the pass to at
+  // most once per campaign per 24h, and lets campaignHealth say "re-verified
+  // the waiting roster" only when that actually just happened.
+  lastHygieneAt: { type: Date, default: null },
 }, { timestamps: true });
 
 OutreachCampaignSchema.statics.CAMPAIGN_STATUSES = CAMPAIGN_STATUSES;

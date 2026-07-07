@@ -61,7 +61,7 @@ const pipelineTarget = () => Math.max(0, (Number(DAILY_CAP_MAX) || 50) * PIPELIN
 function summarizeEnrollments(rows = []) {
   const s = {
     enrolled: 0, active: 0, sent: 0, opened: 0, replied: 0,
-    completed: 0, unsubscribed: 0, stopped: 0, failed: 0, noEmail: 0, bounced: 0, suppressed: 0,
+    completed: 0, unsubscribed: 0, stopped: 0, failed: 0, noEmail: 0, bounced: 0, suppressed: 0, cleaned: 0,
   };
   for (const e of rows) {
     if (!e) continue;
@@ -77,7 +77,16 @@ function summarizeEnrollments(rows = []) {
     // 0 sent" reads as "held by suppression", not "broken".
     if (e.stopReason === 'suppressed') s.suppressed += 1;
     // Hard bounces / complaints / invalid addresses — the deliverability signal.
-    if (['bounced', 'invalid-address', 'complaint'].includes(e.stopReason)) s.bounced += 1;
+    // EXCEPT never-sent rows the engine's roster hygiene stopped pre-send
+    // (status 'stopped' + 'invalid-address' + zero sends — see runRosterHygiene
+    // in services/outreachEngine.js): those are bounces PREVENTED, not suffered.
+    // They're counted as `cleaned` so the auto-clean can't inflate the
+    // campaign's own bounce rate — and so the health copy can say how many dead
+    // addresses the machine dropped.
+    if (['bounced', 'invalid-address', 'complaint'].includes(e.stopReason)) {
+      if (e.status === 'stopped' && e.stopReason === 'invalid-address' && !(e.sends || []).length) s.cleaned += 1;
+      else s.bounced += 1;
+    }
   }
   return s;
 }
@@ -125,8 +134,10 @@ function decideAbWinner(ab, { minSent = 40, minReplies = 4, ratio = 2 } = {}) {
 // at-a-glance signal the UI badges, and — critically — explains WHY a campaign
 // isn't sending instead of leaving the owner staring at zeros. Levels:
 // 'ok' (green) | 'warn' (amber) | 'action' (red — needs a decision).
-function campaignHealth(campaign = {}, stats = {}) {
-  const st = { enrolled: 0, active: 0, sent: 0, replied: 0, completed: 0, noEmail: 0, bounced: 0, unsubscribed: 0, suppressed: 0, failed: 0, stopped: 0, ...stats };
+// `now` is injected for tests; the only clock read is the "did hygiene run
+// recently?" check against campaign.lastHygieneAt.
+function campaignHealth(campaign = {}, stats = {}, now = new Date()) {
+  const st = { enrolled: 0, active: 0, sent: 0, replied: 0, completed: 0, noEmail: 0, bounced: 0, unsubscribed: 0, suppressed: 0, failed: 0, stopped: 0, cleaned: 0, ...stats };
   const status = campaign.status || 'draft';
   if (status === 'draft')  return { level: 'warn', label: 'Draft', hint: 'Launch it when the steps read right.' };
   if (status === 'paused') return { level: 'warn', label: 'Paused', hint: 'Sends are halted — resume to continue the drip.' };
@@ -161,11 +172,30 @@ function campaignHealth(campaign = {}, stats = {}) {
     return { level: 'warn', label: 'Roster exhausted',
       hint: `No one is still in sequence (${st.sent} sent, ${st.replied} replied). Enroll fresh leads to keep it going.` };
   }
-  // Deliverability first — a bouncing/complained-about campaign is torching the
-  // sender's reputation and must be paused before anything else matters.
-  if (st.sent >= 20 && (st.bounced / st.sent) > 0.05) {
-    return { level: 'action', label: `${Math.round((st.bounced / st.sent) * 100)}% bouncing`,
-      hint: `${st.bounced} of ${st.sent} sent bounced or complained — pause and clean the list before you keep sending.` };
+  // Deliverability first — but bounces are no longer a chore assigned to the
+  // owner. The machine already handles the routine case itself: each bounced
+  // address is auto-suppressed the moment it bounces, a spike triggers the
+  // engine's roster hygiene (the not-yet-contacted roster is re-verified
+  // against live MX and dead addresses dropped — runRosterHygiene in
+  // services/outreachEngine.js, stamped on campaign.lastHygieneAt), and
+  // auto-enroll refills the freed slots from the reserve. So a moderate bounce
+  // rate reports WHAT THE MACHINE DID (warn); only a genuinely bad list —
+  // a high rate at real volume, past what hygiene can save — still demands
+  // the owner pause it (action).
+  const bounceRate = st.sent > 0 ? st.bounced / st.sent : 0;
+  if (st.sent >= 30 && bounceRate >= 0.12) {
+    return { level: 'action', label: `${Math.round(bounceRate * 100)}% bouncing`,
+      hint: `${st.bounced} of ${st.sent} sent bounced or complained even after auto-cleaning — this list source is bad and it's torching the sender's reputation. Pause the campaign and rebuild from a fresher source.` };
+  }
+  if (st.sent >= 10 && bounceRate >= 0.05) {
+    // Mention the roster re-verify only when hygiene actually ran recently —
+    // the stamp travels on the campaign doc, so this stays a pure read.
+    const hygieneAt = campaign.lastHygieneAt ? new Date(campaign.lastHygieneAt).getTime() : 0;
+    const hygieneRecent = Number.isFinite(hygieneAt) && hygieneAt > 0
+      && (now.getTime() - hygieneAt) < 48 * 60 * 60 * 1000;
+    const dropNote = st.cleaned > 0 ? ` (dropping ${st.cleaned} dead address${st.cleaned === 1 ? '' : 'es'})` : '';
+    return { level: 'warn', label: `${Math.round(bounceRate * 100)}% bounced — auto-cleaned`,
+      hint: `${st.bounced} of ${st.sent} sent bounced — the engine auto-removed them,${hygieneRecent ? ` re-verified the waiting roster${dropNote},` : ''} and auto-enroll refills from the reserve. Watch it; no action needed yet.` };
   }
   if (st.sent >= 20 && (st.unsubscribed / st.sent) > 0.02) {
     return { level: 'warn', label: 'High unsubscribe rate',

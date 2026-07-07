@@ -91,11 +91,16 @@ exports.deleteSubmission = async (req, res) => {
   }
 };
 
-exports.getUnseenCount = async (_req, res) => {
+exports.getUnseenCount = async (req, res) => {
   try {
-    const count = await ContactSubmission.countDocuments({
-      status: 'new', seenByAdmin: { $ne: true }, honeypot: { $ne: true },
-    });
+    // Optional ?source= scope, mirroring markAllSeen below: the Studio hub
+    // badges contact-form leads and JP Webworks inquiries separately, so each
+    // tile fetches its own count. No/invalid source → the original combined
+    // count (existing callers unchanged).
+    const source = (req.query && req.query.source) || '';
+    const filter = { status: 'new', seenByAdmin: { $ne: true }, honeypot: { $ne: true } };
+    if (['contact', 'webworks'].includes(source)) filter.source = source;
+    const count = await ContactSubmission.countDocuments(filter);
     return res.json({ count });
   } catch (err) {
     return res.status(500).json({ count: 0 });
