@@ -27,9 +27,15 @@ const OutreachStateSchema = new mongoose.Schema({
   // Xm ago · N new" pill.
   gmailLastSyncAt: { type: Date, default: null },
   gmailLastCount:  { type: Number, default: 0 },
-  // Auto-enroll (Wave 7): when set, the finder reserve is topped straight into
-  // this campaign on a cron. Null = off (the owner enrolls manually).
+  // Auto-enroll (Wave 7): which campaign the finder reserve is topped straight
+  // into on a cron. This is now a POINTER only — auto-enroll is ON BY DEFAULT
+  // (the owner never has to click "Auto-enroll"): when this is null but a
+  // campaign is active, the engine adopts the active campaign automatically.
   autoEnrollCampaignId: { type: mongoose.Schema.Types.ObjectId, ref: 'OutreachCampaign', default: null },
+  // Explicit OFF override. Auto-enroll runs by default for any active campaign;
+  // the owner turning it off (the per-campaign toggle) sets this so the
+  // self-healing adopt doesn't just switch it back on. Default false = automated.
+  autoEnrollDisabled: { type: Boolean, default: false },
 }, { timestamps: true });
 
 module.exports = mongoose.model('OutreachState', OutreachStateSchema);

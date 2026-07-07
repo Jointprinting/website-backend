@@ -16,6 +16,7 @@ const {
   enrollBlockReason,
   sanitizeSteps,
   extractBounceEmails,
+  autoEnrollOnFromState,
 } = require('../outreach');
 
 // ── Funnel math ──────────────────────────────────────────────────────────────
@@ -455,4 +456,31 @@ test('decideAbWinner locks only on decisive, high-volume results', () => {
   assert.equal(decideAbWinner({ A: arm(100, 6), B: arm(100, 4) }), ''); // gap under 2×
   assert.equal(decideAbWinner(null), '');
   assert.equal(decideAbWinner({ A: arm(60, 6) }), '');                  // missing arm
+});
+
+// ── Auto-enroll is ON by default (task #102) ─────────────────────────────────
+// Cold leads should flow into the active campaign automatically — the owner
+// never has to click "Auto-enroll." It's OFF only when they explicitly disable it.
+test('autoEnrollOnFromState: ON by default, OFF only when explicitly disabled', () => {
+  assert.equal(autoEnrollOnFromState(null), true, 'fresh install / no state = on');
+  assert.equal(autoEnrollOnFromState({}), true, 'no flag = on');
+  assert.equal(autoEnrollOnFromState({ autoEnrollDisabled: false }), true);
+  assert.equal(autoEnrollOnFromState({ autoEnrollDisabled: true }), false, 'explicit owner off');
+  // A pinned campaign with the flag off is still on (the pointer doesn't gate it).
+  assert.equal(autoEnrollOnFromState({ autoEnrollCampaignId: 'abc' }), true);
+});
+
+test('buildNextActions: no "cold leads waiting" nudge when auto-enroll is on (nothing waits on the owner)', () => {
+  const base = {
+    engine: { senderConfigured: true },
+    campaigns: [{ _id: 'c1', name: 'Dispensaries', status: 'active' }],
+    warmCount: 0, coldReserve: 44, replySyncOn: true,
+  };
+  const withAuto = buildNextActions({ ...base, autoEnrollOn: true });
+  assert.ok(!withAuto.some(a => /cold leads waiting/i.test(a.text)),
+    'auto-enroll on → the reserve flows automatically, so no manual-enroll nudge');
+
+  const noAuto = buildNextActions({ ...base, autoEnrollOn: false });
+  assert.ok(noAuto.some(a => /cold leads waiting/i.test(a.text)),
+    'auto-enroll explicitly off → the manual-enroll nudge still fires');
 });
