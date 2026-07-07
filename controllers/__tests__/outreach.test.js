@@ -387,3 +387,20 @@ test('interleaveByCity: city matching is case/space-insensitive; custom accessor
   assert.deepEqual(interleaveByCity([]), []);
   assert.deepEqual(interleaveByCity(), []);
 });
+
+// ── Subject A/B auto-winner (conservative lock) ───────────────────────────────
+const { decideAbWinner } = require('../outreach');
+test('decideAbWinner locks only on decisive, high-volume results', () => {
+  const arm = (sent, replied) => ({ sent, opened: 0, replied });
+  // Decisive: both arms at volume, leader doubles the laggard with real replies.
+  assert.equal(decideAbWinner({ A: arm(60, 6), B: arm(60, 2) }), 'A');
+  assert.equal(decideAbWinner({ A: arm(50, 1), B: arm(50, 5) }), 'B');
+  // Laggard at zero replies: leader still needs its absolute floor.
+  assert.equal(decideAbWinner({ A: arm(45, 4), B: arm(45, 0) }), 'A');
+  // NOT decisive → keep testing:
+  assert.equal(decideAbWinner({ A: arm(20, 5), B: arm(60, 1) }), '');   // one arm under volume
+  assert.equal(decideAbWinner({ A: arm(60, 3), B: arm(60, 0) }), '');   // too few absolute replies
+  assert.equal(decideAbWinner({ A: arm(100, 6), B: arm(100, 4) }), ''); // gap under 2×
+  assert.equal(decideAbWinner(null), '');
+  assert.equal(decideAbWinner({ A: arm(60, 6) }), '');                  // missing arm
+});

@@ -40,6 +40,12 @@ const OutreachCampaignSchema = new mongoose.Schema({
   // enrollment draws from. Defaults to 'dispensary' (the historical + default
   // vertical), so every existing campaign keeps behaving exactly as before.
   vertical:    { type: String, default: 'dispensary', index: true },
+  // Subject A/B auto-winner: '' while the test runs (50/50 split); once one arm
+  // proves decisively better (decideAbWinner in controllers/outreach.js), the
+  // winning letter is locked here and every NEW send uses it — the test stops
+  // burning half the volume on the losing subject. Cleared by editing the step.
+  abWinner:    { type: String, enum: ['', 'A', 'B'], default: '' },
+  abWinnerAt:  { type: Date, default: null },
 }, { timestamps: true });
 
 OutreachCampaignSchema.statics.CAMPAIGN_STATUSES = CAMPAIGN_STATUSES;
