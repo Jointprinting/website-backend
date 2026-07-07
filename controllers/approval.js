@@ -272,7 +272,7 @@ const publicGetProject = async (req, res) => {
         color:        l.color        || '',
         printType:    l.printType    || '',
         printDetails: l.printDetails || '',
-        unitPrice:    n(l.unitPrice) || +(unitCogs * (n(l.markup) || 1)).toFixed(2),
+        unitPrice:    n(l.unitPrice) || +(unitCogs * (n(l.markup) || 1.4)).toFixed(2),
         // Design preview for the option card: the line's uploaded image
         // (vendor-rendered items) or its studio mockup's thumbnail.
         image: l.image
@@ -463,6 +463,7 @@ const publicSelectOptions = async (req, res) => {
 
     const lines = doc.quoteLines || [];
     const groups = [...new Set(lines.map(l => l.group).filter(Boolean))];
+    const standaloneCount = lines.filter(l => !l.group).length;
     if (groups.length === 0) {
       return res.status(400).json({ message: 'This quote has no options to pick from.' });
     }
@@ -471,17 +472,31 @@ const publicSelectOptions = async (req, res) => {
     if (!picks.every(i => Number.isInteger(i) && i >= 0 && i < lines.length && lines[i].group)) {
       return res.status(400).json({ message: 'Invalid selection — please refresh the page and try again.' });
     }
+    // AT MOST one option per group. The client takes the options they want and
+    // can skip whole groups entirely — a 10-option pitch where they only want 5
+    // is a valid selection, not an error. Two picks in the same group (which
+    // are alternatives, not add-ons) is the only invalid shape.
     for (const g of groups) {
       const inGroup = picks.filter(i => lines[i].group === g);
-      if (inGroup.length !== 1) {
-        return res.status(400).json({ message: `Please pick exactly one option for "${g}".` });
+      if (inGroup.length > 1) {
+        return res.status(400).json({ message: `Please choose just one option for "${g}" — or skip it.` });
       }
+    }
+    // The order can't be empty: require at least one picked option, unless the
+    // quote carries always-included standalone lines that stand on their own.
+    if (picks.length === 0 && standaloneCount === 0) {
+      return res.status(400).json({ message: 'Pick at least one option to continue.' });
     }
 
     const email = String((req.body && req.body.email) || '').slice(0, 254).trim() || _recipientEmail(req);
     const now = new Date();
     const pickSet = new Set(picks);
-    lines.forEach((l, i) => { l.accepted = pickSet.has(i); });
+    // A line is "accepted" (part of the committed order) if the client picked it
+    // OR it's an always-included standalone line. Marking standalone lines here
+    // is what tells the totals math the client has committed — so a selection of
+    // "decline every group, keep only the standalone items" still books its real
+    // value instead of reading as an un-picked $0 quote.
+    lines.forEach((l, i) => { l.accepted = pickSet.has(i) || !l.group; });
     doc.markModified('quoteLines');
     doc.optionsPickedAt = now;
     const chosen = lines.filter(l => l.accepted || !l.group);
