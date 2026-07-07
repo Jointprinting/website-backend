@@ -5,24 +5,28 @@ function deriveCompanyKey(companyName, clientName) {
   return raw.toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
-// Quote totals from the lines. Setup + shipping are per-line now — each option
+// Quote totals from the lines. Setup + shipping are per-line — each option
 // carries its FULL setup/shipping, spread across its own quantity into the unit
 // cost (so 3 alternative options each bear the full cost, never shared). Legacy
 // order-level setup/shipping are only folded in when no line carries its own,
 // so pre-existing quotes keep their totals until they're re-saved.
+//
+// A quote is a PROPOSAL, not a sale — so it is worth $0 to the pipeline until
+// the client actually commits by picking their options. Before that we return
+// zero rather than summing the lines: a pitch of 10 alternative options would
+// otherwise read as a 10-option ORDER and inflate the owner's project totals
+// for a quote the client may not have even opened. Once the client picks, the
+// real order is their accepted picks PLUS any always-included standalone
+// (ungrouped) lines; a group the client DECLINED contributes nothing (the
+// "pitch 10, take the 5 you want" case). A built confirmation supersedes this
+// entirely in the save hooks — the client's approved confirmation is the money.
 function computeQuoteTotals(lines, orderSetup, orderShip) {
-  let arr = Array.isArray(lines) ? lines : [];
-  // Once the client has picked options, only accepted lines are the real
-  // order — summing all alternatives would inflate the total (3 brands of
-  // tee the client picks ONE of). Standalone (ungrouped) lines are always
-  // part of the order, so they count alongside the accepted picks.
-  if (arr.some(l => l && l.accepted)) {
-    // Groups added AFTER the client picked have no accepted line yet — keep
-    // all their alternatives counted (pre-pick behavior) rather than silently
-    // dropping the whole group from the totals.
-    const decided = new Set(arr.filter(l => l && l.accepted).map(l => l.group));
-    arr = arr.filter(l => l && (l.accepted || !l.group || !decided.has(l.group)));
-  }
+  const all = Array.isArray(lines) ? lines : [];
+  if (!all.some(l => l && l.accepted)) return { totalValue: 0, cogs: 0 };
+  // Post-pick: accepted picks + always-included standalone lines only. Grouped
+  // alternatives the client didn't accept (a declined category, or the two
+  // brands they passed on) drop out — summing them would re-inflate the total.
+  const arr = all.filter(l => l && (l.accepted || !l.group));
   const n = (v) => Number(v) || 0;
   const perLineExtras = arr.reduce((s, l) => s + n(l.setupCost) + n(l.shippingCost), 0);
   const legacy = perLineExtras === 0 ? (n(orderSetup) + n(orderShip)) : 0;
@@ -30,7 +34,10 @@ function computeQuoteTotals(lines, orderSetup, orderShip) {
     const qty = n(l.qty);
     const setupShip = n(l.setupCost) + n(l.shippingCost);
     const unitCogs = n(l.blankCost) + n(l.printCost) + (qty > 0 ? setupShip / qty : 0);
-    const unit = n(l.unitPrice) || unitCogs * (n(l.markup) || 1);
+    // Unit price = the owner's committed price, else cost × markup. Markup
+    // falls back to the 1.4 schema default (NEVER ×1 = sell-at-cost) so a line
+    // that never got a tier click still carries a real margin, not $0 profit.
+    const unit = n(l.unitPrice) || unitCogs * (n(l.markup) || 1.4);
     return s + qty * unit;
   }, 0) + legacy;
   const cogs = arr.reduce((s, l) =>
