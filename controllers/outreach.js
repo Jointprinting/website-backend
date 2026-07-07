@@ -359,8 +359,13 @@ async function getOverview(req, res) {
     // already enrolled in a campaign. Excluding the enrolled ones is what makes
     // the count drop after you enroll (and keeps the "cold leads waiting" nudge
     // from firing on leads that are already in the sequence).
-    const st = await OutreachState.findOne({ key: 'engine' }).select('autoEnrollCampaignId').lean().catch(() => null);
-    const autoEnrollOn = !!(st && st.autoEnrollCampaignId);
+    const st = await OutreachState.findOne({ key: 'engine' }).select('autoEnrollCampaignId autoEnrollDisabled').lean().catch(() => null);
+    // Auto-enroll is ON BY DEFAULT — the reserve flows into the active campaign
+    // automatically; it's OFF only when the owner explicitly disabled it. This
+    // is what keeps the "cold leads waiting — enroll a batch" nudge from firing
+    // (that nudge is gated on !autoEnrollOn), so nothing looks like it's waiting
+    // on the owner.
+    const autoEnrollOn = !(st && st.autoEnrollDisabled);
     const enrolledKeys = await OutreachEnrollment.distinct('companyKey').catch(() => []);
     const coldReserve = await Client.countDocuments({
       ...NOT_ARCHIVED, doNotEmail: { $ne: true }, stage: { $in: ['lead', 'contacted'] }, lastContact: null,
@@ -398,6 +403,7 @@ async function getOverview(req, res) {
       // The selectable business verticals (Dispensaries default, Breweries, …) so
       // the campaign editor can offer them without a separate round-trip.
       verticals: verticalOptions(),
+      autoEnrollOn,
       autoEnrollCampaignId: st && st.autoEnrollCampaignId ? String(st.autoEnrollCampaignId) : null });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -465,6 +471,17 @@ async function updateCampaign(req, res) {
     }
     const campaign = await OutreachCampaign.findByIdAndUpdate(req.params.id, { $set: set }, { new: true }).lean();
     if (!campaign) return res.status(404).json({ message: 'campaign not found' });
+    // Activating a campaign (by any path, not just the Launch button) points
+    // auto-enroll at it by default — unless the owner explicitly turned
+    // auto-enroll off — so the cold reserve flows without a manual click.
+    if (set.status === 'active') {
+      const st = await OutreachState.findOne({ key: 'engine' }).select('autoEnrollDisabled').lean().catch(() => null);
+      if (!(st && st.autoEnrollDisabled)) {
+        await OutreachState.findOneAndUpdate(
+          { key: 'engine' }, { $set: { autoEnrollCampaignId: campaign._id } }, { upsert: true },
+        ).catch(() => {});
+      }
+    }
     res.json({ campaign, lint: lintSteps(campaign.steps) });
   } catch (e) {
     res.status(400).json({ message: e.message });
@@ -484,10 +501,12 @@ async function launchCampaign(req, res) {
       req.params.id, { $set: { status: 'active' } }, { new: true },
     ).lean();
     if (!campaign) return res.status(404).json({ message: 'campaign not found' });
-    // Turn on continuous auto-enroll for THIS campaign (only one at a time).
+    // Turn on continuous auto-enroll for THIS campaign (only one at a time), and
+    // clear any explicit OFF override — launching a campaign always means "keep
+    // it fed automatically."
     await OutreachState.findOneAndUpdate(
       { key: 'engine' },
-      { $set: { autoEnrollCampaignId: campaign._id } },
+      { $set: { autoEnrollCampaignId: campaign._id, autoEnrollDisabled: false } },
       { upsert: true },
     );
     // Fill the pipeline now so touch 1 has recipients, then kick a tick; report
@@ -1003,14 +1022,44 @@ function startAutoEnroll() {
   console.log('[outreach] auto-enroll cron started — tops the active campaign from the reserve when enabled');
 }
 
-// One auto-enroll cron pass: if a target campaign is set + still active, top it
-// up from the reserve. Bounded; safe to call often (dedupe via the unique index).
+// Auto-enroll is ON BY DEFAULT — pure derivation from the engine state so the
+// contract ("automated unless the owner explicitly turned it off") is testable
+// in one place. A null/absent state (fresh install) is still ON.
+function autoEnrollOnFromState(state) {
+  return !(state && state.autoEnrollDisabled);
+}
+
+// Resolve which campaign auto-enroll feeds. Auto-enroll is ON BY DEFAULT, so:
+//   - explicit OFF override (autoEnrollDisabled) → null (owner opted out)
+//   - a pinned campaign that's still active → that one
+//   - otherwise ADOPT the most-recently-active campaign and persist the pointer
+// This is what makes the reserve flow automatically without the owner clicking:
+// any active campaign gets topped up, and the pointer self-heals to reality
+// (covers a campaign activated via Launch OR a plain status edit, and existing
+// data whose pointer was never set). Returns the campaign (lean) or null.
+async function resolveAutoEnrollCampaign(state) {
+  if (state && state.autoEnrollDisabled) return null;
+  if (state && state.autoEnrollCampaignId) {
+    const pinned = await OutreachCampaign.findById(state.autoEnrollCampaignId).lean();
+    if (pinned && pinned.status === 'active') return pinned;
+  }
+  const active = await OutreachCampaign.findOne({ status: 'active' }).sort({ updatedAt: -1 }).lean();
+  if (!active) return null;
+  // Adopt it as the auto-enroll target so the pointer (and the UI toggle that
+  // reads it) reflects reality on the next read, not only after this tick.
+  await OutreachState.updateOne({ key: 'engine' }, { $set: { autoEnrollCampaignId: active._id } }, { upsert: true }).catch(() => {});
+  return active;
+}
+
+// One auto-enroll cron pass: top the active campaign up from the reserve. With
+// auto-enroll on by default this fires for any active campaign; it idles only
+// when the owner has explicitly turned it off or nothing is active. Bounded;
+// safe to call often (dedupe via the unique index).
 async function runAutoEnrollTick() {
   const state = await OutreachState.findOne({ key: 'engine' }).lean().catch(() => null);
-  const id = state && state.autoEnrollCampaignId;
-  if (!id) return { skipped: 'off' };
-  const campaign = await OutreachCampaign.findById(id).lean();
-  if (!campaign || campaign.status !== 'active') return { skipped: 'campaign-inactive' };
+  if (state && state.autoEnrollDisabled) return { skipped: 'off' };
+  const campaign = await resolveAutoEnrollCampaign(state);
+  if (!campaign) return { skipped: 'no-active-campaign' };
   return autoFillCampaign(campaign); // capacity-matched (tops the pipeline to ~a week deep)
 }
 
@@ -1021,14 +1070,20 @@ async function setAutoEnroll(req, res) {
     const campaign = await OutreachCampaign.findById(req.params.id).lean();
     if (!campaign) return res.status(404).json({ message: 'campaign not found' });
     const enabled = (req.body || {}).enabled === true || (req.body || {}).enabled === 'true';
+    // Auto-enroll is on by default; turning it OFF is an explicit owner override
+    // (autoEnrollDisabled) so the self-healing adopt in resolveAutoEnrollCampaign
+    // doesn't immediately switch it back on. Turning it ON clears the override
+    // and pins this campaign as the target.
     await OutreachState.findOneAndUpdate(
       { key: 'engine' },
-      { $set: { autoEnrollCampaignId: enabled ? campaign._id : null } },
+      { $set: enabled
+        ? { autoEnrollCampaignId: campaign._id, autoEnrollDisabled: false }
+        : { autoEnrollCampaignId: null, autoEnrollDisabled: true } },
       { upsert: true },
     );
     let filled = null;
     if (enabled && campaign.status === 'active') filled = await autoFillCampaign(campaign).catch(() => null);
-    res.json({ ok: true, autoEnrollCampaignId: enabled ? String(campaign._id) : null, filled });
+    res.json({ ok: true, autoEnrollCampaignId: enabled ? String(campaign._id) : null, disabled: !enabled, filled });
   } catch (e) {
     res.status(400).json({ message: e.message });
   }
@@ -1609,6 +1664,7 @@ module.exports = {
   campaignHealth,
   buildNextActions,
   enrollBlockReason,
+  autoEnrollOnFromState,
   sanitizeSteps,
   extractBounceEmails,
   classifyBounceEvent,
