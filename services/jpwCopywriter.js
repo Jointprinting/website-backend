@@ -278,7 +278,9 @@ function cleanError(e) {
 
 // Generate the site's copy from the brief. NEVER throws — on any model/SDK
 // failure it returns { error } that the controller turns into a 502. On success
-// returns { data: <copy fields>, meta: { model, needs } }.
+// returns { data: <copy fields>, meta: { model, needs, usage } }, where `usage`
+// is the call's { input_tokens, output_tokens } so the controller can record
+// estimated spend against the AI budget (services/aiBudget.js).
 async function generateSiteCopy({ businessName, businessType, templateId, brief, tone } = {}) {
   const capped = String(brief || '').slice(0, MAX_BRIEF);
   const prompt = buildCopyPrompt({ businessName, businessType, templateId, brief: capped, tone });
@@ -298,7 +300,10 @@ async function generateSiteCopy({ businessName, businessType, templateId, brief,
     const tool = (msg.content || []).find((blk) => blk.type === 'tool_use');
     if (!tool) return { error: "The AI didn't return any site copy — try again." };
     const data = sanitizeGeneratedData(tool.input || {}, capped);
-    return { data, meta: { model: MODEL, needs: computeNeeds(data) } };
+    const usage = msg.usage
+      ? { input_tokens: msg.usage.input_tokens || 0, output_tokens: msg.usage.output_tokens || 0 }
+      : null;
+    return { data, meta: { model: MODEL, needs: computeNeeds(data), usage } };
   } catch (e) {
     return { error: cleanError(e) };
   }
