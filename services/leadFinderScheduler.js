@@ -66,6 +66,18 @@ function retryableFailedRegions(failedRegions = {}, { maxAttempts = MAX_REGION_A
     .map(([region]) => region);
 }
 
+// Drop regions that already burned their retry budget. The healthy-pool
+// coverage-upgrade path picks candidates from staleRegions (which only sees
+// CLEAN runs), so a region whose last clean sweep is old but which now fails
+// every attempt would otherwise be re-tried every 6h forever — unbounded error
+// rows, unbounded ledger growth, and (worse) it wedges the few upgrade slots so
+// no other stale state ever gets its background upgrade. Same cap, same ledger,
+// as the frontier path. Pure + unit-tested.
+function underAttemptCap(regions = [], failedRegions = {}, maxAttempts = MAX_REGION_ATTEMPTS) {
+  const failed = failedRegions || {};
+  return (regions || []).filter((r) => (Number(failed[r]) || 0) < maxAttempts);
+}
+
 // A sweep that THREW never covered its state — record that honestly. Writes a
 // LeadFinderRun audit row with `error` set (and finderVersion 0: no coverage was
 // produced), so the Studio's coverage map can tell "we tried and it FAILED"
@@ -161,7 +173,11 @@ async function _sweepVertical({ force = false, fromStart = false, vertical: vert
   // states it already touched — the owner never has to press "re-sweep". A
   // forced run skips this and goes straight to a real refill sweep below.
   if (available >= LOW_WATERMARK && !force) {
-    const stale = await staleRegions(v.finderVersion, MAX_UPGRADE_PER_RUN, v.id);
+    // Ask for a few extra candidates, then drop the ones that already burned
+    // their retry budget (underAttemptCap) — a permanently-failing stale region
+    // must park like it does on the frontier path, not monopolize these slots.
+    const staleAll = await staleRegions(v.finderVersion, MAX_UPGRADE_PER_RUN + MAX_REGION_ATTEMPTS, v.id);
+    const stale = underAttemptCap(staleAll, state.failedRegions).slice(0, MAX_UPGRADE_PER_RUN);
     if (!stale.length) {
       state.lastRunAt = new Date();
       state.lastResult = `queue healthy — ${available} cold ${v.short} ready to enroll; coverage current`;
@@ -272,4 +288,5 @@ function startLeadFinderScheduler() {
 module.exports = {
   startLeadFinderScheduler, runFrontierSweep, runAllFrontierSweeps, activeVerticalIds, getState,
   retryableFailedRegions, // pure — unit-tested
+  underAttemptCap,        // pure — unit-tested
 };

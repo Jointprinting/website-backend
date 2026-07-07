@@ -17,13 +17,17 @@ const {
   runScheduledJob,
 } = require('../controllers/jpwLead');
 const {
-  listSites, createSite, getSite, updateSite, deleteSite, getPublicSite,
+  listSites, createSite, getSite, updateSite, deleteSite, getPublicSite, getPublicSiteByDomain,
 } = require('../controllers/jpwSites');
 
-// PUBLIC site read — the ONE unauthenticated route here, so it must register
-// BEFORE the admin gate. /webworks/p/<slug> preview pages render from it; the
-// controller only serves preview/live sites (drafts 404), so nothing half-built
-// is ever reachable.
+// PUBLIC site reads — the ONLY unauthenticated routes here, so they must
+// register BEFORE the admin gate. /webworks/p/<slug> preview pages render from
+// the slug route; a client's CONNECTED custom domain resolves through the
+// domain route (the React app's hostname gate). The controller only serves
+// preview/live sites (drafts 404), so nothing half-built is ever reachable.
+// NOTE: /sites/public/domain/:host must register before /sites/public/:slug —
+// otherwise Express would swallow "domain" as a :slug value.
+router.get('/sites/public/domain/:host', getPublicSiteByDomain);
 router.get('/sites/public/:slug', getPublicSite);
 
 router.use(requireAdmin);

@@ -108,8 +108,27 @@ async function createSite(req, res) {
     let slug = base;
     for (let n = 2; await JpwSite.exists({ slug }); n++) slug = `${base}-${n}`;
 
-    const site = await JpwSite.create({ ...set, slug, status: 'draft' });
-    res.status(201).json({ site: site.toObject() });
+    // The exists()-loop → create() pair is not atomic: two same-name creates can
+    // race and the loser hits the unique slug index (E11000). Retry once from
+    // the collided slug rather than surfacing a raw Mongo error.
+    try {
+      const site = await JpwSite.create({ ...set, slug, status: 'draft' });
+      return res.status(201).json({ site: site.toObject() });
+    } catch (e) {
+      if (e && e.code === 11000) {
+        for (let n = 2; await JpwSite.exists({ slug }); n++) slug = `${base}-${n}`;
+        try {
+          const site = await JpwSite.create({ ...set, slug, status: 'draft' });
+          return res.status(201).json({ site: site.toObject() });
+        } catch (e2) {
+          if (e2 && e2.code === 11000) {
+            return res.status(400).json({ message: 'A site with a very similar name was just created — try again.' });
+          }
+          throw e2;
+        }
+      }
+      throw e;
+    }
   } catch (e) {
     res.status(400).json({ message: e.message });
   }
@@ -168,8 +187,35 @@ async function getPublicSite(req, res) {
   }
 }
 
+// Request-Host → comparable hostname: lowercase, strip port, strip a leading
+// "www." (clients type domains both ways; the stored domain may carry either
+// form too, so lookups compare both sides normalized). PURE + unit-tested.
+function normalizeHost(host) {
+  return String(host || '').toLowerCase().trim()
+    .replace(/:\d+$/, '')
+    .replace(/^www\./, '');
+}
+
+// GET /api/jpw/sites/public/domain/:host — the hostname-routing lookup behind a
+// client's CONNECTED domain: the React app asks "does this Host belong to a
+// live client site?" and renders it instead of the marketing shell. Only LIVE
+// sites resolve (a preview stays on its /webworks/p/<slug> link until the
+// client pays); unknown hosts 404 and the app falls through to the normal site.
+async function getPublicSiteByDomain(req, res) {
+  try {
+    const host = normalizeHost(req.params.host);
+    if (!host) return res.status(404).json({ message: 'not found' });
+    // The stored domain may or may not carry "www." — match both forms.
+    const site = await JpwSite.findOne({ domain: { $in: [host, `www.${host}`] }, status: 'live' }).lean();
+    if (!site) return res.status(404).json({ message: 'not found' });
+    res.json({ site: publicSiteView(site) });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
 module.exports = {
-  listSites, createSite, getSite, updateSite, deleteSite, getPublicSite,
+  listSites, createSite, getSite, updateSite, deleteSite, getPublicSite, getPublicSiteByDomain,
   // pure helpers (unit-tested)
-  slugifySiteName, sanitizeSiteUpdate, publicSiteView, SITE_STATUSES,
+  slugifySiteName, sanitizeSiteUpdate, publicSiteView, normalizeHost, SITE_STATUSES,
 };

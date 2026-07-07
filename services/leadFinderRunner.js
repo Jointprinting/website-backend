@@ -110,9 +110,21 @@ const citySlug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
 // safe default; a wrong split is worse than a conservative merge). The suffix
 // derives from the LEAD's own city, so every future re-find of the Denver shop
 // lands on the same suffixed record. Pure + unit-tested.
-function disambiguateKey(baseKey, newCity, existingCity) {
+function disambiguateKey(baseKey, newCity, existingCity, { foreignPool = false, fallbackSuffix = 'alt' } = {}) {
   const a = citySlug(newCity);
   const b = citySlug(existingCity);
+  if (foreignPool) {
+    // The colliding existing client is NOT in this vertical's pool — e.g. a
+    // MEDICAL sweep hitting an untagged legacy rec prospect with the same
+    // name-only key. Merging would stamp the wrong vertical tag on it and drag
+    // it into the wrong campaign, so the burden of proof FLIPS: merge only when
+    // both cities are known and EQUAL (same name + same city ≈ the same
+    // storefront, plausibly dual-licensed); any doubt → keep them separate.
+    // The suffix stays stable across re-finds (city slug, else the vertical
+    // fallback) so future sweeps dedupe onto the same suffixed record.
+    if (a && b && a === b) return baseKey;
+    return `${baseKey}-${a || fallbackSuffix}`;
+  }
   if (!a || !b || a === b) return baseKey;
   return `${baseKey}-${a}`;
 }
@@ -176,14 +188,23 @@ async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich, v
   // policy itself stays untouched.
   const bareKeys = [...new Set((mapped || []).filter((m) => m && !m._skip && m.companyKey).map((m) => m.companyKey))];
   const existingClients = bareKeys.length
-    ? await Client.find({ companyKey: { $in: bareKeys } }).select('companyKey address area').lean()
+    ? await Client.find({ companyKey: { $in: bareKeys } }).select('companyKey address area tags').lean()
     : [];
   const existingByKey = new Map(existingClients.map((c) => [c.companyKey, c]));
   for (const m of mapped || []) {
     if (!m || m._skip || !m.companyKey) continue;
     const ex = existingByKey.get(m.companyKey);
     if (!ex) continue;
-    const key = disambiguateKey(m.companyKey, cityFromAddress(m.address), cityFromAddress(ex.address || ex.area));
+    // A NON-default vertical colliding with a client OUTSIDE its pool (no such
+    // tag — usually an untagged legacy rec prospect) must not fill-blanks-merge
+    // into it: the post-import tagging would stamp the wrong vertical on a real
+    // prospect. disambiguateKey's foreignPool mode flips the burden of proof —
+    // merge only on a provable same-city match. The DEFAULT vertical keeps the
+    // original conservative-merge behavior (finder re-finds SHOULD dedupe onto
+    // existing prospects there).
+    const foreignPool = vertical.id !== DEFAULT_VERTICAL_ID && !(ex.tags || []).includes(vertical.tag);
+    const key = disambiguateKey(m.companyKey, cityFromAddress(m.address), cityFromAddress(ex.address || ex.area),
+      { foreignPool, fallbackSuffix: vertical.tag });
     if (key !== m.companyKey) {
       m.companyKey = key;
       m.rowIdentity = key; // the log-dedup identity follows the record it lands on
