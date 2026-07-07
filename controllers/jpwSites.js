@@ -10,6 +10,7 @@
 // is registered ABOVE that gate (it must be reachable with no token).
 
 const JpwSite = require('../models/JpwSite');
+const jpwCopywriter = require('../services/jpwCopywriter');
 
 // ── Pure helpers (unit-tested in controllers/__tests__/jpwSites.test.js) ─────
 
@@ -172,6 +173,40 @@ async function deleteSite(req, res) {
   }
 }
 
+// POST /api/jpw/sites/:id/generate { brief, tone? } — write the whole site's
+// copy from the owner's brief using the shared Anthropic integration. Admin
+// only. Deliberately does NOT save: it returns the copy for the frontend to
+// merge into the live editor draft, so the owner reviews before normal autosave
+// persists it. Feature-flagged on ANTHROPIC_API_KEY.
+async function generateCopy(req, res) {
+  try {
+    if (!jpwCopywriter.isConfigured()) {
+      return res.status(400).json({ message: "AI copywriting isn't enabled — set ANTHROPIC_API_KEY on the API." });
+    }
+    const site = await JpwSite.findById(req.params.id).lean();
+    if (!site) return res.status(404).json({ message: 'site not found' });
+
+    const brief = String((req.body && req.body.brief) || '').trim();
+    if (!brief) {
+      return res.status(400).json({ message: 'Add a few notes about the business so the AI has something to work from.' });
+    }
+    const tone = req.body && req.body.tone;
+
+    const result = await jpwCopywriter.generateSiteCopy({
+      businessName: site.name,
+      businessType: site.businessType,
+      templateId: site.templateId,
+      brief,
+      tone,
+    });
+    // The service never throws — a model/SDK failure comes back as { error }.
+    if (result.error) return res.status(502).json({ message: result.error });
+    return res.json({ data: result.data, meta: result.meta });
+  } catch (e) {
+    return res.status(502).json({ message: e.message || 'AI copywriting failed' });
+  }
+}
+
 // ── Public read (NO auth — registered above the requireAdmin gate) ───────────
 
 // GET /api/jpw/sites/public/:slug — what /webworks/p/<slug> renders. Drafts and
@@ -215,7 +250,7 @@ async function getPublicSiteByDomain(req, res) {
 }
 
 module.exports = {
-  listSites, createSite, getSite, updateSite, deleteSite, getPublicSite, getPublicSiteByDomain,
+  listSites, createSite, getSite, updateSite, deleteSite, generateCopy, getPublicSite, getPublicSiteByDomain,
   // pure helpers (unit-tested)
   slugifySiteName, sanitizeSiteUpdate, publicSiteView, normalizeHost, SITE_STATUSES,
 };
