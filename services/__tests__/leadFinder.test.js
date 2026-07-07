@@ -549,3 +549,45 @@ test('partitionDeliverable rejects disposable domains even with valid MX', () =>
   assert.deepEqual(good.map((c) => c.email), ['info@budz.com']);
   assert.deepEqual(bad.map((c) => c.email), ['x@mailinator.com']);
 });
+
+// ── Verified-defect fixes (post-merge adversarial sweep) ──────────────────────
+const { isOverpassTimeoutRemark } = require('../dispensaryFinder');
+const { underAttemptCap } = require('../leadFinderScheduler');
+
+test('isOverpassTimeoutRemark: a 200-with-remark timeout body is a FAILURE, not coverage', () => {
+  // The classic dense-state shape: HTTP 200, truncated elements, remark set.
+  assert.equal(isOverpassTimeoutRemark({ remark: 'runtime error: Query timed out in "query" at line 3' , elements: [] }), true);
+  assert.equal(isOverpassTimeoutRemark({ remark: 'runtime error: load_query_result' }), true);
+  assert.equal(isOverpassTimeoutRemark({ remark: 'Query timed-out' }), true);
+  // Clean bodies (no remark / benign shapes) pass through as success.
+  assert.equal(isOverpassTimeoutRemark({ elements: [{ id: 1 }] }), false);
+  assert.equal(isOverpassTimeoutRemark({}), false);
+  assert.equal(isOverpassTimeoutRemark(null), false);
+  assert.equal(isOverpassTimeoutRemark('string body'), false);
+});
+
+test('underAttemptCap drops regions that burned their retry budget', () => {
+  const failed = { ny: 3, ca: 1, tx: 5 };
+  // ny (at cap 3) and tx (over) are parked; ca (under) and fresh regions pass.
+  assert.deepEqual(underAttemptCap(['ny', 'ca', 'tx', 'fl'], failed, 3), ['ca', 'fl']);
+  // Empty/absent ledger → everything passes (nothing has failed yet).
+  assert.deepEqual(underAttemptCap(['ny', 'ca'], {}, 3), ['ny', 'ca']);
+  assert.deepEqual(underAttemptCap(['ny'], null, 3), ['ny']);
+  assert.deepEqual(underAttemptCap([], failed, 3), []);
+});
+
+test('disambiguateKey foreignPool mode: burden of proof flips for non-default verticals', () => {
+  // Same known city → still the same storefront → merge (bare key).
+  assert.equal(disambiguateKey('greenleaf', 'Trenton', 'Trenton', { foreignPool: true, fallbackSuffix: 'medical' }), 'greenleaf');
+  // Different city → suffix (same as default mode).
+  assert.equal(disambiguateKey('greenleaf', 'Denver', 'Trenton', { foreignPool: true, fallbackSuffix: 'medical' }), 'greenleaf-denver');
+  // UNKNOWN existing city (the legacy 'area only' shape) → default mode merges,
+  // but a foreign-pool import must NOT (it would stamp the wrong vertical tag).
+  assert.equal(disambiguateKey('greenleaf', 'Columbus', ''), 'greenleaf');
+  assert.equal(disambiguateKey('greenleaf', 'Columbus', '', { foreignPool: true, fallbackSuffix: 'medical' }), 'greenleaf-columbus');
+  // Both cities unknown → stable vertical-tag suffix (re-finds dedupe onto it).
+  assert.equal(disambiguateKey('greenleaf', '', '', { foreignPool: true, fallbackSuffix: 'medical' }), 'greenleaf-medical');
+  // Default mode is byte-identical to before when no options are passed.
+  assert.equal(disambiguateKey('greenleaf', 'Newark', 'Newark'), 'greenleaf');
+  assert.equal(disambiguateKey('greenleaf', 'Denver', 'Newark'), 'greenleaf-denver');
+});

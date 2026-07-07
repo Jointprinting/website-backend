@@ -102,12 +102,16 @@ exports.getUnseenCount = async (_req, res) => {
   }
 };
 
-exports.markAllSeen = async (_req, res) => {
+exports.markAllSeen = async (req, res) => {
   try {
-    await ContactSubmission.updateMany(
-      { seenByAdmin: { $ne: true } },
-      { $set: { seenByAdmin: true } }
-    );
+    // Optional source scope: the Studio's JP Webworks "Inquiries" tile opens a
+    // webworks-filtered view, so it must only mark THOSE seen — otherwise
+    // opening it silently wipes the unseen state of contact-form leads the
+    // owner never looked at. No/invalid source → original mark-everything.
+    const source = (req.body && req.body.source) || (req.query && req.query.source) || '';
+    const filter = { seenByAdmin: { $ne: true } };
+    if (['contact', 'webworks'].includes(source)) filter.source = source;
+    await ContactSubmission.updateMany(filter, { $set: { seenByAdmin: true } });
     return res.json({ ok: true });
   } catch (err) {
     return res.status(500).json({ message: 'Failed' });

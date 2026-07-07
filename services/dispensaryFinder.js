@@ -410,6 +410,17 @@ function splitBbox(bbox) {
 // that a dead endpoint can't fan out into an unbounded request storm.
 const MAX_SPLIT_DEPTH = 2;
 
+// A runtime timeout Overpass reports INSIDE an HTTP 200: once output has begun
+// the status is already committed, so a query that blows its [timeout:] budget
+// mid-execution comes back as 200 + a `remark` ("runtime error: Query timed out
+// in …") + a truncated (often empty) elements array. Accepting that as success
+// is exactly how dense states used to record "swept: 0 found" — it MUST count
+// as a failure so the endpoint fallback + quadrant split get their shot. PURE.
+function isOverpassTimeoutRemark(data) {
+  const remark = data && typeof data === 'object' ? String(data.remark || '') : '';
+  return /timed?[ _-]?out|runtime error/i.test(remark);
+}
+
 // ONE Overpass request for a bbox, trying each endpoint in turn so one being
 // down/rate-limited doesn't stall the sweep. Throws only if every endpoint fails.
 async function fetchBboxOnce(bbox, { timeoutMs = OVERPASS_TIMEOUT_MS, vertical } = {}) {
@@ -423,7 +434,15 @@ async function fetchBboxOnce(bbox, { timeoutMs = OVERPASS_TIMEOUT_MS, vertical }
         validateStatus: () => true,
         maxContentLength: 25 * 1024 * 1024,
       });
-      if (res.status === 200 && res.data) return parseOverpassElements(res.data, vertical);
+      if (res.status === 200 && res.data) {
+        // Partial-with-remark = the query died mid-run; the body is truncated.
+        // Treat as failure so the next endpoint / the quadrant split engages.
+        if (isOverpassTimeoutRemark(res.data)) {
+          lastErr = new Error(`Overpass ${endpoint} → 200 with timeout remark: ${String(res.data.remark).slice(0, 120)}`);
+          continue;
+        }
+        return parseOverpassElements(res.data, vertical);
+      }
       lastErr = new Error(`Overpass ${endpoint} → HTTP ${res.status}`);
     } catch (err) {
       lastErr = err;
@@ -505,6 +524,7 @@ module.exports = {
   fetchDispensariesForBbox,
   // pure — unit-tested
   splitBbox,
+  isOverpassTimeoutRemark,
   buildOverpassQuery,
   osmLatLng,
   osmAddress,

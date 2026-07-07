@@ -75,3 +75,15 @@ test('publicSiteView exposes render fields only — no _id, domain, or timestamp
   assert.equal('domain' in view, false);
   assert.equal(publicSiteView(null), null);
 });
+
+// ── Hostname routing for connected client domains ─────────────────────────────
+const { normalizeHost } = require('../jpwSites');
+test('normalizeHost: lowercase, port stripped, www-insensitive', () => {
+  assert.equal(normalizeHost('Shop.com'), 'shop.com');
+  assert.equal(normalizeHost('shop.com:443'), 'shop.com');
+  assert.equal(normalizeHost('www.Shop.com'), 'shop.com');
+  assert.equal(normalizeHost('WWW.shop.com:8080'), 'shop.com');
+  assert.equal(normalizeHost('  sub.shop.com '), 'sub.shop.com'); // subdomains kept (only www strips)
+  assert.equal(normalizeHost(''), '');
+  assert.equal(normalizeHost(null), '');
+});
