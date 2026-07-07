@@ -11,6 +11,7 @@
 
 const JpwSite = require('../models/JpwSite');
 const jpwCopywriter = require('../services/jpwCopywriter');
+const aiBudget = require('../services/aiBudget');
 
 // ── Pure helpers (unit-tested in controllers/__tests__/jpwSites.test.js) ─────
 
@@ -192,6 +193,12 @@ async function generateCopy(req, res) {
     }
     const tone = req.body && req.body.tone;
 
+    // AI-credit guardrail: a cheap check BEFORE we spend a single token. Refuses
+    // when this month's estimated spend has hit the budget, or the day's generate
+    // count has hit its cap — so a runaway loop can't silently drain the balance.
+    const guard = await aiBudget.preflight();
+    if (!guard.ok) return res.status(guard.status).json({ message: guard.message });
+
     const result = await jpwCopywriter.generateSiteCopy({
       businessName: site.name,
       businessType: site.businessType,
@@ -201,9 +208,30 @@ async function generateCopy(req, res) {
     });
     // The service never throws — a model/SDK failure comes back as { error }.
     if (result.error) return res.status(502).json({ message: result.error });
+
+    // Record estimated spend from the call's usage. Best-effort: a bookkeeping
+    // hiccup must NEVER break the copy the owner just generated.
+    try {
+      if (result.meta && result.meta.usage) await aiBudget.recordUsage(result.meta.usage);
+    } catch (e) {
+      console.error('[jpwSites] AI usage record failed:', e && e.message);
+    }
+
     return res.json({ data: result.data, meta: result.meta });
   } catch (e) {
     return res.status(502).json({ message: e.message || 'AI copywriting failed' });
+  }
+}
+
+// GET /api/jpw/ai-usage — the AI-credit snapshot the Studio hub + JPW Websites
+// tab render (admin only). `configured` mirrors whether AI copywriting is even
+// enabled; `level` is 'ok' | 'warn' (>=80% of budget) | 'blocked' (>=100%).
+async function getAiUsage(_req, res) {
+  try {
+    const status = await aiBudget.getStatus();
+    return res.json({ configured: jpwCopywriter.isConfigured(), ...status });
+  } catch (e) {
+    return res.status(500).json({ message: e.message || 'Failed to read AI usage.' });
   }
 }
 
@@ -250,7 +278,7 @@ async function getPublicSiteByDomain(req, res) {
 }
 
 module.exports = {
-  listSites, createSite, getSite, updateSite, deleteSite, generateCopy, getPublicSite, getPublicSiteByDomain,
+  listSites, createSite, getSite, updateSite, deleteSite, generateCopy, getAiUsage, getPublicSite, getPublicSiteByDomain,
   // pure helpers (unit-tested)
   slugifySiteName, sanitizeSiteUpdate, publicSiteView, normalizeHost, SITE_STATUSES,
 };
