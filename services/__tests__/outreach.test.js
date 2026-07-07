@@ -186,9 +186,11 @@ test('composeMessage footer is a bare Unsubscribe with NO postal address', () =>
   // Opt-out present in both parts.
   assert.match(html, /[Uu]nsubscribe/);
   assert.match(text, /[Uu]nsubscribe/i);
-  // Owner's call: no street / postal line leaks into the footer.
-  assert.doesNotMatch(html, /Elliot|Voorhees|NJ 0804|Joint Printing ·/i);
-  assert.doesNotMatch(text, /Elliot|Voorhees|NJ 0804|Joint Printing ·/i);
+  // Owner's call: no street / postal line leaks into the footer. (The SIGNATURE
+  // legitimately says "Joint Printing · jointprinting.com" — that's the sign-off,
+  // not an address — so only address-shaped strings are asserted absent.)
+  assert.doesNotMatch(html, /Elliot|Voorhees|NJ 0804/i);
+  assert.doesNotMatch(text, /Elliot|Voorhees|NJ 0804/i);
   // Two paragraphs render as two <p> blocks, plus the footer <p>.
   assert.equal((html.match(/<p /g) || []).length >= 3, true); // 2 body + footer
 });
@@ -336,4 +338,34 @@ test('abVariant: stable per token, and both arms occur across tokens', () => {
     arms.add(v);
   }
   assert.equal(arms.size, 2); // a 40-token sample hits both arms
+});
+
+// ── Sender signature (body → sig → footer ordering) ───────────────────────────
+const { buildSignature } = require('../outreachEngine');
+test('buildSignature: default sig, env override, and never double-signs', () => {
+  // Default (no env): Nate + the shop line.
+  const def = buildSignature('Quick question about your shop.', '', 'Joint Printing');
+  assert.deepEqual(def, ['Nate', 'Joint Printing · jointprinting.com']);
+  // Env override wins; literal "\n" and real newlines both split lines.
+  assert.deepEqual(buildSignature('Hi.', 'Nate\\nJoint Printing\\njointprinting.com'), ['Nate', 'Joint Printing', 'jointprinting.com']);
+  assert.deepEqual(buildSignature('Hi.', 'Nate\nThe Print Guy'), ['Nate', 'The Print Guy']);
+  // Body already carries the site link (owner wrote a sign-off) → no signature.
+  assert.equal(buildSignature('…check us out at jointprinting.com\n— Nate', '', ''), null);
+});
+
+test('composeMessage places the signature between body and footer in BOTH parts', () => {
+  const { html, text } = composeMessage({ bodyText: 'Hi there.\n\nSecond para.', token: 'tok123' });
+  // Signature present…
+  assert.match(html, /Nate/);
+  assert.match(text, /\nNate\n/);
+  // …linked site in the HTML part…
+  assert.match(html, /href="https:\/\/jointprinting\.com"/);
+  // …and ordered body → signature → opt-out footer (footer casing varies by
+  // link-vs-reply mode, so match case-insensitively).
+  const lower = text.toLowerCase();
+  assert.ok(text.indexOf('Second para.') < text.indexOf('Nate'));
+  assert.ok(lower.indexOf('nate') < lower.indexOf('unsubscribe'));
+  // A body that signed itself gets no injected signature block.
+  const own = composeMessage({ bodyText: 'See jointprinting.com — Nate', token: 'tok9' });
+  assert.equal(/(^|\n)Nate\n/.test(own.text.replace('— Nate', '')), false);
 });

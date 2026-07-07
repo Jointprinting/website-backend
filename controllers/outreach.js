@@ -104,6 +104,23 @@ function summarizeAbTest(rows = []) {
   return any ? out : null;
 }
 
+// Decide whether a subject A/B test has a clear winner worth LOCKING — after
+// which every new send uses the winning arm instead of burning half the volume
+// on the loser. Deliberately conservative (a wrongly-locked winner is worse
+// than letting the test run): both arms need real volume, the leader needs
+// enough absolute replies to not be one lucky hit, and its reply rate must
+// DOUBLE the laggard's. Returns 'A' | 'B' | '' (keep testing). PURE + tested.
+function decideAbWinner(ab, { minSent = 40, minReplies = 4, ratio = 2 } = {}) {
+  if (!ab || !ab.A || !ab.B) return '';
+  const { A, B } = ab;
+  if ((A.sent || 0) < minSent || (B.sent || 0) < minSent) return '';
+  const rate = (v) => ((v.sent || 0) > 0 ? (v.replied || 0) / v.sent : 0);
+  const [lead, lag, name] = rate(A) >= rate(B) ? [A, B, 'A'] : [B, A, 'B'];
+  if ((lead.replied || 0) < minReplies) return '';
+  if (rate(lead) < ratio * rate(lag)) return '';
+  return name;
+}
+
 // Pure campaign-health read (unit-tested): turns funnel stats into one
 // at-a-glance signal the UI badges, and — critically — explains WHY a campaign
 // isn't sending instead of leaving the owner staring at zeros. Levels:
@@ -251,7 +268,23 @@ async function getOverview(req, res) {
     const campaignRows = campaigns.map((c) => {
       const rows = byCampaign.get(String(c._id)) || [];
       const stats = summarizeEnrollments(rows);
-      return { ...c, stats, health: campaignHealth(c, stats), abTest: summarizeAbTest(rows) };
+      const abTest = summarizeAbTest(rows);
+      // Auto-lock the subject A/B winner the moment the live numbers are
+      // decisive (conservative thresholds — see decideAbWinner). Write-once,
+      // fire-and-forget: the next sends pick it up; this response already
+      // reflects it so the UI shows the lock immediately.
+      let abWinner = c.abWinner || '';
+      if (!abWinner && c.status === 'active' && abTest) {
+        const w = decideAbWinner(abTest);
+        if (w) {
+          abWinner = w;
+          OutreachCampaign.updateOne(
+            { _id: c._id, $or: [{ abWinner: '' }, { abWinner: { $exists: false } }] },
+            { $set: { abWinner: w, abWinnerAt: new Date() } },
+          ).catch(() => {});
+        }
+      }
+      return { ...c, abWinner, stats, health: campaignHealth(c, stats), abTest };
     });
     const campaignName = new Map(campaigns.map((c) => [String(c._id), c.name]));
 
@@ -386,7 +419,13 @@ async function updateCampaign(req, res) {
     const set = {};
     if ('name' in body) set.name = String(body.name || '').trim();
     if ('description' in body) set.description = String(body.description || '');
-    if ('steps' in body) set.steps = sanitizeSteps(body.steps);
+    if ('steps' in body) {
+      set.steps = sanitizeSteps(body.steps);
+      // Editing the steps rewrites the subjects under test — any locked A/B
+      // winner belonged to the OLD copy, so the test restarts at 50/50.
+      set.abWinner = '';
+      set.abWinnerAt = null;
+    }
     if ('vertical' in body && isVertical(body.vertical)) set.vertical = body.vertical;
     if ('status' in body) {
       if (!OutreachCampaign.CAMPAIGN_STATUSES.includes(body.status)) {
@@ -1161,6 +1200,7 @@ async function getAnalytics(req, res) {
           stats,
           health: campaignHealth(c, stats),
           abTest: summarizeAbTest(rows),
+          abWinner: c.abWinner || '',
           stepFunnel: buildStepFunnel(rows),
           trend: weeklyTrend(rows, nowMs),
           perState: buildStateFunnels(rows, stateByKey),
@@ -1534,6 +1574,7 @@ module.exports = {
   // exported for tests
   summarizeEnrollments,
   summarizeAbTest,
+  decideAbWinner,
   interleaveByCity,
   campaignHealth,
   buildNextActions,

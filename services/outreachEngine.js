@@ -313,11 +313,32 @@ async function recheckAuth() {
   return auth ? { ...auth, records: recommendedRecords(auth) } : null;
 }
 
-// Full HTML + plain-text message for one send: rendered body, a bare "Unsubscribe"
-// footer (owner's call — no postal address printed), and the open pixel when a
-// public base is set. If OUTREACH_POSTAL_ADDRESS is ever set to a real PO box /
-// virtual address, prepend `${POSTAL_ADDRESS}<br>` back into the footer for
-// stricter CAN-SPAM compliance.
+// Sender signature — a cold email that signs off with a human name reads like a
+// person wrote it, which is half the reply battle. OUTREACH_SIGNATURE overrides
+// the lines (literal "\n" or real newlines split them); the default derives from
+// OUTREACH_SENDER_NAME. Returns null (no signature) when the body already
+// carries the site link — the owner wrote their own sign-off; never double-sign.
+// PURE (env injected) + unit-tested.
+function buildSignature(bodyText, raw = process.env.OUTREACH_SIGNATURE, senderName = process.env.OUTREACH_SENDER_NAME) {
+  if (/jointprinting\.com/i.test(String(bodyText || ''))) return null;
+  const lines = String(raw || '').split(/\\n|\r?\n/).map((s) => s.trim()).filter(Boolean);
+  if (lines.length) return lines;
+  return ['Nate', `${String(senderName || '').trim() || 'Joint Printing'} · jointprinting.com`];
+}
+
+// One signature line as HTML — escaped, with any jointprinting.com mention made
+// a real link (subtle, body-colored; not the spammy blue).
+function signatureLineHtml(line) {
+  const esc = escapeHtml(line);
+  return esc.replace(/jointprinting\.com/i, (m) => `<a href="https://jointprinting.com" style="color:#2e7d32;text-decoration:none;">${m}</a>`);
+}
+
+// Full HTML + plain-text message for one send: rendered body, the sender
+// signature, a bare "Unsubscribe" footer (owner's call — no postal address
+// printed), and the open pixel when a public base is set. If
+// OUTREACH_POSTAL_ADDRESS is ever set to a real PO box / virtual address,
+// prepend `${POSTAL_ADDRESS}<br>` back into the footer for stricter CAN-SPAM
+// compliance.
 function composeMessage({ bodyText, token }) {
   const unsub = unsubscribeUrl(token);
   // Just the word "Unsubscribe" — a link when we have a public base, else a
@@ -331,16 +352,23 @@ function composeMessage({ bodyText, token }) {
   // A postal address is only printed if one is explicitly configured.
   const postalHtml = POSTAL_ADDRESS ? `${escapeHtml(POSTAL_ADDRESS)}<br>` : '';
   const postalText = POSTAL_ADDRESS ? `${POSTAL_ADDRESS}\n` : '';
+  // Signature between the body and the footer (skipped if the body signed itself).
+  const sig = buildSignature(bodyText);
+  const sigHtml = sig
+    ? `<p style="margin:1em 0 0 0;">${sig.map(signatureLineHtml).join('<br>')}</p>`
+    : '';
+  const sigText = sig ? `\n\n${sig.join('\n')}` : '';
   const pixel = openPixelEnabled() ? openPixelUrl(token) : '';
   const html = [
     `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#222;">`,
     bodyToHtml(bodyText),
+    sigHtml,
     `<p style="margin:1.5em 0 0 0;font-size:11px;line-height:1.5;color:#999;">`,
     `${postalHtml}${optOutHtml}</p>`,
     pixel ? `<img src="${pixel}" width="1" height="1" alt="">` : '', // no display:none
     `</div>`,
   ].join('');
-  const text = `${String(bodyText || '')}\n\n--\n${postalText}${optOutText}\n`;
+  const text = `${String(bodyText || '')}${sigText}\n\n--\n${postalText}${optOutText}\n`;
   return { html, text };
 }
 
@@ -779,10 +807,14 @@ async function sendOne(enr, campaign, now = new Date(), sender = null) {
   } else {
     // Subject A/B: when the step carries a B variant, a stable half of
     // enrollments (keyed off the token, NOT random — so retries and follow-up
-    // fresh-subject steps stay in the same arm) get it instead.
+    // fresh-subject steps stay in the same arm) get it instead. Once the test
+    // has a LOCKED winner (campaign.abWinner, decided from live reply rates),
+    // every new send uses the winning arm — no more volume on the loser.
     let subjectTpl = step.subject;
     if (String(step.subjectB || '').trim()) {
-      variant = abVariant(enr.token);
+      variant = (campaign.abWinner === 'A' || campaign.abWinner === 'B')
+        ? campaign.abWinner
+        : abVariant(enr.token);
       if (variant === 'B') subjectTpl = step.subjectB;
     }
     // Merge FIRST, then resolve spintax — so a {{merge|fallback}} token is never
@@ -1127,6 +1159,7 @@ module.exports = {
   buildMergeContext,
   cityFromAddress,
   composeMessage,
+  buildSignature,
   sendBlockReason,
   bodyToHtml,
   isPermanentSmtpError,
