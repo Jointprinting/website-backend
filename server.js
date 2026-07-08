@@ -307,7 +307,7 @@ app.use('/api/site-settings', express.json({ limit: '2mb' }), siteSettingRoutes)
 app.use('/api/roadtrip', roadTripRoutes);
 app.use('/api/studio', studioRoutes);
 app.use('/api/orders', express.json({ limit: '100mb' }), orderRoutes);
-app.use('/api/client-logos', express.json({ limit: '2mb' }), clientLogoRoutes);
+app.use('/api/client-logos', express.json({ limit: '5mb' }), clientLogoRoutes);
 app.use('/api/clients', express.json(), clientRoutes);
 // CRM import can carry the whole field tracker as JSON rows or raw CSV text, so
 // allow a larger body than the global 1mb default.
