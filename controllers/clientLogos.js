@@ -2,9 +2,11 @@ const ClientLogo = require('../models/ClientLogo');
 const { deriveCompanyKey } = require('../models/Order');
 const r2 = require('../services/r2');
 
-// Cap stored logos at ~500 KB after base64 (roughly 375 KB raw). Logos
-// should be small; bigger uploads suggest someone dropped a full-res photo.
-const MAX_DATA_URL_LEN = 700 * 1024;
+// Cap stored logos generously — a data URL up to ~3 MB (≈ 2.2 MB raw image
+// after base64). Big enough for a real high-res client logo without letting a
+// full-res photo bloat the doc. Stays well under the /api/client-logos body
+// limit (server.js). Env-overridable.
+const MAX_DATA_URL_LEN = Math.max(1, parseInt(process.env.MAX_LOGO_KB, 10) || 3072) * 1024;
 
 // GET /api/client-logos — every logo, for the OrderTracker to map by companyKey.
 const listLogos = async (req, res) => {
@@ -24,7 +26,7 @@ const upsertLogo = async (req, res) => {
       return res.status(400).json({ message: 'imageDataUrl (data:image/...) is required' });
     }
     if (imageDataUrl.length > MAX_DATA_URL_LEN) {
-      return res.status(413).json({ message: `Logo too large — keep it under ${Math.round(MAX_DATA_URL_LEN/1024)} KB.` });
+      return res.status(413).json({ message: `Logo too large — keep it under ${(MAX_DATA_URL_LEN / 1024 / 1024).toFixed(1).replace(/\.0$/, '')} MB.` });
     }
     const companyKey = deriveCompanyKey(companyName, clientName);
     if (!companyKey) return res.status(400).json({ message: 'companyName (or clientName) is required' });
