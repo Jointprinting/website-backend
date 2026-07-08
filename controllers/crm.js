@@ -52,11 +52,11 @@ const CLOSED_STAGES = ['won', 'lost', 'dormant'];
 // so an order can never silently resurrect a deal the owner closed, and an
 // owner-closed stage is never regressed by an import.
 const STAGE_RANK = {
-  lead: 0, contacted: 1, quoting: 2, won: 5, customer: 5,
+  lead: 0, contacted: 1, awaiting_details: 2, quoting: 3, won: 5, customer: 5,
 };
 // Pre-customer stages — a won/customer or order-bearing company must never be
 // regressed INTO one of these through an ordinary edit (customer permanence).
-const PRE_CUSTOMER_STAGES = new Set(['lead', 'contacted', 'quoting']);
+const PRE_CUSTOMER_STAGES = new Set(['lead', 'contacted', 'awaiting_details', 'quoting']);
 // Move `current` toward `target` ONLY if that's a forward move on the funnel and
 // NEITHER stage is a closed/parked end state (lost/dormant). Returns the stage to
 // keep. Never regresses; never touches lost/dormant.
@@ -168,13 +168,14 @@ const NOT_ARCHIVED = { archived: { $ne: true } };
 // /pipeline. won/customer are realized (1); lost/dormant carry no forecast (0).
 // Exposed on the /pipeline payload so the board can label it consistently.
 const STAGE_PROBABILITY = {
-  lead:      0.1,
-  contacted: 0.25,
-  quoting:   0.5,
-  won:       1,
-  customer:  1,
-  lost:      0,
-  dormant:   0,
+  lead:             0.1,
+  contacted:        0.25,
+  awaiting_details: 0.35,
+  quoting:          0.5,
+  won:              1,
+  customer:         1,
+  lost:             0,
+  dormant:          0,
 };
 const stageProbability = (stage) => (
   Object.prototype.hasOwnProperty.call(STAGE_PROBABILITY, stage) ? STAGE_PROBABILITY[stage] : 0
@@ -185,7 +186,7 @@ const stageProbability = (stage) => (
 // customer are closed-won (revenue realized, not open); lost & dormant are dead.
 // (Distinct from the call-engine's CLOSED_STAGES, which keeps `customer` callable
 // for retention — that's about who to call, not open deal value.)
-const OPEN_STAGES = ['lead', 'contacted', 'quoting'];
+const OPEN_STAGES = ['lead', 'contacted', 'awaiting_details', 'quoting'];
 
 // Compute the board summary from a flat list of { stage, dealValue } records.
 // Pure (no DB) so it's unit-testable. Returns:
@@ -239,7 +240,7 @@ function summarizePipeline(records) {
 // Client-per-companyKey record (company dedup intact) — the multiplicity is only
 // in the order columns, and it's intentional (distinct jobs).
 const BOARD_COLUMNS = [
-  'lead', 'contacted',
+  'lead', 'contacted', 'awaiting_details',
   'quoting', 'approval', 'production', 'shipped', 'delivered',
 ];
 const BOARD_CLOSED_COLUMNS = ['lost', 'dormant', 'cancelled'];
@@ -249,7 +250,7 @@ const ALL_BOARD_COLUMNS = [...BOARD_COLUMNS, ...BOARD_CLOSED_COLUMNS];
 // live order earns a lead card (else it already shows as an order card). Mid-
 // funnel Client stages (quoting) are intentionally absent — once a deal
 // is quoting it lives in the ORDER columns, sourced from its Order rows.
-const BOARD_LEAD_STAGES = ['lead', 'contacted'];
+const BOARD_LEAD_STAGES = ['lead', 'contacted', 'awaiting_details'];
 // Client mid-funnel stages that, WITHOUT a live order, fall back to a card in the
 // QUOTING column — so a deal advanced to quoting never vanishes from the
 // board in the window before its order row exists (or if the order mint failed).
@@ -264,7 +265,7 @@ const BOARD_CLOSED_CLIENT_STAGES = ['lost', 'dormant'];
 // columns + the pre-delivery order columns. delivered is won (realized, not
 // open); lost/dormant/cancelled are dead. Keeps the header band's "open pipeline"
 // honest over the unified set.
-const BOARD_OPEN_COLUMNS = ['lead', 'contacted', 'quoting', 'approval', 'production', 'shipped'];
+const BOARD_OPEN_COLUMNS = ['lead', 'contacted', 'awaiting_details', 'quoting', 'approval', 'production', 'shipped'];
 
 // Close-probability per BOARD column — drives the weighted forecast over the
 // unified set. Lead columns keep the Client STAGE_PROBABILITY so a lead's
@@ -272,9 +273,10 @@ const BOARD_OPEN_COLUMNS = ['lead', 'contacted', 'quoting', 'approval', 'product
 // realized (1); the closed lane carries no forecast (0). Exposed on the payload
 // so the board can label without hardcoding.
 const BOARD_PROBABILITY = {
-  lead:       0.1,
-  contacted:  0.25,
-  quoting:    0.5,
+  lead:             0.1,
+  contacted:        0.25,
+  awaiting_details: 0.35,
+  quoting:          0.5,
   approval:   0.8,
   production: 0.9,
   shipped:    0.95,
