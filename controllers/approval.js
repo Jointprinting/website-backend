@@ -273,6 +273,8 @@ const publicGetProject = async (req, res) => {
         printType:    l.printType    || '',
         printDetails: l.printDetails || '',
         unitPrice:    n(l.unitPrice) || +(unitCogs * (n(l.markup) || 1.4)).toFixed(2),
+        // Optional lead time (weeks) shown to the client only when set (>0).
+        turnaroundWeeks: n(l.turnaroundWeeks) || 0,
         // Design preview for the option card: the line's uploaded image
         // (vendor-rendered items) or its studio mockup's thumbnail.
         image: l.image

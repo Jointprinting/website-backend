@@ -911,7 +911,7 @@ const duplicateOrder = async (req, res) => {
         supplier: l.supplier, blankCost: l.blankCost,
         printType: l.printType, printDetails: l.printDetails, printCost: l.printCost,
         setupCost: l.setupCost, shippingCost: l.shippingCost,
-        markup: l.markup, unitPrice: l.unitPrice,
+        markup: l.markup, unitPrice: l.unitPrice, turnaroundWeeks: l.turnaroundWeeks,
       })),
       orderDate:     null,
       shipDate:      null,

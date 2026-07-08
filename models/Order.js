@@ -484,6 +484,11 @@ const OrderSchema = new mongoose.Schema({
     shippingCost: { type: Number, default: 0 },   // full shipping for THIS option; spread across this line's qty
     markup:       { type: Number, default: 1.4 }, // multiplier; unit price = (blankCost + printCost + (setup+ship)/qty) * markup; matches the builder default
     unitPrice:    { type: Number, default: 0 },   // computed but stored so user can override
+    // Optional client-facing lead time for THIS option, in weeks. 0 = not set
+    // (the quote/approval page shows nothing). Purely informational — never
+    // affects pricing/COGS. Per-line so a "quick print" option can quote a
+    // shorter turnaround than a "full print" one in the same group.
+    turnaroundWeeks: { type: Number, default: 0 },
     _id: false,
   }],
   orderDate:     { type: Date },
