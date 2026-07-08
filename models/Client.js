@@ -16,7 +16,9 @@ const mongoose = require('mongoose');
 // 'quoting' by an idempotent boot repair (controllers/crm.migrateRetiredStages),
 // so no stored doc carries it. 'customer' remains the stored value; the UI
 // labels it "Client" everywhere.
-const CRM_STAGES = ['lead', 'contacted', 'quoting', 'won', 'customer', 'lost', 'dormant'];
+// 'awaiting_details' sits between contacted and quoting: the lead is warmer than
+// a first touch (interested, gathering specs) but not yet being priced.
+const CRM_STAGES = ['lead', 'contacted', 'awaiting_details', 'quoting', 'won', 'customer', 'lost', 'dormant'];
 
 // What the company is interested in. '' = unknown/unset.
 const INTEREST_TYPES = ['', 'promos', 'apparel', 'both'];
