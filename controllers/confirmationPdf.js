@@ -59,6 +59,7 @@ const confirmationPdf = async (req, res) => {
     const itemsSubtotal = items.reduce((s, it) =>
       s + (it.sizes || []).reduce((ss, sz) => ss + (Number(sz.qty) || 0) * (Number(sz.unitPrice) || 0), 0), 0);
     const locationTax = Order.computeLocationTax(conf);
+    const feeMode = (conf && conf.feeMode) || 'owner_fee';
     let running = itemsSubtotal;
     const customLines = [];
     (conf.customLines || []).forEach(l => {
@@ -66,6 +67,10 @@ const confirmationPdf = async (req, res) => {
       // customLine must NOT also apply — per-location tax wins. Mirrors the model
       // so the PDF the client pays from is taxed exactly once.
       if (locationTax.active && Order.isTaxCustomLine(l)) return;
+      // Fee-mode guard: in 'client_choice' the client's payment pick applies the
+      // card fee once, so a baked card-fee line is dropped here too — keeping the
+      // PDF total byte-identical to the model + the client page.
+      if (feeMode === 'client_choice' && Order.isCardFeeCustomLine(l)) return;
       const isPercent = !!l.isPercent;
       const amount = Number(l.amount) || 0;
       const value = isPercent ? running * amount / 100 : amount;

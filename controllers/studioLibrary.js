@@ -95,8 +95,12 @@ async function saveItem(req, res) {
         client: client || '', pageState: pageState || null,
         savedAt: savedAt || Date.now(),
       };
+      // Scope the match by STORE too, not remoteId alone. A client UUID that (very
+      // rarely) collides across stores would otherwise let a mockup save MATCH a
+      // blanks/logos doc and flip its `store`, destroying the original. Same-store
+      // upsert keeps each kind isolated.
       const prev = await StudioLibraryItem.findOneAndUpdate(
-        { remoteId },
+        { store, remoteId },
         { $set: fields, $setOnInsert: { remoteId } },
         { new: false, upsert: true },
       );

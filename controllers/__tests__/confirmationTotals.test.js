@@ -308,3 +308,32 @@ test('STATE_TAX_RATES covers the owner territory with expected rates', () => {
 
 // Round to cents to keep float noise out of the assertions.
 function round(n) { return Math.round(n * 100) / 100; }
+
+// ── Fee mode (owner-adds-% vs client-picks-payment) + total units ────────────
+// The card fee must apply EXACTLY once. In the default 'owner_fee' a baked
+// "Credit card fee" line is part of the total; in 'client_choice' it's dropped
+// (the approval-page picker applies it instead), so the two can never double.
+test('feeMode client_choice drops the baked card-fee line; owner_fee keeps it', () => {
+  const conf = {
+    items: [item(10, 20)],   // $200 subtotal, 10 units
+    customLines: [{ label: 'Credit card fee', amount: 2.99, isPercent: true }],
+  };
+  assert.equal(computeConfirmationTotals(conf).grandTotal, 205.98);                       // owner_fee (default): fee applies
+  assert.equal(computeConfirmationTotals({ ...conf, feeMode: 'owner_fee' }).grandTotal, 205.98);
+  assert.equal(computeConfirmationTotals({ ...conf, feeMode: 'client_choice' }).grandTotal, 200); // fee skipped
+});
+
+test('feeMode never drops a NON-card add-on line', () => {
+  const conf = {
+    items: [item(10, 20)],
+    customLines: [{ label: 'Shipping reserve', amount: 15, isPercent: false }],
+    feeMode: 'client_choice',
+  };
+  assert.equal(computeConfirmationTotals(conf).grandTotal, 215);   // shipping still applies
+});
+
+test('computeConfirmationTotals reports totalUnits across items', () => {
+  const conf = { items: [item(10, 20), { sizes: [{ label: 'S', qty: 5, unitPrice: 20 }, { label: 'M', qty: 7, unitPrice: 20 }] }] };
+  assert.equal(computeConfirmationTotals(conf).totalUnits, 22);
+  assert.equal(computeConfirmationTotals({ items: [] }).totalUnits, 0);
+});

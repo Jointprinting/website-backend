@@ -12,7 +12,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const Deal = require('../../models/Deal');
-const { isClientFromDeals, deriveBusinessStatus, planMigration } = require('../../services/dealService');
+const { isClientFromDeals, deriveBusinessStatus, planMigration, groupOrdersByJob } = require('../../services/dealService');
 const { sanitizeDeal } = require('../deals');
 
 // ── Order status → deal stage ────────────────────────────────────────────────
@@ -62,6 +62,41 @@ test('planMigration: one deal per order, stage mapped from status', () => {
   assert.equal(acmeWon.migrationBatch, 'b1');
   assert.equal(toCreate.find(d => d.sourceOrderId === 'o2').stage, 'quoted');
   assert.equal(toCreate.find(d => d.sourceOrderId === 'o3').stage, 'lost');
+});
+
+// ── De-dup: multiple Order docs for ONE job → ONE deal ───────────────────────
+// The reported bug: a job that exists as two Order docs (a project/quote doc and a
+// placed/invoice doc) produced two deal cards — one titled #<projectNumber>, one
+// #<orderNumber>. The migration must collapse them into a single deal.
+test('planMigration collapses duplicate Order docs for one job into a single deal', () => {
+  const orders = [
+    // the full doc: project 30 + invoice 1021, placed
+    { _id: 'full', companyKey: 'bract', companyName: 'Bract House', status: 'placed', totalValue: 8321, orderNumber: '1021', projectNumber: '30' },
+    // a duplicate doc for the same job (shares the invoice number), still at quote
+    { _id: 'dup',  companyKey: 'bract', companyName: 'Bract House', status: 'quoted', totalValue: 8321, orderNumber: '1021' },
+  ];
+  const { toCreate } = planMigration({ orders, clients: [], existingDeals: [], batchId: 'b5' });
+  assert.equal(toCreate.length, 1, 'one job → one deal, not two');
+  const d = toCreate[0];
+  assert.equal(d.stage, 'won', 'the placed doc wins as survivor');
+  assert.equal(d.sourceOrderId, 'full');
+  assert.equal(d.orderNumber, '1021');
+  assert.equal(d.projectNumber, '30', 'both numbers merged onto the one deal');
+});
+
+test('groupOrdersByJob: unions on a shared number, keeps distinct jobs apart', () => {
+  const orders = [
+    { _id: 'a', companyKey: 'x', projectNumber: '000061', orderNumber: '1036' }, // leading zeros
+    { _id: 'b', companyKey: 'x', projectNumber: '61' },                          // same job as a
+    { _id: 'c', companyKey: 'x', projectNumber: '62' },                          // different job
+    { _id: 'd', companyKey: 'y', projectNumber: '61' },                          // different COMPANY, not merged
+  ];
+  const groups = groupOrdersByJob(orders).map((g) => g.map((o) => o._id).sort());
+  // a+b collapse (normalized 61 == 000061); c and d stand alone.
+  assert.equal(groups.length, 3);
+  assert.ok(groups.some((g) => g.join() === 'a,b'));
+  assert.ok(groups.some((g) => g.join() === 'c'));
+  assert.ok(groups.some((g) => g.join() === 'd'));
 });
 
 test('planMigration is IDEMPOTENT — orders that already have a deal are skipped', () => {

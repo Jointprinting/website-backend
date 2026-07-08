@@ -2205,6 +2205,26 @@ function mergeContacts(into, extra) {
   return out;
 }
 
+// Forward-progress rank for a merge stage-fold — ranks won/customer highest and
+// the closed off-ramps (lost/dormant) lowest, so merging a dead duplicate into a
+// live client never regresses the survivor. (STAGES enum order can't be used here:
+// it lists lost/dormant after won/customer.)
+const MERGE_STAGE_RANK = { lead: 1, contacted: 2, quoting: 3, won: 5, customer: 5, lost: 0, dormant: 0 };
+
+// Every collection keyed by companyKey that a merge must re-home onto the survivor
+// (besides Orders, handled explicitly). Deal is the load-bearing one — without it,
+// a merged company's deals stay pinned to the archived loser key and the pipeline
+// attaches to a dead company. `withName` also refreshes the denormalized
+// companyName so future reads/writes stay consistent. Best-effort per collection.
+const MERGE_REPOINT_MODELS = [
+  { name: 'Deal',              withName: true  },
+  { name: 'OutreachEnrollment', withName: false },
+  { name: 'TriageReply',       withName: false },
+  { name: 'ClientLogo',        withName: false },
+  { name: 'FieldRun',          withName: false },
+  { name: 'Dispensary',        withName: false },
+];
+
 // Pure survivor-folding policy for a merge: mutate `survivor` in place, pulling
 // everything worth keeping out of `merged` WITHOUT losing data. No DB here so
 // the fold rules are unit-testable. Order re-pointing + soft-delete stay in the
@@ -2222,8 +2242,12 @@ function foldMergeFields(survivor, merged, mergedKey) {
 
   // Money: keep the LARGER open deal value (don't sum - avoids double-count).
   survivor.dealValue = Math.max(Number(survivor.dealValue) || 0, Number(merged.dealValue) || 0);
-  // Stage: keep whichever is further along the funnel (don't regress).
-  if (STAGES.indexOf(merged.stage) > STAGES.indexOf(survivor.stage)) survivor.stage = merged.stage;
+  // Stage: keep whichever is further along the funnel — but by FORWARD PROGRESS,
+  // not raw enum order. STAGES lists lost/dormant AFTER won/customer, so a naive
+  // index would let a dead duplicate regress a live client to lost/dormant on merge.
+  // MERGE_STAGE_RANK ranks won/customer highest and the closed off-ramps lowest, so
+  // a merge never demotes a client. (Mirrors reconcile's furthest-stage guard.)
+  if ((MERGE_STAGE_RANK[merged.stage] || 0) > (MERGE_STAGE_RANK[survivor.stage] || 0)) survivor.stage = merged.stage;
   // Dates: lastContact = newer; nextFollowUp = keep survivor's, else inherit.
   if (merged.lastContact && (!survivor.lastContact || merged.lastContact > survivor.lastContact)) survivor.lastContact = merged.lastContact;
   if (!survivor.nextFollowUp && merged.nextFollowUp) survivor.nextFollowUp = merged.nextFollowUp;
@@ -2271,6 +2295,21 @@ async function mergeCompanies(req, res) {
       { $set: { companyKey: survivorKey, companyName: survivor.companyName || '', clientName: survivor.clientName || '' } },
     );
 
+    // RE-POINT every OTHER companyKey-keyed collection too (Deals especially), so a
+    // merge re-homes the whole ecosystem — not just orders. Best-effort per model:
+    // a missing/odd collection can't fail the merge (Orders + the survivor already
+    // saved). Deals stranded on the archived loser key were the sharp bug here.
+    const repointed = {};
+    for (const { name, withName } of MERGE_REPOINT_MODELS) {
+      try {
+        const M = require(`../models/${name}`);
+        const set = { companyKey: survivorKey };
+        if (withName) set.companyName = survivor.companyName || '';
+        const r = await M.updateMany({ companyKey: mergedKey }, { $set: set });
+        repointed[name] = r.modifiedCount != null ? r.modifiedCount : (r.nModified || 0);
+      } catch (e) { repointed[name] = 0; }
+    }
+
     // Soft-delete the merged record (recoverable; nothing hard-deleted).
     merged.archived = true;
     merged.archivedAt = new Date();
@@ -2283,6 +2322,8 @@ async function mergeCompanies(req, res) {
       ok: true,
       survivor: survivorLean,
       ordersRepointed: orderUpdate.modifiedCount != null ? orderUpdate.modifiedCount : (orderUpdate.nModified || 0),
+      dealsRepointed: repointed.Deal || 0,
+      repointed,
       mergedKey,
     });
   } catch (e) {

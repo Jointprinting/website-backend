@@ -716,6 +716,23 @@ const sendApprovalLink = async (req, res) => {
     const now = Date.now();
     const expired = order.approvalTokenExpiresAt && order.approvalTokenExpiresAt.getTime() < now;
     const rotated = wantsRotate || expired || !order.approvalToken;
+    // RE-SHARE AFTER A CHANGE REQUEST: if the owner re-shares the SAME link (no
+    // rotation) while the current decision is "requested_changes", reopen the cycle
+    // on that same token — the client's existing URL flips from the "we're on it"
+    // dead-end back to a live Approve / Request-edits ask, and the guest list +
+    // emailed link survive (unlike "Start a fresh link"). Reuses the supersededAt
+    // cutoff the rotate path uses. NEVER fires for 'approved' (money booked +
+    // tracking started) — the status guard enforces that.
+    if (!rotated && _currentApprovalStatus(order).status === 'requested_changes') {
+      order.approvalSupersededAt = new Date(now);
+      order.optionsPickedAt = null;   // mirror the rotate path's stale-pick clear
+      order.activity = order.activity || [];
+      order.activity.push({
+        kind: 'approval_reopened', actor: 'admin',
+        message: 'Reopened for approval after revisions',
+        meta: { reopened: true }, at: new Date(now),
+      });
+    }
     if (rotated) {
       order.approvalToken = crypto.randomBytes(16).toString('hex');
       // Fresh token = fresh approval cycle. Prior approved/requested_changes
