@@ -72,13 +72,21 @@ function isTaxCustomLine(line) {
   return /tax/i.test(String(line.label || ''));
 }
 
-// A baked card/credit-card processing-fee customLine (the "+ Card fee" preset).
-// In feeMode 'client_choice' the CLIENT's payment-method pick applies the fee once,
-// so a baked card-fee line must be dropped from the total to avoid double-charging.
-// Broad label match (mirrors the frontend isCardFeeLine); never a tax line.
-function isCardFeeCustomLine(line) {
+// A baked payment-processing-fee customLine — a "Card fee" or "ACH fee" the owner
+// added himself. Its PRESENCE is the single source of truth for the fee model: if
+// the owner baked a payment fee, the client approval page HIDES its payment-method
+// picker (otherwise the client's pick would apply a second fee). If he baked none,
+// the client picks how to pay and the fee is applied there. A discount / shipping /
+// tax line is NOT a payment fee, so those never suppress the picker. Never a tax line.
+function isPaymentFeeCustomLine(line) {
   if (!line || isTaxCustomLine(line)) return false;
-  return /card/i.test(String(line.label || ''));
+  const label = String(line.label || '');
+  return /card/i.test(label) || /\bach\b|bank transfer/i.test(label);
+}
+// Did the owner bake a payment fee into this confirmation? Drives whether the client
+// sees the payment-method picker (they pick ⟺ no baked fee). Mirrored on the frontend.
+function hasBakedPaymentFee(conf) {
+  return ((conf && conf.customLines) || []).some(isPaymentFeeCustomLine);
 }
 
 // Per-location sales tax for a confirmation that ships to multiple destinations
@@ -148,7 +156,6 @@ function computeConfirmationTotals(conf) {
     s + ((it && it.sizes) || []).reduce((ss, sz) => ss + n(sz.qty) * n(sz.unitPrice), 0), 0);
   const totalUnits = items.reduce((s, it) => s + itemTotalQty(it), 0);
   const locationTax = computeLocationTax(conf);
-  const feeMode = (conf && conf.feeMode) || 'owner_fee';
   let running = itemsSubtotal;
   ((conf && conf.customLines) || []).forEach(l => {
     // DOUBLE-TAX GUARD: when per-location tax is active, a legacy tax customLine
@@ -157,10 +164,10 @@ function computeConfirmationTotals(conf) {
     // applies (back-comp). The builder also suppresses the conflict going forward;
     // this keeps already-saved confirmations that carry both from double-taxing.
     if (locationTax.active && isTaxCustomLine(l)) return;
-    // FEE-MODE GUARD: in 'client_choice' the client's payment-method pick applies
-    // the card/ACH fee exactly once, so a baked card-fee line must NOT also apply
-    // (that was the double-charge). In 'owner_fee' the baked line is the sole fee.
-    if (feeMode === 'client_choice' && isCardFeeCustomLine(l)) return;
+    // A baked payment fee (Card/ACH) always applies here — the double-charge is
+    // prevented by HIDING the client payment picker whenever such a line exists
+    // (hasBakedPaymentFee), not by dropping the line. So the fee is charged once:
+    // via the baked line, OR via the client's pick when there's no baked line.
     running += l && l.isPercent ? running * n(l.amount) / 100 : n(l && l.amount);
   });
   running += locationTax.total;
@@ -416,15 +423,12 @@ const OrderSchema = new mongoose.Schema({
       isTax:     { type: Boolean, default: false },
       _id: false,
     }],
-    // How the card/processing fee is applied — the owner picks ONE, never both:
-    //   'owner_fee'     → the owner bakes a fixed % via a "Card fee" customLine and
-    //                     the client sees no payment picker (the fee is in the Total).
-    //   'client_choice' → NO baked fee line; the client picks Card (2.99%) or ACH
-    //                     (1%) on the approval page and that applies the fee ONCE.
-    // Default 'owner_fee' so every already-saved confirmation keeps its stored total
-    // and simply stops rendering the picker — retroactively killing the old
-    // double-charge (baked line + picker fee) without any data migration.
-    feeMode: { type: String, enum: ['owner_fee', 'client_choice'], default: 'owner_fee' },
+    // Fee model, now DERIVED from the lines (see hasBakedPaymentFee), not a switch:
+    // if the owner baked a Card/ACH fee line the client sees no picker (the fee is in
+    // the Total); if he baked none the client picks Card (2.99%) / ACH (1%) on the
+    // approval page and that applies the fee once. This field is kept only as the
+    // owner's remembered preference for the builder toggle; no money logic reads it.
+    feeMode: { type: String, enum: ['owner_fee', 'client_choice'], default: 'client_choice' },
   },
   // Client-facing order tracking timeline. Initialized the first time a
   // client approves a confirmation; admin then ticks off subsequent steps
@@ -574,5 +578,6 @@ module.exports.STATE_TAX_RATES = STATE_TAX_RATES;
 module.exports.hasConfirmationContent = hasConfirmationContent;
 module.exports.confirmationShareIssues = confirmationShareIssues;
 module.exports.isTaxCustomLine = isTaxCustomLine;
-module.exports.isCardFeeCustomLine = isCardFeeCustomLine;
+module.exports.isPaymentFeeCustomLine = isPaymentFeeCustomLine;
+module.exports.hasBakedPaymentFee = hasBakedPaymentFee;
 module.exports.roundCents = roundCents;
