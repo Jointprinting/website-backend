@@ -210,18 +210,32 @@ const status = async (req, res) => {
   try {
     if (!isConfigured()) return res.json({ configured: false, connected: false });
     const auth = await GoogleDriveAuth.findOne();
+    // Pull the schedule label + staleness window from the scheduler so the hub
+    // shows the REAL cadence and never drifts from the cron. Lazy-required to
+    // avoid a load-time cycle (gdriveBackup requires this controller at boot).
+    const { SCHEDULE_LABEL, STALE_DAYS } = require('../services/gdriveBackup');
+    const connected = !!(auth && auth.refreshToken);
+    const lastAt    = auth ? auth.lastBackupAt : null;
+    // Days since the last successful push. When connected but a push is overdue
+    // (or has never run), flag `stale` so the hub can loudly warn that off-site
+    // auto-backups appear to have stopped — the thing you must catch before a trip.
+    const staleDays = lastAt ? Math.floor((Date.now() - new Date(lastAt).getTime()) / 86400000) : null;
+    const stale     = connected && (staleDays === null || staleDays >= STALE_DAYS);
     res.json({
       configured:     true,
-      connected:      !!(auth && auth.refreshToken),
+      connected,
       email:          auth ? auth.email : '',
       folderId:       auth ? auth.folderId : '',
       connectedAt:    auth ? auth.connectedAt : null,
-      lastBackupAt:   auth ? auth.lastBackupAt : null,
+      lastBackupAt:   lastAt,
       lastBackupName: auth ? auth.lastBackupName : '',
       lastBackupBytes: auth ? auth.lastBackupBytes : 0,
       lastError:      auth ? auth.lastError : '',
       keepBackups:    KEEP_BACKUPS,
-      schedule:       'Weekly · Sunday 03:30 (server time)',
+      schedule:       SCHEDULE_LABEL,
+      stale,
+      staleDays,
+      staleAfterDays: STALE_DAYS,
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
