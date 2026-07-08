@@ -72,6 +72,15 @@ function isTaxCustomLine(line) {
   return /tax/i.test(String(line.label || ''));
 }
 
+// A baked card/credit-card processing-fee customLine (the "+ Card fee" preset).
+// In feeMode 'client_choice' the CLIENT's payment-method pick applies the fee once,
+// so a baked card-fee line must be dropped from the total to avoid double-charging.
+// Broad label match (mirrors the frontend isCardFeeLine); never a tax line.
+function isCardFeeCustomLine(line) {
+  if (!line || isTaxCustomLine(line)) return false;
+  return /card/i.test(String(line.label || ''));
+}
+
 // Per-location sales tax for a confirmation that ships to multiple destinations
 // with their own tax rates. ACTIVE only when at least one shipTo carries a
 // taxRate > 0 — otherwise this is a no-op and the grand total is byte-identical
@@ -137,7 +146,9 @@ function computeConfirmationTotals(conf) {
   const items = (conf && Array.isArray(conf.items)) ? conf.items : [];
   const itemsSubtotal = items.reduce((s, it) =>
     s + ((it && it.sizes) || []).reduce((ss, sz) => ss + n(sz.qty) * n(sz.unitPrice), 0), 0);
+  const totalUnits = items.reduce((s, it) => s + itemTotalQty(it), 0);
   const locationTax = computeLocationTax(conf);
+  const feeMode = (conf && conf.feeMode) || 'owner_fee';
   let running = itemsSubtotal;
   ((conf && conf.customLines) || []).forEach(l => {
     // DOUBLE-TAX GUARD: when per-location tax is active, a legacy tax customLine
@@ -146,13 +157,17 @@ function computeConfirmationTotals(conf) {
     // applies (back-comp). The builder also suppresses the conflict going forward;
     // this keeps already-saved confirmations that carry both from double-taxing.
     if (locationTax.active && isTaxCustomLine(l)) return;
+    // FEE-MODE GUARD: in 'client_choice' the client's payment-method pick applies
+    // the card/ACH fee exactly once, so a baked card-fee line must NOT also apply
+    // (that was the double-charge). In 'owner_fee' the baked line is the sole fee.
+    if (feeMode === 'client_choice' && isCardFeeCustomLine(l)) return;
     running += l && l.isPercent ? running * n(l.amount) / 100 : n(l && l.amount);
   });
   running += locationTax.total;
   // Snap the grand total to cents (the order's stored totalValue, the client's
   // headline total, and the finance number all read this) so it can't drift by a
   // fraction of a cent off the summed lines.
-  return { itemsSubtotal, grandTotal: roundCents(running) };
+  return { itemsSubtotal, totalUnits, grandTotal: roundCents(running) };
 }
 
 // A confirmation only becomes the pricing source of truth once it has real
@@ -401,6 +416,15 @@ const OrderSchema = new mongoose.Schema({
       isTax:     { type: Boolean, default: false },
       _id: false,
     }],
+    // How the card/processing fee is applied — the owner picks ONE, never both:
+    //   'owner_fee'     → the owner bakes a fixed % via a "Card fee" customLine and
+    //                     the client sees no payment picker (the fee is in the Total).
+    //   'client_choice' → NO baked fee line; the client picks Card (2.99%) or ACH
+    //                     (1%) on the approval page and that applies the fee ONCE.
+    // Default 'owner_fee' so every already-saved confirmation keeps its stored total
+    // and simply stops rendering the picker — retroactively killing the old
+    // double-charge (baked line + picker fee) without any data migration.
+    feeMode: { type: String, enum: ['owner_fee', 'client_choice'], default: 'owner_fee' },
   },
   // Client-facing order tracking timeline. Initialized the first time a
   // client approves a confirmation; admin then ticks off subsequent steps
@@ -550,4 +574,5 @@ module.exports.STATE_TAX_RATES = STATE_TAX_RATES;
 module.exports.hasConfirmationContent = hasConfirmationContent;
 module.exports.confirmationShareIssues = confirmationShareIssues;
 module.exports.isTaxCustomLine = isTaxCustomLine;
+module.exports.isCardFeeCustomLine = isCardFeeCustomLine;
 module.exports.roundCents = roundCents;

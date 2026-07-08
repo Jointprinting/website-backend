@@ -38,13 +38,83 @@ function orderDealTitle(order) {
   return n ? `Order #${n}` : (order.companyName || order.clientName || 'Order');
 }
 
-// Plan (do NOT apply) the deals to create so every existing order becomes a deal
+// ── Order → logical-JOB collapsing (de-dup) ───────────────────────────────────
+// One logical job routinely exists as MORE THAN ONE Order document (a quote/project
+// doc carrying the projectNumber and a placed doc carrying the orderNumber; plus
+// import/reconcile duplicates). Keying a deal per Order._id therefore double-counts
+// a job — the bug that put the same order on the board twice (one card #<project>,
+// one card #<order>). We collapse Orders to jobs FIRST, then emit one deal per job.
+
+// Normalize a project number for identity: strip a leading '#' and leading zeros,
+// KEEP a trailing "-N" add-on suffix (24 and 24-2 are distinct jobs). Mirrors the
+// ecosystem's digits-first normalization (orderReconcile/financeDedupe/dataCleanup).
+function normProjNum(v) {
+  const s = String(v == null ? '' : v).trim().toLowerCase().replace(/^#/, '');
+  return s ? s.replace(/^0+(?=\d)/, '') : '';
+}
+// Normalize an invoice/order number for identity: digits only, leading zeros stripped.
+function normOrderNum(v) {
+  const s = String(v == null ? '' : v).replace(/[^\d]/g, '');
+  return s ? s.replace(/^0+(?=\d)/, '') : '';
+}
+const firstNonEmpty = (arr) => (arr.find((x) => x != null && String(x).trim() !== '') || '');
+
+// Group orders into logical jobs: union any two orders of the SAME company that
+// share a (namespaced) project OR order number. A number-less order stands alone.
+// Pure union-find; returns an array of order-groups. Two different jobs never merge
+// (project/order numbers are namespaced apart, and grouping is per companyKey).
+function groupOrdersByJob(orders) {
+  const parent = orders.map((_, i) => i);
+  const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+  const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[ra] = rb; };
+  const tokenToIdx = new Map();
+  orders.forEach((o, i) => {
+    const key = o.companyKey || '';
+    const p = normProjNum(o.projectNumber);
+    const q = normOrderNum(o.orderNumber);
+    const tokens = [];
+    if (p) tokens.push(`${key}#P#${p}`);
+    if (q) tokens.push(`${key}#O#${q}`);
+    for (const t of tokens) {
+      if (tokenToIdx.has(t)) union(i, tokenToIdx.get(t));
+      else tokenToIdx.set(t, i);
+    }
+  });
+  const groups = new Map();
+  orders.forEach((_, i) => {
+    const r = find(i);
+    (groups.get(r) || groups.set(r, []).get(r)).push(orders[i]);
+  });
+  return [...groups.values()];
+}
+
+// Pick the most authoritative Order doc to represent a job: has BOTH numbers >
+// placed/won > higher value > oldest (a stable tiebreak). Never an archived doc
+// (they're excluded upstream by the migration query, but guard anyway).
+function pickSurvivor(group) {
+  const score = (o) => [
+    (o.projectNumber && o.orderNumber) ? 1 : 0,
+    dealStageFromOrderStatus(o.status) === 'won' ? 1 : 0,
+    Number(o.totalValue) || 0,
+  ];
+  return group.slice().sort((a, b) => {
+    const sa = score(a), sb = score(b);
+    for (let i = 0; i < sa.length; i++) if (sb[i] !== sa[i]) return sb[i] - sa[i];
+    const da = new Date(a.orderDate || a.updatedAt || 0).getTime();
+    const db = new Date(b.orderDate || b.updatedAt || 0).getTime();
+    return da - db; // oldest wins the tie
+  })[0];
+}
+
+// Plan (do NOT apply) the deals to create so every existing JOB becomes ONE deal
 // card and every already-won company keeps its client status. PURE + idempotent:
-//   • one deal per order that doesn't already have one (keyed by Order._id via the
-//     deal's sourceOrderId) — stage mapped from the order status
+//   • one deal per logical job (Orders collapsed via groupOrdersByJob) that doesn't
+//     already have one — the deal carries BOTH the project & order numbers and is
+//     sourced from the survivor Order._id; stage mapped from the survivor's status
 //   • for a company that's flagged won/customer but has NO orders, one synthetic
 //     'won' deal so its client status survives the switch to derive-from-deals
-// Re-running with the same inputs yields an empty plan (nothing new to create).
+// Re-running with the same inputs yields an empty plan (skip a whole job if ANY of
+// its orders already seeded a deal — so a re-run never re-emits under a new survivor).
 //
 // Args are plain lean docs: orders[], clients[], existingDeals[]. Returns
 // { toCreate: [dealDoc...], skippedOrders, skippedWonCompanies } where each
@@ -62,28 +132,36 @@ function planMigration({ orders = [], clients = [], existingDeals = [], batchId 
   const toCreate = [];
   let skippedOrders = 0;
 
-  // 1) One deal per order (skip cancelled? no — a cancelled order is a real lost
-  //    deal worth keeping in the history). Idempotent via sourceOrderId.
-  for (const o of orders) {
-    const id = String(o._id || '');
-    if (!id || haveOrderIds.has(id)) { skippedOrders++; continue; }
-    const stage = dealStageFromOrderStatus(o.status);
+  // 1) One deal per logical JOB (collapse duplicate Order docs first). A cancelled
+  //    order is a real lost deal worth keeping, so it isn't filtered.
+  for (const group of groupOrdersByJob(orders)) {
+    // Idempotent at the JOB level: if ANY order in this job already seeded a deal,
+    // skip the whole job so a re-run never re-emits it under a different survivor.
+    if (group.some((o) => haveOrderIds.has(String(o._id || '')))) { skippedOrders += group.length; continue; }
+    const survivor = pickSurvivor(group);
+    const id = String(survivor._id || '');
+    if (!id) { skippedOrders += group.length; continue; }
+    const stage = dealStageFromOrderStatus(survivor.status);
+    // Merge the identifying numbers across the whole job so the one deal carries the
+    // full linkage the ecosystem joins on (project # and invoice #).
+    const orderNumber   = firstNonEmpty(group.map((o) => o.orderNumber));
+    const projectNumber = firstNonEmpty(group.map((o) => o.projectNumber));
     toCreate.push({
-      companyKey:    o.companyKey || '',
-      companyName:   o.companyName || o.clientName || '',
-      title:         orderDealTitle(o),
+      companyKey:    survivor.companyKey || '',
+      companyName:   survivor.companyName || survivor.clientName || '',
+      title:         orderDealTitle({ orderNumber, projectNumber, companyName: survivor.companyName, clientName: survivor.clientName }),
       stage,
-      value:         Number(o.totalValue) || 0,
-      agentId:       o.agentId || '',
-      orderNumber:   o.orderNumber || '',
-      projectNumber: o.projectNumber || '',
+      value:         Number(survivor.totalValue) || 0,
+      agentId:       survivor.agentId || '',
+      orderNumber,
+      projectNumber,
       sourceOrderId: id,
       origin:        'migration',
       migrationBatch: batchId,
-      wonAt:  stage === 'won'  ? (o.orderDate || o.updatedAt || null) : null,
-      lostAt: stage === 'lost' ? (o.updatedAt || null) : null,
+      wonAt:  stage === 'won'  ? (survivor.orderDate || survivor.updatedAt || null) : null,
+      lostAt: stage === 'lost' ? (survivor.updatedAt || null) : null,
     });
-    if (stage === 'won') wonCompanyKeys.add(o.companyKey);
+    if (stage === 'won') wonCompanyKeys.add(survivor.companyKey);
   }
 
   // 2) Won/customer companies with NO orders → one synthetic won deal so the
@@ -120,4 +198,7 @@ module.exports = {
   deriveBusinessStatus,
   orderDealTitle,
   planMigration,
+  // exposed for unit tests
+  groupOrdersByJob,
+  pickSurvivor,
 };
