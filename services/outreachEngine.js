@@ -507,17 +507,26 @@ async function deliverabilityStats(now = new Date(), { force = false } = {}) {
   const since = new Date(nowMs - 7 * 86400000);
   const [sent7d, bounced7d, complaints7d] = await Promise.all([
     countSentSince(since),
-    Suppression.countDocuments({ reason: 'hard-bounce', createdAt: { $gte: since } }).catch(() => 0),
+    // Count only AUTHORITATIVE hard bounces (provider webhook + Gmail NDR). The
+    // inline SMTP path also writes reason:'hard-bounce' but with source:'smtp-bounce'
+    // for RECOVERABLE sender-side errors (auth/relay/quota misread as a dead
+    // recipient) — counting those let one sender misconfig trip the breaker on
+    // bounces that weren't real. Excluding smtp-bounce also lets the breaker recover
+    // the moment the "requeue dropped" recovery tool clears those rows.
+    Suppression.countDocuments({ reason: 'hard-bounce', source: { $in: ['bounce-webhook', 'gmail-ndr'] }, createdAt: { $gte: since } }).catch(() => 0),
     Suppression.countDocuments({ reason: 'complaint', createdAt: { $gte: since } }).catch(() => 0),
   ]);
   const bounceRate = sent7d > 0 ? bounced7d / sent7d : 0;
   const complaintRate = sent7d > 0 ? complaints7d / sent7d : 0;
   const enoughData = sent7d >= BREAKER_MIN_SAMPLE;
   const tripped = enoughData && (bounceRate > MAX_BOUNCE_RATE || complaintRate > MAX_COMPLAINT_RATE);
+  // Reassure, don't command: the list self-cleans (every bounce auto-suppresses,
+  // dead cold prospects auto-archive daily) and sending auto-resumes as the bad
+  // batch ages out of the trailing 7-day window — no manual step needed.
   const reason = !tripped ? ''
     : bounceRate > MAX_BOUNCE_RATE
-      ? `${(bounceRate * 100).toFixed(1)}% bounce rate (7d) exceeds ${(MAX_BOUNCE_RATE * 100).toFixed(0)}% — clean the list`
-      : `${(complaintRate * 100).toFixed(2)}% complaint rate (7d) exceeds ${(MAX_COMPLAINT_RATE * 100).toFixed(2)}%`;
+      ? `${(bounceRate * 100).toFixed(1)}% bounce rate (7d) is over ${(MAX_BOUNCE_RATE * 100).toFixed(0)}% — paused to protect your sender reputation. The list is auto-cleaning; sending resumes on its own.`
+      : `${(complaintRate * 100).toFixed(2)}% complaint rate (7d) is over ${(MAX_COMPLAINT_RATE * 100).toFixed(2)}% — paused to protect your sender reputation. Resumes on its own.`;
   const val = { sent7d, bounced7d, complaints7d, bounceRate, complaintRate, tripped, reason,
     maxBounceRate: MAX_BOUNCE_RATE, maxComplaintRate: MAX_COMPLAINT_RATE };
   _dstatsCache = { at: nowMs, val };

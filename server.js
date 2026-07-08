@@ -125,6 +125,11 @@ db.once('open', () => {
 
   require('./services/jpwScheduler').startJpwScheduler();
 
+  // Daily CRM self-cleaning: auto-archives dead cold-outreach prospects so the
+  // "Clear N cold prospects" pile never builds up (the owner shouldn't have to
+  // click it). Soft + reversible; a reply auto-unarchives.
+  require('./services/crmScheduler').startCrmScheduler();
+
   // Cold-outreach sender: paced, capped, business-hours-only email sequences
   // for CRM leads. Holds (never sends) until OUTREACH_EMAIL_FROM is set — cold
   // volume must never ride the main transactional identity.

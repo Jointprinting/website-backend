@@ -1955,6 +1955,40 @@ async function keysWithAnyOrder(keys) {
   return new Set(rows.map((r) => r.companyKey));
 }
 
+// Auto-archive DEAD cold-outreach prospects so the owner never has to click the
+// "Clear N cold prospects" banner — the outreach system cleans up after itself.
+// "Dead" = the same cold-prospect predicate the manual clear uses, NARROWED to the
+// ones that are truly finished: opted-out/bounced (doNotEmail) OR stale (created
+// > COLD_STALE_DAYS ago with zero engagement). Fresh, still-in-sequence prospects
+// are left alone (they haven't had a chance to reply). Soft + reversible — a reply
+// auto-unarchives via warm-handoff — and a company with ANY order is never touched.
+// Called on a daily cron (services/crmScheduler.js). Returns { archived, keys }.
+const COLD_STALE_DAYS = parseInt(process.env.CRM_COLD_STALE_DAYS || '60', 10);
+async function autoArchiveDeadColdProspects() {
+  const staleBefore = new Date(Date.now() - COLD_STALE_DAYS * 86400000);
+  const candidates = await Client.find({
+    ...NOT_ARCHIVED,
+    lastContact: null,
+    nextFollowUp: null,
+    stage: { $in: ['lead', 'contacted'] },
+    tags: { $nin: ['warm'] },
+    $and: [
+      { $or: [{ leadSource: 'Cold Outreach' }, { tags: { $in: ['dispensary', 'cold-email'] } }] },
+      { $or: [{ doNotEmail: true }, { createdAt: { $lte: staleBefore } }] },
+    ],
+  }).select('companyKey').lean();
+  const keyList = candidates.map((c) => c.companyKey);
+  if (!keyList.length) return { archived: 0, keys: [] };
+  const withOrders = await keysWithAnyOrder(keyList);
+  const keys = keyList.filter((k) => !withOrders.has(k));
+  if (!keys.length) return { archived: 0, keys: [] };
+  const result = await Client.updateMany(
+    { companyKey: { $in: keys }, ...NOT_ARCHIVED },
+    { $set: { archived: true, archivedAt: new Date(), archivedReason: 'auto-cold-cleanup' } },
+  );
+  return { archived: result.modifiedCount != null ? result.modifiedCount : (result.nModified || 0), keys };
+}
+
 async function findReplaceable() {
   const candidates = await Client.find({ source: { $in: IMPORT_SOURCES }, ...NOT_ARCHIVED })
     .select('companyKey stage dealValue tags notes log source').lean();
@@ -2758,6 +2792,7 @@ module.exports = {
   mergeCompanies,
   archiveCompanies,
   unarchiveCompanies,
+  autoArchiveDeadColdProspects,
   deleteLogEntry,
   updateLogEntry,
   archiveOne,

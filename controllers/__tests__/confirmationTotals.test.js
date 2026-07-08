@@ -20,6 +20,7 @@ const {
   computeLocationTax,
   STATE_TAX_RATES,
   isTaxCustomLine,
+  hasBakedPaymentFee,
   roundCents,
 } = require('../../models/Order');
 
@@ -309,27 +310,28 @@ test('STATE_TAX_RATES covers the owner territory with expected rates', () => {
 // Round to cents to keep float noise out of the assertions.
 function round(n) { return Math.round(n * 100) / 100; }
 
-// ── Fee mode (owner-adds-% vs client-picks-payment) + total units ────────────
-// The card fee must apply EXACTLY once. In the default 'owner_fee' a baked
-// "Credit card fee" line is part of the total; in 'client_choice' it's dropped
-// (the approval-page picker applies it instead), so the two can never double.
-test('feeMode client_choice drops the baked card-fee line; owner_fee keeps it', () => {
-  const conf = {
-    items: [item(10, 20)],   // $200 subtotal, 10 units
-    customLines: [{ label: 'Credit card fee', amount: 2.99, isPercent: true }],
-  };
-  assert.equal(computeConfirmationTotals(conf).grandTotal, 205.98);                       // owner_fee (default): fee applies
-  assert.equal(computeConfirmationTotals({ ...conf, feeMode: 'owner_fee' }).grandTotal, 205.98);
-  assert.equal(computeConfirmationTotals({ ...conf, feeMode: 'client_choice' }).grandTotal, 200); // fee skipped
+// ── Payment fee model (derived) + total units ────────────────────────────────
+// The fee is charged EXACTLY once: a baked Card/ACH fee always applies to the
+// total, and the PRESENCE of such a line is what HIDES the client's payment picker
+// (hasBakedPaymentFee) — so it can never be both baked AND picked. Discounts / tax /
+// shipping are not payment fees and never suppress the picker.
+test('a baked card fee always applies to the total', () => {
+  const conf = { items: [item(10, 20)], customLines: [{ label: 'Credit card fee', amount: 2.99, isPercent: true }] };
+  assert.equal(computeConfirmationTotals(conf).grandTotal, 205.98);   // $200 + 2.99%
 });
 
-test('feeMode never drops a NON-card add-on line', () => {
-  const conf = {
-    items: [item(10, 20)],
-    customLines: [{ label: 'Shipping reserve', amount: 15, isPercent: false }],
-    feeMode: 'client_choice',
-  };
-  assert.equal(computeConfirmationTotals(conf).grandTotal, 215);   // shipping still applies
+test('hasBakedPaymentFee: true for Card/ACH, false for discount/tax/shipping', () => {
+  assert.equal(hasBakedPaymentFee({ customLines: [{ label: 'Credit card fee', amount: 2.99, isPercent: true }] }), true);
+  assert.equal(hasBakedPaymentFee({ customLines: [{ label: 'ACH fee', amount: 1, isPercent: true }] }), true);
+  assert.equal(hasBakedPaymentFee({ customLines: [{ label: 'Loyalty discount', amount: -50, isPercent: false }] }), false);
+  assert.equal(hasBakedPaymentFee({ customLines: [{ label: 'Shipping reserve', amount: 15 }] }), false);
+  assert.equal(hasBakedPaymentFee({ customLines: [{ label: 'NJ sales tax', amount: 6.625, isPercent: true, isTax: true }] }), false);
+  assert.equal(hasBakedPaymentFee({ customLines: [] }), false);
+});
+
+test('a non-fee add-on line always applies to the total', () => {
+  const conf = { items: [item(10, 20)], customLines: [{ label: 'Shipping reserve', amount: 15, isPercent: false }] };
+  assert.equal(computeConfirmationTotals(conf).grandTotal, 215);
 });
 
 test('computeConfirmationTotals reports totalUnits across items', () => {
