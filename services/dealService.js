@@ -1,0 +1,123 @@
+// services/dealService.js
+//
+// Pure business logic for the deal pipeline — the derive-client rule and the
+// reversible "seed deals from existing orders" migration plan. Kept pure (plain
+// arrays in, plain plan out) so the whole thing is unit-testable with no DB, and
+// so the migration is a two-step "plan → apply" the controller can dry-run.
+
+const { dealStageFromOrderStatus } = require('../models/Deal');
+
+// ── Derive-client ─────────────────────────────────────────────────────────────
+
+// A business is a CLIENT once it has ≥1 WON deal. This replaces the old hand-set
+// "won"/"customer" company stage: winning a deal is the single source of truth,
+// so the two can never disagree again. Archived deals don't count. PURE.
+function isClientFromDeals(deals) {
+  return (Array.isArray(deals) ? deals : [])
+    .some((d) => d && !d.archived && d.stage === 'won');
+}
+
+// The business's derived pipeline status from its deals (+ order reality as a
+// backstop, since a placed order is a win even if no deal was recorded):
+//   client   — has a won deal, or a placed order
+//   active   — has an open deal (qualifying/quoted) in play
+//   prospect — none of the above (a lead we haven't opened a deal with yet)
+// PURE. `hasPlacedOrder` folds in the existing order-reality signal.
+function deriveBusinessStatus(deals, hasPlacedOrder = false) {
+  const arr = (Array.isArray(deals) ? deals : []).filter((d) => d && !d.archived);
+  if (hasPlacedOrder || arr.some((d) => d.stage === 'won')) return 'client';
+  if (arr.some((d) => d.stage === 'qualifying' || d.stage === 'quoted')) return 'active';
+  return 'prospect';
+}
+
+// ── Reversible migration: seed deals from existing orders + won companies ──────
+
+// A human-ish title for a deal seeded from an order.
+function orderDealTitle(order) {
+  const n = order.orderNumber || order.projectNumber;
+  return n ? `Order #${n}` : (order.companyName || order.clientName || 'Order');
+}
+
+// Plan (do NOT apply) the deals to create so every existing order becomes a deal
+// card and every already-won company keeps its client status. PURE + idempotent:
+//   • one deal per order that doesn't already have one (keyed by Order._id via the
+//     deal's sourceOrderId) — stage mapped from the order status
+//   • for a company that's flagged won/customer but has NO orders, one synthetic
+//     'won' deal so its client status survives the switch to derive-from-deals
+// Re-running with the same inputs yields an empty plan (nothing new to create).
+//
+// Args are plain lean docs: orders[], clients[], existingDeals[]. Returns
+// { toCreate: [dealDoc...], skippedOrders, skippedWonCompanies } where each
+// dealDoc is ready to insert (stamped with origin:'migration' + migrationBatch).
+function planMigration({ orders = [], clients = [], existingDeals = [], batchId = '' } = {}) {
+  const haveOrderIds = new Set(
+    existingDeals.map((d) => String(d.sourceOrderId || '')).filter(Boolean)
+  );
+  // Companies that already own a won deal (so we don't synthesize a second one).
+  const wonCompanyKeys = new Set(
+    existingDeals.filter((d) => d && d.stage === 'won').map((d) => d.companyKey)
+  );
+  const companiesWithOrders = new Set(orders.map((o) => o.companyKey));
+
+  const toCreate = [];
+  let skippedOrders = 0;
+
+  // 1) One deal per order (skip cancelled? no — a cancelled order is a real lost
+  //    deal worth keeping in the history). Idempotent via sourceOrderId.
+  for (const o of orders) {
+    const id = String(o._id || '');
+    if (!id || haveOrderIds.has(id)) { skippedOrders++; continue; }
+    const stage = dealStageFromOrderStatus(o.status);
+    toCreate.push({
+      companyKey:    o.companyKey || '',
+      companyName:   o.companyName || o.clientName || '',
+      title:         orderDealTitle(o),
+      stage,
+      value:         Number(o.totalValue) || 0,
+      agentId:       o.agentId || '',
+      orderNumber:   o.orderNumber || '',
+      projectNumber: o.projectNumber || '',
+      sourceOrderId: id,
+      origin:        'migration',
+      migrationBatch: batchId,
+      wonAt:  stage === 'won'  ? (o.orderDate || o.updatedAt || null) : null,
+      lostAt: stage === 'lost' ? (o.updatedAt || null) : null,
+    });
+    if (stage === 'won') wonCompanyKeys.add(o.companyKey);
+  }
+
+  // 2) Won/customer companies with NO orders → one synthetic won deal so the
+  //    "≥1 won deal = client" rule keeps them a client after the switch.
+  let skippedWonCompanies = 0;
+  for (const c of clients) {
+    const key = c.companyKey;
+    const isWonCompany = c.stage === 'won' || c.stage === 'customer';
+    if (!isWonCompany) continue;
+    if (companiesWithOrders.has(key) || wonCompanyKeys.has(key)) { skippedWonCompanies++; continue; }
+    toCreate.push({
+      companyKey:    key,
+      companyName:   c.companyName || c.clientName || '',
+      title:         'Won (before deals)',
+      stage:         'won',
+      value:         Number(c.dealValue) || 0,
+      agentId:       c.agentId || '',
+      orderNumber:   '',
+      projectNumber: '',
+      sourceOrderId: '',
+      origin:        'migration',
+      migrationBatch: batchId,
+      wonAt:  c.updatedAt || null,
+      lostAt: null,
+    });
+    wonCompanyKeys.add(key);
+  }
+
+  return { toCreate, skippedOrders, skippedWonCompanies };
+}
+
+module.exports = {
+  isClientFromDeals,
+  deriveBusinessStatus,
+  orderDealTitle,
+  planMigration,
+};

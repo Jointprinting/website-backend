@@ -287,6 +287,7 @@ const gdriveRoutes         = require('./routes/gdriveRoutes');
 const financeRoutes        = require('./routes/financeRoutes');
 const receiptRoutes        = require('./routes/receiptRoutes');
 const crmRoutes            = require('./routes/crmRoutes');
+const dealRoutes           = require('./routes/dealRoutes');
 const outreachRoutes       = require('./routes/outreachRoutes');
 const triageRoutes         = require('./routes/triageRoutes');
 const signalsRoutes        = require('./routes/signalsRoutes');
@@ -306,6 +307,7 @@ app.use('/api/clients', express.json(), clientRoutes);
 // CRM import can carry the whole field tracker as JSON rows or raw CSV text, so
 // allow a larger body than the global 1mb default.
 app.use('/api/crm', express.json({ limit: '8mb' }), crmRoutes);
+app.use('/api/deals', express.json(), dealRoutes);
 app.use('/api/outreach', express.json(), outreachRoutes);
 // Reply Triage: pasted/imported buyer replies — snippets only, small bodies.
 app.use('/api/triage', express.json({ limit: '2mb' }), triageRoutes);
