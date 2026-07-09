@@ -20,7 +20,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { _pickedAtForCycle, _currentApprovalStatus } = require('../approval');
-const { confirmationShareIssues } = require('../../models/Order');
+const { confirmationShareIssues, confirmationIsPublished, hasConfirmationContent } = require('../../models/Order');
 
 // ── C1: pick gate is scoped to the current approval cycle ────────────────────
 test('_pickedAtForCycle: pick with no supersede is reported', () => {
@@ -68,6 +68,35 @@ test('_currentApprovalStatus mirrors the same supersede cutoff (no contradiction
   };
   assert.equal(_currentApprovalStatus(order).status, 'pending');
   assert.equal(_pickedAtForCycle(order), null);
+});
+
+// ── Publish gate (the owner's "buffer") ──────────────────────────────────────
+// A confirmation is INVISIBLE to the client until the owner pushes it. Content
+// alone is not enough — publishedAt must be set. This is what lets the owner
+// build/seed/save the draft while the client stays on the "we're finalizing"
+// waiting screen. hasConfirmationContent stays content-only (owner/money view);
+// confirmationIsPublished is the client-facing switch.
+const priced = () => ({ items: [{ sizes: [{ label: 'OS', qty: 50, unitPrice: 12 }] }], customLines: [] });
+
+test('publish gate: content WITHOUT publishedAt is NOT published (buffer holds)', () => {
+  const conf = priced();
+  assert.equal(hasConfirmationContent(conf), true, 'has content');
+  assert.equal(confirmationIsPublished(conf), false, 'but not yet live to the client');
+});
+
+test('publish gate: content WITH publishedAt is published (owner pushed it)', () => {
+  const conf = { ...priced(), publishedAt: new Date('2026-07-09T10:00:00Z') };
+  assert.equal(confirmationIsPublished(conf), true);
+});
+
+test('publish gate: publishedAt with NO content is not published (empty draft never leaks)', () => {
+  assert.equal(confirmationIsPublished({ items: [], customLines: [], publishedAt: new Date() }), false);
+});
+
+test('publish gate: null / empty confirmation is not published', () => {
+  assert.equal(confirmationIsPublished(null), false);
+  assert.equal(confirmationIsPublished({}), false);
+  assert.equal(confirmationIsPublished(undefined), false);
 });
 
 // ── H3/C2: share guard ───────────────────────────────────────────────────────
