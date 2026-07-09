@@ -283,6 +283,20 @@ const publicGetProject = async (req, res) => {
       };
     });
 
+    // Publish gate, applied to the money too: while the confirmation is an
+    // unpublished DRAFT, the client must not see any of it — not the object, and
+    // not the grand total it derives (order.totalValue becomes the confirmation
+    // grandTotal on every autosave, incl. shipping + fee% + tax the owner is still
+    // reviewing). During that window we send the QUOTE-derived total the client
+    // actually picked and hide orderDate. Once published — or when there's no
+    // confirmation at all (a legacy/imported order that legitimately shows a
+    // total on the read-only approve screen) — the stored values pass through.
+    const published = _confPublished(order.confirmation);
+    const draftHidden = !published && _hasConfContent(order.confirmation);
+    const publicTotalValue = draftHidden
+      ? Order.computeQuoteTotals(order.quoteLines || []).totalValue
+      : order.totalValue;
+
     res.json({
       project: {
         projectNumber:        order.projectNumber,
@@ -290,7 +304,7 @@ const publicGetProject = async (req, res) => {
         companyName:          order.companyName,
         clientName:           order.clientName,
         status:               order.status,
-        totalValue:           order.totalValue,
+        totalValue:           publicTotalValue,
         items:                order.items,
         quoteLines:           safeQuoteLines,
         mockupNumbers:        order.mockupNumbers,
@@ -300,11 +314,11 @@ const publicGetProject = async (req, res) => {
         // that advances their page to REVIEW+APPROVE) once the owner has pushed
         // it. While it's an unpublished draft, send an empty stub so neither the
         // stage machine nor a raw-JSON reader can surface the half-built doc.
-        confirmation:         _confPublished(order.confirmation) ? _safeConfirmation(order.confirmation) : { items: [], customLines: [] },
-        orderDate:            order.orderDate,
+        confirmation:         published ? _safeConfirmation(order.confirmation) : { items: [], customLines: [] },
+        orderDate:            draftHidden ? null : order.orderDate,
         optionsPickedAt:      pickedAtCurrent,
         paymentMethod:        order.paymentMethod || '',
-        hasConfirmation:      _confPublished(order.confirmation),
+        hasConfirmation:      published,
         approvalStatus:       currentStatus,
         approvalAt:           lastTerminal ? lastTerminal.at : null,
         approvalMessage:      lastTerminal ? lastTerminal.message : '',
@@ -555,6 +569,21 @@ const publicApprove = async (req, res) => {
       return res.status(404).json({ message: 'This link is invalid or no longer available.', reason: 'invalid' });
     }
     const order = lookup.order;
+
+    // Server backstop for the invariant "the client can never approve a raw
+    // quote directly": if this order carries a quote, approval is only allowed
+    // once the owner has PUBLISHED a confirmation. This makes the server — not
+    // just the frontend routing — the source of truth, so a stale/old-bundle tab
+    // or a direct API call can't commit a bare quote. A truly quote-less order
+    // (legacy/imported, no quoteLines) has no confirmation to build and approves
+    // directly on the read-only screen, exactly as before.
+    if ((order.quoteLines || []).length > 0 && !_confPublished(order.confirmation)) {
+      return res.status(409).json({
+        message: "Your confirmation isn't ready to approve yet — we're finalizing the details and you'll be able to approve here in a moment.",
+        reason: 'confirmation_not_published',
+      });
+    }
+
     const by    = String((req.body && req.body.name)  || '').trim().slice(0, 120);
     const email = String((req.body && req.body.email) || '').trim().slice(0, 200) || _recipientEmail(req);
     // Payment method the client chose on the approval page (optional). Only 'cc'
