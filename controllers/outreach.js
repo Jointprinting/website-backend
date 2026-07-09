@@ -225,7 +225,9 @@ function buildNextActions({ engine = {}, campaigns = [], warmCount = 0, coldRese
     add('action', 'Sending is held: your sender domain isn’t authenticated. The exact DNS records to paste are in the panel below — add them, then hit re-check.');
   }
   if (engine.deliverability && engine.deliverability.tripped) {
-    add('action', `Sending auto-paused — ${engine.deliverability.reason}. Clean the list, then it resumes on its own.`, { view: 'analytics' });
+    // `reason` already ends with "…the list is auto-cleaning; sending resumes on
+    // its own." — don't append a second, redundant "resumes on its own."
+    add('action', `Sending auto-paused — ${engine.deliverability.reason}`, { view: 'analytics' });
   }
   // Reply auto-stop is the difference between a smart drip and an embarrassing
   // one: without Gmail sync, replies aren't detected, so the sequence keeps
