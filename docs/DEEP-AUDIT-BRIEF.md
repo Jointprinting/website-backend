@@ -123,6 +123,45 @@ Mirror `website-frontend/CLAUDE.md` and `website-backend/CLAUDE.md`. Essence:
 
 ---
 
+## 3.5 Skills & plugins — use them (don't reinvent what a skill already does)
+
+Nate wants every session **leaning on Claude skills/plugins**. Set them up at the start,
+then *actually invoke them throughout* — an installed skill you never call is wasted.
+
+**Do this first:** open the marketplace (`/plugin`), run `ListSkills` / `SearchSkills`,
+and check `.claude/` in both repos to see what's available; install the relevant ones; and
+call them by name (Skill tool or `/name`) whenever they fit.
+
+**Nate specifically wants these — install + use them, and confirm each actually fits:**
+- **code review** — built into Claude Code (`/code-review`). Run it on the diff **before
+  every squash-merge** — a perfect fit for the ship-it-live-then-brief workflow. Use
+  `/security-review` too for anything touching auth, the paid proxy, or client data.
+- **official Anthropic skills pack** — the document skills (**pdf / docx / pptx / xlsx**)
+  + others. High value here: real **client-facing PDFs** (quotes, brand guide, lookbooks),
+  an **xlsx** finance export, a **pptx** deck for the ERP pitch.
+- **claude-mem** (persistent cross-session memory) — install it. Especially valuable
+  because this audit is a **recurring** engagement: memory keeps continuity between
+  sessions so you don't re-learn the ecosystem each time. (MCP alternative: the **Mem0**
+  connector in the claude.ai directory does the same job.)
+- **obsidian** — if Nate keeps notes in an Obsidian vault, wire it up so his Field Map
+  notes / business docs / brainstorms are readable + writable from the session.
+- **ponytail** — Nate flagged it; locate it in its marketplace, confirm what it does, use
+  it if it fits — and tell him if it doesn't.
+
+**Also lean on the built-ins already available:** `verify` / `run` (drive a flow
+end-to-end before claiming it works), `artifact-design` (visual deliverables — dashboards,
+briefs, brand pages), `dataviz` (charts/analytics), `simplify` (post-change cleanup),
+`how-we-work` (Nate's own agreement), `deep-research` (market/competitor work for the ERP
+track). His catalog also has **qdrant-skills** (semantic/vector search) — pair it with a
+memory skill if you stand up a knowledge base.
+
+**Install path** for a community plugin: `/plugin marketplace add <owner/repo>` →
+`/plugin install <name>`. **Confirm each named skill exists + fits before relying on it**;
+if one doesn't, say so rather than pretend. And **default to reaching for a skill** — if a
+task matches one (a review, a doc, a chart, a memory write), use it instead of hand-rolling.
+
+---
+
 ## 4. How to run the audit (methodology)
 
 - **Fan out with ultracode workflows / parallel agents** — a reader per surface, then
