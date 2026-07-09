@@ -91,6 +91,26 @@ async function expireLegacyApprovalTokens() {
   return r.modifiedCount != null ? r.modifiedCount : (r.nModified || 0);
 }
 
+// One-time backfill for the confirmation PUBLISH GATE. Confirmations built BEFORE
+// the gate existed have no `publishedAt`; without this they'd read as unpublished
+// drafts and a client mid-review would be bounced to the "we're finalizing" screen.
+// Stamp every EXISTING confirmation-with-content as already-published (using its own
+// order date / last-updated time). Guarded to run exactly once (see server.js) so it
+// can never stamp a NEW draft the owner hasn't pushed. Mirrors
+// scripts/backfillConfirmationPublished.js so the owner never has to run a script.
+async function backfillConfirmationPublished() {
+  const r = await Order.updateMany(
+    {
+      $and: [
+        { $or: [{ 'confirmation.items.0': { $exists: true } }, { 'confirmation.customLines.0': { $exists: true } }] },
+        { $or: [{ 'confirmation.publishedAt': null }, { 'confirmation.publishedAt': { $exists: false } }] },
+      ],
+    },
+    [{ $set: { 'confirmation.publishedAt': { $ifNull: ['$confirmation.orderDate', { $ifNull: ['$updatedAt', '$$NOW'] }] } } }],
+  );
+  return r.modifiedCount != null ? r.modifiedCount : (r.nModified || 0);
+}
+
 // ── Public approval surface (no auth — token-gated) ───────────────────────────
 // Returns one of:
 //   { ok: true, order }          — valid, not expired
@@ -1027,4 +1047,5 @@ module.exports = {
   // Exported for unit tests (pure helpers).
   _pickedAtForCycle, _currentApprovalStatus,
   expireLegacyApprovalTokens,
+  backfillConfirmationPublished,
 };

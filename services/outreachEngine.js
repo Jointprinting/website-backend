@@ -495,9 +495,34 @@ async function getSentToday(now = new Date()) {
 // Suppression list (written by the bounce webhook + permanent-SMTP path);
 // denominator is sends in the same window. Cached ~10 min — it's read on every
 // tick + dashboard load.
-const BREAKER_MIN_SAMPLE = parseInt(process.env.OUTREACH_BREAKER_MIN_SAMPLE || '30', 10);
+const BREAKER_MIN_SAMPLE = parseInt(process.env.OUTREACH_BREAKER_MIN_SAMPLE || '50', 10);
 const MAX_BOUNCE_RATE = parseFloat(process.env.OUTREACH_MAX_BOUNCE_RATE || '0.05');       // 5%
 const MAX_COMPLAINT_RATE = parseFloat(process.env.OUTREACH_MAX_COMPLAINT_RATE || '0.002'); // 0.2%
+// Absolute floors: a RATE over a tiny sample is noise (3 bounces on 30 sends reads as
+// 10% but is statistically meaningless) — and pausing then FREEZES the engine, since
+// it can't dilute the rate with fresh good sends until the bad batch ages out. So the
+// breaker also requires a real COUNT of bad events, not just a rate, before it trips.
+const BREAKER_MIN_BOUNCES = parseInt(process.env.OUTREACH_BREAKER_MIN_BOUNCES || '6', 10);
+const BREAKER_MIN_COMPLAINTS = parseInt(process.env.OUTREACH_BREAKER_MIN_COMPLAINTS || '2', 10);
+
+// Pure breaker evaluation (unit-tested). Trips ONLY when the sample is real AND the
+// bad-event COUNT clears its floor AND the rate is over threshold — so a couple of
+// dead addresses in a small test batch can't pause (and then strand) the whole engine.
+function evaluateDeliverability({ sent7d = 0, bounced7d = 0, complaints7d = 0 } = {}) {
+  const bounceRate = sent7d > 0 ? bounced7d / sent7d : 0;
+  const complaintRate = sent7d > 0 ? complaints7d / sent7d : 0;
+  const enoughData = sent7d >= BREAKER_MIN_SAMPLE;
+  const bounceTrips = enoughData && bounceRate > MAX_BOUNCE_RATE && bounced7d >= BREAKER_MIN_BOUNCES;
+  const complaintTrips = enoughData && complaintRate > MAX_COMPLAINT_RATE && complaints7d >= BREAKER_MIN_COMPLAINTS;
+  const tripped = bounceTrips || complaintTrips;
+  const reason = !tripped ? ''
+    : bounceTrips
+      ? `${(bounceRate * 100).toFixed(1)}% bounce rate (7d) is over ${(MAX_BOUNCE_RATE * 100).toFixed(0)}% — paused to protect your sender reputation. The list is auto-cleaning; sending resumes on its own.`
+      : `${(complaintRate * 100).toFixed(2)}% complaint rate (7d) is over ${(MAX_COMPLAINT_RATE * 100).toFixed(2)}% — paused to protect your sender reputation. Resumes on its own.`;
+  return { sent7d, bounced7d, complaints7d, bounceRate, complaintRate, tripped, reason,
+    maxBounceRate: MAX_BOUNCE_RATE, maxComplaintRate: MAX_COMPLAINT_RATE };
+}
+
 let _dstatsCache = { at: 0, val: null };
 const DSTATS_TTL = parseInt(process.env.OUTREACH_DSTATS_TTL_MS || String(10 * 60 * 1000), 10);
 
@@ -516,19 +541,10 @@ async function deliverabilityStats(now = new Date(), { force = false } = {}) {
     Suppression.countDocuments({ reason: 'hard-bounce', source: { $in: ['bounce-webhook', 'gmail-ndr'] }, createdAt: { $gte: since } }).catch(() => 0),
     Suppression.countDocuments({ reason: 'complaint', createdAt: { $gte: since } }).catch(() => 0),
   ]);
-  const bounceRate = sent7d > 0 ? bounced7d / sent7d : 0;
-  const complaintRate = sent7d > 0 ? complaints7d / sent7d : 0;
-  const enoughData = sent7d >= BREAKER_MIN_SAMPLE;
-  const tripped = enoughData && (bounceRate > MAX_BOUNCE_RATE || complaintRate > MAX_COMPLAINT_RATE);
   // Reassure, don't command: the list self-cleans (every bounce auto-suppresses,
   // dead cold prospects auto-archive daily) and sending auto-resumes as the bad
   // batch ages out of the trailing 7-day window — no manual step needed.
-  const reason = !tripped ? ''
-    : bounceRate > MAX_BOUNCE_RATE
-      ? `${(bounceRate * 100).toFixed(1)}% bounce rate (7d) is over ${(MAX_BOUNCE_RATE * 100).toFixed(0)}% — paused to protect your sender reputation. The list is auto-cleaning; sending resumes on its own.`
-      : `${(complaintRate * 100).toFixed(2)}% complaint rate (7d) is over ${(MAX_COMPLAINT_RATE * 100).toFixed(2)}% — paused to protect your sender reputation. Resumes on its own.`;
-  const val = { sent7d, bounced7d, complaints7d, bounceRate, complaintRate, tripped, reason,
-    maxBounceRate: MAX_BOUNCE_RATE, maxComplaintRate: MAX_COMPLAINT_RATE };
+  const val = evaluateDeliverability({ sent7d, bounced7d, complaints7d });
   _dstatsCache = { at: nowMs, val };
   return val;
 }
@@ -1340,6 +1356,7 @@ module.exports = {
   abVariant,
   isRoleEmail,
   deliverabilityStats,
+  evaluateDeliverability,   // pure circuit-breaker decision core (unit-tested)
   // Auto roster hygiene (bounce-spike re-verify): the async pass + its pure,
   // unit-tested decision core.
   runRosterHygiene,
