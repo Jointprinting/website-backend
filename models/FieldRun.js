@@ -20,7 +20,14 @@ const RunStopSchema = new mongoose.Schema({
   lng:     { type: Number, required: true },
   placeId: { type: String, default: '' },
   chainName: { type: String, default: '' },
+  // The CRM card's REAL key, resolved at add time (companyKey-OR-matchKey, the
+  // same join the map's pin list uses) — falls back to the source record's own
+  // derived key when no CRM match exists. Outcome/to-do capture writes to THIS
+  // key so it can never mint a derived-key duplicate of a matched company.
   companyKey: { type: String, default: '' },
+  // Snapshot of the matched CRM record's stage at add time ('' = no CRM match).
+  // Display/fallback only — stage writes go through the CRM's promote-only path.
+  crmStage: { type: String, default: '' },
 
   order:     { type: Number, default: 0 },
   status:    { type: String, enum: STOP_STATUSES, default: 'pending' },

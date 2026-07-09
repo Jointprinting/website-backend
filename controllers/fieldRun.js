@@ -12,9 +12,29 @@
 
 const FieldRun = require('../models/FieldRun');
 const Dispensary = require('../models/Dispensary');
+const Client = require('../models/Client');
 const { optimizeStopOrder } = require('../services/routeOptimize');
+const { matchKey } = require('../services/dispensaryIngest');
 
 function todayLabel() { return new Date().toISOString().slice(0, 10); }
+
+// Resolve the CRM card a stop belongs to — companyKey OR the fuzzier matchKey,
+// the exact join listDispensaries uses for pins. Resolved ONCE at add time and
+// carried on the stop, so logging an outcome/to-do later (often with the map
+// panned far away from the stop) writes to the card's REAL key instead of a
+// derived-key duplicate. Best-effort: a lookup failure just means no match.
+async function resolveCrmMatch(companyKey, dispMatchKey, name) {
+  const or = [];
+  if (companyKey) or.push({ companyKey });
+  const mk = dispMatchKey || (name ? matchKey(name) : '');
+  if (mk) or.push({ matchKey: mk });
+  if (!or.length) return null;
+  try {
+    return await Client.findOne({ $or: or }).select('companyKey stage').lean();
+  } catch {
+    return null;
+  }
+}
 
 async function ensureActiveRun() {
   let run = await FieldRun.findOne({ active: true }).sort({ createdAt: -1 });
@@ -51,6 +71,7 @@ async function addStop(req, res) {
       if (!isFinite(d.lat) || !isFinite(d.lng) || d.lat == null) {
         return res.status(400).json({ message: 'That store has no coordinates yet — run enrichment first.' });
       }
+      const crm = await resolveCrmMatch(d.companyKey, d.matchKey, d.name);
       stop = {
         dispensaryId: d._id,
         name: d.name,
@@ -59,7 +80,8 @@ async function addStop(req, res) {
         lat: d.lat, lng: d.lng,
         placeId: d.placeId,
         chainName: d.chainName,
-        companyKey: d.companyKey,
+        companyKey: (crm && crm.companyKey) || d.companyKey,
+        crmStage: (crm && crm.stage) || '',
       };
     } else {
       const lat = parseFloat(b.lat), lng = parseFloat(b.lng);
@@ -69,6 +91,7 @@ async function addStop(req, res) {
       if (b.leadId && run.stops.some((s) => String(s.leadId) === String(b.leadId))) {
         return res.json({ run, duplicate: true });
       }
+      const crm = await resolveCrmMatch(String(b.companyKey || ''), '', String(b.name));
       stop = {
         leadId: b.leadId || null,
         name: String(b.name),
@@ -77,7 +100,8 @@ async function addStop(req, res) {
         lat, lng,
         placeId: String(b.placeId || ''),
         chainName: String(b.chainName || ''),
-        companyKey: String(b.companyKey || ''),
+        companyKey: (crm && crm.companyKey) || String(b.companyKey || ''),
+        crmStage: (crm && crm.stage) || '',
       };
     }
 

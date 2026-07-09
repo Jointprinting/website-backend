@@ -71,6 +71,18 @@ function promoteStage(current, target) {
   return tr > cr ? target : cur;
 }
 
+// Stage write for a promote-only SUGGESTION (patchOne's `stageSuggest`, used by
+// the Field Map's visit/to-do capture): `current` is the existing record's
+// { stage } (null on a fresh upsert). Returns the stage to $set, or null for
+// no write. Pure so the contract is testable: seeds a new record at the
+// suggested stage, moves an existing one forward only (via promoteStage), and
+// never touches an owner-closed lost/dormant record.
+function suggestStageWrite(current, suggest) {
+  const next = promoteStage(current && current.stage, suggest);
+  if (!current) return next;
+  return next !== current.stage ? next : null;
+}
+
 // Auto-promote a company's CRM record to 'customer' when one of its orders has
 // been PLACED (owner-approved). Best-effort and idempotent:
 //   • get-or-create the Client by companyKey (race-safe upsert; seeds identity
@@ -1580,6 +1592,20 @@ async function patchOne(req, res) {
       }
     }
 
+    // Promote-only stage suggestion — the Field Map's visit/to-do capture (and
+    // any other best-effort writer) sends `stageSuggest` instead of `stage`:
+    // the server moves the funnel FORWARD only (promoteStage), so a suggestion
+    // can never regress an owner-advanced deal or resurrect a closed one. An
+    // explicit `stage` in the same patch wins (that's a deliberate edit).
+    if (body.stageSuggest && !('stage' in body)) {
+      if (!STAGES.includes(body.stageSuggest)) {
+        return res.status(400).json({ message: `invalid stage "${body.stageSuggest}"` });
+      }
+      const cur = await Client.findOne({ companyKey: key }).select('stage').lean();
+      const next = suggestStageWrite(cur, body.stageSuggest);
+      if (next) set.stage = next;
+    }
+
     // Intent: log a touch.
     const hasLog = typeof body.logText === 'string' && body.logText.trim() !== '';
     if (hasLog) {
@@ -2804,6 +2830,7 @@ module.exports = {
   matchCandidates,
   migrateRetiredStages,
   // exported for tests / reuse
+  suggestStageWrite,
   sanitizeContacts,
   rankMatchCandidates,
   scoreNameMatch,

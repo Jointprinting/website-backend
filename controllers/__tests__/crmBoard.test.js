@@ -22,6 +22,7 @@ const {
   BOARD_CLOSED_COLUMNS,
   BOARD_PROBABILITY,
   promoteStage,
+  suggestStageWrite,
 } = require('../crm');
 
 // ── orderStatusToColumn — the status → board column mapper ───────────────────
@@ -330,6 +331,34 @@ test('promoteStage(_, "quoting") advances early stages but never regresses or re
   // A deliberately-closed/parked stage is never resurrected by the handoff.
   assert.equal(promoteStage('lost',      'quoting'), 'lost');
   assert.equal(promoteStage('dormant',   'quoting'), 'dormant');
+});
+
+// ── patchOne's `stageSuggest` decision (suggestStageWrite) ────────────────────
+// The Field Map's visit/to-do capture SUGGESTS a stage instead of setting one;
+// the server decides via suggestStageWrite(current, suggest). Pin the contract:
+// seed a fresh record, promote forward only, never regress or resurrect — even
+// when the caller's view of the record is stale or missing (a run stop logged
+// with the map panned far away).
+test('suggestStageWrite seeds a fresh record at the suggested stage', () => {
+  assert.equal(suggestStageWrite(null, 'lead'),      'lead');
+  assert.equal(suggestStageWrite(null, 'contacted'), 'contacted');
+});
+
+test('suggestStageWrite promotes forward only, and no-ops (null) otherwise', () => {
+  // lead + visit suggestion → contacted.
+  assert.equal(suggestStageWrite({ stage: 'lead' }, 'contacted'), 'contacted');
+  // Same stage → no write.
+  assert.equal(suggestStageWrite({ stage: 'contacted' }, 'contacted'), null);
+  // A deal further down the funnel is NEVER pulled back (the exact off-screen
+  // run-stop corruption: a quoting deal must not regress to contacted).
+  assert.equal(suggestStageWrite({ stage: 'quoting' },  'contacted'), null);
+  assert.equal(suggestStageWrite({ stage: 'won' },      'contacted'), null);
+  assert.equal(suggestStageWrite({ stage: 'customer' }, 'lead'),      null);
+  // Closed/parked stages are never resurrected by a field capture.
+  assert.equal(suggestStageWrite({ stage: 'lost' },    'contacted'), null);
+  assert.equal(suggestStageWrite({ stage: 'dormant' }, 'contacted'), null);
+  // A legacy record with no stage is treated as 'lead' — promotable.
+  assert.equal(suggestStageWrite({ stage: '' }, 'contacted'), 'contacted');
 });
 
 test('BOARD_PROBABILITY exposes the per-column close-rates', () => {
