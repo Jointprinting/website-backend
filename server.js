@@ -178,6 +178,26 @@ db.once('open', () => {
       .catch((e) => console.warn('[approval] legacy-token expiry backfill failed:', e.message));
   }, 5_500);
 
+  // ONE-TIME: stamp pre-gate confirmations as already-published so the new
+  // publish gate doesn't bounce an in-flight client to the "we're finalizing"
+  // screen. Guarded by a flag doc in the `migrations` collection so it runs
+  // EXACTLY ONCE — it must never re-run and stamp a NEW unpublished draft. The
+  // owner never has to run a script. (scripts/backfillConfirmationPublished.js
+  // remains for a manual/dry-run.)
+  setTimeout(async () => {
+    const KEY = 'confirmationPublishedBackfill-v1';
+    try {
+      const migrations = mongoose.connection.db.collection('migrations');
+      const done = await migrations.findOne({ _id: KEY });
+      if (done) return;
+      const n = await require('./controllers/approval').backfillConfirmationPublished();
+      await migrations.insertOne({ _id: KEY, at: new Date(), modified: n });
+      console.log(`[approval] confirmation publish-gate backfill: stamped ${n} existing confirmation(s) as published.`);
+    } catch (e) {
+      console.warn('[approval] confirmation publish backfill failed (will retry next boot):', e.message);
+    }
+  }, 6_500);
+
   // Idempotent: rename the income category "Customer Sales" → "Client Sales"
   // on stored transactions + receipt extractions (owner's vocabulary change).
   setTimeout(() => {

@@ -432,3 +432,44 @@ test('looksLikeDnsOutage: a mostly-dead verdict on a real sample is a resolver p
   assert.equal(looksLikeDnsOutage(2, 3), false);    // small absolute count
   assert.equal(looksLikeDnsOutage(0, 0), false);
 });
+
+// ── Deliverability circuit-breaker: min-sample + absolute-count floors ─────────
+// Regression: a small batch (3 bounces on 30 sends = 10%) must NOT trip the breaker
+// — a rate over a tiny sample is noise, and pausing then FREEZES the engine (it
+// can't dilute the rate with fresh good sends). The breaker requires a real sample
+// AND an absolute count of bad events, not just a rate.
+const { evaluateDeliverability } = require('../outreachEngine');
+
+test('breaker: 3 bounces on 30 sends (10%) does NOT trip — sample too small', () => {
+  const r = evaluateDeliverability({ sent7d: 30, bounced7d: 3, complaints7d: 0 });
+  assert.equal(r.tripped, false);
+  assert.equal(r.reason, '');
+});
+
+test('breaker: 3 bounces on 60 sends (5%) does NOT trip — bounce count under the floor', () => {
+  // 60 sends clears the sample floor, but 3 bounces is still noise (< min-bounces).
+  const r = evaluateDeliverability({ sent7d: 60, bounced7d: 3, complaints7d: 0 });
+  assert.equal(r.tripped, false);
+});
+
+test('breaker: 8 bounces on 80 sends (10%) DOES trip — real sample + real count', () => {
+  const r = evaluateDeliverability({ sent7d: 80, bounced7d: 8, complaints7d: 0 });
+  assert.equal(r.tripped, true);
+  assert.match(r.reason, /bounce rate/);
+});
+
+test('breaker: healthy volume (6 bounces on 400 sends = 1.5%) does NOT trip', () => {
+  const r = evaluateDeliverability({ sent7d: 400, bounced7d: 6, complaints7d: 0 });
+  assert.equal(r.tripped, false);
+});
+
+test('breaker: 1 complaint on 60 sends does NOT trip — complaint count under the floor', () => {
+  const r = evaluateDeliverability({ sent7d: 60, bounced7d: 0, complaints7d: 1 });
+  assert.equal(r.tripped, false);
+});
+
+test('breaker: no sends → not tripped, zero rates', () => {
+  const r = evaluateDeliverability({ sent7d: 0, bounced7d: 0, complaints7d: 0 });
+  assert.equal(r.tripped, false);
+  assert.equal(r.bounceRate, 0);
+});
