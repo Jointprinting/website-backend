@@ -12,7 +12,9 @@ function haversineMi(a, b) {
   const dLat = toRad(b.lat - a.lat), dLng = toRad(b.lng - a.lng);
   const h = Math.sin(dLat / 2) ** 2
     + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
-  return 2 * 3958.8 * Math.asin(Math.sqrt(h));
+  // Clamp: float rounding can push h a hair past 1 (near-antipodal points),
+  // and asin(√h>1) is NaN — which would poison a whole route's mileage.
+  return 2 * 3958.8 * Math.asin(Math.sqrt(Math.min(1, h)));
 }
 
 function pathMiles(start, stops) {

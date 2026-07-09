@@ -71,6 +71,19 @@ function promoteStage(current, target) {
   return tr > cr ? target : cur;
 }
 
+// The stages a promote-only SUGGESTION (patchOne's `stageSuggest`, used by the
+// Field Map's visit/to-do capture) may move a record FROM, for a given target:
+// exactly the stages ranked strictly below it. lost/dormant carry no rank, so
+// they are never promotable-from (owner-closed stays closed) and — as targets —
+// yield an empty list (never promoted into). Pure + exported for tests; the
+// caller turns this into an ATOMIC conditional update (the filter re-checks
+// the rule at write time), so a concurrent owner edit between an offline
+// queue's read and its replayed write can never be overwritten.
+function promotableFrom(target) {
+  const tr = STAGE_RANK[target] != null ? STAGE_RANK[target] : 0;
+  return Object.keys(STAGE_RANK).filter((s) => STAGE_RANK[s] < tr);
+}
+
 // Auto-promote a company's CRM record to 'customer' when one of its orders has
 // been PLACED (owner-approved). Best-effort and idempotent:
 //   • get-or-create the Client by companyKey (race-safe upsert; seeds identity
@@ -1519,8 +1532,28 @@ async function patchOne(req, res) {
     if (!key) return res.status(400).json({ message: 'companyKey required' });
     const body = req.body || {};
 
+    // Field-map captures resolve identity at WRITE time before minting a new
+    // company: the pin/stop key can be a derived key or a stale add-time
+    // snapshot (a card created later under a different key would be missed,
+    // and offline-queued captures replay hours old). If no card owns the key
+    // but one fuzzy-matches the company name (the same matchKey join the map
+    // uses), land the touch on that card instead of upserting a duplicate.
+    // Scoped to field-map writes so ordinary CRM edits keep exact-key
+    // semantics. A merged-away duplicate is never bound — its history lives
+    // on the survivor, and re-engagement deliberately won't unarchive it.
+    let targetKey = key;
+    if (body.source === 'field-map' && !(await Client.exists({ companyKey: key }))) {
+      const mk = deriveMatchKey(body.companyName || '', body.clientName || '');
+      const alt = mk
+        ? await Client.findOne({ matchKey: mk, $nor: [{ archived: true, archivedReason: 'merged' }] })
+            .select('companyKey').lean()
+        : null;
+      if (alt && alt.companyKey) targetKey = alt.companyKey;
+    }
+
     const set = {};
     const push = {};
+    const setOnInsert = {};
 
     // Plain field edits.
     for (const f of PATCHABLE) {
@@ -1580,6 +1613,35 @@ async function patchOne(req, res) {
       }
     }
 
+    // Promote-only stage suggestion — the Field Map's visit/to-do capture (and
+    // any other best-effort writer) sends `stageSuggest` instead of `stage`.
+    // Two ATOMIC pieces, so the promote-only rule holds at write time even
+    // against a concurrent owner edit (offline queues replay in bursts exactly
+    // when the owner is back at the board):
+    //   • an existing record moves forward ONLY via a stage-guarded updateOne
+    //     — the filter re-checks promotableFrom at write time, so an owner
+    //     move to lost/quoting/anywhere between read and replay always wins;
+    //   • a fresh record seeds at the suggested stage via $setOnInsert.
+    // An explicit `stage` in the same patch wins (that's a deliberate edit).
+    if (body.stageSuggest && !('stage' in body)) {
+      if (!STAGES.includes(body.stageSuggest)) {
+        return res.status(400).json({ message: `invalid stage "${body.stageSuggest}"` });
+      }
+      setOnInsert.stage = body.stageSuggest;
+      const from = promotableFrom(body.stageSuggest);
+      if (from.length) {
+        await Client.updateOne(
+          {
+            companyKey: targetKey,
+            // ''/null/missing count as 'lead' (promotable). lost/dormant are
+            // never in `from`, so owner-closed records never match.
+            $or: [{ stage: { $in: from } }, { stage: null }, { stage: '' }, { stage: { $exists: false } }],
+          },
+          { $set: { stage: body.stageSuggest } },
+        );
+      }
+    }
+
     // Intent: log a touch.
     const hasLog = typeof body.logText === 'string' && body.logText.trim() !== '';
     if (hasLog) {
@@ -1595,7 +1657,7 @@ async function patchOne(req, res) {
       set.nextFollowUp = body.nextFollowUp || null;
     }
 
-    set.companyKey = key;
+    set.companyKey = targetKey;
 
     // Customer permanence (ECOSYSTEM.md: "Customer status is permanent … lock the
     // stage so it can't regress to lead"). Server backstop for the frontend's
@@ -1603,10 +1665,12 @@ async function patchOne(req, res) {
     // right-clicked back to a pre-customer stage. The regression is dropped (other
     // edits in the same patch still apply); dormant/lost stay allowed — those are
     // deliberate owner closes, and 'dormant' is explicitly fine for a cold customer.
+    // (stageSuggest never lands in `set`, so promote-only field captures — which
+    // can't regress anything — are not blocked here for order-bearing leads.)
     if ('stage' in set && PRE_CUSTOMER_STAGES.has(set.stage)) {
-      const current = await Client.findOne({ companyKey: key }).select('stage').lean();
+      const current = await Client.findOne({ companyKey: targetKey }).select('stage').lean();
       const isCustomerStage = current && (current.stage === 'won' || current.stage === 'customer');
-      const hasOrders = (await keysWithOrders([key])).has(key);
+      const hasOrders = (await keysWithOrders([targetKey])).has(targetKey);
       if (isCustomerStage || hasOrders) {
         delete set.stage;
         delete set.lostReason; // stage-coupled clear no longer applies
@@ -1621,7 +1685,7 @@ async function patchOne(req, res) {
     // dormancy, and reviving the loser would recreate the duplicate.
     const reEngaged = hasLog || ('nextFollowUp' in set && !!set.nextFollowUp);
     if (reEngaged) {
-      const cur = await Client.findOne({ companyKey: key })
+      const cur = await Client.findOne({ companyKey: targetKey })
         .select('archived archivedReason').lean();
       if (cur && cur.archived && cur.archivedReason !== 'merged') {
         set.archived = false;
@@ -1633,9 +1697,10 @@ async function patchOne(req, res) {
     const update = {};
     if (Object.keys(set).length)  update.$set  = set;
     if (Object.keys(push).length) update.$push = push;
+    if (Object.keys(setOnInsert).length) update.$setOnInsert = setOnInsert;
 
     const client = await Client.findOneAndUpdate(
-      { companyKey: key },
+      { companyKey: targetKey },
       update,
       { upsert: true, new: true, setDefaultsOnInsert: true },
     ).lean();
@@ -2804,6 +2869,7 @@ module.exports = {
   matchCandidates,
   migrateRetiredStages,
   // exported for tests / reuse
+  promotableFrom,
   sanitizeContacts,
   rankMatchCandidates,
   scoreNameMatch,

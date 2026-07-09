@@ -22,6 +22,7 @@ const {
   BOARD_CLOSED_COLUMNS,
   BOARD_PROBABILITY,
   promoteStage,
+  promotableFrom,
 } = require('../crm');
 
 // ── orderStatusToColumn — the status → board column mapper ───────────────────
@@ -330,6 +331,37 @@ test('promoteStage(_, "quoting") advances early stages but never regresses or re
   // A deliberately-closed/parked stage is never resurrected by the handoff.
   assert.equal(promoteStage('lost',      'quoting'), 'lost');
   assert.equal(promoteStage('dormant',   'quoting'), 'dormant');
+});
+
+// ── patchOne's `stageSuggest` guard (promotableFrom) ──────────────────────────
+// The Field Map's visit/to-do capture SUGGESTS a stage instead of setting one;
+// patchOne turns promotableFrom(target) into an ATOMIC stage-guarded updateOne
+// (the filter re-checks the rule at write time — an offline queue replaying
+// against a concurrent owner edit can never overwrite it). Pin the contract:
+// forward moves only, never regress, never resurrect an owner-closed record.
+test('promotableFrom lists exactly the stages ranked below the target', () => {
+  // lead + visit suggestion → only 'lead' may move to 'contacted'.
+  assert.deepEqual(promotableFrom('contacted'), ['lead']);
+  // A quoting/won/customer deal is NEVER pulled back to contacted — absent
+  // from the list (the exact off-screen run-stop corruption).
+  assert.equal(promotableFrom('contacted').includes('quoting'),  false);
+  assert.equal(promotableFrom('contacted').includes('won'),      false);
+  assert.equal(promotableFrom('contacted').includes('customer'), false);
+  assert.deepEqual(promotableFrom('quoting'), ['lead', 'contacted', 'awaiting_details']);
+});
+
+test('promotableFrom: lost/dormant are never promotable-from nor promotable-into', () => {
+  // Owner-closed records never match a suggestion's guard…
+  for (const target of ['contacted', 'quoting', 'won']) {
+    assert.equal(promotableFrom(target).includes('lost'),    false);
+    assert.equal(promotableFrom(target).includes('dormant'), false);
+  }
+  // …and a suggestion can never move anything INTO a closed/parked stage.
+  assert.deepEqual(promotableFrom('lost'),    []);
+  assert.deepEqual(promotableFrom('dormant'), []);
+  // 'lead' is rank 0: an existing record is never demoted to it (it only
+  // seeds fresh inserts via $setOnInsert).
+  assert.deepEqual(promotableFrom('lead'), []);
 });
 
 test('BOARD_PROBABILITY exposes the per-column close-rates', () => {
