@@ -79,7 +79,11 @@ const OOO_BODY = /\b(i(?:'| a)?m (?:currently )?(?:out of (?:the )?office|on (?:
 // this account is not monitored" got treated as a buyer reply and warmed the CRM).
 // Distinct from OOO (a person temporarily away, which we snooze): these are ignored.
 const AUTO_ACK_SUBJECT = /\b(auto[\s-]?response|automatic response|autoresponse|auto[\s-]?acknowledge?ment|acknowledg?ement of your)\b/i;
-const AUTO_ACK_BODY = /\b(thank you for (?:contacting|your (?:email|message|inquiry|enquiry))|this is an automated (?:response|message|email|reply)|(?:please )?do not (?:reply|respond) to this (?:e-?mail|message|account|mailbox)|this (?:mailbox|inbox|e-?mail account|account) is (?:not |un)monitored|is not monitored|unlikely (?:they|it) will (?:be seen|not be seen)|can ?not be answered via this|no longer monitored)\b/i;
+// Body wording is MACHINE-SPECIFIC only — phrases a human would never write in a
+// real reply. A polite human opener ("thank you for your email, yes we'd love a
+// quote") must NOT be swallowed, so soft openers are deliberately excluded here;
+// a generic auto-ack is still caught by its subject (AUTO_ACK_SUBJECT) or headers.
+const AUTO_ACK_BODY = /\b(this is an automated (?:response|message|email|reply)|(?:please )?do not (?:reply|respond) to this (?:e-?mail|message|account|mailbox)|this (?:mailbox|inbox|e-?mail account|account) is (?:not |un)monitored|is not monitored|unlikely (?:they|it) will (?:be seen|not be seen)|can ?not be answered via this (?:e-?mail|account)|no longer monitored)\b/i;
 
 // RFC-standard headers that DEFINITIVELY mark automated / bulk / list mail — the
 // gold-standard signal, independent of fragile subject/body wording. A well-behaved
@@ -271,11 +275,16 @@ function matchReply(fromEmail, subject, { enrollments = [], clients = [], messag
     if (cl) return { matched: true, matchBy: 'email', companyKey: cl.companyKey || '', companyName: cl.companyName || '', enrollmentId: '' };
   }
 
-  // 3) Subject still carrying our campaign subject.
+  // 3) Subject still carrying our campaign subject. A subject match is STRONG
+  //    (auto-warms), so only act when it resolves to a SINGLE company — a generic,
+  //    non-personalized subject ("Quick question") can match enrollments for two
+  //    different shops on a shared host; picking the first would warm/stop the
+  //    wrong one. Ambiguous (≥2 distinct companyKeys) → leave for manual triage.
   const subj = normSubject(subject);
   if (subj) {
-    const enr = enrollments.find((e) => (e.subjects || []).some((x) => normSubject(x) && normSubject(x) === subj));
-    if (enr) return hit('subject', enr);
+    const matches = enrollments.filter((e) => (e.subjects || []).some((x) => normSubject(x) && normSubject(x) === subj));
+    const keys = new Set(matches.map((e) => e.companyKey || '').filter(Boolean));
+    if (matches.length && keys.size <= 1) return hit('subject', matches[0]);
   }
 
   // 4) Domain fallback (soft) — a buyer replying from a personal/shared inbox on
