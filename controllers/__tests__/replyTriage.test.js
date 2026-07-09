@@ -96,6 +96,47 @@ test('auto_reply_ooo: out-of-office auto-replies get their own category (snoozed
   assert.equal(cat({ fromEmail: 'jo@shop.com', subject: 'Re: hi', snippet: 'This is an automated response — on vacation.' }), 'auto_reply_ooo');
 });
 
+test('auto-responder is IGNORED, never a real reply (the Origins Cannabis bug)', () => {
+  // The exact live case: an "Auto response:" from the shop's REAL address whose
+  // body is a generic auto-ack. It must NOT be treated as a human reply.
+  const r = classifyReply({
+    fromEmail: 'shop@originscannabis.com',
+    fromName: 'Origins Cannabis',
+    subject: 'Auto response: Custom Merch/Apparel for Origins Cannabis',
+    snippet: 'Thank you for contacting Origins Cannabis. Questions cannot be answered via this email account. Do not send urgent messages to this account; it is unlikely they will be seen in time.',
+  });
+  assert.equal(r.category, 'bounce_auto_ignore');
+  assert.equal(r.ignore, true);
+  assert.equal(r.auto, true);
+  // Subject-only and body-only auto-ack wording each trip it, too.
+  assert.equal(cat({ fromEmail: 'x@shop.com', subject: 'Auto-Response: your inquiry' }), 'bounce_auto_ignore');
+  assert.equal(cat({ fromEmail: 'x@shop.com', subject: 'Re: merch', snippet: 'Please do not reply to this email; this mailbox is not monitored.' }), 'bounce_auto_ignore');
+});
+
+test('RFC auto/bulk headers catch an auto-responder regardless of wording', () => {
+  // Auto-Submitted (RFC 3834) — the definitive auto-reply signal.
+  assert.equal(cat({ fromEmail: 'a@shop.com', subject: 'Re: merch', snippet: 'sure, sounds good', headers: { 'Auto-Submitted': 'auto-replied' } }), 'bounce_auto_ignore');
+  // Precedence: bulk, and a mailing-list header — bulk/list mail, not a person.
+  assert.equal(cat({ fromEmail: 'a@shop.com', subject: 'Newsletter', headers: { Precedence: 'bulk' } }), 'bounce_auto_ignore');
+  assert.equal(cat({ fromEmail: 'a@shop.com', subject: 'Update', headers: { 'List-Id': '<news.shop.com>' } }), 'bounce_auto_ignore');
+  // Exchange/Outlook auto-response suppression header.
+  assert.equal(cat({ fromEmail: 'a@shop.com', subject: 'Re: hi', headers: { 'X-Auto-Response-Suppress': 'All' } }), 'bounce_auto_ignore');
+  // Auto-Submitted: no is a NORMAL human message — must NOT trip.
+  assert.equal(cat({ fromEmail: 'a@shop.com', subject: 'Re: merch', snippet: "let's talk, we're interested", headers: { 'Auto-Submitted': 'no' } }), 'hot_lead');
+});
+
+test('a genuine human reply is untouched by the auto filters', () => {
+  // "thanks for reaching out" (not "thank you for contacting") stays a real lead.
+  assert.equal(cat({ fromEmail: 'buyer@shop.com', subject: 'Re: Custom merch', snippet: "Thanks for reaching out — we're interested, can you send pricing?" }), 'asked_pricing');
+  assert.equal(cat({ fromEmail: 'buyer@shop.com', subject: 'Re: Custom merch', snippet: "Let's set up a call this week." }), 'hot_lead');
+});
+
+test('a true out-of-office still SNOOZES (not ignored) even with auto headers', () => {
+  const r = classifyReply({ fromEmail: 'sam@shop.com', subject: 'Automatic reply: Out of office', headers: { 'Auto-Submitted': 'auto-replied' } });
+  assert.equal(r.category, 'auto_reply_ooo');   // OOO precedence over generic ignore
+  assert.equal(r.ooo, true);
+});
+
 test('parseOooResume: honors an explicit near-future M/D, else +7 days', () => {
   const now = new Date('2026-07-03T12:00:00Z');
   // explicit "back on 7/15" → that date

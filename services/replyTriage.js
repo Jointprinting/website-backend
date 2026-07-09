@@ -73,6 +73,35 @@ const BOUNCE_SUBJECT = /(delivery (?:status notification|has failed|failure)|und
 const OOO_SUBJECT = /\b(out of (?:the )?office|auto(?:matic)?[ -]?reply|automatic reply|on vacation|away from (?:the |my )?office|on (?:leave|holiday|pto)|maternity leave|paternity leave)\b/i;
 const OOO_BODY = /\b(i(?:'| a)?m (?:currently )?(?:out of (?:the )?office|on (?:vacation|leave|pto|holiday)|away|traveling)|out of (?:the )?office (?:until|through|from|and)|automatic(?:ally)? (?:generated )?(?:reply|response)|this is an autom(?:ated|atic)|limited access to (?:my )?email)\b/i;
 
+// Generic (non-OOO) auto-responders / auto-acknowledgements — a machine, not a
+// human, replied. These must NEVER count as a real reply (the bug: an "Auto
+// response: …" from a shop's real address that says "thank you for contacting …
+// this account is not monitored" got treated as a buyer reply and warmed the CRM).
+// Distinct from OOO (a person temporarily away, which we snooze): these are ignored.
+const AUTO_ACK_SUBJECT = /\b(auto[\s-]?response|automatic response|autoresponse|auto[\s-]?acknowledge?ment|acknowledg?ement of your)\b/i;
+const AUTO_ACK_BODY = /\b(thank you for (?:contacting|your (?:email|message|inquiry|enquiry))|this is an automated (?:response|message|email|reply)|(?:please )?do not (?:reply|respond) to this (?:e-?mail|message|account|mailbox)|this (?:mailbox|inbox|e-?mail account|account) is (?:not |un)monitored|is not monitored|unlikely (?:they|it) will (?:be seen|not be seen)|can ?not be answered via this|no longer monitored)\b/i;
+
+// RFC-standard headers that DEFINITIVELY mark automated / bulk / list mail — the
+// gold-standard signal, independent of fragile subject/body wording. A well-behaved
+// auto-responder sets `Auto-Submitted: auto-replied` (RFC 3834); bulk/list senders
+// set `Precedence: bulk|list` or `List-Id`; Outlook/Exchange set `X-Auto-Response-
+// Suppress`. A genuine 1:1 human reply from Gmail/Outlook carries none of these.
+function headerSaysAuto(headers) {
+  if (!headers || typeof headers !== 'object') return false;
+  const get = (k) => {
+    const key = Object.keys(headers).find((h) => h.toLowerCase() === k);
+    return key ? String(headers[key] == null ? '' : headers[key]) : '';
+  };
+  const autoSub = get('auto-submitted').trim().toLowerCase();
+  if (autoSub && autoSub !== 'no') return true;                         // RFC 3834
+  if (/\b(bulk|auto[_-]?reply|auto[_-]?generated|junk|list)\b/i.test(get('precedence'))) return true;
+  if (get('x-autoreply') || get('x-autorespond') || get('x-autoresponse')) return true;
+  if (get('x-auto-response-suppress')) return true;                    // Exchange/Outlook auto
+  if (get('x-autoreply-from') || get('x-mail-autoreply') || get('x-vacation')) return true;
+  if (get('list-id') || get('list-unsubscribe-post')) return true;     // mailing-list / bulk, not a person
+  return false;
+}
+
 // Content signals. Order below encodes precedence.
 const RE_UNSUB = /\b(unsubscribe|remove me|take me off|stop (?:emailing|contacting|sending)|opt[ -]?out|do not (?:contact|email)|quit emailing)\b/i;
 const RE_NOT_INTERESTED = /\b(not interested|no,? thank|no thanks|we'?re all set|already (?:have|use|using|work with|got)|not (?:at this time|right now|looking|a fit|for us)|no need|please stop|not needed)\b/i;
@@ -87,7 +116,7 @@ const RE_LATER = /\b(not (?:right )?now|next (?:month|quarter|year|week|season)|
 // "unsubscribe — btw what are your prices" is never mis-filed as a pricing lead.
 // Returns { category, ignore, self, ooo }: `ignore` = not a real human reply to
 // act on; `ooo` = an out-of-office auto-reply the caller should snooze on.
-function classifyReply({ subject = '', snippet = '', fromEmail = '', fromName = '' } = {}) {
+function classifyReply({ subject = '', snippet = '', fromEmail = '', fromName = '', headers = null } = {}) {
   const from = String(fromEmail).toLowerCase();
   const subj = String(subject);
   const body = String(snippet);
@@ -98,8 +127,19 @@ function classifyReply({ subject = '', snippet = '', fromEmail = '', fromName = 
 
   // Hard machine mail (bounces, receipts, calendar) → ignore.
   if (AUTO_FROM.test(from) || BOUNCE_SUBJECT.test(subj)) return { category: 'bounce_auto_ignore', ignore: true, self: false };
-  // Out-of-office auto-reply → its own category (snooze, don't ignore).
+  // Out-of-office auto-reply (a real person temporarily away) → its own category
+  // (snooze, don't ignore). Checked BEFORE the generic auto-ack so a true OOO
+  // resumes the sequence instead of being dropped.
   if (OOO_SUBJECT.test(subj) || OOO_BODY.test(body)) return { category: 'auto_reply_ooo', ignore: false, self: false, ooo: true };
+  // Generic auto-responder / bulk / list mail — flagged by RFC headers
+  // (Auto-Submitted / Precedence / X-Auto*) or by the message's own auto-ack
+  // wording ("Auto response: …", "thank you for contacting …", "this mailbox is
+  // not monitored"). A machine acknowledged us — NEVER a real reply, so ignore it
+  // outright (no CRM warm, no "Replied" state). This is the fix for auto-replies
+  // that used to slip through and pollute the pipeline.
+  if (headerSaysAuto(headers) || AUTO_ACK_SUBJECT.test(subj) || AUTO_ACK_BODY.test(hay)) {
+    return { category: 'bounce_auto_ignore', ignore: true, self: false, auto: true };
+  }
 
   if (RE_UNSUB.test(hay))          return { category: 'unsubscribe',      ignore: false, self: false };
   if (RE_NOT_INTERESTED.test(hay)) return { category: 'not_interested',  ignore: false, self: false };
@@ -328,6 +368,7 @@ module.exports = {
   isValidCategory,
   isValidStatus,
   classifyReply,
+  headerSaysAuto,
   classifyBounceNdr,
   parseOooResume,
   parseFromHeader,

@@ -73,7 +73,10 @@ async function ingestOne(raw = {}) {
     if (dup) return { skip: 'duplicate' };
   }
 
-  const cls = classifyReply({ subject, snippet, fromEmail, fromName });
+  // Pass the raw header map through so classifyReply can use the RFC-standard
+  // auto/bulk signals (Auto-Submitted / Precedence / X-Auto* / List-*), which are
+  // far more reliable than subject/body wording for catching auto-responders.
+  const cls = classifyReply({ subject, snippet, fromEmail, fromName, headers: raw.headers || null });
   const { category } = cls;
   if (cls.self) return { skip: 'self' }; // our own outbound mail is never a reply
 
@@ -391,8 +394,13 @@ async function runGmailSync({ maxMessages = 50, windowDays = 7 } = {}) {
   const ids = (list.messages || []).map((m) => m.id);
   let imported = 0;
   const skipped = { empty: 0, self: 0, duplicate: 0 };
-  const HEADERS = ['From', 'Subject', 'Message-Id', 'In-Reply-To', 'References', 'Date']
-    .map((h) => `metadataHeaders=${h}`).join('&');
+  // Pull the auto-reply / bulk detection headers alongside the routing ones, so
+  // an auto-responder is caught by its RFC headers even when its wording is novel.
+  const HEADERS = [
+    'From', 'Subject', 'Message-Id', 'In-Reply-To', 'References', 'Date',
+    'Auto-Submitted', 'Precedence', 'X-Autoreply', 'X-Autorespond', 'X-Autoresponse',
+    'X-Auto-Response-Suppress', 'List-Id', 'List-Unsubscribe-Post',
+  ].map((h) => `metadataHeaders=${h}`).join('&');
   for (const id of ids) {
     const msg = await gmailApi(`messages/${id}?format=metadata&${HEADERS}`, token).catch(() => null);
     if (!msg) continue;
@@ -407,6 +415,7 @@ async function runGmailSync({ maxMessages = 50, windowDays = 7 } = {}) {
       receivedAt: msg.internalDate ? new Date(Number(msg.internalDate)) : new Date(),
       inReplyTo: h['in-reply-to'] || '',
       references: h.references || '',
+      headers: h,   // full lowercased header map → auto/bulk detection
       gmailMessageId: id,
       source: 'gmail',
     });
