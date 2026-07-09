@@ -296,11 +296,15 @@ const publicGetProject = async (req, res) => {
         mockupNumbers:        order.mockupNumbers,
         confirmationMessage:  order.confirmationMessage,
         confirmationTerms:    order.confirmationTerms,
-        confirmation:         _safeConfirmation(order.confirmation),
+        // Publish gate: the client only receives the confirmation (and the flag
+        // that advances their page to REVIEW+APPROVE) once the owner has pushed
+        // it. While it's an unpublished draft, send an empty stub so neither the
+        // stage machine nor a raw-JSON reader can surface the half-built doc.
+        confirmation:         _confPublished(order.confirmation) ? _safeConfirmation(order.confirmation) : { items: [], customLines: [] },
         orderDate:            order.orderDate,
         optionsPickedAt:      pickedAtCurrent,
         paymentMethod:        order.paymentMethod || '',
-        hasConfirmation:      _hasConfContent(order.confirmation),
+        hasConfirmation:      _confPublished(order.confirmation),
         approvalStatus:       currentStatus,
         approvalAt:           lastTerminal ? lastTerminal.at : null,
         approvalMessage:      lastTerminal ? lastTerminal.message : '',
@@ -432,6 +436,15 @@ function _hasConfContent(conf) {
   return ((conf.items || []).length > 0) || ((conf.customLines || []).length > 0);
 }
 
+// The PUBLISH GATE (the owner's "buffer"): a confirmation is only live to the
+// client once the owner has explicitly pushed it (confirmation.publishedAt set).
+// Building/seeding/autosaving the draft must NOT flip the client's page — they
+// stay on "we're finalizing your order" until this is true. Mirrors
+// Order.confirmationIsPublished for lean docs.
+function _confPublished(conf) {
+  return _hasConfContent(conf) && !!(conf && conf.publishedAt);
+}
+
 // POST /api/public/projects/:id/select?token=... — the interactive quote
 // stage. Body: { picks: [lineIndex, ...] }. The client picks ONE option per
 // product group; standalone (ungrouped) lines are always part of the order.
@@ -456,18 +469,27 @@ const publicSelectOptions = async (req, res) => {
     if (_currentApprovalStatus(doc).status !== 'pending') {
       return _alreadyDecidedResponse(res, doc._id);
     }
-    if (_hasConfContent(doc.confirmation)) {
+    // Block re-picking only once the owner has PUSHED the confirmation (it's live
+    // for review). While it's still an unpublished draft the client may freely
+    // change their picks from the waiting screen — the owner re-seeds before
+    // pushing. Once published, changes go through "request changes" instead.
+    if (_confPublished(doc.confirmation)) {
       return res.status(409).json({
-        message: "Your confirmation page is already being prepared from your picks — it'll be ready shortly. If you need to change something, just reply to our email.",
-        reason: 'confirmation_exists',
+        message: "Your confirmation page is ready to review — reload to see it. If you need to change something, use 'Request changes' there.",
+        reason: 'confirmation_published',
       });
     }
 
     const lines = doc.quoteLines || [];
     const groups = [...new Set(lines.map(l => l.group).filter(Boolean))];
     const standaloneCount = lines.filter(l => !l.group).length;
-    if (groups.length === 0) {
-      return res.status(400).json({ message: 'This quote has no options to pick from.' });
+    // A quote with no option-groups but real standalone lines is a valid
+    // "accept this quote" — the client accepts and lands on the waiting screen
+    // while the owner finalizes the confirmation (so EVERY quote routes through
+    // the owner's confirmation, never a direct quote-approve). Only a truly empty
+    // quote (no groups AND no standalone lines) has nothing to accept.
+    if (groups.length === 0 && standaloneCount === 0) {
+      return res.status(400).json({ message: 'This quote has no line items to accept yet.' });
     }
     const picksRaw = (req.body && req.body.picks) || [];
     const picks = Array.isArray(picksRaw) ? [...new Set(picksRaw.map(Number))] : [];
@@ -513,7 +535,7 @@ const publicSelectOptions = async (req, res) => {
       `[Joint Printing] Options picked — ${doc.companyName || doc.clientName || 'Project'} (#${doc.projectNumber || ''})`,
       `<p><strong>${_esc(email || doc.companyName || doc.clientName || 'Your client')}</strong> picked their options on project #${_esc(doc.projectNumber || '')}.</p>` +
       `<p>${_esc(summary)}</p>` +
-      `<p>Open the confirmation builder — it seeds itself from their picks; add sizes and mockups, then share it for approval.</p>`,
+      `<p>Open the confirmation builder — it fills in from their picks (product, quantity, unit price). Double-check the numbers, then hit <strong>Push to client</strong> to send it to their link for approval.</p>`,
       'Client picked options, but the email notification to you failed to send. Check your email (SendGrid) settings.',
     );
 
@@ -833,6 +855,68 @@ const sendApprovalLink = async (req, res) => {
   }
 };
 
+// POST /api/orders/:id/confirmation/publish — the owner's "Push to client"
+// action. Flips the confirmation from a private draft to LIVE on the client's
+// EXISTING link by setting confirmation.publishedAt. Until this runs, building
+// and saving the confirmation stays invisible to the client (they sit on the
+// "we're finalizing your order" buffer) so the owner can double-check the
+// numbers first. Never touches the approval token — same link, nothing new
+// minted. If the client had requested changes, re-publishing reopens the cycle
+// on the same link so the revised confirmation is a fresh approve/request ask.
+const publishConfirmation = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Project not found' });
+
+    // Nothing to push until a real confirmation exists.
+    if (!Order.hasConfirmationContent(order.confirmation)) {
+      return res.status(400).json({ message: 'Build the confirmation first — there is nothing to push yet.', reason: 'empty' });
+    }
+    // Same backstop as sharing: never push a $0 / no-priced-items / over-allocated
+    // confirmation to the client. The builder mirrors this before the button.
+    const shareIssues = Order.confirmationShareIssues(order.confirmation);
+    if (shareIssues.length > 0) {
+      return res.status(422).json({ message: shareIssues[0], reason: 'unshareable', issues: shareIssues });
+    }
+    // Already approved = money booked + tracking started. A revision there must
+    // go through "Start a fresh link", not a silent re-push.
+    if (_currentApprovalStatus(order).status === 'approved') {
+      return res.status(409).json({ message: 'The client already approved this order.', reason: 'already_approved' });
+    }
+
+    const now = new Date();
+    if (!order.confirmation) order.confirmation = {};
+    order.confirmation.publishedAt = now;
+    order.markModified('confirmation');
+
+    // If the client had asked for changes, this push IS the revised ask: reopen
+    // the cycle on the SAME token (mirrors sendApprovalLink's reopen path) so
+    // their existing link flips from the "we're on it" dead-end back to a live
+    // Approve / Request-edits screen.
+    const reopened = _currentApprovalStatus(order).status === 'requested_changes';
+    if (reopened) order.approvalSupersededAt = new Date(now);
+
+    order.activity = order.activity || [];
+    order.activity.push({
+      kind: 'confirmation_pushed', actor: 'admin',
+      message: reopened ? 'Pushed revised confirmation to the client' : 'Pushed confirmation to the client',
+      meta: { published: true, reopened }, at: now,
+    });
+    await order.save();
+
+    res.json({
+      ok: true,
+      publishedAt: now,
+      reopened,
+      // The frontend uses this to offer a one-tap "email them it's ready" via the
+      // existing send flow when the client hasn't been emailed the link yet.
+      hasRecipients: (order.approvalRecipients || []).length > 0,
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 // PATCH /api/orders/:id/tracking — admin updates the tracking steps array
 // (rename, reorder, hide, add custom, set completedAt). Single endpoint that
 // takes the full steps array; simpler for the UI than per-step mutators and
@@ -908,6 +992,7 @@ module.exports = {
   ensureApprovalToken,
   sendApprovalLink,
   publicGetProject, publicApprove, publicRequestChanges, publicSelectOptions,
+  publishConfirmation,
   updateTracking, initTracking,
   DEFAULT_TRACKING_STEPS,
   // Exported for unit tests (pure helpers).

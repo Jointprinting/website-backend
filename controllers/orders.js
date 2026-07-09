@@ -406,8 +406,18 @@ const updateOrder = async (req, res) => {
       if (cogs > 0) body.cogs = cogs;
       if (body.confirmation.orderDate) body.orderDate = body.confirmation.orderDate;
     }
-    const current = await Order.findById(req.params.id).select('status paid orderNumber').lean();
+    const current = await Order.findById(req.params.id).select('status paid orderNumber confirmation.publishedAt').lean();
     if (!current) return res.status(404).json({ message: 'Not found' });
+
+    // The confirmation PUBLISH GATE is server-owned — only POST /confirmation/publish
+    // sets it. A builder autosave sends the whole confirmation object, and $set
+    // replaces the subdoc; without this, that save would drop publishedAt and
+    // silently un-publish a live confirmation (bouncing the client back to the
+    // "we're finalizing" waiting screen). Carry the existing stamp through every
+    // confirmation write so only the publish endpoint can ever change it.
+    if (body.confirmation) {
+      body.confirmation.publishedAt = (current.confirmation && current.confirmation.publishedAt) || null;
+    }
 
     // Auto-assign invoice number on first transition to approved+.
     if (body.status === 'approved' || ['placed', 'in_production', 'shipped', 'delivered'].includes(body.status)) {

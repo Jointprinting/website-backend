@@ -186,6 +186,17 @@ function hasConfirmationContent(conf) {
   return items.length > 0 || lines.length > 0;
 }
 
+// Is the confirmation live on the client's link? The publish gate: content ALONE
+// is not enough — the owner must have pushed it (confirmation.publishedAt set).
+// This is the switch the PUBLIC page reads to move a client off the "we're
+// finalizing" buffer into REVIEW+APPROVE. Owner-side views keep using
+// hasConfirmationContent (they see the draft as it's built); only the client is
+// gated. Totals/COGS still derive from content regardless of publish state, so
+// the owner's own records are correct while the draft is still hidden.
+function confirmationIsPublished(conf) {
+  return hasConfirmationContent(conf) && !!(conf && conf.publishedAt);
+}
+
 // Total units of one confirmation item across its sizes.
 function itemTotalQty(it) {
   return ((it && it.sizes) || []).reduce((s, sz) => s + (Number(sz.qty) || 0), 0);
@@ -429,6 +440,16 @@ const OrderSchema = new mongoose.Schema({
     // approval page and that applies the fee once. This field is kept only as the
     // owner's remembered preference for the builder toggle; no money logic reads it.
     feeMode: { type: String, enum: ['owner_fee', 'client_choice'], default: 'client_choice' },
+    // Publish gate (the "buffer"): the confirmation is INVISIBLE to the client
+    // until the owner explicitly pushes it. Building/seeding/saving the doc never
+    // shows it — the client stays on the "we're finalizing your order" screen —
+    // so the owner can double-check the numbers before anything is committed.
+    // Set by POST /orders/:id/confirmation/publish; the public page flips to
+    // REVIEW+APPROVE only once this is non-null (see confirmationIsPublished).
+    // null = draft (owner still finalizing). Existing pre-gate confirmations are
+    // backfilled to their own updatedAt by scripts/backfillConfirmationPublished.js
+    // so in-flight clients are never bounced back to the waiting screen.
+    publishedAt: { type: Date, default: null },
   },
   // Client-facing order tracking timeline. Initialized the first time a
   // client approves a confirmation; admin then ticks off subsequent steps
@@ -581,6 +602,7 @@ module.exports.computeConfirmationTotals = computeConfirmationTotals;
 module.exports.computeLocationTax = computeLocationTax;
 module.exports.STATE_TAX_RATES = STATE_TAX_RATES;
 module.exports.hasConfirmationContent = hasConfirmationContent;
+module.exports.confirmationIsPublished = confirmationIsPublished;
 module.exports.confirmationShareIssues = confirmationShareIssues;
 module.exports.isTaxCustomLine = isTaxCustomLine;
 module.exports.isPaymentFeeCustomLine = isPaymentFeeCustomLine;

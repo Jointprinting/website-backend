@@ -10,7 +10,7 @@ const {
   cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups, assignMockupNumber,
   createOrGetProjectForCompany,
 } = require('../controllers/orders');
-const { ensureApprovalToken, sendApprovalLink, updateTracking, initTracking } = require('../controllers/approval');
+const { ensureApprovalToken, sendApprovalLink, publishConfirmation, updateTracking, initTracking } = require('../controllers/approval');
 const { confirmationPdf } = require('../controllers/confirmationPdf');
 const vendorRebuild = require('../controllers/vendorRebuild');
 
@@ -31,6 +31,8 @@ router.post('/from-submission/:submissionId', createFromSubmission);
 router.post('/for-company',               createOrGetProjectForCompany);
 router.post('/:id/approval-link',         ensureApprovalToken);
 router.post('/:id/approval-link/send',    sendApprovalLink);
+// "Push to client": flip the finalized confirmation live on the existing link.
+router.post('/:id/confirmation/publish',  publishConfirmation);
 router.patch('/:id/tracking',             updateTracking);
 router.post('/:id/tracking/init',         initTracking);
 router.post('/:id/duplicate',             duplicateOrder);
