@@ -243,6 +243,31 @@ async function ingestNdrBounce(reply) {
   }
 }
 
+// One-time healer: re-run the (now header/wording-aware) classifier over replies
+// that were ingested BEFORE the auto-responder fix and are still sitting in a
+// human/actionable bucket. Any that are actually machine auto-acks (e.g. an
+// "Auto response: …" caught by subject) are demoted to bounce_auto_ignore +
+// status 'ignored', so they drop out of the triage worklist AND the hub banner
+// without the owner touching anything. Idempotent; safe to re-run. Returns count.
+const HUMANISH_CATEGORIES = ['hot_lead', 'needs_response', 'asked_pricing', 'asked_mockups', 'follow_up_later', 'wrong_person'];
+async function retriageStoredReplies() {
+  const rows = await TriageReply.find({ category: { $in: HUMANISH_CATEGORIES } })
+    .select('subject snippet fromEmail fromName').lean();
+  let demoted = 0;
+  for (const r of rows) {
+    const cls = classifyReply({ subject: r.subject, snippet: r.snippet, fromEmail: r.fromEmail, fromName: r.fromName });
+    if (cls.category === IGNORE_CATEGORY || cls.category === 'auto_reply_ooo') {
+      await TriageReply.updateOne(
+        { _id: r._id },
+        { $set: { category: cls.category, suggestedAction: suggestedActionFor(cls.category), status: 'ignored', handledAt: new Date() } },
+      );
+      demoted += 1;
+    }
+  }
+  if (demoted) console.log(`[triage] re-triage healer: demoted ${demoted} stored auto-repl(y/ies) out of the worklist`);
+  return demoted;
+}
+
 // GET /api/triage/replies?category=&status=&matched=&includeIgnored=
 // Bounces/auto-replies are hidden by default (they're noise) unless explicitly
 // asked for via ?category=bounce_auto_ignore or ?includeIgnored=true.
@@ -538,5 +563,5 @@ async function getWorklist(_req, res) {
 
 module.exports = {
   listReplies, addReplies, updateStatus, syncGmail, getSyncStatus, getWorklist,
-  ingestOne, applyStatusSideEffects, runGmailSync, startGmailIngest,
+  ingestOne, applyStatusSideEffects, runGmailSync, startGmailIngest, retriageStoredReplies,
 };
