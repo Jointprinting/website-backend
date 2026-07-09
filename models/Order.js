@@ -570,7 +570,12 @@ OrderSchema.pre('save', function (next) {
 OrderSchema.pre('findOneAndUpdate', async function () {
   const u = this.getUpdate() || {};
   const set = u.$set || u;
-  if (set.companyName !== undefined || set.clientName !== undefined) {
+  // Re-derive the join key when the name changes — UNLESS the caller passed an
+  // explicit companyKey (an established order keeping its identity stable on a
+  // display-name edit, or a deliberate merge). Without this guard, renaming one
+  // project silently re-keyed it and orphaned it from its company's other orders,
+  // finance rollup, and CRM record.
+  if ((set.companyName !== undefined || set.clientName !== undefined) && set.companyKey === undefined) {
     set.companyKey = deriveCompanyKey(set.companyName, set.clientName);
   }
   if (Array.isArray(set.quoteLines)) {

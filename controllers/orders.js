@@ -395,19 +395,34 @@ const createOrder = async (req, res) => {
 const updateOrder = async (req, res) => {
   try {
     const body = { ...req.body };
-    if (body.confirmation) await _offloadConfirmationImages(body.confirmation);
-    // Order money + sale date flow FROM the confirmation (the approved doc), so
-    // the admin never hand-maintains them. Guarded so we never wipe a historical
-    // order's manual numbers when a confirmation lacks the data (e.g. older
-    // confirmations built before unitCost, or a still-empty draft).
-    if (body.confirmation) {
+
+    const current = await Order.findById(req.params.id)
+      .select('status paid orderNumber companyKey companyName clientName confirmation.publishedAt').lean();
+    if (!current) return res.status(404).json({ message: 'Not found' });
+
+    // APPROVAL FREEZE (revenue + client integrity): once the client has approved
+    // — or the order moved into production — the confirmation they signed off on,
+    // and the money booked from it, are LOCKED. A later Confirmation Builder
+    // autosave must never silently rewrite the approved total/COGS or mutate the
+    // document the client sees. Drop those writes on an already-approved+ order;
+    // changing a booked order is a deliberate re-open, not an incidental edit.
+    const MONEY_LOCKED = ['approved', 'placed', 'in_production', 'shipped', 'delivered'].includes(current.status);
+    if (MONEY_LOCKED) {
+      delete body.confirmation;
+      delete body.totalValue;
+      delete body.cogs;
+      delete body.orderDate;
+    } else if (body.confirmation) {
+      // Order money + sale date flow FROM the confirmation (the approved doc), so
+      // the admin never hand-maintains them. Guarded so we never wipe a historical
+      // order's manual numbers when a confirmation lacks the data (e.g. older
+      // confirmations built before unitCost, or a still-empty draft).
+      await _offloadConfirmationImages(body.confirmation);
       const { revenue, cogs } = _confirmationTotals(body.confirmation);
       if (revenue > 0) body.totalValue = revenue;
       if (cogs > 0) body.cogs = cogs;
       if (body.confirmation.orderDate) body.orderDate = body.confirmation.orderDate;
     }
-    const current = await Order.findById(req.params.id).select('status paid orderNumber confirmation.publishedAt').lean();
-    if (!current) return res.status(404).json({ message: 'Not found' });
 
     // The confirmation PUBLISH GATE is server-owned — only POST /confirmation/publish
     // sets it. A builder autosave sends the whole confirmation object, and $set
@@ -417,6 +432,18 @@ const updateOrder = async (req, res) => {
     // confirmation write so only the publish endpoint can ever change it.
     if (body.confirmation) {
       body.confirmation.publishedAt = (current.confirmation && current.confirmation.publishedAt) || null;
+    }
+
+    // IDENTITY FREEZE: an ESTABLISHED order (already has an orderNumber → linked
+    // POs / Transactions / CRM all keyed on companyKey) keeps its companyKey STABLE
+    // even when its display name is edited, so a typo fix ("Acme" → "Acme Inc") on
+    // one project can't silently re-key it and orphan it from its company's other
+    // orders, revenue rollup, and CRM record. Renaming/merging a company for real
+    // is the deliberate merge-company action. (The model hook respects this
+    // explicit key instead of re-deriving it.)
+    if (current.orderNumber && current.companyKey
+        && (body.companyName !== undefined || body.clientName !== undefined)) {
+      body.companyKey = current.companyKey;
     }
 
     // Auto-assign invoice number on first transition to approved+.
@@ -833,13 +860,38 @@ const cleanupCandidates = async (req, res) => {
   }
 };
 
-// POST /api/orders/cleanup-delete — bulk-delete by ids
+// POST /api/orders/cleanup-delete — soft-archive the empty placeholder orders the
+// cleanup preview surfaced. SAFETY: this used to hard-`deleteMany` whatever ids the
+// client sent — a stale/wrong list or a real order id reaching the body permanently
+// destroyed an order (dangling its POs by orderId and its Transactions by
+// orderNumber), with no undo. Now it (1) re-verifies EACH id is genuinely empty
+// server-side (same criteria as the preview — never trust the client's list), and
+// (2) ARCHIVES rather than deletes, matching the archive-not-delete house rule, so
+// a mistake is always recoverable. A non-empty id is refused, not touched.
 const cleanupDelete = async (req, res) => {
   try {
     const ids = Array.isArray(req.body && req.body.ids) ? req.body.ids : [];
-    if (ids.length === 0) return res.json({ deleted: 0 });
-    const result = await Order.deleteMany({ _id: { $in: ids } });
-    res.json({ deleted: result.deletedCount });
+    if (ids.length === 0) return res.json({ archived: 0, refused: 0, deleted: 0 });
+    const docs = await Order.find({ _id: { $in: ids }, archived: { $ne: true } })
+      .select('orderNumber companyName clientName totalValue items quoteLines mockupNumbers files').lean();
+    const isEmpty = (o) => (
+      !o.companyName && !o.clientName &&
+      !(o.items || []).length && !(o.quoteLines || []).length &&
+      !(o.mockupNumbers || []).length && !(o.files || []).length &&
+      (!o.totalValue || o.totalValue === 0) && !o.orderNumber
+    );
+    const archiveIds = docs.filter(isEmpty).map((o) => o._id);
+    const refused = docs.length - archiveIds.length;
+    let archived = 0;
+    if (archiveIds.length) {
+      const r = await Order.updateMany(
+        { _id: { $in: archiveIds }, archived: { $ne: true } },
+        { $set: { archived: true, archivedAt: new Date(), archivedReason: 'cleanup-empty' } },
+      );
+      archived = r.modifiedCount != null ? r.modifiedCount : (r.nModified || 0);
+    }
+    // `deleted` kept for frontend back-compat (it reads r.deleted for the toast).
+    res.json({ archived, refused, deleted: archived });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
