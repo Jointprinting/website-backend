@@ -613,7 +613,12 @@ function summarizeCompanyFinance(orders, transactions) {
     if (!o) continue;
     orderCount += 1;
     estimatedCogs += num(o.cogs);            // each Order's stored estimate (quote/confirmation)
-    const collected = o.status === 'delivered' || o.paid === true;
+    // Collected = money in: a delivered order (payment precedes delivery) or one
+    // explicitly paid — but NEVER a cancelled (dead) or quoted (not-a-sale) order,
+    // even if a stray `paid` flag lingers on it, so a refunded/cancelled deposit
+    // can't masquerade as revenue.
+    const collected = o.status === 'delivered'
+      || (o.paid === true && o.status !== 'cancelled' && o.status !== 'quoted');
     if (collected) {
       paidCount += 1;
       realizedOrderValue += num(o.totalValue);

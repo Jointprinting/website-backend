@@ -26,6 +26,22 @@ async function warmCompany(companyKey, opts = {}) {
   const client = await Client.findOne({ companyKey });
   if (!client) return { ok: false, reason: 'no-client' };
 
+  // Never resurface an opted-out company into the Today call queue. If they've
+  // been set do-not-contact (unsubscribe / hard bounce), a later positive-sounding
+  // reply must NOT re-tag them warm, set a follow-up, or promote the stage — that
+  // would drop a suppressed lead back in front of the owner to email. We still log
+  // the reply (best-effort, de-duped) so it isn't silently lost.
+  if (client.doNotEmail === true) {
+    const dedupKey = opts.dedupKey
+      || (opts.enrollmentId ? `outreach-reply:${opts.enrollmentId}` : `outreach-reply:${companyKey}`);
+    const already = (client.log || []).some((l) => l && l.dedupKey === dedupKey);
+    if (!already) {
+      client.log.push({ at: now, text: 'Reply received on an opted-out company (not re-queued — still do-not-contact)', kind: 'email', dedupKey });
+      await client.save();
+    }
+    return { ok: true, warmed: false, doNotEmail: true, logged: !already };
+  }
+
   let campaignName = opts.campaignName || '';
   if (!campaignName && opts.campaignId) {
     const c = await OutreachCampaign.findById(opts.campaignId).select('name').lean();

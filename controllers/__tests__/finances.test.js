@@ -348,6 +348,18 @@ test('a CANCELLED order counts as neither revenue nor outstanding', () => {
   assert.equal(out.paidCount,   0);
 });
 
+test('a stray paid flag on a cancelled/quoted order is NOT counted as revenue', () => {
+  // A cancelled order with a lingering paid=true (refunded deposit) must not
+  // masquerade as collected revenue via the empty-ledger fallback.
+  const cancelled = summarizeCompanyFinance([order({ status: 'cancelled', paid: true, totalValue: 5000 })], []);
+  assert.equal(cancelled.revenue, 0);
+  assert.equal(cancelled.paidCount, 0);
+  // Same for a quoted order that carries a paid deposit flag — not a real sale.
+  const quoted = summarizeCompanyFinance([order({ status: 'quoted', paid: true, totalValue: 3000 })], []);
+  assert.equal(quoted.revenue, 0);
+  assert.equal(quoted.paidCount, 0);
+});
+
 test('revenue falls back to collected order value when the ledger has no sale row', () => {
   // The reported bug: a client who paid every invoice reads $0 revenue because the
   // owner books payment in QuickBooks, not the in-app ledger. With no Client-Sales

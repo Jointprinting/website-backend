@@ -131,6 +131,30 @@ test('a genuine human reply is untouched by the auto filters', () => {
   assert.equal(cat({ fromEmail: 'buyer@shop.com', subject: 'Re: Custom merch', snippet: "Let's set up a call this week." }), 'hot_lead');
 });
 
+test('a polite human opener is NOT swallowed as an auto-ack (no over-correction)', () => {
+  // A real buyer commonly opens with "Thank you for your email" — this must NOT be
+  // treated as a machine auto-ack (regression guard for the auto-reply fix).
+  assert.equal(cat({ fromEmail: 'buyer@shop.com', subject: 'Re: Custom merch', snippet: "Thank you for your email — yes, we'd love a quote, what's your pricing on 250 tees?" }), 'asked_pricing');
+  assert.equal(cat({ fromEmail: 'buyer@shop.com', subject: 'Re: Custom merch', snippet: 'Thank you for your message! Interested — can you send a mockup?' }), 'asked_mockups');
+});
+
+test('matchReply: an ambiguous subject shared by two companies does NOT auto-pick one', () => {
+  // Same generic subject on enrollments for two different shops (shared host) →
+  // must NOT strong-match/warm the first one; left unmatched for manual triage.
+  const enr = [
+    { _id: 'a', toEmail: 'a@sharedhost.com', companyKey: 'shopa', companyName: 'Shop A', subjects: ['Quick question'] },
+    { _id: 'b', toEmail: 'b@sharedhost.com', companyKey: 'shopb', companyName: 'Shop B', subjects: ['Quick question'] },
+  ];
+  const m = matchReply('someoneelse@gmail.com', 'Re: Quick question', { enrollments: enr });
+  assert.equal(m.matched, false);
+  assert.equal(m.matchBy, 'none');
+  // But when the subject resolves to a SINGLE company, it still matches.
+  const one = matchReply('someoneelse@gmail.com', 'Re: Quick question', { enrollments: [enr[0]] });
+  assert.equal(one.matched, true);
+  assert.equal(one.matchBy, 'subject');
+  assert.equal(one.companyKey, 'shopa');
+});
+
 test('a true out-of-office still SNOOZES (not ignored) even with auto headers', () => {
   const r = classifyReply({ fromEmail: 'sam@shop.com', subject: 'Automatic reply: Out of office', headers: { 'Auto-Submitted': 'auto-replied' } });
   assert.equal(r.category, 'auto_reply_ooo');   // OOO precedence over generic ignore

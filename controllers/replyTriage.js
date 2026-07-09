@@ -407,18 +407,27 @@ async function runGmailSync({ maxMessages = 50, windowDays = 7 } = {}) {
     const h = {};
     for (const hdr of (msg.payload && msg.payload.headers) || []) h[hdr.name.toLowerCase()] = hdr.value;
     const { email, name } = parseFromHeader(h.from);
-    const r = await ingestOne({
-      fromEmail: email,
-      fromName: name,
-      subject: h.subject || '',
-      snippet: msg.snippet || '',
-      receivedAt: msg.internalDate ? new Date(Number(msg.internalDate)) : new Date(),
-      inReplyTo: h['in-reply-to'] || '',
-      references: h.references || '',
-      headers: h,   // full lowercased header map → auto/bulk detection
-      gmailMessageId: id,
-      source: 'gmail',
-    });
+    let r;
+    try {
+      r = await ingestOne({
+        fromEmail: email,
+        fromName: name,
+        subject: h.subject || '',
+        snippet: msg.snippet || '',
+        receivedAt: msg.internalDate ? new Date(Number(msg.internalDate)) : new Date(),
+        inReplyTo: h['in-reply-to'] || '',
+        references: h.references || '',
+        headers: h,   // full lowercased header map → auto/bulk detection
+        gmailMessageId: id,
+        source: 'gmail',
+      });
+    } catch (e) {
+      // A concurrent sync (the 10-min cron overlapping a manual POST /triage/sync)
+      // can both pass the findOne dedupe then race the unique gmailMessageId
+      // insert → E11000 on the loser. Swallow any single-row failure so one
+      // message never aborts the rest of the batch (it re-syncs next tick).
+      continue;
+    }
     if (r.saved) imported += 1;
     else if (r.skip && skipped[r.skip] != null) skipped[r.skip] += 1;
   }

@@ -511,7 +511,11 @@ const dashboard = async (req, res) => {
         revenueThisMonth: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'delivered'] }, { $gte: [{ $ifNull: ['$deliveredDate', '$orderDate'] }, startOfMonth] }] }, '$totalValue', 0] } },
         openOrders: { $sum: { $cond: [{ $in: ['$status', ['approved', 'placed', 'in_production', 'shipped']] }, 1, 0] } },
         openQuotes: { $sum: { $cond: [{ $eq: ['$status', 'quoted'] }, 1, 0] } },
-        unpaidTotal: { $sum: { $cond: [{ $and: [{ $eq: ['$paid', false] }, { $ne: ['$status', 'quoted'] }, { $ne: ['$status', 'cancelled'] }] }, '$totalValue', 0] } },
+        // Unpaid = genuinely-open orders only (approved/placed/in_production/shipped).
+        // Delivered is collected (payment precedes delivery), quoted isn't a
+        // receivable, cancelled is dead — matching the per-client rollups so the
+        // header "unpaid" agrees with the CRM card and Clients overview.
+        unpaidTotal: { $sum: { $cond: [{ $and: [{ $eq: ['$paid', false] }, { $in: ['$status', ['approved', 'placed', 'in_production', 'shipped']] }] }, '$totalValue', 0] } },
       }},
     ]);
 
@@ -654,7 +658,9 @@ const serveFile = async (req, res) => {
 // new Clients overview dialog.
 const clientsSummary = async (req, res) => {
   try {
-    const orders = await Order.find({}).select('status totalValue companyName clientName companyKey updatedAt orderDate paid').lean();
+    // Exclude archived (soft-deleted / deduped) orders so this per-client rollup
+    // matches the dashboard header and the CRM company card, which both do.
+    const orders = await Order.find({ archived: { $ne: true } }).select('status totalValue companyName clientName companyKey updatedAt orderDate paid').lean();
 
     const byKey = {};
     orders.forEach(o => {
@@ -709,7 +715,9 @@ const analytics = async (req, res) => {
     const now = new Date();
     const oneYearAgo = new Date(now.getFullYear() - 1, now.getMonth(), 1);
 
-    const orders = await Order.find({}).select('status totalValue cogs orderDate companyName clientName companyKey quoteLines').lean();
+    // Archived (soft-deleted / deduped) orders must not inflate the headline
+    // analytics — same exclusion the dashboard and per-client rollups use.
+    const orders = await Order.find({ archived: { $ne: true } }).select('status totalValue cogs orderDate companyName clientName companyKey quoteLines').lean();
 
     // Revenue by month (delivered only, last 12 months)
     const monthBuckets = {};
