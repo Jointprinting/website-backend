@@ -198,6 +198,22 @@ db.once('open', () => {
     }
   }, 6_500);
 
+  // One-time healer: demote any auto-responder replies that were ingested BEFORE
+  // the auto-reply classifier fix and are still sitting in the triage worklist /
+  // hub banner (e.g. an "Auto response: …"). Idempotent + safe, but flag-guarded so
+  // it runs once per classifier version; bump the -vN when the classifier changes.
+  setTimeout(async () => {
+    const KEY = 'retriageAutoAcks-v1';
+    try {
+      const migrations = mongoose.connection.db.collection('migrations');
+      if (await migrations.findOne({ _id: KEY })) return;
+      const n = await require('./controllers/replyTriage').retriageStoredReplies();
+      await migrations.insertOne({ _id: KEY, at: new Date(), demoted: n });
+    } catch (e) {
+      console.warn('[triage] re-triage healer failed (will retry next boot):', e.message);
+    }
+  }, 7_000);
+
   // Idempotent: rename the income category "Customer Sales" → "Client Sales"
   // on stored transactions + receipt extractions (owner's vocabulary change).
   setTimeout(() => {
