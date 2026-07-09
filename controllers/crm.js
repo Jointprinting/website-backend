@@ -1397,12 +1397,14 @@ async function getOne(req, res) {
       ).lean();
     }
 
-    const orders = await Order.find({ companyKey: key })
+    const orders = await Order.find({ companyKey: key, archived: { $ne: true } })
       .sort({ orderDate: -1, createdAt: -1 })
       .select('projectNumber orderNumber status paid totalValue cogs orderDate createdAt')
       .lean();
-    // ALL orders (incl. quotes) are returned to the UI list above; only the
-    // isCustomer flag below keys off a real PLACED order.
+    // ALL live orders (incl. quotes) are returned to the UI list above; only the
+    // isCustomer flag below keys off a real PLACED order. Archived orders are
+    // excluded so the duplicate-order sweep (archived twins) stops double-counting
+    // this company's list AND its finance rollup below.
 
     // ── Linked POs ──────────────────────────────────────────────────────────────
     // POs hang off Orders (PurchaseOrder.orderId). Gather this company's order ids

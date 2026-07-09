@@ -290,11 +290,11 @@ test('money rounds to cents (round2, no float drift)', () => {
 });
 
 // ── outstanding / order tallies (from Orders, not the ledger) ────────────────
-test('outstanding = totalValue of UNPAID orders; paid orders excluded', () => {
+test('outstanding = totalValue of OPEN unpaid orders; paid orders excluded', () => {
   const orders = [
-    order({ orderNumber: '1', paid: true,  totalValue: 500 }),  // paid → not outstanding
-    order({ orderNumber: '2', paid: false, totalValue: 800 }),  // unpaid → outstanding
-    order({ orderNumber: '3', paid: false, totalValue: 200 }),  // unpaid → outstanding
+    order({ orderNumber: '1', status: 'placed', paid: true,  totalValue: 500 }),  // paid → not outstanding
+    order({ orderNumber: '2', status: 'placed', paid: false, totalValue: 800 }),  // open+unpaid → outstanding
+    order({ orderNumber: '3', status: 'placed', paid: false, totalValue: 200 }),  // open+unpaid → outstanding
   ];
   const out = summarizeCompanyFinance(orders, []);
   assert.equal(out.outstanding, 1000);  // 800 + 200
@@ -304,8 +304,8 @@ test('outstanding = totalValue of UNPAID orders; paid orders excluded', () => {
 
 test('outstanding is independent of revenue (ledger vs invoiced are different lenses)', () => {
   // An order can be fully paid in the ledger sense yet have revenue rows, and an
-  // unpaid order contributes to outstanding regardless of any Tx.
-  const orders = [order({ orderNumber: '7', paid: false, totalValue: 1500 })];
+  // OPEN unpaid order contributes to outstanding regardless of any Tx.
+  const orders = [order({ orderNumber: '7', status: 'placed', paid: false, totalValue: 1500 })];
   const txns   = [sale(1500), blank(600)];
   const out = summarizeCompanyFinance(orders, txns);
   assert.equal(out.revenue,     1500);
@@ -317,13 +317,58 @@ test('outstanding is independent of revenue (ledger vs invoiced are different le
 
 test('non-numeric totalValue is treated as 0 for outstanding', () => {
   const orders = [
-    order({ paid: false, totalValue: undefined }),
-    order({ paid: false, totalValue: null }),
-    order({ paid: false, totalValue: '300' }),  // numeric string still counts (num())
+    order({ status: 'placed', paid: false, totalValue: undefined }),
+    order({ status: 'placed', paid: false, totalValue: null }),
+    order({ status: 'placed', paid: false, totalValue: '300' }),  // numeric string still counts (num())
   ];
   const out = summarizeCompanyFinance(orders, []);
   assert.equal(out.outstanding, 300);
   assert.equal(out.orderCount,  3);
+});
+
+// ── status-aware money model (owner's "delivered/paid = money in") ───────────
+test('a QUOTED order is NOT outstanding (a quote is not a receivable)', () => {
+  const orders = [order({ status: 'quoted', paid: false, totalValue: 5000 })];
+  const out = summarizeCompanyFinance(orders, []);
+  assert.equal(out.outstanding, 0);     // was the "$18k est" phantom-unpaid bug
+  assert.equal(out.paidCount,   0);
+});
+
+test('a DELIVERED order is collected: not outstanding, counts as paid', () => {
+  const orders = [order({ status: 'delivered', paid: false, totalValue: 5000 })];
+  const out = summarizeCompanyFinance(orders, []);
+  assert.equal(out.outstanding, 0);     // delivered = payment already in (flow order)
+  assert.equal(out.paidCount,   1);
+});
+
+test('a CANCELLED order counts as neither revenue nor outstanding', () => {
+  const orders = [order({ status: 'cancelled', paid: false, totalValue: 5000 })];
+  const out = summarizeCompanyFinance(orders, []);
+  assert.equal(out.outstanding, 0);
+  assert.equal(out.paidCount,   0);
+});
+
+test('revenue falls back to collected order value when the ledger has no sale row', () => {
+  // The reported bug: a client who paid every invoice reads $0 revenue because the
+  // owner books payment in QuickBooks, not the in-app ledger. With no Client-Sales
+  // Tx, revenue falls back to the delivered/paid order value.
+  const orders = [
+    order({ status: 'delivered', paid: true,  totalValue: 5000 }),
+    order({ status: 'delivered', paid: true,  totalValue: 2000 }),
+  ];
+  const out = summarizeCompanyFinance(orders, []);   // NO ledger rows
+  assert.equal(out.revenue, 7000);
+  assert.equal(out.paidCount, 2);
+  assert.equal(out.outstanding, 0);
+});
+
+test('the ledger sale WINS over the fallback — never double-counts a booked sale', () => {
+  // A delivered order that DOES have a ledger sale uses the ledger figure only
+  // (5000 order + 4852.89 ledger would be 9852.89 if double-counted — it must not).
+  const orders = [order({ status: 'delivered', paid: true, totalValue: 5000 })];
+  const txns   = [sale(4852.89), procFee(145.10)];
+  const out = summarizeCompanyFinance(orders, txns);
+  assert.equal(out.revenue, 4852.89);   // ledger only, NOT 5000 and NOT 9852.89
 });
 
 // ════════════════════════════════════════════════════════════════════════════
