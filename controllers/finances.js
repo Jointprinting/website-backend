@@ -571,11 +571,26 @@ const deriveCompanyKey = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]
 // expense rows in COGS_CATEGORIES; profit = revenue − COGS; margin = profit /
 // revenue %. `signed` lets credits/returns net down, identical to the ledger.
 //
+// Genuinely-open order statuses — invoiced/in-flight, money not yet in. A `quoted`
+// order isn't a receivable (just a quote); `delivered` is collected; `cancelled` is
+// dead. Mirrors the Order Tracker's per-client "unpaid" set (orders.js clientsSummary).
+const OPEN_UNPAID_STATUSES = ['approved', 'placed', 'in_production', 'shipped'];
+
 // `outstanding` is the one figure the ledger has no notion of — it's
-// invoiced-but-unpaid, which lives on the Order (paid flag + totalValue), not in
-// the cash-basis Transaction stream. So it's summed from Orders: totalValue of
-// every Order with paid !== true. orderCount/paidCount are plain Order tallies.
+// invoiced-but-unpaid, which lives on the Order (status + paid flag + totalValue),
+// not in the cash-basis Transaction stream. It is NOT "every unpaid order": a
+// `quoted` order is a quote, not a receivable; a `delivered` order is collected
+// (in the order flow payment precedes delivery); a `cancelled` order is dead. So
+// outstanding = totalValue of orders that are genuinely OPEN (approved / placed /
+// in_production / shipped) AND not yet paid — the SAME definition the Order
+// Tracker's per-client rollup uses (controllers/orders.js clientsSummary), so the
+// CRM card and the Order Tracker never disagree.
 // Returns { revenue, cogs, profit, margin, outstanding, orderCount, paidCount }.
+//
+// Orders whose money is COLLECTED — the owner's "a delivered/paid job is money in"
+// rule. A delivered order is settled (payment precedes delivery); an order flagged
+// paid is settled outright. These never count as outstanding, and they back the
+// revenue fallback below.
 function summarizeCompanyFinance(orders, transactions) {
   const cogsCats = new Set(Transaction.COGS_CATEGORIES);
   let revenue = 0;
@@ -588,19 +603,35 @@ function summarizeCompanyFinance(orders, transactions) {
       if (t.receiptUrl) receiptCount += 1;
     }
   }
-  const profit = round2(revenue - cogs);   // profit is on the ACTUAL (receipt) cost
 
   let outstanding = 0;
   let orderCount = 0;
   let paidCount = 0;
   let estimatedCogs = 0;        // the confirmation/quote estimate, summed off Orders
+  let realizedOrderValue = 0;   // Σ totalValue of collected (delivered/paid) orders
   for (const o of (orders || [])) {
     if (!o) continue;
     orderCount += 1;
-    if (o.paid) paidCount += 1;
-    else outstanding += num(o.totalValue);   // invoiced (has a total) but not yet paid
     estimatedCogs += num(o.cogs);            // each Order's stored estimate (quote/confirmation)
+    const collected = o.status === 'delivered' || o.paid === true;
+    if (collected) {
+      paidCount += 1;
+      realizedOrderValue += num(o.totalValue);
+    } else if (OPEN_UNPAID_STATUSES.includes(o.status)) {
+      outstanding += num(o.totalValue);      // invoiced, in-flight, not yet paid
+    }
+    // `quoted` (not a real receivable) and `cancelled` (dead) count as neither.
   }
+
+  // Revenue floor is the reconciled cash ledger (Client Sales). But the owner
+  // books payment in QuickBooks and doesn't always enter a Client-Sales row here,
+  // so a company whose jobs are all delivered/paid could read $0. When the ledger
+  // has NO revenue at all, fall back to the collected order value — matching the
+  // Order Tracker's delivered-revenue definition. The fallback fires ONLY on an
+  // empty ledger, so it can never double-count a booked sale.
+  if (revenue === 0 && realizedOrderValue > 0) revenue = realizedOrderValue;
+
+  const profit = round2(revenue - cogs);   // profit is on the ACTUAL (receipt) cost
 
   return {
     revenue: round2(revenue),
