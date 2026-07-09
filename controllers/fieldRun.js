@@ -18,19 +18,26 @@ const { matchKey } = require('../services/dispensaryIngest');
 
 function todayLabel() { return new Date().toISOString().slice(0, 10); }
 
-// Resolve the CRM card a stop belongs to — companyKey OR the fuzzier matchKey,
-// the exact join listDispensaries uses for pins. Resolved ONCE at add time and
-// carried on the stop, so logging an outcome/to-do later (often with the map
-// panned far away from the stop) writes to the card's REAL key instead of a
-// derived-key duplicate. Best-effort: a lookup failure just means no match.
-async function resolveCrmMatch(companyKey, dispMatchKey, name) {
-  const or = [];
-  if (companyKey) or.push({ companyKey });
-  const mk = dispMatchKey || (name ? matchKey(name) : '');
-  if (mk) or.push({ matchKey: mk });
-  if (!or.length) return null;
+// Resolve the CRM card a stop belongs to, with the SAME precedence as the
+// map's pin join (listDispensaries): the exact companyKey match wins, the
+// fuzzier matchKey is only a fallback — so a stop never binds to a different
+// card than the pin the owner tapped. Resolved ONCE at add time and carried
+// on the stop, so logging an outcome/to-do later (often with the map panned
+// far away) writes toward the card's REAL key instead of a derived-key
+// duplicate; patchOne re-resolves field-map writes at write time as the
+// backstop for cards created after the stop was added. A merged-away
+// duplicate is never bound — its history lives on the surviving card.
+// Best-effort: a lookup failure just means no match.
+const NOT_MERGED_LOSER = { $nor: [{ archived: true, archivedReason: 'merged' }] };
+async function resolveCrmMatch(companyKey, dispMatchKey) {
   try {
-    return await Client.findOne({ $or: or }).select('companyKey stage').lean();
+    let c = companyKey
+      ? await Client.findOne({ companyKey, ...NOT_MERGED_LOSER }).select('companyKey stage').lean()
+      : null;
+    if (!c && dispMatchKey) {
+      c = await Client.findOne({ matchKey: dispMatchKey, ...NOT_MERGED_LOSER }).select('companyKey stage').lean();
+    }
+    return c;
   } catch {
     return null;
   }
@@ -71,7 +78,7 @@ async function addStop(req, res) {
       if (!isFinite(d.lat) || !isFinite(d.lng) || d.lat == null) {
         return res.status(400).json({ message: 'That store has no coordinates yet — run enrichment first.' });
       }
-      const crm = await resolveCrmMatch(d.companyKey, d.matchKey, d.name);
+      const crm = await resolveCrmMatch(d.companyKey, d.matchKey || matchKey(d.name));
       stop = {
         dispensaryId: d._id,
         name: d.name,
@@ -91,7 +98,12 @@ async function addStop(req, res) {
       if (b.leadId && run.stops.some((s) => String(s.leadId) === String(b.leadId))) {
         return res.json({ run, duplicate: true });
       }
-      const crm = await resolveCrmMatch(String(b.companyKey || ''), '', String(b.name));
+      // Custom stops (friends, favors, hand-typed places) match by EXACT
+      // companyKey only — a fuzzy name match could bind "Green Leaf" (a
+      // friend's shop) to the unrelated company "Green Leaf, LLC" and write
+      // field visits into its record. Dispensary stops are companies by
+      // definition; custom pins aren't.
+      const crm = await resolveCrmMatch(String(b.companyKey || ''), '');
       stop = {
         leadId: b.leadId || null,
         name: String(b.name),

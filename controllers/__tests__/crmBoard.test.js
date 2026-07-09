@@ -22,7 +22,7 @@ const {
   BOARD_CLOSED_COLUMNS,
   BOARD_PROBABILITY,
   promoteStage,
-  suggestStageWrite,
+  promotableFrom,
 } = require('../crm');
 
 // ── orderStatusToColumn — the status → board column mapper ───────────────────
@@ -333,32 +333,35 @@ test('promoteStage(_, "quoting") advances early stages but never regresses or re
   assert.equal(promoteStage('dormant',   'quoting'), 'dormant');
 });
 
-// ── patchOne's `stageSuggest` decision (suggestStageWrite) ────────────────────
+// ── patchOne's `stageSuggest` guard (promotableFrom) ──────────────────────────
 // The Field Map's visit/to-do capture SUGGESTS a stage instead of setting one;
-// the server decides via suggestStageWrite(current, suggest). Pin the contract:
-// seed a fresh record, promote forward only, never regress or resurrect — even
-// when the caller's view of the record is stale or missing (a run stop logged
-// with the map panned far away).
-test('suggestStageWrite seeds a fresh record at the suggested stage', () => {
-  assert.equal(suggestStageWrite(null, 'lead'),      'lead');
-  assert.equal(suggestStageWrite(null, 'contacted'), 'contacted');
+// patchOne turns promotableFrom(target) into an ATOMIC stage-guarded updateOne
+// (the filter re-checks the rule at write time — an offline queue replaying
+// against a concurrent owner edit can never overwrite it). Pin the contract:
+// forward moves only, never regress, never resurrect an owner-closed record.
+test('promotableFrom lists exactly the stages ranked below the target', () => {
+  // lead + visit suggestion → only 'lead' may move to 'contacted'.
+  assert.deepEqual(promotableFrom('contacted'), ['lead']);
+  // A quoting/won/customer deal is NEVER pulled back to contacted — absent
+  // from the list (the exact off-screen run-stop corruption).
+  assert.equal(promotableFrom('contacted').includes('quoting'),  false);
+  assert.equal(promotableFrom('contacted').includes('won'),      false);
+  assert.equal(promotableFrom('contacted').includes('customer'), false);
+  assert.deepEqual(promotableFrom('quoting'), ['lead', 'contacted', 'awaiting_details']);
 });
 
-test('suggestStageWrite promotes forward only, and no-ops (null) otherwise', () => {
-  // lead + visit suggestion → contacted.
-  assert.equal(suggestStageWrite({ stage: 'lead' }, 'contacted'), 'contacted');
-  // Same stage → no write.
-  assert.equal(suggestStageWrite({ stage: 'contacted' }, 'contacted'), null);
-  // A deal further down the funnel is NEVER pulled back (the exact off-screen
-  // run-stop corruption: a quoting deal must not regress to contacted).
-  assert.equal(suggestStageWrite({ stage: 'quoting' },  'contacted'), null);
-  assert.equal(suggestStageWrite({ stage: 'won' },      'contacted'), null);
-  assert.equal(suggestStageWrite({ stage: 'customer' }, 'lead'),      null);
-  // Closed/parked stages are never resurrected by a field capture.
-  assert.equal(suggestStageWrite({ stage: 'lost' },    'contacted'), null);
-  assert.equal(suggestStageWrite({ stage: 'dormant' }, 'contacted'), null);
-  // A legacy record with no stage is treated as 'lead' — promotable.
-  assert.equal(suggestStageWrite({ stage: '' }, 'contacted'), 'contacted');
+test('promotableFrom: lost/dormant are never promotable-from nor promotable-into', () => {
+  // Owner-closed records never match a suggestion's guard…
+  for (const target of ['contacted', 'quoting', 'won']) {
+    assert.equal(promotableFrom(target).includes('lost'),    false);
+    assert.equal(promotableFrom(target).includes('dormant'), false);
+  }
+  // …and a suggestion can never move anything INTO a closed/parked stage.
+  assert.deepEqual(promotableFrom('lost'),    []);
+  assert.deepEqual(promotableFrom('dormant'), []);
+  // 'lead' is rank 0: an existing record is never demoted to it (it only
+  // seeds fresh inserts via $setOnInsert).
+  assert.deepEqual(promotableFrom('lead'), []);
 });
 
 test('BOARD_PROBABILITY exposes the per-column close-rates', () => {
