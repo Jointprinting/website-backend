@@ -11,6 +11,7 @@ const {
   createOrGetProjectForCompany,
 } = require('../controllers/orders');
 const { ensureApprovalToken, sendApprovalLink, publishConfirmation, updateTracking, initTracking } = require('../controllers/approval');
+const orderDupSweep = require('../controllers/orderDupSweep');
 const { confirmationPdf } = require('../controllers/confirmationPdf');
 const vendorRebuild = require('../controllers/vendorRebuild');
 
@@ -35,6 +36,12 @@ router.post('/:id/approval-link/send',    sendApprovalLink);
 router.post('/:id/confirmation/publish',  publishConfirmation);
 router.patch('/:id/tracking',             updateTracking);
 router.post('/:id/tracking/init',         initTracking);
+// Duplicate-order sweep (same job imported twice → archive the redundant copy).
+// STATIC '/dedup/*' — declared here so it's never read as an order id. Reversible.
+router.get('/dedup/preview',              orderDupSweep.dedupPreview);
+router.post('/dedup/preview',             orderDupSweep.dedupPreview);
+router.post('/dedup/apply',               orderDupSweep.dedupApply);
+router.post('/dedup/revert',              orderDupSweep.dedupRevert);
 router.post('/:id/duplicate',             duplicateOrder);
 router.get('/cleanup-candidates',         cleanupCandidates);
 router.post('/cleanup-delete',            cleanupDelete);
