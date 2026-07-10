@@ -795,7 +795,6 @@ const poPdf = async (req, res) => {
     field('Purchase Order Number', po.poNumber);
     field('Date', ld(po.date));
     field('Due / In-hands Date', ld(po.dueDate));
-    field('Proof', po.proofRequired ? 'Required before production run' : 'Not required');
     field('Blanks', po.blanksProvided ? 'Provided by Joint Printing' : 'Supplied by printer');
 
     // Vendor / printer block on the right, vertically aligned with the meta block.
@@ -803,7 +802,7 @@ const poPdf = async (req, res) => {
     const afterMeta = doc.y;
     doc.y = metaTop;
     doc.font('Helvetica-Bold').fontSize(9).fillColor(GREEN)
-      .text('PRINTER / VENDOR', rightX, doc.y, { width: colW, characterSpacing: 0.5 });
+      .text('TO', rightX, doc.y, { width: colW, characterSpacing: 0.5 });
     doc.moveDown(0.15);
     const vLines = [po.vendorName, po.contactName && `Attn: ${po.contactName}`, po.vendorAddress]
       .map((s) => String(s || '').trim()).filter(Boolean);
@@ -831,10 +830,10 @@ const poPdf = async (req, res) => {
 
     section('Shipping');
     const shipTop = doc.y;
-    addrBlock(left, colW, 'Ship blanks to (printer)', printerShip, 'Where JP sends the blanks');
+    addrBlock(left, colW, 'Blanks ship to', printerShip, null);
     const leftEnd = doc.y;
     doc.y = shipTop;
-    addrBlock(rightX, colW, 'Finished goods ship to', hasFinalShip ? sh : null, 'Where the finished order delivers');
+    addrBlock(rightX, colW, 'Finished goods ship to', hasFinalShip ? sh : null, null);
     doc.y = Math.max(leftEnd, doc.y);
 
     if ((po.items || []).length > 0) {

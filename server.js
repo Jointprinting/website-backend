@@ -214,6 +214,24 @@ db.once('open', () => {
     }
   }, 7_000);
 
+  // ONE-TIME: re-derive the stored cogs estimate from confirmation items
+  // (qty × unitCost) for orders that HAVE a confirmation — the save hooks now
+  // keep this in sync, but orders confirmed before the change still carry the
+  // whole-pitch quote sum (inflated when the quote listed many standalone
+  // alternatives). Flag-guarded: after this runs once, the hooks own it.
+  setTimeout(async () => {
+    const KEY = 'confirmationCogsBackfill-v1';
+    try {
+      const migrations = mongoose.connection.db.collection('migrations');
+      if (await migrations.findOne({ _id: KEY })) return;
+      const n = await require('./controllers/orders').backfillConfirmationCogs();
+      await migrations.insertOne({ _id: KEY, at: new Date(), fixed: n });
+      if (n) console.log(`[orders] confirmation-COGS backfill: corrected the estimate on ${n} order(s).`);
+    } catch (e) {
+      console.warn('[orders] confirmation-COGS backfill failed (will retry next boot):', e.message);
+    }
+  }, 7_500);
+
   // Idempotent: rename the income category "Customer Sales" → "Client Sales"
   // on stored transactions + receipt extractions (owner's vocabulary change).
   setTimeout(() => {
