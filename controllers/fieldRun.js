@@ -59,6 +59,13 @@ async function getCurrent(_req, res) {
   }
 }
 
+// Both coordinates present and real. NB: global isFinite(null) === true, so
+// the null checks are load-bearing — one lng-less doc must be skipped, not
+// blow up the whole run.save() on the schema's required lng.
+function hasCoords(d) {
+  return d && d.lat != null && d.lng != null && isFinite(d.lat) && isFinite(d.lng);
+}
+
 // Assemble a run stop from a Dispensary doc + its resolved CRM match.
 function stopFromDispensary(d, crm) {
   return {
@@ -98,7 +105,7 @@ async function addStop(req, res) {
       const byId = new Map(docs.map((d) => [String(d._id), d]));
       for (const id of ids) {
         const d = byId.get(id);
-        if (!d || have.has(id) || !isFinite(d.lat) || d.lat == null) { skipped++; continue; }
+        if (!d || have.has(id) || !hasCoords(d)) { skipped++; continue; }
         const crm = await resolveCrmMatch(d.companyKey, d.matchKey || matchKey(d.name));
         const stop = stopFromDispensary(d, crm);
         stop.order = order++;
@@ -117,7 +124,7 @@ async function addStop(req, res) {
       }
       const d = await Dispensary.findById(b.dispensaryId).lean();
       if (!d) return res.status(404).json({ message: 'Dispensary not found.' });
-      if (!isFinite(d.lat) || !isFinite(d.lng) || d.lat == null) {
+      if (!hasCoords(d)) {
         return res.status(400).json({ message: 'That store has no coordinates yet — run enrichment first.' });
       }
       const crm = await resolveCrmMatch(d.companyKey, d.matchKey || matchKey(d.name));

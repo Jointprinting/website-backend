@@ -301,6 +301,7 @@ async function ingestState(state, opts = {}) {
           licenseStatus: n.licenseStatus,
           address: n.address, city: n.city, zip: n.zip,
           source: 'roster', verified: true, active: true,
+          segment: n.segment,
           rosterSource: n.rosterSource, lastVerifiedAt: startedAt,
           companyKey: n.companyKey, matchKey: n.matchKey,
           ...(n.phone ? { phone: n.phone } : {}),

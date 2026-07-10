@@ -73,16 +73,27 @@ async function listDispensaries(req, res) {
     };
     if (req.query.verifiedOnly === 'true') filter.verified = true;
 
+    // Segment filter — DB-side for stamped rows (so a narrow selection in a
+    // dense, capped viewport doesn't lose pins to post-cap thinning), with
+    // un-stamped legacy rows ('' / missing) still fetched, derived from
+    // state+source, and pruned in memory.
+    const wanted = String(req.query.segments || '')
+      .split(',').map((s) => s.trim()).filter((s) => SEGMENTS.includes(s));
+    const narrowed = wanted.length > 0 && wanted.length < SEGMENTS.length;
+    if (narrowed) {
+      filter.$or = [
+        { segment: { $in: wanted } },
+        { segment: { $in: ['', null] } },
+        { segment: { $exists: false } },
+      ];
+    }
+
     const cap = 4000;
     let docs = await Dispensary.find(filter).limit(cap).lean();
     const capped = docs.length >= cap;
 
-    // Segment filter — derived per row (stamp wins, else state+source rule) so
-    // legacy rows classify without a migration.
-    const wanted = String(req.query.segments || '')
-      .split(',').map((s) => s.trim()).filter((s) => SEGMENTS.includes(s));
     for (const d of docs) d.segment = d.segment || deriveSegment(d.state, d.source);
-    if (wanted.length && wanted.length < SEGMENTS.length) {
+    if (narrowed) {
       docs = docs.filter((d) => !d.segment || wanted.includes(d.segment));
     }
 

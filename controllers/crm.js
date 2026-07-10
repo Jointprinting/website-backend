@@ -1595,12 +1595,23 @@ async function patchOne(req, res) {
         const c = inc[0];
         const cur = await Client.findOne({ companyKey: targetKey }).select('contacts').lean();
         const existing = (cur && cur.contacts) || [];
+        // Match order: phone/email (the strong keys) via mergeContacts; else
+        // the same NAME — the natural repeat-capture flow is "got the name
+        // first, got their number the next visit", and that second capture
+        // must enrich the existing person, never append a duplicate.
+        const cp = normPhone(c.phone);
+        const ce = normEmail(c.email);
+        const keyMatch = (cp || ce)
+          ? existing.find((ec) => (cp && normPhone(ec.phone) === cp) || (ce && normEmail(ec.email) === ce))
+          : null;
         const nameKey = String(c.name || '').trim().toLowerCase();
-        const sameName = !normPhone(c.phone) && !normEmail(c.email) && nameKey
+        const nameMatch = !keyMatch && nameKey
           ? existing.find((ec) => String(ec.name || '').trim().toLowerCase() === nameKey)
           : null;
-        if (sameName) {
-          set.contacts = existing.map((ec) => (ec === sameName ? { ...ec, role: ec.role || c.role } : ec));
+        if (nameMatch) {
+          set.contacts = existing.map((ec) => (ec === nameMatch
+            ? { ...ec, role: ec.role || c.role, phone: ec.phone || c.phone, email: ec.email || c.email }
+            : ec));
         } else {
           set.contacts = mergeContacts(existing, [c]);
         }
