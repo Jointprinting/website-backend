@@ -66,7 +66,7 @@ async function saveItem(req, res) {
     const { store } = req.params;
     if (!['blanks','logos','mockups'].includes(store))
       return res.status(400).json({ message: 'Invalid store.' });
-    let { name, data, thumbnail, client, pageState, savedAt, remoteId } = req.body;
+    let { name, data, thumbnail, client, pageState, pages, extraViews, savedAt, remoteId } = req.body;
 
     // Offload base64 images to R2 (when configured) so the document stays small
     // and well under Mongo's 16MB ceiling. uploadDataUrl returns the value
@@ -79,6 +79,11 @@ async function saveItem(req, res) {
           r2.uploadDataUrl(thumbnail, `${store}/img`),
           r2.uploadDataUrl(data, `${store}/img`),
         ]);
+        // Multi-page mockups: each extra view offloads exactly like the
+        // thumbnail — the doc stores URLs, the images live in R2.
+        if (Array.isArray(extraViews) && extraViews.length) {
+          extraViews = await Promise.all(extraViews.map((v) => r2.uploadDataUrl(v, `${store}/img`)));
+        }
       } catch (e) {
         console.warn('[studioLibrary] R2 upload failed, storing inline:', e.message);
       }
@@ -93,6 +98,8 @@ async function saveItem(req, res) {
       const fields = {
         store, name, data: data || '', thumbnail: thumbnail || '',
         client: client || '', pageState: pageState || null,
+        pages: pages || null,
+        extraViews: Array.isArray(extraViews) ? extraViews.filter(Boolean) : [],
         savedAt: savedAt || Date.now(),
       };
       // Scope the match by STORE too, not remoteId alone. A client UUID that (very
@@ -115,6 +122,8 @@ async function saveItem(req, res) {
     const item = await StudioLibraryItem.create({
       store, name, data: data || '', thumbnail: thumbnail || '',
       client: client || '', pageState: pageState || null,
+      pages: pages || null,
+      extraViews: Array.isArray(extraViews) ? extraViews.filter(Boolean) : [],
       savedAt: savedAt || Date.now(),
       // Never store an empty remoteId — docs without one can't be deduped by
       // the studio's sync and get re-imported as new local rows on every load.

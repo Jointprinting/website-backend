@@ -816,6 +816,31 @@ async function markReplied(req, res) {
   }
 }
 
+// POST /api/outreach/enrollments/:id/not-a-reply — the owner's one-tap
+// correction for a FALSE warm: "that 'reply' was an auto-responder." The
+// classifier can't be perfect, so wrong warms must be trivially fixable:
+// reclassify any humanish triage replies matched to this enrollment out of
+// the worklist, then undo the warm side-effects via the shared un-warm
+// (drip resumes an hour out, warm tag off, our follow-up cleared, the log
+// line rewritten as a correction). Idempotent.
+async function notARealReply(req, res) {
+  try {
+    const enr = await OutreachEnrollment.findById(req.params.id).lean();
+    if (!enr) return res.status(404).json({ message: 'enrollment not found' });
+    const TriageReply = require('../models/TriageReply');
+    const { suggestedActionFor } = require('../services/replyTriage');
+    await TriageReply.updateMany(
+      { enrollmentId: enr._id, category: { $nin: ['bounce_auto_ignore'] } },
+      { $set: { category: 'bounce_auto_ignore', suggestedAction: suggestedActionFor('bounce_auto_ignore'), status: 'ignored', handledAt: new Date() } },
+    );
+    const out = await require('../services/warmHandoff')
+      .unwarmFromReply({ enrollmentId: enr._id, companyKey: enr.companyKey });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
 // POST /api/outreach/enrollments/:id/stop — owner halts one company's sequence.
 async function stopEnrollment(req, res) {
   try {
@@ -1731,6 +1756,7 @@ module.exports = {
   launchCampaign,
   getCampaign,
   getCandidates,
+  notARealReply,
   enrollCompanies,
   getQueue,
   markReplied,

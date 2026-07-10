@@ -78,12 +78,12 @@ const OOO_BODY = /\b(i(?:'| a)?m (?:currently )?(?:out of (?:the )?office|on (?:
 // response: …" from a shop's real address that says "thank you for contacting …
 // this account is not monitored" got treated as a buyer reply and warmed the CRM).
 // Distinct from OOO (a person temporarily away, which we snooze): these are ignored.
-const AUTO_ACK_SUBJECT = /\b(auto[\s-]?response|automatic response|autoresponse|auto[\s-]?acknowledge?ment|acknowledg?ement of your)\b/i;
+const AUTO_ACK_SUBJECT = /\b(auto[\s-]?response|automatic response|autoresponse|auto[\s-]?acknowledge?ment|acknowledg?ement of your|we(?:'ve| have) received your|your (?:message|email|inquiry|request) (?:has been|was) received|thank you for contacting)\b/i;
 // Body wording is MACHINE-SPECIFIC only — phrases a human would never write in a
 // real reply. A polite human opener ("thank you for your email, yes we'd love a
 // quote") must NOT be swallowed, so soft openers are deliberately excluded here;
 // a generic auto-ack is still caught by its subject (AUTO_ACK_SUBJECT) or headers.
-const AUTO_ACK_BODY = /\b(this is an automated (?:response|message|email|reply)|(?:please )?do not (?:reply|respond) to this (?:e-?mail|message|account|mailbox)|this (?:mailbox|inbox|e-?mail account|account) is (?:not |un)monitored|is not monitored|unlikely (?:they|it) will (?:be seen|not be seen)|can ?not be answered via this (?:e-?mail|account)|no longer monitored)\b/i;
+const AUTO_ACK_BODY = /\b(this is an automated (?:response|message|email|reply)|(?:please )?do not (?:reply|respond) to this (?:e-?mail|message|account|mailbox)|this (?:mailbox|inbox|e-?mail account|account) is (?:not |un)monitored|is not monitored|unlikely (?:they|it) will (?:be seen|not be seen)|can ?not be answered via this (?:e-?mail|account)|no longer monitored|(?:ticket|case|reference) (?:number|#)\s*[:#]?\s*\w|support (?:ticket|request) (?:has been )?(?:created|received|opened)|your (?:message|email|inquiry|request) (?:has been|was) received and|a (?:member of our|our) team will (?:be in touch|respond|get back)|this is a no-?reply)\b/i;
 
 // RFC-standard headers that DEFINITIVELY mark automated / bulk / list mail — the
 // gold-standard signal, independent of fragile subject/body wording. A well-behaved
@@ -203,6 +203,11 @@ function classifyBounceNdr({ subject = '', snippet = '', fromEmail = '' } = {}, 
   // Hard only when a permanent signal is present AND no transient one — when in
   // doubt, do nothing (the conservative default for anything that kills a lead).
   const hard = NDR_HARD.test(hay) && !NDR_SOFT.test(hay);
+  // Soft = a transient failure notice ("temporary problem… will retry",
+  // mailbox full, deferred). Never kills a lead by itself, but the drip must
+  // STOP stacking more mail onto a struggling mailbox — the controller defers
+  // the enrollment and escalates to suppression only after repeated notices.
+  const soft = !hard && NDR_SOFT.test(hay);
   // The failed recipient(s): every address in the NDR that isn't a daemon and
   // isn't on OUR sending/replying domains (those appear in the quoted original).
   const ours = new Set((ourDomains || []).map((d) => String(d || '').toLowerCase()).filter(Boolean));
@@ -210,7 +215,7 @@ function classifyBounceNdr({ subject = '', snippet = '', fromEmail = '' } = {}, 
     .map((e) => e.toLowerCase())
     .filter((e) => !NDR_JUNK_LOCAL.test(e.split('@')[0] || ''))
     .filter((e) => !ours.has(e.split('@')[1] || '')))];
-  return { isBounce: true, hard, emails };
+  return { isBounce: true, hard, soft, emails };
 }
 
 // ── Matching ─────────────────────────────────────────────────────────────────

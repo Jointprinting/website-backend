@@ -211,7 +211,7 @@ const publicGetProject = async (req, res) => {
     const mockupRefs = confRefs.length > 0 ? confRefs : (order.mockupNumbers || []);
     const mockupItems = await StudioLibraryItem
       .find({ store: 'mockups' })
-      .select('name pageState.mockupNum thumbnail data')
+      .select('name pageState.mockupNum thumbnail data extraViews')
       .lean();
     const byNorm = {};
     mockupItems.forEach(m => {
@@ -232,7 +232,9 @@ const publicGetProject = async (req, res) => {
       .filter(k => { if (seen.has(k)) return false; seen.add(k); return true; })
       .map(k => byNorm[k])
       .filter(Boolean)
-      .map(m => ({ name: m.name, thumbnail: m.thumbnail, back: m.data, mockupNum: m.pageState?.mockupNum }));
+      // extraViews = pages 2+ of a multi-page mockup (e.g. the sideways
+      // garment for shoulder prints) — the client sees every view.
+      .map(m => ({ name: m.name, thumbnail: m.thumbnail, back: m.data, mockupNum: m.pageState?.mockupNum, extraViews: m.extraViews || [] }));
 
     const logo = await ClientLogo.findOne({ companyKey: order.companyKey }).select('imageDataUrl').lean();
 
