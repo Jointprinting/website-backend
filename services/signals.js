@@ -219,9 +219,38 @@ async function hubPulse(now = new Date()) {
   };
 }
 
+// Lookbook feedback the owner hasn't acknowledged — a client tapped 👍/👎 or
+// left a comment on a shared gallery. One item per lookbook; the count is the
+// unseen entries. Cleared by POST /api/lookbooks/:id/feedback/seen.
+async function lookbookFeedback() {
+  const Lookbook = require('../models/Lookbook');
+  const books = await Lookbook.find({ status: 'shared', 'feedback.0': { $exists: true } })
+    .select('companyKey companyName title feedback').lean();
+  const items = [];
+  let total = 0;
+  for (const lb of books) {
+    const unseen = (lb.feedback || []).filter((f) => !f.seenAt);
+    if (!unseen.length) continue;
+    total += unseen.length;
+    const latest = unseen[unseen.length - 1];
+    items.push({
+      _id: String(lb._id),
+      companyKey: lb.companyKey,
+      name: lb.companyName || lb.title || 'Lookbook',
+      metric: `${unseen.length}×`,
+      note: latest.comment ? `"${latest.comment.slice(0, 80)}"` : (latest.reaction === 'up' ? '👍' : latest.reaction === 'down' ? '👎' : ''),
+    });
+  }
+  return [
+    { id: 'lookbook_feedback', severity: 'warning', kind: 'lookbook',
+      label: `${total} lookbook reaction${total === 1 ? '' : 's'} to review`,
+      count: total, items: cap(items) },
+  ];
+}
+
 // buildSignals — compose all sources; a thrown source drops only its group.
 async function buildSignals({ now = new Date() } = {}) {
-  const sources = [ordersAging(now), followUps(now), outreachReplies(now)];
+  const sources = [ordersAging(now), followUps(now), outreachReplies(now), lookbookFeedback(now)];
   const [settled, pulse] = await Promise.all([
     Promise.allSettled(sources),
     hubPulse(now).catch(() => null), // pulse is garnish — never sinks the feed
