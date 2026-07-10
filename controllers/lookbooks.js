@@ -23,21 +23,27 @@ const crypto = require('crypto');
 const Lookbook = require('../models/Lookbook');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
 const ClientLogo = require('../models/ClientLogo');
-const { notifyAdmin } = require('./approval');
+const { notifyAdmin, _esc } = require('./approval');
 const { deriveCompanyKey } = require('../utils/fieldTrackerImport');
 
 const SHARE_TTL_MS = 90 * 24 * 60 * 60 * 1000;  // 90 days, rotated on re-share
 const VIEW_THROTTLE_MS = 10 * 60 * 1000;        // one lastViewedAt stamp / 10 min
+const NOTIFY_THROTTLE_MS = 10 * 60 * 1000;      // one feedback email / lookbook / 10 min
 const FEEDBACK_CAP = 500;                       // runaway-guard on the array
 
 // Resolve a lookbook's ordered pages against the mockup library. Tiles carry
 // whatever the library holds (R2 https URLs after offload, else base64) —
 // the same ship-as-is approach the approval page uses for its mockup strip.
-async function resolveTiles(lb) {
+// `withBack` is public-gallery-only: a legacy non-offloaded back is multi-MB
+// inline base64, and the ADMIN builder never renders backs — shipping them on
+// every debounced autosave PATCH would be pure waste (the library's own
+// summary endpoint strips them for exactly this reason).
+async function resolveTiles(lb, { withBack = false } = {}) {
   const ids = (lb.mockups || []).map((m) => m.remoteId).filter(Boolean);
   if (!ids.length) return [];
+  const fields = `remoteId name client thumbnail pageState.mockupNum${withBack ? ' data' : ''}`;
   const docs = await StudioLibraryItem.find({ store: 'mockups', remoteId: { $in: ids } })
-    .select('remoteId name client thumbnail data pageState.mockupNum').lean();
+    .select(fields).lean();
   const byRid = new Map(docs.map((d) => [d.remoteId, d]));
   return (lb.mockups || []).map((m) => {
     const d = byRid.get(m.remoteId);
@@ -49,7 +55,7 @@ async function resolveTiles(lb) {
       mockupNum: (d.pageState && d.pageState.mockupNum) ? String(d.pageState.mockupNum) : '',
       caption: m.caption || '',
       front: d.thumbnail || '',
-      back: d.data || '',
+      ...(withBack ? { back: d.data || '' } : {}),
     };
   });
 }
@@ -179,7 +185,11 @@ async function loadByToken(req) {
   const token = String(req.query.token || req.body?.token || '');
   if (!token) return { status: 404 };
   const lb = await Lookbook.findById(req.params.id);
-  if (!lb || !lb.shareToken || lb.shareToken !== token || lb.status === 'archived') return { status: 404 };
+  // Only status 'shared' is client-visible — the lifecycle's whole point.
+  // Archiving OR restoring to draft kills the link immediately (the token is
+  // deliberately not enough on its own: "Restore to draft" must never
+  // silently revive a link the archive dialog promised was dead).
+  if (!lb || !lb.shareToken || lb.shareToken !== token || lb.status !== 'shared') return { status: 404 };
   if (lb.shareTokenExpiresAt && lb.shareTokenExpiresAt < new Date()) return { status: 410 };
   return { lb };
 }
@@ -197,7 +207,7 @@ async function publicGetLookbook(req, res) {
     }
 
     const logo = await ClientLogo.findOne({ companyKey: lb.companyKey }).select('imageDataUrl').lean();
-    const tiles = (await resolveTiles(lb)).filter((t) => !t.missing);
+    const tiles = (await resolveTiles(lb, { withBack: true })).filter((t) => !t.missing);
     res.json({
       title: lb.title, subtitle: lb.subtitle,
       companyName: lb.companyName,
@@ -246,16 +256,33 @@ async function publicPostFeedback(req, res) {
     } else {
       lb.feedback.push(entry);
     }
+    // Best-effort heads-up — the hub signal is the durable surface, so the
+    // email is throttled per lookbook (a reaction-tapping script must never
+    // flood the inbox) and every client-supplied string is escaped (same
+    // _esc treatment the approval flow's notification emails use).
+    const now2 = new Date();
+    const shouldNotify = !lb.lastFeedbackNotifiedAt || (now2 - lb.lastFeedbackNotifiedAt) > NOTIFY_THROTTLE_MS;
+    if (shouldNotify) lb.lastFeedbackNotifiedAt = now2;
     await lb.save();
 
-    // Best-effort heads-up — the hub signal is the durable surface.
-    const what = [reaction && (reaction === 'up' ? '👍' : '👎'), comment && `"${comment.slice(0, 140)}"`].filter(Boolean).join(' · ');
-    notifyAdmin(
-      `Lookbook feedback — ${lb.companyName || lb.companyKey}`,
-      `<p><b>${entry.by || 'The client'}</b> on <b>${lb.title}</b>${entry.mockupRemoteId ? ' (a mockup)' : ''}: ${what}</p>`,
-    ).catch(() => {});
+    if (shouldNotify) {
+      const what = [reaction && (reaction === 'up' ? '👍' : '👎'), comment && `"${_esc(comment.slice(0, 140))}"`].filter(Boolean).join(' · ');
+      notifyAdmin(
+        `Lookbook feedback — ${lb.companyName || lb.companyKey}`,
+        `<p><b>${_esc(entry.by) || 'The client'}</b> on <b>${_esc(lb.title)}</b>${entry.mockupRemoteId ? ' (a mockup)' : ''}: ${what}</p>`,
+      ).catch(() => {});
+    }
 
-    res.json({ ok: true });
+    // Echo the updated public feedback so the gallery can update in place —
+    // re-fetching the whole payload (every inline mockup image) per 👍 tap
+    // would be a multi-MB transfer on legacy non-offloaded lookbooks.
+    res.json({
+      ok: true,
+      feedback: (lb.feedback || []).map((f) => ({
+        mockupRemoteId: f.mockupRemoteId, reaction: f.reaction,
+        comment: f.comment, by: f.by, at: f.at,
+      })),
+    });
   } catch (err) {
     res.status(500).json({ message: 'Feedback failed.' });
   }

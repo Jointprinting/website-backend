@@ -54,6 +54,9 @@ const LookbookSchema = new mongoose.Schema({
   shareTokenExpiresAt: { type: Date, default: null },
   sharedAt:            { type: Date, default: null },
   lastViewedAt:        { type: Date, default: null },  // last client open
+  // Throttle stamp for the feedback heads-up email (the hub signal is the
+  // durable surface; the email is a courtesy, never a flood).
+  lastFeedbackNotifiedAt: { type: Date, default: null },
 
   feedback: { type: [LookbookFeedbackSchema], default: [] },
 }, { timestamps: true });

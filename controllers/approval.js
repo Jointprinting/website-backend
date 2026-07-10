@@ -1047,6 +1047,7 @@ module.exports = {
   DEFAULT_TRACKING_STEPS,
   // Exported for unit tests (pure helpers).
   _pickedAtForCycle, _currentApprovalStatus,
+  _esc,  // notification-email escaping, reused by lookbooks
   expireLegacyApprovalTokens,
   backfillConfirmationPublished,
 };
