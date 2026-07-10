@@ -59,14 +59,63 @@ async function getCurrent(_req, res) {
   }
 }
 
+// Both coordinates present and real. NB: global isFinite(null) === true, so
+// the null checks are load-bearing — one lng-less doc must be skipped, not
+// blow up the whole run.save() on the schema's required lng.
+function hasCoords(d) {
+  return d && d.lat != null && d.lng != null && isFinite(d.lat) && isFinite(d.lng);
+}
+
+// Assemble a run stop from a Dispensary doc + its resolved CRM match.
+function stopFromDispensary(d, crm) {
+  return {
+    dispensaryId: d._id,
+    name: d.name,
+    address: [d.address, d.city].filter(Boolean).join(', '),
+    phone: d.phone,
+    lat: d.lat, lng: d.lng,
+    placeId: d.placeId,
+    chainName: d.chainName,
+    companyKey: (crm && crm.companyKey) || d.companyKey,
+    crmStage: (crm && crm.stage) || '',
+  };
+}
+
 // ── POST /api/roadtrip/run/stops ─────────────────────────────────────────────
-// Body: { dispensaryId } | { leadId, name, lat, lng, ... } | a bare custom
-// stop { name, lat, lng, address?, phone? }. Dedupes by dispensaryId/leadId/
-// placeId so double-taps don't double-book.
+// Body: { dispensaryId } | { dispensaryIds: [...] } (bulk "add all in view")
+// | { leadId, name, lat, lng, ... } | a bare custom stop { name, lat, lng,
+// address?, phone? }. Dedupes by dispensaryId/leadId/placeId so double-taps
+// (and re-bulk-adds of an area) don't double-book.
+const BULK_ADD_CAP = 80;
+
 async function addStop(req, res) {
   try {
     const run = await ensureActiveRun();
     const b = req.body || {};
+
+    // Bulk path — the "save them all" day-planning flow: search a city, add
+    // every store in view in one tap. Already-added stops and stores without
+    // coordinates are skipped, not errors; order continues from the tray's end.
+    if (Array.isArray(b.dispensaryIds)) {
+      const ids = b.dispensaryIds.slice(0, BULK_ADD_CAP).map(String);
+      const have = new Set(run.stops.map((s) => String(s.dispensaryId)));
+      let order = run.stops.length ? Math.max(...run.stops.map((s) => s.order)) + 1 : 0;
+      let added = 0, skipped = 0;
+      const docs = await Dispensary.find({ _id: { $in: ids } }).lean();
+      const byId = new Map(docs.map((d) => [String(d._id), d]));
+      for (const id of ids) {
+        const d = byId.get(id);
+        if (!d || have.has(id) || !hasCoords(d)) { skipped++; continue; }
+        const crm = await resolveCrmMatch(d.companyKey, d.matchKey || matchKey(d.name));
+        const stop = stopFromDispensary(d, crm);
+        stop.order = order++;
+        run.stops.push(stop);
+        have.add(id);
+        added++;
+      }
+      if (added) await run.save();
+      return res.json({ run, added, skipped, capped: b.dispensaryIds.length > BULK_ADD_CAP });
+    }
 
     let stop = null;
     if (b.dispensaryId) {
@@ -75,21 +124,11 @@ async function addStop(req, res) {
       }
       const d = await Dispensary.findById(b.dispensaryId).lean();
       if (!d) return res.status(404).json({ message: 'Dispensary not found.' });
-      if (!isFinite(d.lat) || !isFinite(d.lng) || d.lat == null) {
+      if (!hasCoords(d)) {
         return res.status(400).json({ message: 'That store has no coordinates yet — run enrichment first.' });
       }
       const crm = await resolveCrmMatch(d.companyKey, d.matchKey || matchKey(d.name));
-      stop = {
-        dispensaryId: d._id,
-        name: d.name,
-        address: [d.address, d.city].filter(Boolean).join(', '),
-        phone: d.phone,
-        lat: d.lat, lng: d.lng,
-        placeId: d.placeId,
-        chainName: d.chainName,
-        companyKey: (crm && crm.companyKey) || d.companyKey,
-        crmStage: (crm && crm.stage) || '',
-      };
+      stop = stopFromDispensary(d, crm);
     } else {
       const lat = parseFloat(b.lat), lng = parseFloat(b.lng);
       if (!b.name || !isFinite(lat) || !isFinite(lng)) {

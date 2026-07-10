@@ -81,4 +81,36 @@ const NO_RETAIL_YET = ['VA', 'DC'];
 
 const REC_STATE_CODES = Object.keys(REC_STATES);
 
-module.exports = { REC_STATES, REC_STATE_CODES, MEDICAL_ONLY, NO_RETAIL_YET };
+// ── Market segment ────────────────────────────────────────────────────────────
+// Every retail pin belongs to one of the owner's three pitch segments:
+//   'rec'  — licensed adult-use market (the classic dispensary)
+//   'med'  — licensed medical-only market
+//   'hemp' — hemp-derived-THC retail ("bodega THC": delta-8 / THCA smoke, vape
+//            and CBD shops in states with no legal marijuana retail — Texas,
+//            the Carolinas, Tennessee, Georgia…). Legally volatile: the federal
+//            hemp redefinition (P.L. 119-37) bites Nov 2026 and TX/TN rules are
+//            already shrinking flower sellers — the segment is a filter, never
+//            a data deletion, so pins age out with their sources.
+// Derivation is state+source-based (not persisted-only) so legacy rows and
+// list drift (a state flipping rec) reclassify automatically at read time:
+//   rec state                        → 'rec'
+//   medical-only state, roster/google/manual → 'med'   (license-backed or
+//            found via a "dispensary" text sweep — a real med dispensary)
+//   medical-only state, osm          → 'hemp'  (the cannabis tag-net there
+//            overwhelmingly catches CBD/hemp storefronts, not licensees)
+//   any other / unknown state        → 'hemp' when the state is a real code
+//            (a cannabis-tagged shop where no marijuana retail is legal IS a
+//            hemp shop), '' when the state is unparsed ('US'/'').
+// '' (unknown) is deliberately never filtered out by segment reads.
+// MIRROR: src/screens/studio/_roadTrip.js documents the segment vocabulary for
+// the Field Map's clickers — keep the labels in sync.
+function deriveSegment(state, source) {
+  const st = String(state || '').toUpperCase();
+  if (!st || st === 'US' || st.length !== 2) return '';
+  if (REC_STATES[st]) return 'rec';
+  if (MEDICAL_ONLY.includes(st)) return source === 'osm' ? 'hemp' : 'med';
+  return 'hemp';
+}
+const SEGMENTS = ['rec', 'med', 'hemp'];
+
+module.exports = { REC_STATES, REC_STATE_CODES, MEDICAL_ONLY, NO_RETAIL_YET, deriveSegment, SEGMENTS };

@@ -47,6 +47,13 @@ const DispensarySchema = new mongoose.Schema({
   isChain:   { type: Boolean, default: false },
   chainName: { type: String, default: '' },
 
+  // Market segment for the Field Map's clickers: 'rec' | 'med' | 'hemp'
+  // ('' = unknown, never filtered out). Stamped at ingest/scan time via
+  // services/dispensaryStates.deriveSegment; legacy rows without a stamp are
+  // derived at read time from the same rule, so a state list update
+  // reclassifies old pins automatically.
+  segment:    { type: String, enum: ['rec', 'med', 'hemp', ''], default: '', index: true },
+
   // Provenance / lifecycle
   //   'osm' — discovered free via OpenStreetMap (Overpass) as the map is panned;
   //           community-mapped, so verified:false (not a license-roster row).

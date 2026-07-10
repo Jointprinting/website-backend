@@ -11,7 +11,7 @@ const Dispensary = require('../models/Dispensary');
 const Client = require('../models/Client');
 const DispensaryDenylist = require('../models/DispensaryDenylist');
 const OsmScanTile = require('../models/OsmScanTile');
-const { REC_STATES, MEDICAL_ONLY, NO_RETAIL_YET } = require('../services/dispensaryStates');
+const { REC_STATES, MEDICAL_ONLY, NO_RETAIL_YET, deriveSegment, SEGMENTS } = require('../services/dispensaryStates');
 const { ingestState, rechainState, geocodeMissing, deriveCompanyKey, matchKey } = require('../services/dispensaryIngest');
 const { enrichBatch } = require('../services/dispensaryEnrich');
 const { detectKnownChain } = require('../services/dispensaryChains');
@@ -53,24 +53,49 @@ function stateFromAddress(addr) {
   return (m && m[1]) || 'US';
 }
 
-// ── GET /api/roadtrip/dispensaries?minLat&maxLat&minLng&maxLng[&chain=..] ────
-// Returns every active, visible dispensary in the viewport plus its CRM
-// stage (if the company exists in the CRM). Capped defensively — a whole-US
-// zoom is served, just thinned to the cap.
+// ── GET /api/roadtrip/dispensaries?minLat&maxLat&minLng&maxLng[&segments=..] ─
+// Returns every active, visible INDEPENDENT dispensary in the viewport plus
+// its CRM stage (if the company exists in the CRM). Chains are excluded at
+// the source — the owner doesn't pitch them, so they never render (owner
+// decision; chain detection itself stays, the dedupe machinery uses it).
+// `segments` is a CSV of rec|med|hemp (default: all three); rows whose
+// segment can't be derived ('' — unparsed state) are never filtered out.
+// Capped defensively — a whole-US zoom is served, just thinned to the cap.
 async function listDispensaries(req, res) {
   try {
     const bbox = parseBbox(req.query);
     if (!bbox) return res.status(400).json({ message: 'minLat/maxLat/minLng/maxLng are required.' });
     const filter = {
       active: true, hidden: false,
+      isChain: { $ne: true },
       lat: { $gte: bbox.minLat, $lte: bbox.maxLat },
       lng: { $gte: bbox.minLng, $lte: bbox.maxLng },
     };
-    if (req.query.chain) filter.chainName = req.query.chain;
     if (req.query.verifiedOnly === 'true') filter.verified = true;
 
+    // Segment filter — DB-side for stamped rows (so a narrow selection in a
+    // dense, capped viewport doesn't lose pins to post-cap thinning), with
+    // un-stamped legacy rows ('' / missing) still fetched, derived from
+    // state+source, and pruned in memory.
+    const wanted = String(req.query.segments || '')
+      .split(',').map((s) => s.trim()).filter((s) => SEGMENTS.includes(s));
+    const narrowed = wanted.length > 0 && wanted.length < SEGMENTS.length;
+    if (narrowed) {
+      filter.$or = [
+        { segment: { $in: wanted } },
+        { segment: { $in: ['', null] } },
+        { segment: { $exists: false } },
+      ];
+    }
+
     const cap = 4000;
-    const docs = await Dispensary.find(filter).limit(cap).lean();
+    let docs = await Dispensary.find(filter).limit(cap).lean();
+    const capped = docs.length >= cap;
+
+    for (const d of docs) d.segment = d.segment || deriveSegment(d.state, d.source);
+    if (narrowed) {
+      docs = docs.filter((d) => !d.segment || wanted.includes(d.segment));
+    }
 
     // CRM cross-reference in one indexed query: match by companyKey OR the
     // fuzzier matchKey (same derivations the CRM itself uses).
@@ -108,7 +133,7 @@ async function listDispensaries(req, res) {
         placeId: d.placeId, googleMapsUri: d.googleMapsUri,
         rating: d.rating, ratingCount: d.ratingCount,
         businessStatus: d.businessStatus,
-        isChain: d.isChain, chainName: d.chainName,
+        segment: d.segment,
         verified: d.verified, source: d.source,
         enriched: !!d.enrichedAt,
         lastVisitedAt: d.lastVisitedAt,
@@ -117,13 +142,7 @@ async function listDispensaries(req, res) {
       };
     });
 
-    // Chain rollup for the CHAINS panel: name → store count in view.
-    const chainCounts = {};
-    for (const r of results) {
-      if (r.chainName) chainCounts[r.chainName] = (chainCounts[r.chainName] || 0) + 1;
-    }
-
-    res.json({ count: results.length, capped: docs.length >= cap, results, chains: chainCounts });
+    res.json({ count: results.length, capped, results });
   } catch (err) {
     console.error('[dispensary] list error:', err.message);
     res.status(500).json({ message: 'Dispensary lookup failed.' });
@@ -273,6 +292,7 @@ async function sweep(req, res) {
             googleMapsUri: p.extras?.googleMapsUri || '',
             rating: p.rating, ratingCount: p.extras?.ratingCount ?? null,
             source: 'google', verified: false, active: true,
+            segment: deriveSegment(stateGuess, 'google'),
             isChain: !!detectKnownChain(p.name), chainName: detectKnownChain(p.name) || '',
             companyKey: deriveCompanyKey(p.name),
             matchKey: matchKey(p.name),
@@ -318,86 +338,6 @@ async function rechain(req, res) {
     res.json(await rechainState(req.body?.state ? String(req.body.state).toUpperCase() : null));
   } catch (err) {
     res.status(500).json({ message: err.message });
-  }
-}
-
-// ── GET /api/roadtrip/suggest?lat&lng[&radius&limit] ─────────────────────────
-// "Plan me a run near here." Returns the best nearby dispensaries to actually
-// visit — active, visible, and NOT already a customer or a dead lead — ranked by
-// sales value (a never-worked prospect with a phone beats a warm one), then by
-// distance. The owner one-taps these into Today's Run and optimizes the route.
-const SUGGEST_CLOSED_STAGES = new Set(['won', 'customer', 'lost', 'dormant']);
-
-// Great-circle distance in miles between two lat/lng points.
-function haversineMi(lat1, lng1, lat2, lng2) {
-  const R = 3958.8, r = Math.PI / 180;
-  const dLa = (lat2 - lat1) * r, dLo = (lng2 - lng1) * r;
-  const a = Math.sin(dLa / 2) ** 2 + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin(dLo / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
-}
-
-// Pure ranker (unit-tested). Keeps dispensaries within the radius that are real
-// prospects (drops customers / dead leads), scores each, and returns the top N.
-//   fresh (never in CRM) = +2, has a phone = +1 → sort by score, then nearest.
-function rankProspects(docs, origin, { radiusMi = 25, stageByKey = new Map(), limit = 12 } = {}) {
-  const out = [];
-  for (const d of (docs || [])) {
-    if (d == null || d.lat == null || d.lng == null) continue;
-    const miles = haversineMi(origin.lat, origin.lng, d.lat, d.lng);
-    if (!(miles <= radiusMi)) continue;
-    const stage = stageByKey.get(d.companyKey) || null;
-    if (stage && SUGGEST_CLOSED_STAGES.has(stage)) continue; // already ours / dead — skip
-    const fresh = !stage;
-    const hasPhone = !!d.phone;
-    out.push({
-      _id: String(d._id), name: d.name || 'Dispensary',
-      lat: d.lat, lng: d.lng, phone: d.phone || '', website: d.website || '',
-      companyKey: d.companyKey || '', stage, fresh,
-      miles: Math.round(miles * 10) / 10, score: (fresh ? 2 : 0) + (hasPhone ? 1 : 0),
-    });
-  }
-  out.sort((a, b) => (b.score - a.score) || (a.miles - b.miles) || String(a.name).localeCompare(String(b.name)));
-  return out.slice(0, limit);
-}
-
-async function suggest(req, res) {
-  try {
-    const lat = parseFloat(req.query.lat), lng = parseFloat(req.query.lng);
-    if (!isFinite(lat) || !isFinite(lng)) return res.status(400).json({ message: 'lat and lng are required.' });
-    const radiusMi = Math.min(Math.max(parseFloat(req.query.radius) || 25, 1), 100);
-    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 12, 1), 40);
-    // bbox pre-filter (~radius) keeps the scan cheap; haversine does the exact cut.
-    const dLat = radiusMi / 69;
-    const dLng = radiusMi / ((69 * Math.cos(lat * Math.PI / 180)) || 69);
-    const docs = await Dispensary.find({
-      active: true, hidden: false,
-      lat: { $ne: null, $gte: lat - dLat, $lte: lat + dLat },
-      lng: { $ne: null, $gte: lng - dLng, $lte: lng + dLng },
-    }).select('name lat lng phone website companyKey matchKey').limit(1500).lean();
-    // CRM cross-reference (same companyKey/matchKey rule the map uses) so we can
-    // skip stores that are already customers or dead leads.
-    const companyKeys = [...new Set(docs.map((d) => d.companyKey).filter(Boolean))];
-    const matchKeys = [...new Set(docs.map((d) => d.matchKey).filter(Boolean))];
-    const clients = companyKeys.length || matchKeys.length
-      ? await Client.find(
-          { archived: { $ne: true }, $or: [{ companyKey: { $in: companyKeys } }, { matchKey: { $in: matchKeys } }] },
-          { companyKey: 1, matchKey: 1, stage: 1 },
-        ).lean()
-      : [];
-    const byCompanyKey = new Map(), byMatchKey = new Map();
-    for (const c of clients) {
-      if (c.companyKey) byCompanyKey.set(c.companyKey, c.stage);
-      if (c.matchKey) byMatchKey.set(c.matchKey, c.stage);
-    }
-    const stageByKey = new Map();
-    for (const d of docs) {
-      const st = byCompanyKey.get(d.companyKey) || byMatchKey.get(d.matchKey) || null;
-      if (st && d.companyKey) stageByKey.set(d.companyKey, st);
-    }
-    const suggestions = rankProspects(docs, { lat, lng }, { radiusMi, stageByKey, limit });
-    res.json({ count: suggestions.length, radiusMi, suggestions });
-  } catch (err) {
-    res.status(500).json({ message: err.message || 'Suggest failed.' });
   }
 }
 
@@ -452,16 +392,20 @@ async function scanOsm(req, res) {
       }
       const dedupeKey = c.osmId ? `osm:${c.osmId}` : `osm:${mk}|${c.lat.toFixed(4)},${c.lng.toFixed(4)}`;
       const chainName = detectKnownChain(c.name) || '';
+      const st = stateFromAddress(c.address);
       await Dispensary.updateOne(
         { dedupeKey },
         {
           $set: {
-            state: stateFromAddress(c.address),
+            state: st,
             name: c.name,
             address: c.address,
             lat: c.lat, lng: c.lng,
             phone: c.phone || '', website: c.website || '',
             source: 'osm', verified: false, active: true,
+            // A cannabis-tagged shop in a no-marijuana-retail state IS a
+            // hemp/"bodega THC" shop — the segment clickers key off this.
+            segment: deriveSegment(st, 'osm'),
             isChain: !!chainName || !!c.chain,
             chainName,
             companyKey: deriveCompanyKey(c.name),
@@ -490,8 +434,7 @@ async function scanOsm(req, res) {
 }
 
 module.exports = {
-  listDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, suggest, scanOsm,
-  rankProspects, haversineMi,
+  listDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, scanOsm,
   // pure — unit-tested
   tileKeyFor, bboxTooLarge, stateFromAddress,
 };

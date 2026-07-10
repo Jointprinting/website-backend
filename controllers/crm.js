@@ -1583,6 +1583,41 @@ async function patchOne(req, res) {
       }
     }
 
+    // Intent: capture ONE person from the field (Field Map's "who did I talk
+    // to"). Merge-don't-replace: an existing contact (matched by phone/email —
+    // mergeContacts — or by name when the capture carries neither) is blank-
+    // filled; anyone new is appended; the ★ primary is never disturbed. This
+    // is deliberately distinct from a `contacts` edit, which REPLACES the
+    // whole array from the company card's editor.
+    if (body.addContact && typeof body.addContact === 'object' && !('contacts' in body)) {
+      const inc = sanitizeContacts([{ ...body.addContact, isPrimary: false }]);
+      if (inc.length) {
+        const c = inc[0];
+        const cur = await Client.findOne({ companyKey: targetKey }).select('contacts').lean();
+        const existing = (cur && cur.contacts) || [];
+        // Match order: phone/email (the strong keys) via mergeContacts; else
+        // the same NAME — the natural repeat-capture flow is "got the name
+        // first, got their number the next visit", and that second capture
+        // must enrich the existing person, never append a duplicate.
+        const cp = normPhone(c.phone);
+        const ce = normEmail(c.email);
+        const keyMatch = (cp || ce)
+          ? existing.find((ec) => (cp && normPhone(ec.phone) === cp) || (ce && normEmail(ec.email) === ce))
+          : null;
+        const nameKey = String(c.name || '').trim().toLowerCase();
+        const nameMatch = !keyMatch && nameKey
+          ? existing.find((ec) => String(ec.name || '').trim().toLowerCase() === nameKey)
+          : null;
+        if (nameMatch) {
+          set.contacts = existing.map((ec) => (ec === nameMatch
+            ? { ...ec, role: ec.role || c.role, phone: ec.phone || c.phone, email: ec.email || c.email }
+            : ec));
+        } else {
+          set.contacts = mergeContacts(existing, [c]);
+        }
+      }
+    }
+
     // Tags: normalize to a clean string[] — trimmed, non-empty, de-duped
     // (case-insensitively, keeping first spelling) — so the field stays tidy
     // regardless of what the client sends.
