@@ -143,6 +143,35 @@ async function _loadProjectByToken(projectId, token) {
   return { ok: true, order };
 }
 
+// ── Public invoice / receipt downloads ────────────────────────────────────────
+// Token-gated PDFs off the approved confirmation — the same airtight totals
+// the client approved, faced as an invoice (payment line) or receipt (PAID
+// banner). Receipt requires the order to actually be paid; invoice requires
+// an approved confirmation (there is nothing to invoice before that).
+function publicOrderDoc(docType) {
+  const render = require('./confirmationPdf').orderDocPdf(docType);
+  return async (req, res) => {
+    try {
+      const gate = await _loadProjectByToken(req.params.id, String(req.query.token || ''));
+      if (!gate.ok) {
+        return res.status(gate.reason === 'expired' ? 410 : 404)
+          .json({ message: gate.reason === 'expired' ? 'This link has expired.' : 'Not found.' });
+      }
+      const order = gate.order;
+      if (_currentApprovalStatus(order).status !== 'approved') {
+        return res.status(400).json({ message: 'Available once the order is approved.' });
+      }
+      if (docType === 'receipt') {
+        const paid = ((order.tracking && order.tracking.steps) || []).some((st) => st.id === 'order_paid' && st.completedAt);
+        if (!paid) return res.status(400).json({ message: 'Available once the order is paid.' });
+      }
+      return render(req, res);
+    } catch (e) {
+      res.status(500).json({ message: 'Document failed.' });
+    }
+  };
+}
+
 // Who is acting, from the personal `r` tag the share email put in their link
 // (base64url of the recipient email). Returns '' for hand-copied links or
 // garbage values — never throws, never trusts more than an email shape.
@@ -1042,6 +1071,7 @@ const initTracking = async (req, res) => {
 module.exports = {
   ensureApprovalToken,
   sendApprovalLink,
+  publicOrderDoc,
   notifyAdmin,  // reused by lookbooks (same best-effort heads-up email)
   publicGetProject, publicApprove, publicRequestChanges, publicSelectOptions,
   publishConfirmation,

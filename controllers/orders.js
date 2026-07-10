@@ -1492,12 +1492,35 @@ const assignMockupNumber = async (req, res) => {
   }
 };
 
+// One-time backfill (server.js, flag-guarded): re-derive the stored cogs
+// estimate for orders whose confirmation carries item unitCosts. Before
+// computeConfirmationCogs existed, cogs stayed quote-derived forever — so an
+// order pitched with many standalone alternatives kept summing the WHOLE pitch
+// into its COGS estimate (and Finances' estimatedCogs) long after the client
+// picked. Recomputes exactly what the save hooks now maintain; direct
+// updateOne per doc (no hooks — nothing else must move). Skips zero results so
+// a pre-unitCost confirmation keeps its quote-derived figure.
+const backfillConfirmationCogs = async () => {
+  const { computeConfirmationCogs } = require('../models/Order');
+  const docs = await Order.find({ 'confirmation.items.0': { $exists: true } })
+    .select('cogs confirmation.items').lean();
+  let fixed = 0;
+  for (const o of docs) {
+    const confCogs = computeConfirmationCogs(o.confirmation);
+    if (confCogs > 0 && confCogs !== (Number(o.cogs) || 0)) {
+      await Order.updateOne({ _id: o._id }, { $set: { cogs: confCogs } });
+      fixed += 1;
+    }
+  }
+  return fixed;
+};
+
 module.exports = {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
   dashboard, attention, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
   cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups, assignMockupNumber,
-  createOrGetProjectForCompany,
+  createOrGetProjectForCompany, backfillConfirmationCogs,
   // exported for tests / reuse
   isPlacedStatus, bumpCustomerOnPlacement, pickLiveProjectForCompany, isLiveProject,
   orderPlacedAt, etAgeDays,

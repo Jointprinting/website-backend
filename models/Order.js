@@ -177,6 +177,20 @@ function computeConfirmationTotals(conf) {
   return { itemsSubtotal, totalUnits, grandTotal: roundCents(running) };
 }
 
+// Estimated COGS from the CONFIRMATION's items — Σ (item qty × unitCost), the
+// internal cost/unit each item carried over from its accepted quote line. Once
+// a confirmation exists it IS the real order (only the client's picks get
+// seeded into it, and the owner may trim/add items after), so its cost side
+// supersedes the quote-stage estimate the same way its grand total supersedes
+// totalValue — otherwise an order pitched with many alternatives keeps summing
+// the whole pitch into COGS forever. Returns 0 when no item carries a unitCost
+// (confirmations built before the field existed): callers must keep the
+// quote-derived figure then, never let a legacy doc zero out a real estimate.
+function computeConfirmationCogs(conf) {
+  const items = (conf && Array.isArray(conf.items)) ? conf.items : [];
+  return roundCents(items.reduce((s, it) => s + itemTotalQty(it) * (Number(it && it.unitCost) || 0), 0));
+}
+
 // A confirmation only becomes the pricing source of truth once it has real
 // content — an empty sub-document (every order has one) must not zero totals.
 function hasConfirmationContent(conf) {
@@ -540,9 +554,11 @@ const OrderSchema = new mongoose.Schema({
 // Totals lifecycle — one source of truth per stage:
 //   - Quote stage (no confirmation content): totalValue/cogs derive from
 //     quoteLines, so every surface (card / dashboard) agrees with the quote.
-//   - Confirmation stage: the confirmation grand total is what the client
-//     actually approves, so it becomes totalValue. cogs stays quote-derived
-//     (the confirmation carries no cost data).
+//   - Confirmation stage: the confirmation is the real order — its grand total
+//     (what the client actually approves) becomes totalValue, and its items'
+//     qty × unitCost becomes cogs. Quote-derived cogs survives only when the
+//     confirmation predates the unitCost field (computeConfirmationCogs → 0),
+//     so a legacy doc can never zero out a real estimate.
 // Recomputes are gated on the fields actually changing, so unrelated saves
 // (approval-token rotation, tracking ticks) can't clobber a hand-corrected
 // total.
@@ -563,6 +579,8 @@ OrderSchema.pre('save', function (next) {
   }
   if ((confTouched || quoteTouched) && hasConfirmationContent(this.confirmation)) {
     this.totalValue = computeConfirmationTotals(this.confirmation).grandTotal;
+    const confCogs = computeConfirmationCogs(this.confirmation);
+    if (confCogs > 0) this.cogs = confCogs;
   }
   next();
 });
@@ -588,11 +606,17 @@ OrderSchema.pre('findOneAndUpdate', async function () {
       const doc = await this.model.findOne(this.getQuery()).select('confirmation').lean();
       conf = doc && doc.confirmation;
     }
-    set.totalValue = hasConfirmationContent(conf)
-      ? computeConfirmationTotals(conf).grandTotal
-      : t.totalValue;
+    if (hasConfirmationContent(conf)) {
+      set.totalValue = computeConfirmationTotals(conf).grandTotal;
+      const confCogs = computeConfirmationCogs(conf);
+      if (confCogs > 0) set.cogs = confCogs;
+    } else {
+      set.totalValue = t.totalValue;
+    }
   } else if (set.confirmation !== undefined && hasConfirmationContent(set.confirmation)) {
     set.totalValue = computeConfirmationTotals(set.confirmation).grandTotal;
+    const confCogs = computeConfirmationCogs(set.confirmation);
+    if (confCogs > 0) set.cogs = confCogs;
   }
   if (u.$set) u.$set = set; else Object.assign(u, set);
   this.setUpdate(u);
@@ -604,6 +628,7 @@ module.exports.PAYMENT_FEES = PAYMENT_FEES;
 module.exports.deriveCompanyKey = deriveCompanyKey;
 module.exports.computeQuoteTotals = computeQuoteTotals;
 module.exports.computeConfirmationTotals = computeConfirmationTotals;
+module.exports.computeConfirmationCogs = computeConfirmationCogs;
 module.exports.computeLocationTax = computeLocationTax;
 module.exports.STATE_TAX_RATES = STATE_TAX_RATES;
 module.exports.hasConfirmationContent = hasConfirmationContent;

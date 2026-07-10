@@ -21,8 +21,12 @@ const money = (n) =>
 const C = { green: '#1a3d2b', ink: '#111111', muted: '#666666', line: '#d9d9d2', band: '#f1f1ec' };
 
 // POST /api/orders/:id/confirmation/pdf
+// Also renders the client-facing INVOICE and RECEIPT variants (docType via
+// orderDocPdf below): same layout and airtight totals, different header —
+// an invoice shows the payment line, a receipt shows the PAID banner.
 const confirmationPdf = async (req, res) => {
   try {
+    const docType = req._jpDocType || 'confirmation';
     const order = await Order.findById(req.params.id).lean();
     if (!order) return res.status(404).json({ message: 'Not found' });
 
@@ -96,7 +100,7 @@ const confirmationPdf = async (req, res) => {
       .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
     const nameSlug = slug(order.companyName) || slug(order.clientName)
       || `project-${order.projectNumber || order._id}`;
-    const filename = `confirmation-${nameSlug}.pdf`;
+    const filename = `${docType}-${nameSlug}.pdf`;
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     doc.pipe(res);
@@ -118,8 +122,11 @@ const confirmationPdf = async (req, res) => {
       .text('JOINT PRINTING', left + logoSize + 12, left + 10);
     doc.y = Math.max(doc.y, left + logoSize);
     doc.moveDown(0.15);
+    const docLabel = docType === 'invoice' ? 'Invoice' : docType === 'receipt' ? 'Receipt' : 'Order Confirmation';
     doc.fillColor(C.ink).font('Helvetica-Bold').fontSize(15)
-      .text(conf.orderTitle || `${order.companyName || order.clientName || 'Project'} — Order Confirmation`);
+      .text(docType === 'confirmation'
+        ? (conf.orderTitle || `${order.companyName || order.clientName || 'Project'} — Order Confirmation`)
+        : `${order.companyName || order.clientName || 'Project'} — ${docLabel}`);
     const meta = [
       order.projectNumber ? `Project #${order.projectNumber}` : null,
       order.orderNumber   ? `Invoice #${order.orderNumber}`   : null,
@@ -133,6 +140,32 @@ const confirmationPdf = async (req, res) => {
     doc.moveDown(0.4);
     hr(doc.y);
     doc.moveDown(0.8);
+
+    // Invoice/receipt payment block — everything the client's bookkeeper needs.
+    if (docType === 'invoice' || docType === 'receipt') {
+      const methodLabel = order.paymentMethod === 'cc' ? 'Card' : order.paymentMethod === 'ach' ? 'ACH bank transfer' : '';
+      const paidStep = ((order.tracking && order.tracking.steps) || []).find((st) => st.id === 'order_paid' && st.completedAt);
+      if (docType === 'receipt') {
+        const paidDate = paidStep
+          ? new Date(paidStep.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+          : '';
+        const bandY = doc.y;
+        doc.rect(left, bandY, pageW, 26).fill('#e8f5ee');
+        doc.fillColor(C.green).font('Helvetica-Bold').fontSize(12)
+          .text(`PAID${paidDate ? ` — ${paidDate}` : ''}${methodLabel ? `  ·  ${methodLabel}` : ''}`, left + 10, bandY + 7);
+        doc.y = bandY + 34;
+      } else if (methodLabel) {
+        doc.fillColor(C.ink).font('Helvetica').fontSize(10)
+          .text(`Payment method: ${methodLabel}`);
+        doc.moveDown(0.6);
+      }
+      // Bill-to block: who this document belongs to.
+      const bill = [order.companyName, order.clientName].filter(Boolean).join(' — ');
+      if (bill) {
+        doc.fillColor(C.muted).font('Helvetica').fontSize(9).text(`Billed to: ${bill}`);
+        doc.moveDown(0.6);
+      }
+    }
 
     // ── Ship to ─────────────────────────────────────────────────────────────
     const sh = conf.shipping || {};
@@ -317,4 +350,8 @@ const confirmationPdf = async (req, res) => {
   }
 };
 
-module.exports = { confirmationPdf };
+// Same renderer, different document face — used by the public approval page's
+// invoice/receipt downloads (token-gated in controllers/approval.js).
+const orderDocPdf = (docType) => (req, res) => { req._jpDocType = docType; return confirmationPdf(req, res); };
+
+module.exports = { confirmationPdf, orderDocPdf };
