@@ -34,6 +34,17 @@ const TriageReplySchema = new mongoose.Schema({
 
   source: { type: String, enum: ['manual', 'import', 'gmail'], default: 'manual' },
 
+  // AI-suggested response (services/outreachCopy.js), stored so a generated
+  // draft survives reloads and never costs a second AI call. AI drafts, owner
+  // sends — this is only text the owner edits and mails himself.
+  aiDraft: {
+    type: new mongoose.Schema({
+      body: { type: String, default: '' },
+      at:   { type: Date, default: null },
+    }, { _id: false }),
+    default: null,
+  },
+
   // Set only for Gmail-synced rows so a re-sync can dedupe. Manual/import rows
   // leave it null; the partial unique index below ignores nulls.
   gmailMessageId: { type: String, default: null },

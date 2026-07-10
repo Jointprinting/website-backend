@@ -1040,12 +1040,14 @@ const initTracking = async (req, res) => {
 module.exports = {
   ensureApprovalToken,
   sendApprovalLink,
+  notifyAdmin,  // reused by lookbooks (same best-effort heads-up email)
   publicGetProject, publicApprove, publicRequestChanges, publicSelectOptions,
   publishConfirmation,
   updateTracking, initTracking,
   DEFAULT_TRACKING_STEPS,
   // Exported for unit tests (pure helpers).
   _pickedAtForCycle, _currentApprovalStatus,
+  _esc,  // notification-email escaping, reused by lookbooks
   expireLegacyApprovalTokens,
   backfillConfirmationPublished,
 };

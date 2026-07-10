@@ -37,6 +37,8 @@ const {
   getAnalytics,
   bounceWebhook,
   recoverSenderFailures,
+  draftReply,
+  draftSequence,
 } = require('../controllers/outreach');
 
 // ── Public (token-keyed, embedded in the emails themselves) ──
@@ -63,6 +65,11 @@ router.post('/auth-recheck', recheckAuthNow); // force-refresh SPF/DKIM/DMARC cl
 router.get('/find-leads/status',    getFinderStatus);
 router.post('/find-leads',          findLeads);      // manual one-state sweep (API-only)
 router.post('/find-leads/auto/run', runAutoNow);     // "Refill now" — force a sweep
+
+// AI drafting (AI drafts, owner sends — neither endpoint sends any mail).
+// Registered before /campaigns/:id so 'draft-sequence' is never read as an id.
+router.post('/campaigns/draft-sequence', draftSequence); // → { steps } for the editor, nothing persisted
+router.post('/replies/:id/draft',        draftReply);    // persists aiDraft on the TriageReply
 
 router.post('/campaigns',            createCampaign);
 router.get('/campaigns/:id',         getCampaign);

@@ -42,6 +42,9 @@ const { runFrontierSweep } = require('../services/leadFinderScheduler');
 const { REGIONS, isRegion } = require('../services/dispensaryFinder');
 const { isVertical, verticalPoolFilter, verticalOptions, DEFAULT_VERTICAL_ID } = require('../services/leadVerticals');
 const { isGmailConfigured } = require('../services/replyTriage');
+const TriageReply = require('../models/TriageReply');
+const outreachCopy = require('../services/outreachCopy');
+const aiBudget = require('../services/aiBudget');
 
 const NOT_ARCHIVED = { archived: { $ne: true } };
 
@@ -1630,6 +1633,97 @@ async function unsubscribe(req, res) {
   );
 }
 
+// ── AI drafting (AI drafts, owner sends — nothing here sends mail) ───────────
+
+// POST /api/outreach/replies/:id/draft — an AI-suggested response to a triaged
+// buyer reply, persisted on the TriageReply as `aiDraft` so it survives reloads
+// and never costs a second AI call. Returns the STORED draft unless the body
+// carries { regenerate: true }. Feature-flagged on ANTHROPIC_API_KEY and
+// guarded by the AI budget (services/aiBudget.js), same as the JPW copywriter.
+async function draftReply(req, res) {
+  try {
+    if (!outreachCopy.isConfigured()) {
+      return res.status(400).json({ message: "AI drafting isn't enabled — set ANTHROPIC_API_KEY on the API." });
+    }
+    const reply = await TriageReply.findById(req.params.id).lean();
+    if (!reply) return res.status(404).json({ message: 'reply not found' });
+
+    // A stored draft is free — only a fresh generate (or explicit regenerate)
+    // touches the model.
+    const regenerate = !!(req.body && req.body.regenerate);
+    if (reply.aiDraft && reply.aiDraft.body && !regenerate) {
+      return res.json({ draft: reply.aiDraft });
+    }
+
+    // AI-credit guardrail: refuse BEFORE spending a token when this month's
+    // budget or today's generate cap is hit (429/402 + aiBudget's message).
+    const guard = await aiBudget.preflight();
+    if (!guard.ok) return res.status(guard.status).json({ message: guard.message });
+
+    // CRM context for the prompt: the matched company (stage / last touch) and
+    // whether they're already a real customer by order reality.
+    const client = reply.companyKey
+      ? await Client.findOne({ companyKey: reply.companyKey })
+        .select('companyName clientName stage lastContact contacts').lean()
+      : null;
+    const orders = reply.companyKey
+      ? await Order.find({ companyKey: reply.companyKey, status: { $in: PLACED_STATUSES } })
+        .select('status').limit(20).lean()
+      : [];
+
+    const result = await outreachCopy.draftReply({ reply, client, orders });
+    // The service never throws — a model/SDK failure comes back as { error }.
+    if (result.error) return res.status(502).json({ message: result.error });
+
+    // Record estimated spend. Best-effort: a bookkeeping hiccup must never
+    // break the draft the owner just generated.
+    try {
+      if (result.meta && result.meta.usage) await aiBudget.recordUsage(result.meta.usage);
+    } catch (e) {
+      console.error('[outreach] AI usage record failed:', e && e.message);
+    }
+
+    const draft = { body: result.body, at: new Date() };
+    await TriageReply.updateOne({ _id: reply._id }, { $set: { aiDraft: draft } });
+    res.json({ draft });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
+// POST /api/outreach/campaigns/draft-sequence { vertical?, touches?, notes? } —
+// a cold-email sequence for the campaign editor. Returns { steps } shaped like
+// sanitizeSteps' input (subject/body/offsetDays, merge tokens already validated
+// against the sender's vocabulary); nothing is persisted — the editor takes the
+// steps for review and the owner still saves/launches by hand.
+async function draftSequence(req, res) {
+  try {
+    if (!outreachCopy.isConfigured()) {
+      return res.status(400).json({ message: "AI drafting isn't enabled — set ANTHROPIC_API_KEY on the API." });
+    }
+    const guard = await aiBudget.preflight();
+    if (!guard.ok) return res.status(guard.status).json({ message: guard.message });
+
+    const body = req.body || {};
+    const result = await outreachCopy.draftSequence({
+      vertical: body.vertical,
+      touches: body.touches,
+      notes: body.notes,
+    });
+    if (result.error) return res.status(502).json({ message: result.error });
+
+    try {
+      if (result.meta && result.meta.usage) await aiBudget.recordUsage(result.meta.usage);
+    } catch (e) {
+      console.error('[outreach] AI usage record failed:', e && e.message);
+    }
+
+    res.json({ steps: result.steps });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
 module.exports = {
   getOverview,
   createCampaign,
@@ -1658,6 +1752,8 @@ module.exports = {
   getAnalytics,
   bounceWebhook,
   recoverSenderFailures,
+  draftReply,
+  draftSequence,
   // exported for tests
   summarizeEnrollments,
   summarizeAbTest,
