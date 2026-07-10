@@ -21,7 +21,7 @@
 
 const axios = require('axios');
 const Dispensary = require('../models/Dispensary');
-const { REC_STATES } = require('./dispensaryStates');
+const { REC_STATES, deriveSegment } = require('./dispensaryStates');
 const { assignChains } = require('./dispensaryChains');
 
 // Same normalizations the CRM uses — keep byte-for-byte in sync with
@@ -167,6 +167,7 @@ function normalizeRow(row, map, state, sourceUrl) {
     source: 'roster',
     verified: true,
     active: true,
+    segment: deriveSegment(state, 'roster'),
     dedupeKey,
     rosterSource: sourceUrl,
     companyKey: deriveCompanyKey(name),

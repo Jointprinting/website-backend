@@ -1583,6 +1583,30 @@ async function patchOne(req, res) {
       }
     }
 
+    // Intent: capture ONE person from the field (Field Map's "who did I talk
+    // to"). Merge-don't-replace: an existing contact (matched by phone/email —
+    // mergeContacts — or by name when the capture carries neither) is blank-
+    // filled; anyone new is appended; the ★ primary is never disturbed. This
+    // is deliberately distinct from a `contacts` edit, which REPLACES the
+    // whole array from the company card's editor.
+    if (body.addContact && typeof body.addContact === 'object' && !('contacts' in body)) {
+      const inc = sanitizeContacts([{ ...body.addContact, isPrimary: false }]);
+      if (inc.length) {
+        const c = inc[0];
+        const cur = await Client.findOne({ companyKey: targetKey }).select('contacts').lean();
+        const existing = (cur && cur.contacts) || [];
+        const nameKey = String(c.name || '').trim().toLowerCase();
+        const sameName = !normPhone(c.phone) && !normEmail(c.email) && nameKey
+          ? existing.find((ec) => String(ec.name || '').trim().toLowerCase() === nameKey)
+          : null;
+        if (sameName) {
+          set.contacts = existing.map((ec) => (ec === sameName ? { ...ec, role: ec.role || c.role } : ec));
+        } else {
+          set.contacts = mergeContacts(existing, [c]);
+        }
+      }
+    }
+
     // Tags: normalize to a clean string[] — trimmed, non-empty, de-duped
     // (case-insensitively, keeping first spelling) — so the field stays tidy
     // regardless of what the client sends.

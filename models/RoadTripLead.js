@@ -72,16 +72,6 @@ const RoadTripLeadSchema = new mongoose.Schema({
   dayLabel:  { type: String, default: '' },
   sortOrder: { type: Number, default: 0 },
 
-  // Sleep slot for this lead on its day. At most one 'primary' and one
-  // 'backup' per (tripLabel, dayLabel) — soft-enforced in the controller by
-  // demoting prior holders before assigning. `type` (above) drives the map
-  // layer/heatmap; `sleepKind` only drives the TONIGHT chip styling
-  // (campground vs Park & Ride etc.) so the dispensary search and heatmap
-  // stay clean.
-  sleepRole:     { type: String, enum: ['', 'primary', 'backup'], default: '' },
-  sleepKind:     { type: String, enum: ['', 'campground', 'park_and_ride', 'hotel', 'friend', 'other'], default: '' },
-  isActiveSleep: { type: Boolean, default: false },
-
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
 });

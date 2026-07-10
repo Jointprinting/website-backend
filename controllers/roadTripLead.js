@@ -20,8 +20,6 @@ const ALLOWED_LEAD_FIELDS = [
   'score', 'contactEmail', 'followUpDate',
   'visitOutcome', 'itemInterests',
   'existingVendor', 'referredBy', 'customType',
-  // Sleep slot fields (TONIGHT chip):
-  'sleepRole', 'sleepKind', 'isActiveSleep',
 ];
 
 function pickAllowed(body) {
@@ -36,42 +34,11 @@ function pickAllowed(body) {
   if (out.itemInterests !== undefined && !Array.isArray(out.itemInterests)) {
     out.itemInterests = [out.itemInterests];
   }
-  // existingVendor + isActiveSleep are booleans; coerce 'true'/'false' from form bodies
+  // existingVendor is a boolean; coerce 'true'/'false' from form bodies
   if (out.existingVendor !== undefined) {
     out.existingVendor = out.existingVendor === true || out.existingVendor === 'true';
   }
-  if (out.isActiveSleep !== undefined) {
-    out.isActiveSleep = out.isActiveSleep === true || out.isActiveSleep === 'true';
-  }
   return out;
-}
-
-// Soft-enforce one primary + one backup + one active sleep per (tripLabel,
-// dayLabel). When the incoming write claims a slot, demote any prior holder
-// of the same slot on the same day. Single-writer system — a unique index
-// would be stricter but would conflict with frequent dayLabel reshuffling.
-async function demoteOtherSleepHolders(updates, excludeId = null) {
-  const tripLabel = updates.tripLabel ?? '';
-  const dayLabel = updates.dayLabel ?? '';
-  // If dayLabel isn't being set, we don't know which day to clean up — bail.
-  if (!dayLabel) return;
-
-  if (updates.sleepRole === 'primary' || updates.sleepRole === 'backup') {
-    const filter = {
-      tripLabel, dayLabel, sleepRole: updates.sleepRole,
-      ...(excludeId ? { _id: { $ne: excludeId } } : {}),
-    };
-    await RoadTripLead.updateMany(filter, {
-      $set: { sleepRole: '', sleepKind: '', isActiveSleep: false },
-    });
-  }
-  if (updates.isActiveSleep === true) {
-    const filter = {
-      tripLabel, dayLabel, isActiveSleep: true,
-      ...(excludeId ? { _id: { $ne: excludeId } } : {}),
-    };
-    await RoadTripLead.updateMany(filter, { $set: { isActiveSleep: false } });
-  }
 }
 
 async function listLeads(req, res) {
@@ -107,7 +74,6 @@ async function createLead(req, res) {
         });
       }
     }
-    await demoteOtherSleepHolders(data);
     const created = await RoadTripLead.create(data);
     res.status(201).json(created);
   } catch (err) {
@@ -119,16 +85,6 @@ async function createLead(req, res) {
 async function updateLead(req, res) {
   try {
     const updates = pickAllowed(req.body);
-    // If a sleep slot or active flag is being claimed and we don't have a
-    // dayLabel in the body, look up the lead's current dayLabel so we can
-    // demote correctly.
-    if ((updates.sleepRole === 'primary' || updates.sleepRole === 'backup'
-         || updates.isActiveSleep === true) && updates.dayLabel === undefined) {
-      const current = await RoadTripLead.findById(req.params.id).lean();
-      if (current) updates.dayLabel = current.dayLabel;
-      if (current) updates.tripLabel = current.tripLabel;
-    }
-    await demoteOtherSleepHolders(updates, req.params.id);
     const lead = await RoadTripLead.findByIdAndUpdate(
       req.params.id,
       { $set: updates },
