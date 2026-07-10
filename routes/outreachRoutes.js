@@ -21,6 +21,7 @@ const {
   enrollCompanies,
   getQueue,
   markReplied,
+  notARealReply,
   stopEnrollment,
   unenrollAll,
   resetCampaign,
@@ -82,6 +83,7 @@ router.delete('/campaigns/:id', deleteCampaign);    // remove a campaign entirel
 router.post('/campaigns/:id/auto-enroll', setAutoEnroll);
 
 router.post('/enrollments/:id/replied', markReplied);
+router.post('/enrollments/:id/not-a-reply', notARealReply); // false-warm correction
 router.post('/enrollments/:id/stop',    stopEnrollment);
 
 module.exports = router;

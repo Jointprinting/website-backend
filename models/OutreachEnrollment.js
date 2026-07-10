@@ -55,6 +55,11 @@ const OutreachEnrollmentSchema = new mongoose.Schema({
   repliedAt:    { type: Date, default: null },
   unsubscribedAt: { type: Date, default: null },
   stopReason:   { type: String, default: '' },          // 'no-email', 'became-customer', 'owner', ...
+  // Gmail "temporary problem… will retry" notices for this address. Each one
+  // defers the next touch 72h (don't stack mail on a struggling mailbox); the
+  // third suppresses the address and fails the enrollment (triage NDR ingest).
+  softBounceCount:  { type: Number, default: 0 },
+  lastSoftBounceAt: { type: Date, default: null },
 
   // Per-step SMTP retry bookkeeping — reset on every successful send.
   sendAttempts: { type: Number, default: 0 },

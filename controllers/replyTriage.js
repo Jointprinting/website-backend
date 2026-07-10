@@ -220,7 +220,40 @@ function ourSendingDomains() {
 // enrollment) — a random address quoted inside a forwarded NDR is never touched.
 async function ingestNdrBounce(reply) {
   const ndr = classifyBounceNdr(reply, ourSendingDomains());
-  if (!ndr.isBounce || !ndr.hard || !ndr.emails.length) return;
+  if (!ndr.isBounce || !ndr.emails.length) return;
+
+  // SOFT bounce ("temporary problem… will retry", mailbox full, deferred):
+  // never kill the lead, but stop stacking more sends onto a struggling
+  // mailbox — push the enrollment's next touch past the provider's retry
+  // window and count the notice. Three notices ≈ the mailbox is dead in
+  // practice → suppress the ADDRESS and fail the enrollment (no company-wide
+  // doNotEmail: a different contact at the company may still be reachable).
+  if (!ndr.hard) {
+    if (!ndr.soft) return;
+    const DEFER_MS = 72 * 60 * 60 * 1000;
+    for (const email of ndr.emails) {
+      const rx = new RegExp(`^${escapeRegex(email)}$`, 'i');
+      const enrs = await OutreachEnrollment.find({ toEmail: rx, status: 'active' });
+      for (const e of enrs) {
+        e.softBounceCount = (e.softBounceCount || 0) + 1;
+        e.lastSoftBounceAt = new Date();
+        if (e.softBounceCount >= 3) {
+          e.status = 'failed';
+          e.stopReason = 'bounced';
+          e.nextSendAt = null;
+          await e.save();
+          await suppress(email, { reason: 'soft-bounce-x3', source: 'gmail-ndr' });
+          console.log(`[triage] 3rd soft bounce → suppressed ${email}, enrollment failed`);
+        } else {
+          const deferTo = new Date(Date.now() + DEFER_MS);
+          if (!e.nextSendAt || e.nextSendAt < deferTo) e.nextSendAt = deferTo;
+          await e.save();
+          console.log(`[triage] soft bounce #${e.softBounceCount} for ${email} → next touch deferred 72h`);
+        }
+      }
+    }
+    return;
+  }
   for (const email of ndr.emails) {
     const rx = new RegExp(`^${escapeRegex(email)}$`, 'i');
     const enrs = await OutreachEnrollment.find({ toEmail: rx }).select('companyKey status').lean();
@@ -252,7 +285,7 @@ async function ingestNdrBounce(reply) {
 const HUMANISH_CATEGORIES = ['hot_lead', 'needs_response', 'asked_pricing', 'asked_mockups', 'follow_up_later', 'wrong_person'];
 async function retriageStoredReplies() {
   const rows = await TriageReply.find({ category: { $in: HUMANISH_CATEGORIES } })
-    .select('subject snippet fromEmail fromName').lean();
+    .select('subject snippet fromEmail fromName enrollmentId companyKey').lean();
   let demoted = 0;
   for (const r of rows) {
     const cls = classifyReply({ subject: r.subject, snippet: r.snippet, fromEmail: r.fromEmail, fromName: r.fromName });
@@ -261,6 +294,13 @@ async function retriageStoredReplies() {
         { _id: r._id },
         { $set: { category: cls.category, suggestedAction: suggestedActionFor(cls.category), status: 'ignored', handledAt: new Date() } },
       );
+      // A hard auto-ack also UNDOES the warm it caused (resume drip, un-warm
+      // the company) — a true OOO keeps its warm/snooze semantics.
+      if (cls.category === IGNORE_CATEGORY) {
+        await require('../services/warmHandoff')
+          .unwarmFromReply({ enrollmentId: r.enrollmentId, companyKey: r.companyKey })
+          .catch((e) => console.warn('[triage] healer un-warm failed:', e.message));
+      }
       demoted += 1;
     }
   }
@@ -360,6 +400,23 @@ async function updateStatus(req, res) {
 
     reply.status = status;
     reply.handledAt = status === 'new' ? null : new Date();
+
+    // Owner correction: "that wasn't a real reply" (an auto-responder slipped
+    // past the classifier and warmed the company / stopped the drip). Beyond
+    // dismissing the row, reclassify it AND undo the warm side-effects — the
+    // enrollment resumes, the false warm comes off the Today queue, and the
+    // hub's "warm lead waiting" banner clears.
+    if (status === 'ignored' && req.body && req.body.notARealReply === true) {
+      reply.category = 'bounce_auto_ignore';
+      reply.suggestedAction = suggestedActionFor('bounce_auto_ignore');
+      try {
+        await require('../services/warmHandoff').unwarmFromReply({
+          enrollmentId: reply.enrollmentId, companyKey: reply.companyKey,
+        });
+      } catch (e) {
+        console.warn('[triage] un-warm failed:', e.message);
+      }
+    }
     await reply.save();
 
     // Side effects are best-effort: a triage state change should still succeed

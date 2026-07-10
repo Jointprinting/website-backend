@@ -390,3 +390,54 @@ test('classifyBounceNdr: a normal human reply is not a bounce', () => {
   }, []);
   assert.deepEqual(r, { isBounce: false, hard: false, emails: [] });
 });
+
+// ── v2 auto-ack net (the "Origins Cannabis" class of miss) ───────────────────
+// Dispensary/support autoresponders that carry no RFC auto headers and dodge
+// the v1 wording. Machine-specific phrases only — a warm human reply that
+// happens to open politely must still triage as human.
+test('classifyReply v2: ticket/receipt-style auto-acks are ignored', () => {
+  for (const s of [
+    { subject: 'We have received your message', snippet: 'Our team will get back to you shortly.' },
+    { subject: 'Thank you for contacting Origins Cannabis', snippet: 'A member of our team will be in touch.' },
+    { subject: 'Re: quick question', snippet: 'Your request has been received and a support ticket has been created. Ticket #48221.' },
+    { subject: 'Auto-Response', snippet: 'anything' },
+  ]) {
+    const cls = classifyReply({ ...s, fromEmail: 'info@dispensary.com' });
+    assert.equal(cls.category, 'bounce_auto_ignore', s.subject);
+    assert.equal(cls.ignore, true);
+  }
+});
+
+test('classifyReply v2: real human replies still triage as human', () => {
+  for (const s of [
+    { subject: 'Re: staff tees', snippet: 'Thanks for reaching out! Yes — can you send pricing for 50 hoodies?' },
+    { subject: 'Re: merch', snippet: 'We received your email — love the idea. What are your minimums?' },
+    { subject: 'Re: mockups', snippet: 'I will get back to you Monday after I talk to my partner.' },
+  ]) {
+    const cls = classifyReply({ ...s, fromEmail: 'buyer@shop.com' });
+    assert.notEqual(cls.category, 'bounce_auto_ignore', s.subject);
+  }
+});
+
+// ── Soft-bounce classification (Gmail "will retry" notices) ──────────────────
+test('classifyBounceNdr: soft notices flag soft (never hard)', () => {
+  const r = classifyBounceNdr({
+    subject: 'Delivery incomplete',
+    snippet: 'There was a temporary problem delivering your message to contact@silverleaf406.com. Gmail will retry for 46 more hours.',
+    fromEmail: 'mailer-daemon@googlemail.com',
+  }, ['jointprintingshop.com']);
+  assert.equal(r.isBounce, true);
+  assert.equal(r.hard, false);
+  assert.equal(r.soft, true);
+  assert.deepEqual(r.emails, ['contact@silverleaf406.com']);
+});
+
+test('classifyBounceNdr: hard failures stay hard (not soft)', () => {
+  const r = classifyBounceNdr({
+    subject: 'Delivery Status Notification (Failure)',
+    snippet: 'The address you tried was not found: ghost@deadshop.com — 550 5.1.1 user unknown.',
+    fromEmail: 'mailer-daemon@googlemail.com',
+  }, ['jointprintingshop.com']);
+  assert.equal(r.hard, true);
+  assert.equal(r.soft, false);
+});

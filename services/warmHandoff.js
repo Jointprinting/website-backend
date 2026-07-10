@@ -90,4 +90,54 @@ async function warmFromEnrollment(enr, opts = {}) {
   return { ok: true, companyKey: enr.companyKey, ...res };
 }
 
-module.exports = { warmCompany, warmFromEnrollment };
+// The CORRECTION for a false warm: an auto-responder slipped past the
+// classifier, warmed the company, and stopped the drip — the owner (or the
+// re-triage healer) says "that wasn't a real reply". Undo exactly what the
+// handoff did, conservatively:
+//   • enrollment 'replied' → back to 'active' with the next touch ~an hour out
+//     (the sequence resumes where it stopped);
+//   • the 'warm' tag comes off; the follow-up we set is cleared (only when it
+//     still sits at/behind the warm date — an owner-moved date is respected);
+//   • stage reverts contacted → lead ONLY when our warm log line exists and
+//     the log shows no real human touch (visit/call) — never regress real work;
+//   • our "Replied to outreach" log line is rewritten as a correction, not
+//     deleted (history stays honest).
+// Idempotent: running it twice is a no-op.
+async function unwarmFromReply({ enrollmentId = null, companyKey = '' } = {}, opts = {}) {
+  const now = opts.now instanceof Date ? opts.now : new Date();
+  const OutreachEnrollment = require('../models/OutreachEnrollment');
+  let enr = null;
+  if (enrollmentId) {
+    enr = await OutreachEnrollment.findById(enrollmentId);
+    if (enr && enr.status === 'replied') {
+      enr.status = 'active';
+      enr.repliedAt = null;
+      enr.nextSendAt = new Date(now.getTime() + 60 * 60 * 1000);
+      await enr.save();
+    }
+  }
+  const key = companyKey || (enr && enr.companyKey) || '';
+  if (!key) return { ok: true, unwarmed: false };
+  const client = await Client.findOne({ companyKey: key });
+  if (!client) return { ok: true, unwarmed: false };
+
+  const dedupKey = enrollmentId ? `outreach-reply:${enrollmentId}` : `outreach-reply:${key}`;
+  const line = (client.log || []).find((l) => l && l.dedupKey === dedupKey);
+  if (!line) return { ok: true, unwarmed: false }; // we never warmed this one
+
+  client.tags = (client.tags || []).filter((t) => String(t).toLowerCase() !== 'warm');
+  if (client.nextFollowUp && line.at && client.nextFollowUp <= new Date(new Date(line.at).getTime() + 26 * 60 * 60 * 1000)) {
+    client.nextFollowUp = null;
+  }
+  const humanTouch = (client.log || []).some((l) => l && l !== line && ['visit', 'call', 'meeting'].includes(l.kind));
+  if (client.stage === 'contacted' && !humanTouch) client.stage = 'lead';
+  if (!/corrected/i.test(line.text || '')) {
+    line.text = 'Auto-responder misread as a real reply — corrected (drip resumed)';
+    line.kind = 'note';
+  }
+  client.markModified('log');
+  await client.save();
+  return { ok: true, unwarmed: true };
+}
+
+module.exports = { warmCompany, warmFromEnrollment, unwarmFromReply };
