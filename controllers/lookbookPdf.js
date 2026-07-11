@@ -16,6 +16,8 @@ const PDFDocument = require('pdfkit');
 const path = require('path');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
 const { resolveImageBuffer } = require('../utils/pdfImage');
+let sharp = null;
+try { sharp = require('sharp'); } catch (_) { /* knockout degrades to the raw image */ }
 
 // The green "JP" logo box, reused from the confirmation PDF.
 const JP_LOGO_PATH = path.join(__dirname, '..', 'assets', 'jp-logo.png');
@@ -229,7 +231,102 @@ function drawCell(doc, cell, mk, opts) {
   doc.restore();
 }
 
-// ── controller ──────────────────────────────────────────────────────────────
+// Knock the white studio backdrop out of a mockup composite so the garment sits
+// on the page's own card instead of a hard white rectangle — the same "clean
+// background" look the web viewer offers, baked into the download. Pure pixel
+// threshold via sharp (present on Render); ANY failure returns the original
+// buffer, so the PDF can never break on a knockout attempt.
+const KNOCKOUT_THRESHOLD = 240;   // min channel value counted as "white"
+async function knockoutWhite(buf) {
+  if (!buf || !sharp) return buf;
+  try {
+    const { data, info } = await sharp(buf).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const ch = info.channels || 4;
+    if (ch < 4) return buf;
+    const out = Buffer.from(data);
+    const t = KNOCKOUT_THRESHOLD;
+    for (let i = 0; i < out.length; i += ch) {
+      if (out[i] >= t && out[i + 1] >= t && out[i + 2] >= t) out[i + 3] = 0;
+    }
+    return await sharp(out, { raw: { width: info.width, height: info.height, channels: ch } }).png().toBuffer();
+  } catch (_) {
+    return buf;   // sharp unhappy → ship the mockup as-is
+  }
+}
+
+// ── builder (shared by the studio POST and the public GET) ───────────────────
+
+// Resolve + (optionally) knock out every image up front, in parallel.
+async function resolveDeckImages(ordered, { showBack, knockout }) {
+  await Promise.all(ordered.map(async (mk) => {
+    let front = await resolveImageBuffer(mk.thumbnail);
+    let back = showBack ? await resolveImageBuffer(mk.data) : null;
+    if (knockout) { front = await knockoutWhite(front); if (back) back = await knockoutWhite(back); }
+    mk._frontBuf = front;
+    mk._backBuf = back;
+    mk.mockupNum = mk.pageState && mk.pageState.mockupNum ? String(mk.pageState.mockupNum) : '';
+  }));
+}
+
+const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+
+// Draw + stream the deck to `res`. `ordered` is already image-resolved. This is
+// the whole PDF; both entry points (studio POST, public GET) funnel through it.
+function streamLookbookPdf(res, { ordered, info, layout, showBack, showLabels, filename }) {
+  // margin: 0 — the lookbook is laid out with fully absolute geometry (PAGE /
+  // MARGIN constants), so pdfkit's own margins must be off, or text drawn near
+  // the edges (the footer) trips its flow-based auto-pagination and inserts
+  // blank pages between ours.
+  const doc = new PDFDocument({ size: 'LETTER', margin: 0, autoFirstPage: false });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  doc.pipe(res);
+
+  doc.addPage();
+  drawCover(doc, info);
+
+  const { cols, rows } = LAYOUTS[layout];
+  const per = cols * rows;
+  const totalContentPages = pageCount(layout, ordered.length);
+  const contentBox = {
+    x: MARGIN, y: MARGIN + 20,
+    w: PAGE.w - MARGIN * 2, h: PAGE.h - (MARGIN + 20) - (MARGIN + 6),
+  };
+  for (let p = 0; p < totalContentPages; p++) {
+    doc.addPage();
+    drawChrome(doc, info, p + 1, totalContentPages);
+    const cells = gridCells(contentBox, cols, rows, GUTTER);
+    for (let i = 0; i < per; i++) {
+      const idx = p * per + i;
+      if (idx >= ordered.length) break;
+      drawCell(doc, cells[i], ordered[idx], { showLabels, showBack });
+    }
+  }
+  doc.end();
+}
+
+// The full build from a set of ordered library docs + presentation options.
+// `docs` carry { name, client, thumbnail, data, pageState } (lean StudioLibraryItem).
+async function buildLookbookPdf(res, { docs, title, subtitle, clientName, projectNumber, layout, showBack, showLabels, knockout }) {
+  const ordered = (docs || []).filter(Boolean);
+  if (!ordered.length) { if (!res.headersSent) res.status(404).json({ message: 'No matching mockups found.' }); return; }
+
+  const back = showBack !== false;      // default on (only drawn when a back exists)
+  const labels = showLabels !== false;  // default on
+  const lay = resolveLayout(layout, ordered.length);
+  await resolveDeckImages(ordered, { showBack: back, knockout: !!knockout });
+
+  const client = String(clientName || ordered[0].client || '').trim();
+  const ttl = String(title || '').trim() || (client ? `${client} Lookbook` : 'Lookbook');
+  const proj = projectNumber || (ordered[0].pageState && ordered[0].pageState.projectNumber) || '';
+  const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const info = { title: ttl, subtitle: String(subtitle || '').trim(), client, projectNumber: proj, date, count: ordered.length };
+  const filename = `lookbook-${slug(client) || slug(ttl) || 'joint-printing'}.pdf`;
+
+  streamLookbookPdf(res, { ordered, info, layout: lay, showBack: back, showLabels: labels, filename });
+}
+
+// ── controller (studio POST /api/studio/lookbook/pdf) ────────────────────────
 
 async function lookbookPdf(req, res) {
   try {
@@ -244,58 +341,12 @@ async function lookbookPdf(req, res) {
     const ordered = ids.map((id) => byId.get(id)).filter(Boolean);
     if (!ordered.length) return res.status(404).json({ message: 'No matching mockups found.' });
 
-    const showBack = body.showBack !== false;     // default on (only drawn when a back exists)
-    const showLabels = body.showLabels !== false;  // default on
-    const layout = resolveLayout(body.layout, ordered.length);
-
-    // Resolve every image up front, in parallel — front composite (thumbnail)
-    // and, when asked, the back composite (data).
-    await Promise.all(ordered.map(async (mk) => {
-      mk._frontBuf = await resolveImageBuffer(mk.thumbnail);
-      mk._backBuf = showBack ? await resolveImageBuffer(mk.data) : null;
-      mk.mockupNum = mk.pageState && mk.pageState.mockupNum ? String(mk.pageState.mockupNum) : '';
-    }));
-
-    const client = String(body.clientName || ordered[0].client || '').trim();
-    const title = String(body.title || '').trim() || (client ? `${client} Lookbook` : 'Lookbook');
-    const projectNumber = body.projectNumber
-      || (ordered[0].pageState && ordered[0].pageState.projectNumber) || '';
-    const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-    const info = { title, subtitle: String(body.subtitle || '').trim(), client, projectNumber, date, count: ordered.length };
-
-    // margin: 0 — the lookbook is laid out with fully absolute geometry (PAGE /
-    // MARGIN constants), so pdfkit's own margins must be off, or text drawn near
-    // the edges (the footer) trips its flow-based auto-pagination and inserts
-    // blank pages between ours.
-    const doc = new PDFDocument({ size: 'LETTER', margin: 0, autoFirstPage: false });
-    const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-    const filename = `lookbook-${slug(client) || slug(title) || 'joint-printing'}.pdf`;
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    doc.pipe(res);
-
-    doc.addPage();
-    drawCover(doc, info);
-
-    const { cols, rows } = LAYOUTS[layout];
-    const per = cols * rows;
-    const totalContentPages = pageCount(layout, ordered.length);
-    const contentBox = {
-      x: MARGIN, y: MARGIN + 20,
-      w: PAGE.w - MARGIN * 2, h: PAGE.h - (MARGIN + 20) - (MARGIN + 6),
-    };
-    for (let p = 0; p < totalContentPages; p++) {
-      doc.addPage();
-      drawChrome(doc, info, p + 1, totalContentPages);
-      const cells = gridCells(contentBox, cols, rows, GUTTER);
-      for (let i = 0; i < per; i++) {
-        const idx = p * per + i;
-        if (idx >= ordered.length) break;
-        drawCell(doc, cells[i], ordered[idx], { showLabels, showBack });
-      }
-    }
-
-    doc.end();
+    await buildLookbookPdf(res, {
+      docs: ordered,
+      title: body.title, subtitle: body.subtitle, clientName: body.clientName,
+      projectNumber: body.projectNumber, layout: body.layout,
+      showBack: body.showBack, showLabels: body.showLabels, knockout: body.knockout,
+    });
   } catch (e) {
     if (!res.headersSent) res.status(500).json({ message: e.message });
     else { try { res.end(); } catch (_) { /* already streaming */ } }
@@ -304,6 +355,8 @@ async function lookbookPdf(req, res) {
 
 module.exports = {
   lookbookPdf,
+  buildLookbookPdf,      // used by the public token-gated download (controllers/lookbooks.js)
+  knockoutWhite,
   // exported for unit tests
   pickLayout, resolveLayout, perPage, pageCount, gridCells, fitContain, LAYOUTS,
 };

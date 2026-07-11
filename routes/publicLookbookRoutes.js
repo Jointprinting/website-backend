@@ -6,9 +6,10 @@
 const express = require('express');
 const router = express.Router();
 
-const { publicGetLookbook, publicPostFeedback, publicRequestPricing } = require('../controllers/lookbooks');
+const { publicGetLookbook, publicPostFeedback, publicRequestPricing, publicLookbookPdf } = require('../controllers/lookbooks');
 
 router.get ('/:id',                 publicGetLookbook);
+router.get ('/:id/pdf',             publicLookbookPdf);   // client's own polished download
 router.post('/:id/feedback',        publicPostFeedback);
 router.post('/:id/request-pricing', publicRequestPricing);
 
