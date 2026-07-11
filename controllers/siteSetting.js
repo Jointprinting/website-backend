@@ -40,6 +40,14 @@ const VALIDATORS = {
     if (dataUrl.length > 800 * 1024) throw new Error('Brand logo too large — keep under ~600 KB.');
     return { dataUrl };
   },
+
+  // The Content planner's weekly posting goal — posts per week per platform
+  // (0 = paused). The owner sets the pace; 7/week is the sane ceiling.
+  socialPace: (v) => {
+    if (!v || typeof v !== 'object') throw new Error('Expected object value.');
+    const clamp = (n) => Math.max(0, Math.min(7, Math.round(Number(n) || 0)));
+    return { linkedin: clamp(v.linkedin), instagram: clamp(v.instagram) };
+  },
 };
 
 const DEFAULTS = {
@@ -51,6 +59,8 @@ const DEFAULTS = {
     accentColor: '#1a3d2b',
   },
   brandLogo: { dataUrl: '' },
+  // Start where Nate asked: one LinkedIn + one Instagram post a week.
+  socialPace: { linkedin: 1, instagram: 1 },
 };
 
 async function getSetting(req, res) {
