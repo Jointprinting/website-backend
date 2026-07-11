@@ -511,6 +511,12 @@ const OrderSchema = new mongoose.Schema({
     description:  { type: String, default: '' },
     color:        { type: String, default: '' },
     supplier:     { type: String, default: '' },
+    // Public product page for THIS blank (e.g. an S&S Activewear /p/ URL) so a
+    // client comparing brands can click through to specs/colors. Deliberately a
+    // CLIENT-VISIBLE exception to the "supplier stays internal" rule — the
+    // owner sets it per line, and supplier PRICING never rides along (S&S gates
+    // wholesale prices behind login). Exposed publicly as `productUrl`.
+    supplierUrl:  { type: String, default: '' },
     blankCost:    { type: Number, default: 0 },   // per unit
     printType:    { type: String, default: '' },  // e.g. "Screen Print", "DTG", "Embroidery"
     printDetails: { type: String, default: '' },  // e.g. "1 color front + 2 color back"
