@@ -326,6 +326,10 @@ const publicGetProject = async (req, res) => {
         unitPrice:    n(l.unitPrice) || +(unitCogs * (n(l.markup) || 1.4)).toFixed(2),
         // Optional lead time (weeks) shown to the client only when set (>0).
         turnaroundWeeks: n(l.turnaroundWeeks) || 0,
+        // Public product page for this blank (owner-set, e.g. S&S Activewear).
+        // The one supplier fact that IS client-facing — see the schema note;
+        // costs/markup/supplier name stay stripped.
+        productUrl:   l.supplierUrl || '',
         // Design preview for the option card: the line's uploaded image
         // (vendor-rendered items) or its studio mockup's thumbnail.
         image: l.image
