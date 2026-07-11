@@ -85,6 +85,21 @@ const AUTO_ACK_SUBJECT = /\b(auto[\s-]?response|automatic response|autoresponse|
 // a generic auto-ack is still caught by its subject (AUTO_ACK_SUBJECT) or headers.
 const AUTO_ACK_BODY = /\b(this is an automated (?:response|message|email|reply)|(?:please )?do not (?:reply|respond) to this (?:e-?mail|message|account|mailbox)|this (?:mailbox|inbox|e-?mail account|account) is (?:not |un)monitored|is not monitored|unlikely (?:they|it) will (?:be seen|not be seen)|can ?not be answered via this (?:e-?mail|account)|no longer monitored|(?:ticket|case|reference) (?:number|#)\s*[:#]?\s*\w|support (?:ticket|request) (?:has been )?(?:created|received|opened)|your (?:message|email|inquiry|request) (?:has been|was) received and|a (?:member of our|our) team will (?:be in touch|respond|get back)|this is a no-?reply)\b/i;
 
+// HIGH-PRECISION auto-ack combo (the Origins Cannabis case): a dispensary's
+// autoresponder from a REAL, monitored address whose wording alone doesn't trip
+// the patterns above — it opens by ACKNOWLEDGING our message and then DEFERS a
+// real answer to later ("thanks for reaching out — we'll get back to you within
+// 24-48 hours"). Neither half is auto on its own (a human sales rep writes
+// "thanks for reaching out, yes we'd love to quote you"), so we require BOTH an
+// acknowledgement AND a no-substance defer-to-later promise. That combo is
+// something a genuine 1:1 reply essentially never contains, so it's safe to
+// treat as a machine ack and NOT warm the CRM.
+const ACK_OPENER = /\b(thank(?:s| you)(?: (?:so|very) much)? for (?:reaching out|contacting|getting in touch|your (?:e-?mail|message|inquiry|interest|note|patience|order|submission))|we(?:'ve| have| just)?(?: recently)? received your (?:message|e-?mail|inquiry|request|order|note|submission))\b/i;
+const DEFER_RESPONSE = /\b((?:we|someone|a (?:team )?member|our team|a representative|somebody)(?:'ll| will| are going to| shall)? (?:be in touch|get back to you|respond|reply to you|contact you|reach out to you)|within \d+\s*(?:-\s*\d+\s*)?(?:business )?(?:hours?|days?|hrs?|business days?)|as soon as (?:possible|we can|we are able)|response time|(?:currently )?(?:experiencing |receiving )?(?:a )?high (?:volume|number) of|during (?:our )?(?:regular |normal |standard )?business hours)\b/i;
+function isAutoAckCombo(hay) {
+  return ACK_OPENER.test(hay) && DEFER_RESPONSE.test(hay);
+}
+
 // RFC-standard headers that DEFINITIVELY mark automated / bulk / list mail — the
 // gold-standard signal, independent of fragile subject/body wording. A well-behaved
 // auto-responder sets `Auto-Submitted: auto-replied` (RFC 3834); bulk/list senders
@@ -152,6 +167,13 @@ function classifyReply({ subject = '', snippet = '', fromEmail = '', fromName = 
   if (RE_MOCKUP.test(hay))         return { category: 'asked_mockups',   ignore: false, self: false };
   if (RE_HOT.test(hay))            return { category: 'hot_lead',        ignore: false, self: false };
   if (RE_LATER.test(hay))          return { category: 'follow_up_later', ignore: false, self: false };
+  // The fuzzy auto-ack combo runs LAST, only when NO real buying signal fired —
+  // a "thanks, someone will be in touch, but send me a mockup?" already resolved
+  // to asked_mockups above. What's left here (acknowledge + defer, no substance)
+  // is the novel autoresponder (the Origins case) — ignore it, don't warm.
+  if (isAutoAckCombo(hay)) {
+    return { category: 'bounce_auto_ignore', ignore: true, self: false, auto: true };
+  }
   return { category: 'needs_response', ignore: false, self: false };
 }
 

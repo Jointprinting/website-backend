@@ -209,7 +209,7 @@ db.once('open', () => {
   // hub banner (e.g. an "Auto response: …"). Idempotent + safe, but flag-guarded so
   // it runs once per classifier version; bump the -vN when the classifier changes.
   setTimeout(async () => {
-    const KEY = 'retriageAutoAcks-v2'; // v2: broader auto-ack net + un-warms the false warms it demotes
+    const KEY = 'retriageAutoAcks-v3'; // v3: high-precision auto-ack combo (ack + defer-to-later) — heals the Origins Cannabis false warm
     try {
       const migrations = mongoose.connection.db.collection('migrations');
       if (await migrations.findOne({ _id: KEY })) return;
