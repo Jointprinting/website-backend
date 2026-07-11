@@ -17,6 +17,7 @@
 
 const Lookbook = require('../models/Lookbook');
 const SocialPost = require('../models/SocialPost');
+const Newsletter = require('../models/Newsletter');
 
 const ARCHIVE_TTL_DAYS = 60;   // mirrored in frontend _shared.js ARCHIVE_TTL_DAYS
 
@@ -32,7 +33,11 @@ async function backfillArchiveStamps(now = new Date()) {
     { archived: true, archivedAt: null },
     { $set: { archivedAt: now } },
   );
-  return { lookbooks: lb.modifiedCount || 0, posts: sp.modifiedCount || 0 };
+  const nl = await Newsletter.updateMany(
+    { archived: true, archivedAt: null },
+    { $set: { archivedAt: now } },
+  );
+  return { lookbooks: lb.modifiedCount || 0, posts: sp.modifiedCount || 0, newsletters: nl.modifiedCount || 0 };
 }
 
 async function purgeExpiredArchives(now = new Date()) {
@@ -41,7 +46,8 @@ async function purgeExpiredArchives(now = new Date()) {
   // and Mongo's $lt is type-bracketed so null can't sneak past anyway).
   const lb = await Lookbook.deleteMany({ status: 'archived', archivedAt: { $lt: cutoff } });
   const sp = await SocialPost.deleteMany({ archived: true, archivedAt: { $lt: cutoff } });
-  return { lookbooks: lb.deletedCount || 0, posts: sp.deletedCount || 0 };
+  const nl = await Newsletter.deleteMany({ archived: true, archivedAt: { $lt: cutoff } });
+  return { lookbooks: lb.deletedCount || 0, posts: sp.deletedCount || 0, newsletters: nl.deletedCount || 0 };
 }
 
 // Daily schedule, service-owned like its siblings (startInstagramSync,
@@ -50,9 +56,9 @@ function startArchivePurge() {
   const run = async () => {
     try {
       const b = await backfillArchiveStamps();
-      if (b.lookbooks || b.posts) console.log(`[archive] stamped ${b.lookbooks} lookbook(s), ${b.posts} post(s) archived pre-TTL — their 60-day clock starts now.`);
+      if (b.lookbooks || b.posts || b.newsletters) console.log(`[archive] stamped ${b.lookbooks} lookbook(s), ${b.posts} post(s), ${b.newsletters} newsletter(s) archived pre-TTL — their 60-day clock starts now.`);
       const r = await purgeExpiredArchives();
-      if (r.lookbooks || r.posts) console.log(`[archive] purged ${r.lookbooks} lookbook(s), ${r.posts} content post(s) archived >${ARCHIVE_TTL_DAYS}d.`);
+      if (r.lookbooks || r.posts || r.newsletters) console.log(`[archive] purged ${r.lookbooks} lookbook(s), ${r.posts} content post(s), ${r.newsletters} newsletter(s) archived >${ARCHIVE_TTL_DAYS}d.`);
     } catch (e) {
       console.warn('[archive] purge failed (will retry tomorrow):', e.message);
     }

@@ -63,7 +63,7 @@ const OWN_JSON_PREFIXES = [
   '/api/studio', '/api/site-settings', '/api/orders', '/api/client-logos',
   '/api/clients', '/api/crm', '/api/outreach', '/api/triage', '/api/public',
   '/api/jpw', '/api/gdrive', '/api/finances', '/api/receipts', '/api/lookbooks',
-  '/api/social',
+  '/api/social', '/api/newsletter',
 ];
 const globalJson = express.json({ limit: '1mb' });
 app.use((req, res, next) => {
@@ -366,6 +366,7 @@ const signalsRoutes        = require('./routes/signalsRoutes');
 const lookbookRoutes       = require('./routes/lookbookRoutes');
 const publicLookbookRoutes = require('./routes/publicLookbookRoutes');
 const socialPostRoutes     = require('./routes/socialPostRoutes');
+const newsletterRoutes     = require('./routes/newsletterRoutes');
 
 app.use('/api/products/ss', ssProxyLimiter);
 app.use('/api/products', productRoutes);
@@ -394,6 +395,9 @@ app.use('/api/lookbooks', express.json({ limit: '2mb' }), lookbookRoutes);
 // Content planner: post bodies are text, but an IG card can carry a small
 // downscaled reference image (data URL), so allow a touch more than 1mb.
 app.use('/api/social', express.json({ limit: '3mb' }), socialPostRoutes);
+app.use('/api/newsletter', express.json({ limit: '25mb' }), newsletterRoutes);
+// Public open-tracking pixel — no auth, addressed by the unguessable per-recipient token.
+app.get('/api/newsletter/t/:token/open.png', require('./controllers/newsletter').openPixel);
 app.use('/api/admin/backup', backupRoutes);
 app.use('/api/admin', express.json({ limit: '2mb' }), adminRoutes); // owner-only agent management
 app.use('/api/agent', express.json({ limit: '2mb' }), agentRoutes); // sales-agent portal (self-scoped)
