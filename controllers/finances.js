@@ -519,6 +519,16 @@ const summary = async (req, res) => {
     const net = round2(income - expense);
     const pctOfSpend = {};
     Object.entries(expenseByCategory).forEach(([k, v]) => { pctOfSpend[k] = pct(v, expense); });
+    // Two margin lenses for the header. `margin` (below) is NET — after every
+    // business expense including monthly overhead (software, subscriptions…),
+    // owner draws excluded. GROSS counts only the order-linked COGS categories,
+    // so it answers "what do I make on the merch itself" — the same cost set
+    // the per-order/per-client tables use. Both ship so the header can label
+    // them instead of showing one ambiguous "Margin".
+    const cogsCats = new Set(Transaction.COGS_CATEGORIES);
+    const cogsExpense = round2(Object.entries(expenseByCategory)
+      .reduce((s, [k, v]) => s + (cogsCats.has(k) ? v : 0), 0));
+    const grossProfit = round2(income - cogsExpense);
     // Owner cash lens (additive — does NOT change the profit definition). Profit
     // stays draw-EXCLUDED (a draw is a distribution of earned profit, not a cost,
     // and an LLC/sole-prop is taxed on profit, not draws). On top of that we show:
@@ -534,7 +544,11 @@ const summary = async (req, res) => {
     res.json({
       year: req.query.year ? Number(req.query.year) : 'all',
       income: round2(income), expense: round2(expense), net,
-      margin: pct(net, income),
+      margin: pct(net, income),                       // NET margin (after overhead)
+      cogs: cogsExpense,                              // order-linked spend (COGS categories)
+      overhead: round2(expense - cogsExpense),        // everything else (monthly costs etc.)
+      grossProfit,
+      grossMargin: pct(grossProfit, income),          // margin on the merch itself
       ownerContribution: round2(ownerContribution),
       ownerDraw: round2(ownerDraw),
       takeHome, leftInBusiness,
