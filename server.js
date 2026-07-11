@@ -151,6 +151,11 @@ db.once('open', () => {
   // only reads its progress.
   require('./services/leadFinderScheduler').startLeadFinderScheduler();
 
+  // Instagram numbers for the Content tab: every 12h, pull followers +
+  // per-post engagement via the Meta Graph API and append stat snapshots.
+  // A cheap no-op until the owner connects the account in the tab.
+  require('./services/instagramSync').startInstagramSync();
+
   // Weekly push of the full backup (incl. R2 receipt images) to Google Drive.
   // No-op until the admin connects Drive — safe to start unconditionally.
   require('./services/gdriveBackup').startGoogleDriveBackup();
@@ -214,6 +219,13 @@ db.once('open', () => {
       console.warn('[triage] re-triage healer failed (will retry next boot):', e.message);
     }
   }, 7_000);
+
+  // DAILY: purge archived lookbooks + content posts older than 60 days —
+  // Nate's explicit exception to archive-not-delete, presentation artifacts
+  // only (services/archivePurge.js documents the scope + the legacy-stamp
+  // backfill that guarantees every doc a full grace window; money records
+  // never purge; docs/ECOSYSTEM.md records the owner decision).
+  require('./services/archivePurge').startArchivePurge();
 
   // ONE-TIME: re-derive the stored cogs estimate from confirmation items
   // (qty × unitCost) for orders that HAVE a confirmation — the save hooks now

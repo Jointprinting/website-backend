@@ -6,9 +6,10 @@
 const express = require('express');
 const router = express.Router();
 
-const { publicGetLookbook, publicPostFeedback } = require('../controllers/lookbooks');
+const { publicGetLookbook, publicPostFeedback, publicRequestPricing } = require('../controllers/lookbooks');
 
-router.get ('/:id',          publicGetLookbook);
-router.post('/:id/feedback', publicPostFeedback);
+router.get ('/:id',                 publicGetLookbook);
+router.post('/:id/feedback',        publicPostFeedback);
+router.post('/:id/request-pricing', publicRequestPricing);
 
 module.exports = router;

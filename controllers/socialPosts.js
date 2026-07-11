@@ -15,6 +15,10 @@
 // controllers/siteSetting.js — so this controller stays purely about posts.
 
 const SocialPost = require('../models/SocialPost');
+const SocialAccount = require('../models/SocialAccount');
+// The Meta Graph plumbing (base URL, wrapped GET, error unwrapping) lives in
+// the service — the controller stays thin so a version bump lands in one file.
+const { syncInstagram, graphGet, graphErrorMessage } = require('../services/instagramSync');
 
 const num = (v) => Number(v) || 0;
 
@@ -143,8 +147,126 @@ const addStat = async (req, res) => {
   }
 };
 
+// The account card's read: everything EXCEPT the token itself (an admin JWT
+// shouldn't be able to exfiltrate the Meta credential — hasToken + expiry is
+// all the UI needs).
+const maskAccount = (a) => a && ({
+  platform: a.platform, igUserId: a.igUserId, username: a.username,
+  followers: a.followers, mediaCount: a.mediaCount, profilePicUrl: a.profilePicUrl,
+  lastSyncAt: a.lastSyncAt, lastSyncError: a.lastSyncError,
+  hasToken: !!a.accessToken, tokenExpiresAt: a.tokenExpiresAt,
+  followerHistory: (a.followerHistory || []).slice(-90),
+});
+const readMasked = async () => maskAccount(await SocialAccount.findOne({ platform: 'instagram' }).lean()) || null;
+
+// GET /api/social/account — the connected Instagram account (or null).
+const getAccount = async (req, res) => {
+  try {
+    res.json({ account: await readMasked() });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+// POST /api/social/account — connect/refresh Instagram: { accessToken,
+// igUserId? }. Three steps, each honest about failure:
+//   1. If FACEBOOK_APP_ID/SECRET are configured, exchange the pasted token
+//      for a ~60-day long-lived one (best-effort — the pasted token is used
+//      as-is when the exchange isn't possible).
+//   2. Discover the IG Business user id via /me/accounts when not supplied.
+//   3. Validate by reading the profile, then upsert + run a first full sync
+//      so the tab lights up immediately.
+const connectAccount = async (req, res) => {
+  try {
+    let token = String((req.body || {}).accessToken || '').trim();
+    let igUserId = String((req.body || {}).igUserId || '').trim();
+    if (!token) return res.status(400).json({ message: 'Paste the access token first.' });
+
+    let tokenExpiresAt = null;
+    if (process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET) {
+      try {
+        const data = await graphGet('oauth/access_token', {
+          grant_type: 'fb_exchange_token',
+          client_id: process.env.FACEBOOK_APP_ID,
+          client_secret: process.env.FACEBOOK_APP_SECRET,
+          fb_exchange_token: token,
+        });
+        if (data.access_token) {
+          token = data.access_token;
+          if (data.expires_in) tokenExpiresAt = new Date(Date.now() + data.expires_in * 1000);
+        }
+      } catch (e) { /* keep the pasted token — exchange is a bonus */ }
+    }
+
+    if (!igUserId) {
+      try {
+        const data = await graphGet('me/accounts', {
+          fields: 'name,instagram_business_account{id,username}', access_token: token,
+        });
+        const page = (data.data || []).find((pg) => pg.instagram_business_account && pg.instagram_business_account.id);
+        if (page) igUserId = page.instagram_business_account.id;
+      } catch (e) { /* falls through to the explicit error below */ }
+      if (!igUserId) {
+        return res.status(400).json({
+          message: 'Could not find an Instagram Business account on this token — make sure your IG is a Business/Creator account linked to a Facebook Page, or paste the IG user id manually.',
+        });
+      }
+    }
+
+    let prof;
+    try {
+      prof = await graphGet(igUserId, {
+        fields: 'followers_count,media_count,username,profile_picture_url', access_token: token,
+      });
+    } catch (e) {
+      return res.status(400).json({ message: `Instagram rejected the credentials: ${String(graphErrorMessage(e)).slice(0, 300)}` });
+    }
+
+    await SocialAccount.findOneAndUpdate(
+      { platform: 'instagram' },
+      { $set: {
+        igUserId, accessToken: token, tokenExpiresAt,
+        username: prof.username || '', followers: Number(prof.followers_count) || 0,
+        mediaCount: Number(prof.media_count) || 0, profilePicUrl: prof.profile_picture_url || '',
+        lastSyncError: '',
+      } },
+      { upsert: true },
+    );
+    // Respond as soon as the credentials validate — the first full sync (up
+    // to ~25 media × an insight call each) runs in the background so the
+    // Connect button can't sit behind a gateway timeout; the account card
+    // shows lastSyncAt/lastSyncError when it lands, and Sync now re-runs it.
+    syncInstagram().catch(() => {});
+    res.json({ account: await readMasked() });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+// DELETE /api/social/account — disconnect (credential removal is a real
+// delete; the posts and their stats all stay).
+const disconnectAccount = async (req, res) => {
+  try {
+    await SocialAccount.deleteOne({ platform: 'instagram' });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+// POST /api/social/account/sync — the tab's Sync now button.
+const syncAccountNow = async (req, res) => {
+  try {
+    const r = await syncInstagram();
+    res.json({ ...r, account: await readMasked() });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 module.exports = {
   listPosts, createPost, patchPost, addStat,
+  getAccount, connectAccount, disconnectAccount, syncAccountNow,
   // exported for tests
   cleanPostFields, applyStatusStamps, cleanStatSnapshot, MAX_SNAPSHOTS,
 };
