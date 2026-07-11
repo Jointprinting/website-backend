@@ -1487,7 +1487,98 @@ const backfillTransactionLinks = async () => {
   return { projFilled, vendorFilled, scanned: rows.length };
 };
 
-module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears, backfillTransactionLinks, migrateRenamedCategories, config, addCategory, removeCategory };
+// GET /api/finances/nj-sales-tax — the numbers behind the hub's quarterly
+// NJ ST-50 reminder. Returns whichever filing is currently in its reminder
+// window (2 weeks before the 20th through a 5-day grace), the orders that
+// charged NJ sales tax that quarter, and the totals to double-check against
+// the state portal. `?period=YYYYQn` forces a specific quarter (for looking
+// back); default is the active-reminder filing, else the most recent quarter.
+const njSalesTax = async (req, res) => {
+  try {
+    const { activeFiling, njTaxForOrder, orderSaleDate, QUARTERS, dueDateFor } = require('../services/njSalesTax');
+    const now = new Date();
+
+    // Resolve the period to report. Explicit ?period=2026Q2 wins; else the
+    // filing whose reminder is active now; else the most recently ended quarter.
+    let filing = activeFiling(now);
+    const pm = String(req.query.period || '').match(/^(\d{4})Q([1-4])$/i);
+    if (pm) {
+      const spec = QUARTERS[parseInt(pm[2], 10) - 1];
+      const salesYear = parseInt(pm[1], 10);
+      filing = {
+        label: spec.label, salesYear,
+        periodStart: new Date(salesYear, spec.startMonth, 1),
+        periodEnd: new Date(salesYear, spec.endMonth + 1, 1),
+        dueDate: dueDateFor(spec, salesYear),
+        daysUntilDue: Math.ceil((dueDateFor(spec, salesYear).getTime() - now.getTime()) / 86400000),
+      };
+    }
+    if (!filing) {
+      // No active reminder + no explicit period → default to the quarter that
+      // most recently ended, so the tool always shows something useful.
+      const m = now.getMonth();
+      const qi = Math.floor(((m - 3 + 12) % 12) / 3); // previous quarter index
+      const spec = QUARTERS[qi];
+      const salesYear = m < 3 ? now.getFullYear() - 1 : now.getFullYear();
+      filing = {
+        label: spec.label, salesYear,
+        periodStart: new Date(salesYear, spec.startMonth, 1),
+        periodEnd: new Date(salesYear, spec.endMonth + 1, 1),
+        dueDate: dueDateFor(spec, salesYear),
+        daysUntilDue: Math.ceil((dueDateFor(spec, salesYear).getTime() - now.getTime()) / 86400000),
+        inactive: true,
+      };
+    }
+
+    // Real sales only — a quote that never sold owes no tax. Approved+ or paid,
+    // never cancelled, with a confirmation to compute tax from.
+    const SALE_STATUSES = ['approved', 'placed', 'in_production', 'shipped', 'delivered'];
+    const orders = await Order.find({
+      archived: { $ne: true },
+      $or: [{ status: { $in: SALE_STATUSES } }, { paid: true }],
+      'confirmation.items.0': { $exists: true },
+    }).select('orderNumber projectNumber companyName clientName status paid orderDate createdAt paidAt tracking shipToState confirmation').lean();
+
+    const rows = [];
+    let totalTaxable = 0; let totalTax = 0;
+    for (const o of orders) {
+      const { taxable, tax } = njTaxForOrder(o);
+      if (tax <= 0) continue;
+      const saleDate = orderSaleDate(o);
+      if (!saleDate || saleDate < filing.periodStart || saleDate >= filing.periodEnd) continue;
+      totalTaxable += taxable; totalTax += tax;
+      rows.push({
+        orderNumber: o.orderNumber || o.projectNumber || '',
+        projectNumber: o.projectNumber || '',
+        company: o.companyName || o.clientName || '',
+        date: saleDate,
+        status: o.status,
+        paid: !!o.paid,
+        taxable: round2(taxable),
+        tax: round2(tax),
+      });
+    }
+    rows.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    res.json({
+      active: !filing.inactive && !pm,      // is the reminder currently showing?
+      period: filing.label,
+      salesYear: filing.salesYear,
+      periodStart: filing.periodStart,
+      periodEnd: filing.periodEnd,
+      dueDate: filing.dueDate,
+      daysUntilDue: filing.daysUntilDue,
+      orderCount: rows.length,
+      totalTaxable: round2(totalTaxable),
+      totalTax: round2(totalTax),
+      orders: rows,
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears, backfillTransactionLinks, migrateRenamedCategories, config, addCategory, removeCategory, njSalesTax };
 module.exports.normalizeCategoryName = normalizeCategoryName;
 module.exports.categoriesWithCustom = categoriesWithCustom;
 module.exports.enrichTransactionLinks = enrichTransactionLinks;

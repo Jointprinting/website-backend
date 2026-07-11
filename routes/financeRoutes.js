@@ -20,6 +20,7 @@ router.get('/by-client', ctl.byClient);
 router.get('/order-actuals', ctl.orderActuals);
 router.get('/payment-gaps', ctl.paymentGaps);
 router.get('/missing-receipts', ctl.missingReceipts);
+router.get('/nj-sales-tax', ctl.njSalesTax);   // quarterly NJ ST-50 numbers behind the hub reminder
 router.get('/export', ctl.exportCsv);
 router.post('/import', ctl.importCsv);
 
