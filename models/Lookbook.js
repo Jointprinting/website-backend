@@ -48,17 +48,39 @@ const LookbookSchema = new mongoose.Schema({
   showLabels: { type: Boolean, default: true },
 
   status: { type: String, enum: ['draft', 'shared', 'archived'], default: 'draft' },
+  // Stamped when status flips to 'archived' (cleared on restore) — the clock
+  // for the 60-day archive auto-purge (services/archivePurge.js). Lookbooks
+  // are presentation artifacts, so unlike money records they DO hard-delete
+  // after the owner's grace window.
+  archivedAt: { type: Date, default: null },
 
   // Share link (same shape as Order.approvalToken).
   shareToken:          { type: String, default: '', index: true },
   shareTokenExpiresAt: { type: Date, default: null },
   sharedAt:            { type: Date, default: null },
   lastViewedAt:        { type: Date, default: null },  // last client open
+  viewCount:           { type: Number, default: 0 },   // throttled client visits (one / 10 min)
   // Throttle stamp for the feedback heads-up email (the hub signal is the
   // durable surface; the email is a courtesy, never a flood).
   lastFeedbackNotifiedAt: { type: Date, default: null },
 
   feedback: { type: [LookbookFeedbackSchema], default: [] },
+
+  // "Request pricing" submissions from the public gallery — the durable record
+  // (the actionable artifact is the quote-stage project each one seeds; its
+  // number is stored here so the builder can jump to it).
+  lastPricingRequestAt: { type: Date, default: null },   // throttle stamp
+  pricingRequests: [{
+    at:      { type: Date, default: Date.now },
+    by:      { type: String, default: '' },
+    email:   { type: String, default: '' },
+    phone:   { type: String, default: '' },
+    shipTo:  { type: String, default: '' },
+    note:    { type: String, default: '' },
+    picks:   [{ remoteId: String, name: String, qty: Number, _id: false }],
+    projectNumber: { type: String, default: '' },
+    _id: false,
+  }],
 }, { timestamps: true });
 
 LookbookSchema.index({ status: 1, updatedAt: -1 });

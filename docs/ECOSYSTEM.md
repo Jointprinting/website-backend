@@ -245,6 +245,14 @@ standalone.
   **archive-not-delete**, auto-hides when there's nothing to do. Templates:
   `controllers/dataCleanup` + `DataCleanupView`, `services/financeDedupe`,
   `services/crmReconcile` — persist the snapshot **before** mutating.
+  - **Owner-approved exception (Jul 2026):** archived **Lookbooks** and archived
+    **Content posts** (SocialPost) hard-delete **60 days after archiving**
+    (`services/archivePurge.js` — Nate: "for archived stuff like lookbooks…
+    make it delete after like 1-2 months"). Scope is STRICTLY these two
+    presentation-artifact collections; money/operational archives (Orders,
+    Transactions, Clients, POs…) still never delete. Both tabs show the
+    per-item countdown; legacy archives get their clock backfilled to the
+    deploy date so nothing purges without a full visible grace window.
 - **One-time tools auto-hide** once done/empty — never leave leftover cleanup buttons.
 - **Printer-network routing & sales-tax NEXUS** are the long-term north star, but do **not**
   encode routing or nexus tax logic without the owner's explicit strategy — he picks
