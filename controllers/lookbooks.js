@@ -27,6 +27,7 @@ const Order = require('../models/Order');
 const { notifyAdmin, _esc } = require('./approval');
 const { deriveCompanyKey } = require('../utils/fieldTrackerImport');
 const { nextNumber } = require('../utils/sequence');
+const { buildLookbookPdf } = require('./lookbookPdf');
 
 const SHARE_TTL_MS = 90 * 24 * 60 * 60 * 1000;  // 90 days, rotated on re-share
 const VIEW_THROTTLE_MS = 10 * 60 * 1000;        // one lastViewedAt stamp / 10 min
@@ -101,7 +102,7 @@ async function listLookbooks(req, res) {
 
 function pickEditable(body) {
   const out = {};
-  for (const f of ['title', 'subtitle', 'projectNumber', 'layout', 'showBack', 'showLabels']) {
+  for (const f of ['title', 'subtitle', 'projectNumber', 'layout', 'showBack', 'showLabels', 'theme', 'knockout']) {
     if (body[f] !== undefined) out[f] = body[f];
   }
   if (Array.isArray(body.mockups)) {
@@ -241,6 +242,7 @@ async function publicGetLookbook(req, res) {
       companyName: lb.companyName,
       logo: (logo && logo.imageDataUrl) || '',
       layout: lb.layout, showBack: lb.showBack, showLabels: lb.showLabels,
+      theme: lb.theme || 'paper', knockout: !!lb.knockout,
       mockups: tiles.map((t) => ({
         remoteId: t.remoteId, name: t.name, mockupNum: t.mockupNum,
         caption: t.caption, front: t.front, back: t.back,
@@ -452,10 +454,44 @@ async function publicRequestPricing(req, res) {
   }
 }
 
+// GET /api/public/lookbooks/:id/pdf?token=…[&layout=…&knockout=…] — the client's
+// own polished download. Same token gate as the gallery; reuses the shared PDF
+// builder (controllers/lookbookPdf.js) so the download matches the deck the
+// owner exports from the Studio. `layout`/`knockout` query overrides let the
+// client grab it in whatever cut they picked in the viewer (falling back to the
+// lookbook's saved defaults). Streams binary — never touches res.json on success.
+async function publicLookbookPdf(req, res) {
+  try {
+    const { lb, status } = await loadByToken(req);
+    if (!lb) return res.status(status).json({ message: status === 410 ? 'This lookbook link has expired.' : 'Lookbook not found.' });
+
+    const ids = (lb.mockups || []).map((m) => m.remoteId).filter(Boolean);
+    if (!ids.length) return res.status(404).json({ message: 'This lookbook has no pages yet.' });
+
+    const docs = await StudioLibraryItem.find({ store: 'mockups', remoteId: { $in: ids } })
+      .select('name client thumbnail data pageState.mockupNum pageState.projectNumber remoteId').lean();
+    const byRid = new Map(docs.map((d) => [d.remoteId, d]));
+    const ordered = ids.map((rid) => byRid.get(rid)).filter(Boolean);   // preserve deck order
+
+    const layout = String(req.query.layout || lb.layout || 'auto');
+    const knockout = req.query.knockout !== undefined ? req.query.knockout === 'true' : !!lb.knockout;
+
+    await buildLookbookPdf(res, {
+      docs: ordered,
+      title: lb.title, subtitle: lb.subtitle, clientName: lb.companyName,
+      projectNumber: lb.projectNumber, layout,
+      showBack: lb.showBack, showLabels: lb.showLabels, knockout,
+    });
+  } catch (err) {
+    if (!res.headersSent) res.status(500).json({ message: 'Could not build the PDF — try again in a moment.' });
+    else { try { res.end(); } catch (_) { /* already streaming */ } }
+  }
+}
+
 module.exports = {
   listLookbooks, createLookbook, getLookbook, patchLookbook,
   shareLookbook, markFeedbackSeen,
-  publicGetLookbook, publicPostFeedback, publicRequestPricing,
+  publicGetLookbook, publicPostFeedback, publicRequestPricing, publicLookbookPdf,
   // exported for tests
   cleanPricingRequest,
 };

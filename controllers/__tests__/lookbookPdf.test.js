@@ -6,7 +6,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { pickLayout, resolveLayout, perPage, pageCount, gridCells, fitContain, LAYOUTS } = require('../lookbookPdf');
+const { pickLayout, resolveLayout, perPage, pageCount, gridCells, fitContain, LAYOUTS, knockoutWhite } = require('../lookbookPdf');
+let sharp = null;
+try { sharp = require('sharp'); } catch (_) { /* knockout test skips without sharp */ }
 
 // ── auto-pick: a couple → hero, a handful → 2×2, a lot → contact sheet ──
 test('pickLayout: count thresholds', () => {
@@ -116,4 +118,22 @@ test('LAYOUTS: the three presets are the documented grids', () => {
   assert.deepEqual(LAYOUTS.editorial, { cols: 1, rows: 1 });
   assert.deepEqual(LAYOUTS.grid, { cols: 2, rows: 2 });
   assert.deepEqual(LAYOUTS.contact, { cols: 3, rows: 3 });
+});
+
+// ── white knockout: the "clean background" download baked in ──
+test('knockoutWhite: white → transparent, a colored pixel stays opaque', async (t) => {
+  if (!sharp) return t.skip('sharp not installed');
+  // A 2×1 image: one pure-white pixel, one deep-green pixel.
+  const src = await sharp(Buffer.from([255, 255, 255, 0, 128, 0]), { raw: { width: 2, height: 1, channels: 3 } }).png().toBuffer();
+  const out = await knockoutWhite(src);
+  const { data, info } = await sharp(out).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  assert.equal(info.channels, 4);
+  assert.equal(data[3], 0);     // white pixel is now fully transparent
+  assert.equal(data[7], 255);   // the green pixel keeps full opacity
+});
+
+test('knockoutWhite: a nullish/undecodable buffer is returned untouched (never throws)', async () => {
+  assert.equal(await knockoutWhite(null), null);
+  const junk = Buffer.from('not an image');
+  assert.equal(await knockoutWhite(junk), junk);
 });

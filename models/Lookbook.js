@@ -46,6 +46,15 @@ const LookbookSchema = new mongoose.Schema({
   layout:     { type: String, enum: ['auto', 'editorial', 'grid'], default: 'auto' },
   showBack:   { type: Boolean, default: true },
   showLabels: { type: Boolean, default: true },
+  // Marketing controls the owner sets as the DEFAULT the client first sees on
+  // the share link (the client can still flip theme/layout live in the viewer —
+  // that override is client-side only and never written back here).
+  //   theme    — the public gallery's palette (paper|charcoal|forest|mono|…);
+  //              a free string so new palettes can ship without a migration.
+  //   knockout — drop the white studio backdrop so garments float on the theme
+  //              (web: canvas/blend; PDF download: sharp). Off by default.
+  theme:    { type: String, default: 'paper' },
+  knockout: { type: Boolean, default: false },
 
   status: { type: String, enum: ['draft', 'shared', 'archived'], default: 'draft' },
   // Stamped when status flips to 'archived' (cleared on restore) — the clock
