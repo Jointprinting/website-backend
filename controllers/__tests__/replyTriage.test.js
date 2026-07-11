@@ -138,6 +138,29 @@ test('a polite human opener is NOT swallowed as an auto-ack (no over-correction)
   assert.equal(cat({ fromEmail: 'buyer@shop.com', subject: 'Re: Custom merch', snippet: 'Thank you for your message! Interested — can you send a mockup?' }), 'asked_mockups');
 });
 
+test('auto-ack COMBO: acknowledge + defer-to-later is ignored (novel dispensary autoresponder)', () => {
+  // The wording that slipped past subject/body patterns: a real, monitored
+  // address that opens by acknowledging us and then defers a real answer.
+  assert.equal(cat({
+    fromEmail: 'hello@originscannabis.com', fromName: 'Origins',
+    subject: 'Re: Custom merch for Origins',
+    snippet: "Thanks for reaching out! We've received your message and a member of our team will get back to you within 24-48 hours.",
+  }), 'bounce_auto_ignore');
+  assert.equal(cat({
+    fromEmail: 'info@shop.com', subject: 'Re: hats',
+    snippet: 'Thank you for contacting us. Due to high volume, we will respond as soon as possible.',
+  }), 'bounce_auto_ignore');
+});
+
+test('auto-ack COMBO does NOT swallow a real lead that only acknowledges (no defer)', () => {
+  // Acknowledgement WITHOUT a no-substance defer-to-later promise stays a real
+  // lead — the combo needs BOTH halves, so buying intent always wins.
+  assert.equal(cat({ fromEmail: 'buyer@shop.com', subject: 'Re: merch',
+    snippet: "Thanks for reaching out! We've received your message and yes, we'd love a quote on 200 hoodies." }), 'asked_pricing');
+  assert.equal(cat({ fromEmail: 'buyer@shop.com', subject: 'Re: merch',
+    snippet: 'Thanks for contacting us — someone will be in touch, but quick q: can you send a mockup first?' }), 'asked_mockups');
+});
+
 test('matchReply: an ambiguous subject shared by two companies does NOT auto-pick one', () => {
   // Same generic subject on enrollments for two different shops (shared host) →
   // must NOT strong-match/warm the first one; left unmatched for manual triage.
