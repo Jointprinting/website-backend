@@ -63,6 +63,7 @@ const OWN_JSON_PREFIXES = [
   '/api/studio', '/api/site-settings', '/api/orders', '/api/client-logos',
   '/api/clients', '/api/crm', '/api/outreach', '/api/triage', '/api/public',
   '/api/jpw', '/api/gdrive', '/api/finances', '/api/receipts', '/api/lookbooks',
+  '/api/social',
 ];
 const globalJson = express.json({ limit: '1mb' });
 app.use((req, res, next) => {
@@ -352,6 +353,7 @@ const triageRoutes         = require('./routes/triageRoutes');
 const signalsRoutes        = require('./routes/signalsRoutes');
 const lookbookRoutes       = require('./routes/lookbookRoutes');
 const publicLookbookRoutes = require('./routes/publicLookbookRoutes');
+const socialPostRoutes     = require('./routes/socialPostRoutes');
 
 app.use('/api/products/ss', ssProxyLimiter);
 app.use('/api/products', productRoutes);
@@ -377,6 +379,9 @@ app.use('/api/signals', signalsRoutes);
 app.use('/api/public/lookbooks', express.json(), publicLookbookRoutes);
 app.use('/api/public', express.json(), publicApprovalRoutes);
 app.use('/api/lookbooks', express.json({ limit: '2mb' }), lookbookRoutes);
+// Content planner: post bodies are text, but an IG card can carry a small
+// downscaled reference image (data URL), so allow a touch more than 1mb.
+app.use('/api/social', express.json({ limit: '3mb' }), socialPostRoutes);
 app.use('/api/admin/backup', backupRoutes);
 app.use('/api/admin', express.json({ limit: '2mb' }), adminRoutes); // owner-only agent management
 app.use('/api/agent', express.json({ limit: '2mb' }), agentRoutes); // sales-agent portal (self-scoped)
