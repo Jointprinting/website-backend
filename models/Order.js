@@ -524,6 +524,7 @@ const OrderSchema = new mongoose.Schema({
     setupCost:    { type: Number, default: 0 },   // full one-time setup for THIS option; spread across this line's qty
     shippingCost: { type: Number, default: 0 },   // full shipping for THIS option; spread across this line's qty
     markup:       { type: Number, default: 1.4 }, // multiplier; unit price = (blankCost + printCost + (setup+ship)/qty) * markup; matches the builder default
+    noMarkup:     { type: Boolean, default: false }, // promo/vendor-catalog price already includes margin — un-typed cells auto-fill at COST (×1), not ×1.4. COGS unaffected.
     unitPrice:    { type: Number, default: 0 },   // computed but stored so user can override
     // Optional client-facing lead time for THIS option, in weeks. 0 = not set
     // (the quote/approval page shows nothing). Purely informational — never
