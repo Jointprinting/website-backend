@@ -344,7 +344,6 @@ const authRoutes           = require('./routes/authRoutes');
 const submissionRoutes     = require('./routes/submissionRoutes');
 const scriptVersionRoutes  = require('./routes/scriptVersionRoutes');
 const catalogRoutes        = require('./routes/catalogRoutes');
-const promoCatalogRoutes   = require('./routes/promoCatalogRoutes');
 const siteSettingRoutes    = require('./routes/siteSettingRoutes');
 const roadTripRoutes       = require('./routes/roadTripRoutes');
 const studioRoutes         = require('./routes/studioRoutes');
@@ -375,9 +374,6 @@ app.use('/api/auth', authRoutes);
 app.use('/api/submissions', submissionRoutes);
 app.use('/api/script-versions', scriptVersionRoutes);
 app.use('/api/catalogs', catalogRoutes);
-// Promo catalog: /scan is multipart (multer); the JSON CRUD endpoints get a small
-// JSON parser (multer ignores it — different content-type).
-app.use('/api/promo-catalog', express.json({ limit: '2mb' }), promoCatalogRoutes);
 app.use('/api/site-settings', express.json({ limit: '2mb' }), siteSettingRoutes);
 app.use('/api/roadtrip', roadTripRoutes);
 app.use('/api/studio', studioRoutes);
