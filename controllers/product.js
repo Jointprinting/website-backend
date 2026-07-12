@@ -1242,6 +1242,88 @@ function summarizeSsStyle(skus) {
   };
 }
 
+// Shape one summarized style into the payload the Mockup Studio's S&S Finder
+// already renders (worker-compatible): { name, count, colors:[{color, colorCode,
+// swatch1, swatch2, front, back}] }, or { name, match:{…} } when a color filter
+// narrows to one. Lets the Finder call OUR backend instead of an external worker.
+function ssFinderColorsPayload(s, colorFilter) {
+  const colors = (s.colors || []).map((c) => ({
+    color:     c.name,
+    colorCode: c.colorCode || '',
+    swatch1:   c.hex || '',
+    swatch2:   '',
+    front:     c.front || '',
+    back:      c.back || '',
+  }));
+  const name = `${s.brand || ''} ${s.styleName || ''}`.trim() || s.styleName || '';
+  if (colorFilter) {
+    const cf = colorFilter.toLowerCase();
+    const hit = colors.find((c) => c.color.toLowerCase() === cf) || colors.find((c) => c.color.toLowerCase().includes(cf));
+    if (hit) return { name, match: hit };
+  }
+  return { name, count: colors.length, colors };
+}
+
+// GET /api/products/ss/finder?style=&color=&styleid=
+// The Mockup Studio's S&S Finder search, served by OUR backend with the owner's
+// SS_ACCOUNT/SS_API_KEY — no external Cloudflare worker. Resolves a typed style
+// (name or part #) against the catalog: >1 hit → a style picker payload; 1 hit →
+// its colors (front/back garment images the studio imports as blanks). Errors
+// come back 200 with {error,hint} so the Finder shows them inline. Reuses the
+// same /styles + /products/?styleid= calls the marketing site already relies on.
+exports.ssFinder = async (req, res) => {
+  try {
+    ensureSsCredentials();
+    const style   = String(req.query.style   || '').trim();
+    const color   = String(req.query.color   || '').trim();
+    const styleid = String(req.query.styleid || '').trim();
+    const norm = (v) => String(v || '').toLowerCase().trim();
+
+    // A direct styleID (from the style picker) → straight to that style's SKUs.
+    if (styleid) {
+      const prod = await ssClient.get('/products/', { params: { styleid } });
+      const skus = Array.isArray(prod.data) ? prod.data : [];
+      if (!skus.length) return res.json({ error: 'That style has no product data.' });
+      return res.json(ssFinderColorsPayload(summarizeSsStyle(skus), color));
+    }
+
+    if (!style) return res.status(400).json({ error: 'Enter a style code first.' });
+
+    const stylesResp = await ssClient.get('/styles');
+    const all = Array.isArray(stylesResp.data) ? stylesResp.data : [];
+    const q = norm(style);
+    let matches = all.filter((s) => norm(s.styleName) === q || norm(s.partNumber) === q);
+    if (!matches.length) matches = all.filter((s) => norm(s.styleName).includes(q) || norm(s.partNumber).includes(q)).slice(0, 25);
+
+    if (!matches.length) {
+      return res.json({ error: `No S&S style matches "${style}".`, hint: 'Try the style number (e.g. 5000, SS4500) or the exact style name.' });
+    }
+    if (matches.length > 1) {
+      return res.json({
+        multipleMatches: true,
+        query: style,
+        matches: matches.slice(0, 25).map((m) => ({
+          styleID: m.styleID,
+          styleName: m.styleName,
+          label: `${m.brandName || ''} ${m.styleName || ''}`.trim(),
+          title: m.title || '',
+          partNumber: m.partNumber || '',
+        })),
+      });
+    }
+    const prod = await ssClient.get('/products/', { params: { styleid: matches[0].styleID } });
+    const skus = Array.isArray(prod.data) ? prod.data : [];
+    if (!skus.length) return res.json({ error: 'That style has no product data.' });
+    return res.json(ssFinderColorsPayload(summarizeSsStyle(skus), color));
+  } catch (e) {
+    const status = e.response && e.response.status;
+    res.status(200).json({
+      error: (e.response && e.response.data && e.response.data.message) || e.message || 'S&S lookup failed.',
+      hint: status === 401 ? 'Check SS_ACCOUNT / SS_API_KEY on the server.' : undefined,
+    });
+  }
+};
+
 exports.syncFromSS = async (req, res) => {
   try {
     ensureSsCredentials();

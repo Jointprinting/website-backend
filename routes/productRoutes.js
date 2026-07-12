@@ -21,6 +21,7 @@ const {
   warmAllStylesHandler,
   debugSSStyle,
   findSSStyle,
+  ssFinder,
   dropGridfsAndStaleSync,
 } = require('../controllers/product');
 
@@ -41,6 +42,10 @@ router.get('/ss/details', getSSDetails);                // Mongo-backed batch en
 router.get('/ss/test', requireAdmin, testSSConnection);
 router.get('/ss/debug', requireAdmin, debugSSStyle);    // ?style=X — see raw S&S responses
 router.get('/ss/find', findSSStyle);
+// Mockup Studio's S&S Finder — replaces the old external Cloudflare worker with
+// our own S&S integration (owner keys). Admin-gated: it fans out to the metered
+// /styles catalog, and the Studio already sends its bearer token.
+router.get('/ss/finder', requireAdmin, ssFinder);
 router.get('/ss/style/:style', getSSStyleDetail);       // honest live fallback
 router.get('/style/:style', getProductByStyleCode);     // Mongo -> sync -> fallback
 router.get('/:id', getProductById);
