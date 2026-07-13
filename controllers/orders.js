@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const Order = require('../models/Order');
 const Transaction = require('../models/Transaction');
 const ContactSubmission = require('../models/ContactSubmission');
@@ -1465,37 +1466,121 @@ function _nextMockupLetter(projectNumber, existing) {
   return `${base}${_numToLetter(max + 1)}`;
 }
 
-// POST /api/orders/:id/mockups/assign — atomically reserve the next mockup
-// number (A, B, C…) for this project AND link it to the order in one step.
-// This is the authoritative source for the lettering. The studio previously
-// computed the letter client-side from a cached project list, which raced and
-// produced duplicate "A"s — and once one mockup existed there was no way to add
-// a second. Returns the assigned number, e.g. { mockupNum: "#000133B" }.
+// Atomically reserve the next mockup number (A, B, C…) for a project AND link
+// it to the order in one step. Compute-then-claim with a conditional write:
+// the push only succeeds if nobody claimed the same letter between our read
+// and write (the filter excludes docs already containing it). The old
+// $addToSet version silently deduped, so two concurrent saves were BOTH told
+// they owned the same number. On a lost race, re-read and claim the next
+// letter. Returns { order, mockupNum } — mockupNum '' when the project has no
+// number to letter against; null when the order doesn't exist.
+async function _reserveMockupNumber(orderId) {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const order = await Order.findById(orderId).select('projectNumber mockupNumbers');
+    if (!order) return null;
+
+    const next = _nextMockupLetter(order.projectNumber, order.mockupNumbers || []);
+    if (!next) return { order, mockupNum: '' };
+
+    const r = await Order.updateOne(
+      { _id: order._id, mockupNumbers: { $ne: next } },
+      { $push: { mockupNumbers: next } },
+    );
+    if (r.modifiedCount === 1) return { order, mockupNum: next };
+  }
+  throw new Error('Could not reserve a mockup number — too many concurrent saves. Try again.');
+}
+
+// POST /api/orders/:id/mockups/assign — the authoritative source for the
+// lettering (the studio previously computed the letter client-side from a
+// cached project list, which raced and produced duplicate "A"s — and once one
+// mockup existed there was no way to add a second). Returns the assigned
+// number, e.g. { mockupNum: "#000133B" }.
 const assignMockupNumber = async (req, res) => {
   try {
-    // Compute-then-claim with a conditional write: the push only succeeds if
-    // nobody claimed the same letter between our read and write (the filter
-    // excludes docs already containing it). The old $addToSet version silently
-    // deduped, so two concurrent saves were BOTH told they owned the same
-    // number. On a lost race, re-read and claim the next letter instead.
-    for (let attempt = 0; attempt < 6; attempt++) {
-      const order = await Order.findById(req.params.id).select('projectNumber mockupNumbers');
-      if (!order) return res.status(404).json({ message: 'Project not found' });
-
-      const next = _nextMockupLetter(order.projectNumber, order.mockupNumbers || []);
-      if (!next) return res.status(400).json({ message: 'Project has no number to letter against.' });
-
-      const r = await Order.updateOne(
-        { _id: order._id, mockupNumbers: { $ne: next } },
-        { $push: { mockupNumbers: next } },
-      );
-      if (r.modifiedCount === 1) {
-        return res.json({ mockupNum: next, projectId: order._id });
-      }
-    }
-    return res.status(409).json({ message: 'Could not reserve a mockup number — too many concurrent saves. Try again.' });
+    const got = await _reserveMockupNumber(req.params.id);
+    if (!got) return res.status(404).json({ message: 'Project not found' });
+    if (!got.mockupNum) return res.status(400).json({ message: 'Project has no number to letter against.' });
+    return res.json({ mockupNum: got.mockupNum, projectId: got.order._id });
   } catch (e) {
-    res.status(500).json({ message: e.message });
+    res.status(e.message && e.message.includes('reserve') ? 409 : 500).json({ message: e.message });
+  }
+};
+
+// The clone body for a mockup variation: same art/pages, NEW identity. The new
+// mockup number is restamped everywhere the old one lives (pageState + every
+// multi-page entry), the name gets a "· v2/v3…" suffix keyed off the letter so
+// two variations never share a display name, and the remoteId is fresh so the
+// studio treats it as its own file. PURE — exported for tests.
+function buildMockupVariation(src, newNum, remoteId) {
+  const s = src || {};
+  const restamp = (ps) => (ps && typeof ps === 'object' ? { ...ps, mockupNum: newNum } : ps);
+  const letter = String(newNum || '').replace(/^#?\d*/, '');
+  return {
+    store: 'mockups',
+    name: `${String(s.name || 'Mockup').replace(/\s*·\s*v\d+$/i, '')} · v${_letterToNum(letter) || 2}`,
+    data: s.data || '',
+    thumbnail: s.thumbnail || '',
+    client: s.client || '',
+    pageState: restamp(s.pageState),
+    pages: Array.isArray(s.pages) ? s.pages.map(restamp) : s.pages || null,
+    extraViews: Array.isArray(s.extraViews) ? [...s.extraViews] : [],
+    savedAt: Date.now(),
+    remoteId,
+  };
+}
+
+// POST /api/orders/:id/mockups/duplicate — "Add a variation": clone an
+// existing mockup into a brand-new one on the SAME project (next letter),
+// identical art, ready to tweak in the studio. Server-side on purpose: the
+// full library doc (incl. offloaded/base64 page data) never has to round-trip
+// through the browser, and the number reservation reuses the same atomic path
+// the studio + promo upload use. Body: { remoteId } (preferred) or
+// { mockupNum } of the source tile.
+const duplicateMockup = async (req, res) => {
+  try {
+    const remoteId = String((req.body || {}).remoteId || '').trim();
+    const srcNum = String((req.body || {}).mockupNum || '').trim();
+    if (!remoteId && !srcNum) return res.status(400).json({ message: 'Pass the source mockup (remoteId or mockupNum).' });
+
+    const src = remoteId
+      ? await StudioLibraryItem.findOne({ store: 'mockups', remoteId }).lean()
+      : await StudioLibraryItem.findOne({ store: 'mockups', 'pageState.mockupNum': srcNum }).lean();
+    if (!src) return res.status(404).json({ message: 'Source mockup not found in the studio library.' });
+
+    const got = await _reserveMockupNumber(req.params.id);
+    if (!got) return res.status(404).json({ message: 'Project not found' });
+    if (!got.mockupNum) return res.status(400).json({ message: 'Project has no number to letter against.' });
+    const newNum = got.mockupNum;
+
+    const newRemoteId = `var-${crypto.randomUUID()}`;
+    let item;
+    try {
+      item = await StudioLibraryItem.create(buildMockupVariation(src, newNum, newRemoteId));
+    } catch (e) {
+      // Don't leave a dangling number linked to the project if the clone failed.
+      await Order.updateOne({ _id: req.params.id }, { $pull: { mockupNumbers: newNum } }).catch(() => {});
+      throw e;
+    }
+
+    // A variation is an explicit re-add — if this number was somehow excluded
+    // before, the owner's new intent wins. Activity keeps the paper trail.
+    await Order.updateOne(
+      { _id: req.params.id },
+      {
+        $pull: { excludedMockups: newNum },
+        $push: { activity: {
+          kind: 'mockups_linked', actor: 'owner',
+          message: `Added variation ${newNum} of ${src.pageState && src.pageState.mockupNum ? src.pageState.mockupNum : (src.name || 'mockup')}`,
+          meta: { mockupNumbers: [newNum], source: 'variation' },
+          at: new Date(),
+        } },
+      },
+    ).catch(() => {});
+
+    res.json({ ok: true, mockupNum: newNum, remoteId: newRemoteId, itemId: item._id, name: item.name });
+  } catch (e) {
+    res.status(e.message && e.message.includes('reserve') ? 409 : 500).json({ message: e.message });
   }
 };
 
@@ -1527,8 +1612,8 @@ module.exports = {
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
   dashboard, attention, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
   cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups, assignMockupNumber,
-  createOrGetProjectForCompany, backfillConfirmationCogs,
+  duplicateMockup, createOrGetProjectForCompany, backfillConfirmationCogs,
   // exported for tests / reuse
   isPlacedStatus, bumpCustomerOnPlacement, pickLiveProjectForCompany, isLiveProject,
-  orderPlacedAt, etAgeDays,
+  orderPlacedAt, etAgeDays, buildMockupVariation,
 };
