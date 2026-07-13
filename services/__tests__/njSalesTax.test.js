@@ -4,7 +4,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { activeFiling, dueDateFor, QUARTERS, orderSaleDate, njTaxForOrder } = require('../njSalesTax');
+const { activeFiling, dueDateFor, QUARTERS, orderSaleDate, njTaxForOrder, grossReceiptsForOrder } = require('../njSalesTax');
 
 test('the Jul-20 filing (Q2) is active in mid-July', () => {
   const f = activeFiling(new Date(2026, 6, 11)); // Jul 11, 2026
@@ -66,6 +66,40 @@ test('a legacy single NJ tax custom line counts only when the order shipped to N
   assert.equal(njTaxForOrder(base).tax, 66.25);
   // Same order shipped to PA → the NJ line doesn't apply.
   assert.equal(njTaxForOrder({ ...base, shipToState: 'PA' }).tax, 0);
+});
+
+test('grossReceiptsForOrder excludes per-location tax (ST-50 line 1)', () => {
+  const order = {
+    confirmation: {
+      items: [{ sizes: [{ qty: 100, unitPrice: 10 }], allocations: [{ key: 'nj', qty: 60 }, { key: 'ny', qty: 40 }] }],
+      shipTos: [
+        { key: 'nj', state: 'NJ', taxRate: 6.625, label: 'Trenton' },
+        { key: 'ny', state: 'NY', taxRate: 8, label: 'NYC' },
+      ],
+    },
+  };
+  // $1000 of goods; NJ tax 39.75 + NY tax 32 ride the grand total but are NOT receipts.
+  assert.equal(grossReceiptsForOrder(order), 1000);
+});
+
+test('grossReceiptsForOrder excludes a legacy percent tax custom line but keeps real charges', () => {
+  const order = {
+    shipToState: 'NJ',
+    confirmation: {
+      items: [{ sizes: [{ qty: 50, unitPrice: 20 }] }],   // $1000 subtotal
+      customLines: [
+        { label: 'Shipping', amount: 40 },
+        { label: 'NJ Sales Tax', amount: 6.625, isPercent: true },
+      ],
+    },
+  };
+  // Receipts = $1000 goods + $40 shipping; the 6.625% tax line drops out.
+  const gross = grossReceiptsForOrder(order);
+  assert.ok(Math.abs(gross - 1040) < 0.02, `gross ${gross} ≈ 1040`);
+});
+
+test('grossReceiptsForOrder is 0 with no confirmation', () => {
+  assert.equal(grossReceiptsForOrder({}), 0);
 });
 
 test('orderSaleDate prefers orderDate, then paid date, then createdAt', () => {

@@ -1495,7 +1495,7 @@ const backfillTransactionLinks = async () => {
 // back); default is the active-reminder filing, else the most recent quarter.
 const njSalesTax = async (req, res) => {
   try {
-    const { activeFiling, njTaxForOrder, orderSaleDate, QUARTERS, dueDateFor } = require('../services/njSalesTax');
+    const { activeFiling, njTaxForOrder, grossReceiptsForOrder, orderSaleDate, QUARTERS, dueDateFor } = require('../services/njSalesTax');
     const now = new Date();
 
     // Resolve the period to report. Explicit ?period=2026Q2 wins; else the
@@ -1541,10 +1541,17 @@ const njSalesTax = async (req, res) => {
 
     const rows = [];
     let totalTaxable = 0; let totalTax = 0;
+    // ST-50 line 1: gross receipts from EVERY sale booked in the period —
+    // taxed or not (out-of-state, wholesale) — excluding the tax collected.
+    let totalGross = 0;
     for (const o of orders) {
+      const saleDateAny = orderSaleDate(o);
+      if (saleDateAny && saleDateAny >= filing.periodStart && saleDateAny < filing.periodEnd) {
+        totalGross += grossReceiptsForOrder(o);
+      }
       const { taxable, tax } = njTaxForOrder(o);
       if (tax <= 0) continue;
-      const saleDate = orderSaleDate(o);
+      const saleDate = saleDateAny;
       if (!saleDate || saleDate < filing.periodStart || saleDate >= filing.periodEnd) continue;
       totalTaxable += taxable; totalTax += tax;
       rows.push({
@@ -1571,6 +1578,11 @@ const njSalesTax = async (req, res) => {
       orderCount: rows.length,
       totalTaxable: round2(totalTaxable),
       totalTax: round2(totalTax),
+      // ST-50 form lines, ready to type: line 1 = gross receipts from every
+      // sale booked this quarter (tax excluded); line 2 = the non-NJ-taxable
+      // slice; line 3 (taxable) is totalTaxable; line 8 is totalTax.
+      totalGross: round2(totalGross),
+      totalNonTaxable: round2(Math.max(0, totalGross - totalTaxable)),
       orders: rows,
     });
   } catch (e) {

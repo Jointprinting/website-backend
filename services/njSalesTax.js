@@ -11,7 +11,7 @@
 // fixed −5/−4 offset kept simple: we bucket on calendar month/day, which is
 // unambiguous for quarter boundaries.
 
-const { computeLocationTax, isTaxCustomLine } = require('../models/Order');
+const { computeLocationTax, isTaxCustomLine, computeConfirmationTotals } = require('../models/Order');
 
 const round2 = (v) => Math.round(((Number(v) || 0) + Number.EPSILON) * 100) / 100;
 
@@ -120,7 +120,29 @@ function njTaxForOrder(order) {
   return { taxable: round2(itemsSubtotal), tax: round2(tax) };
 }
 
+// Gross receipts ONE order books for the ST-50 (form line 1): the confirmation
+// grand total minus every tax dollar the client was actually charged — receipts
+// never include collected sales tax (any state's). Tax lines are valued with
+// the SAME running-subtotal walk computeConfirmationTotals uses (a percent line
+// applies to everything above it), so grand − tax is exactly what the client
+// paid for goods + real charges. PURE.
+function grossReceiptsForOrder(order) {
+  const conf = order && order.confirmation;
+  if (!conf) return 0;
+  const n = (v) => Number(v) || 0;
+  const { itemsSubtotal, grandTotal } = computeConfirmationTotals(conf);
+  let tax = computeLocationTax(conf).total || 0;
+  let running = itemsSubtotal;
+  for (const line of (Array.isArray(conf.customLines) ? conf.customLines : [])) {
+    const value = line && line.isPercent ? running * n(line.amount) / 100 : n(line && line.amount);
+    if (isTaxCustomLine(line)) tax += value;
+    running += value;
+  }
+  return round2(Math.max(0, n(grandTotal) - tax));
+}
+
 module.exports = {
-  QUARTERS, dueDateFor, quarterOf, activeFiling, orderSaleDate, njTaxForOrder, round2,
+  QUARTERS, dueDateFor, quarterOf, activeFiling, orderSaleDate, njTaxForOrder,
+  grossReceiptsForOrder, round2,
   REMIND_BEFORE_DAYS, GRACE_AFTER_DAYS,
 };
