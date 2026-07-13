@@ -1287,7 +1287,7 @@ const autoLinkMockups = async (req, res) => {
     const slug   = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
 
     const [projects, library] = await Promise.all([
-      Order.find({}).select('projectNumber companyName clientName companyKey mockupNumbers status updatedAt').lean(),
+      Order.find({}).select('projectNumber companyName clientName companyKey mockupNumbers excludedMockups status updatedAt').lean(),
       StudioLibraryItem.find({ store: 'mockups' }).select('name client pageState.mockupNum').lean(),
     ]);
 
@@ -1374,6 +1374,13 @@ const autoLinkMockups = async (req, res) => {
       }
 
       if (!target) { unmatched.push({ itemId: item._id, itemName: item.name || '', mockupNum: rawNum, reason: 'no match' }); continue; }
+
+      // The owner explicitly X'd this number off the target project — an
+      // exclusion is what makes that removal stick, so auto-link honors it.
+      if ((target.excludedMockups || []).some((x) => norm(x) === nn)) {
+        unmatched.push({ itemId: item._id, itemName: item.name || '', mockupNum: rawNum, reason: 'removed by owner' });
+        continue;
+      }
 
       links.push({
         itemId: item._id, itemName: item.name || '', mockupNum: rawNum,
