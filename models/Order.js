@@ -487,6 +487,11 @@ const OrderSchema = new mongoose.Schema({
   },
 
   mockupNumbers: [{ type: String }],
+  // Mockup #s the owner explicitly REMOVED from this project. The client-name
+  // auto-matcher (drawer + server auto-link) skips these, so an X actually
+  // sticks instead of the mockup re-attaching itself. An explicit re-link via
+  // the picker still wins — exclusion only blocks AUTO matching.
+  excludedMockups: [{ type: String }],
   contactSubmissionId: { type: mongoose.Schema.Types.ObjectId, ref: 'ContactSubmission', default: null },
   items: [{
     description: { type: String, default: '' },
