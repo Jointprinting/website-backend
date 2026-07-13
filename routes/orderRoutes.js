@@ -8,7 +8,7 @@ const {
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
   dashboard, attention, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
   cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups, assignMockupNumber,
-  createOrGetProjectForCompany,
+  duplicateMockup, createOrGetProjectForCompany,
 } = require('../controllers/orders');
 const { ensureApprovalToken, sendApprovalLink, publishConfirmation, updateTracking, initTracking } = require('../controllers/approval');
 const orderDupSweep = require('../controllers/orderDupSweep');
@@ -94,6 +94,7 @@ router.put('/pos/:poId',                  poCtl.updatePo);
 router.delete('/pos/:poId',               poCtl.deletePo);
 router.post('/pos/:poId/pdf',             poCtl.poPdf);
 router.post('/:id/mockups/assign',        assignMockupNumber);
+router.post('/:id/mockups/duplicate',     duplicateMockup);   // "Add a variation" — clone into the next letter
 router.post('/:id/files', upload.single('file'), uploadFile);
 router.get('/:id/files/:filename',        serveFile);
 router.delete('/:id/files/:filename',     deleteFile);

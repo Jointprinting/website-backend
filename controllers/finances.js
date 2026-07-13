@@ -1539,6 +1539,19 @@ const njSalesTax = async (req, res) => {
       'confirmation.items.0': { $exists: true },
     }).select('orderNumber projectNumber companyName clientName status paid orderDate createdAt paidAt tracking shipToState confirmation').lean();
 
+    // Filed marker — set by POST /nj-sales-tax/filed when the owner marks the
+    // return submitted (optionally with the confirmation receipt). Keyed
+    // "2026Q2" in the njSt50Filings site setting; a filed quarter's banner
+    // stays hidden even inside the reminder window.
+    const qn = (String(filing.label).match(/^Q([1-4])/) || [])[1] || '';
+    const periodKey = qn ? `${filing.salesYear}Q${qn}` : '';
+    let filedInfo = null;
+    if (periodKey) {
+      const SiteSetting = require('../models/SiteSetting');
+      const st = await SiteSetting.findOne({ key: 'njSt50Filings' }).lean().catch(() => null);
+      filedInfo = (st && st.value && st.value[periodKey]) || null;
+    }
+
     const rows = [];
     let totalTaxable = 0; let totalTax = 0;
     // ST-50 line 1: gross receipts from EVERY sale booked in the period —
@@ -1583,6 +1596,9 @@ const njSalesTax = async (req, res) => {
       // slice; line 3 (taxable) is totalTaxable; line 8 is totalTax.
       totalGross: round2(totalGross),
       totalNonTaxable: round2(Math.max(0, totalGross - totalTaxable)),
+      periodKey,
+      filed: !!filedInfo,
+      filedAt: filedInfo ? filedInfo.filedAt : null,
       orders: rows,
     });
   } catch (e) {
@@ -1590,7 +1606,32 @@ const njSalesTax = async (req, res) => {
   }
 };
 
-module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears, backfillTransactionLinks, migrateRenamedCategories, config, addCategory, removeCategory, njSalesTax };
+// POST /api/finances/nj-sales-tax/filed — the owner marks a quarter's ST-50
+// submitted (ideally right after uploading the state confirmation as a receipt,
+// whose id rides along for the paper trail). Dismisses the hub banner for that
+// quarter permanently. Server-side merge so concurrent writes can't clobber
+// other quarters.
+const njSalesTaxFiled = async (req, res) => {
+  try {
+    const period = String((req.body || {}).period || '').trim().toUpperCase();
+    if (!/^\d{4}Q[1-4]$/.test(period)) {
+      return res.status(400).json({ message: 'Pass the period as e.g. 2026Q2.' });
+    }
+    const receiptId = String((req.body || {}).receiptId || '').trim();
+    const SiteSetting = require('../models/SiteSetting');
+    const entry = { filedAt: new Date().toISOString(), ...(receiptId ? { receiptId } : {}) };
+    await SiteSetting.findOneAndUpdate(
+      { key: 'njSt50Filings' },
+      { $set: { [`value.${period}`]: entry, updatedAt: new Date() } },
+      { upsert: true },
+    );
+    res.json({ ok: true, period, ...entry });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears, backfillTransactionLinks, migrateRenamedCategories, config, addCategory, removeCategory, njSalesTax, njSalesTaxFiled };
 module.exports.normalizeCategoryName = normalizeCategoryName;
 module.exports.categoriesWithCustom = categoriesWithCustom;
 module.exports.enrichTransactionLinks = enrichTransactionLinks;
