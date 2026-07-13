@@ -876,6 +876,43 @@ async function sendTestEmail(to) {
   return { ok: true, to: dest, from: fromAddr, messageId: (info && info.messageId) || null };
 }
 
+// One-off "great meeting you — here's the catalog" send, fired the same day as
+// a field visit (the Field Map's tonight-queue). Reuses the exact transport +
+// compose path the drip uses; the catalog is the public PDF the drip already
+// links in step 2.
+const CATALOG_URL = 'https://www.jointprinting.com/catalogs/dispo-promos.pdf';
+async function sendCatalogEmail(to, { companyName = '' } = {}) {
+  if (!outreachFrom())   throw new Error('Set OUTREACH_EMAIL_FROM on the API first.');
+  if (!smtpConfigured()) throw new Error('SMTP isn’t configured on the API yet — set the SMTP_* credentials.');
+  const dest = String(to || '').trim().toLowerCase();
+  if (!isEmail(dest)) throw new Error('Enter a valid email address for the catalog.');
+
+  const sender = getSenders()[0] || {};
+  const fromAddr = sender.from || outreachFrom();
+  const replyToAddr = sender.replyTo || outreachReplyTo();
+  const bodyText = [
+    `Great meeting you${companyName ? ` at ${companyName}` : ''} today!`,
+    '',
+    'As promised, here’s our dispensary promo catalog — custom grinders, trays, mylar bags, papers and more, all with your branding:',
+    CATALOG_URL,
+    '',
+    'Anything catch your eye, just reply here and I’ll get you pricing and mockups.',
+    '',
+    'Nate · Joint Printing',
+  ].join('\n');
+  const { html, text } = composeMessage({ bodyText, token: '' }); // reply-based opt-out, no pixel
+
+  const info = await sendEmail({
+    to: dest,
+    subject: 'Great meeting you today — the Joint Printing catalog',
+    html, textAlt: text,
+    from: fromAddr,
+    ...(replyToAddr ? { replyTo: replyToAddr } : {}),
+    ...(sender.smtp ? { smtp: sender.smtp } : {}),
+  });
+  return { ok: true, to: dest, messageId: (info && info.messageId) || null };
+}
+
 // Send ONE enrollment's next due step, optionally through a specific pool
 // identity `sender` (else the primary/legacy from + global SMTP). Returns
 // 'sent' | 'skipped' | 'error'.
@@ -1368,6 +1405,9 @@ module.exports = {
   // see the comment on the const). Analytics reports this so the UI can label a
   // 0% open rate as "tracking off", not "nobody opens your emails".
   openPixelEnabled,
+  // One-off "great meeting you" catalog send for Field Map visits — reuses the
+  // engine's sender/compose/send plumbing but never touches enrollments.
+  sendCatalogEmail,
   DAILY_CAP_MAX,
   DOMAIN_DAILY_CAP,
   SEND_PRIORITY_FILTERS,

@@ -21,6 +21,7 @@ const {
 
 const {
   getCurrent, addStop, removeStop, patchStop, optimize, patchRun, completeRun,
+  catalogQueue, sendCatalog,
 } = require('../controllers/fieldRun');
 
 const { requireAdmin } = require('../middleware/auth');
@@ -47,6 +48,10 @@ router.delete('/run/stops/:stopId', removeStop);
 router.patch ('/run/stops/:stopId', patchStop);
 router.post  ('/run/optimize',      optimize);
 router.post  ('/run/complete',      completeRun);
+
+// ── Tonight's catalog queue (visit capture → "send the catalog today") ───────
+router.get ('/catalog-queue',                     catalogQueue);
+router.post('/catalog-queue/:runId/:stopId/send', sendCatalog);
 
 // ── Live place search (legacy fallback — the map now reads the DB) ──────────
 router.get('/search/dispensaries', searchDispensaries);

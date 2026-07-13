@@ -201,10 +201,91 @@ async function patchStop(req, res) {
       }
     }
     if (b.outcome !== undefined) stop.outcome = String(b.outcome);
+    // Visit capture: queue tonight's catalog send (+ the best email to send it
+    // to). One-way except an explicit false — a re-synced offline write can't
+    // un-queue a send.
+    if (b.catalogQueued !== undefined) stop.catalogQueued = b.catalogQueued === true;
+    if (b.contactEmail !== undefined) stop.contactEmail = String(b.contactEmail || '').trim().toLowerCase();
     await run.save();
     res.json({ run });
   } catch (err) {
     res.status(500).json({ message: 'Update stop failed.' });
+  }
+}
+
+// ── Tonight's catalog queue ───────────────────────────────────────────────────
+// GET /api/roadtrip/catalog-queue — stops visited in the last 3 days with a
+// catalog queued and not yet sent (today's run + a grace window so a late night
+// doesn't drop yesterday's promises). POST /catalog-queue/:runId/:stopId/send
+// emails the catalog to the captured address, stamps catalogSentAt, logs the
+// touch on the CRM card and books the ~2-day "did you see it?" check-in call.
+async function catalogQueue(_req, res) {
+  try {
+    const since = new Date(Date.now() - 3 * 86400000);
+    const runs = await FieldRun.find({ updatedAt: { $gte: since } })
+      .select('stops active updatedAt').sort({ createdAt: -1 }).limit(6).lean();
+    const rows = [];
+    const seen = new Set();
+    for (const run of runs) {
+      for (const s of run.stops || []) {
+        if (!s.catalogQueued || s.catalogSentAt) continue;
+        const k = s.companyKey || String(s._id);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        rows.push({
+          runId: run._id, stopId: s._id, name: s.name, companyKey: s.companyKey || '',
+          email: s.contactEmail || '', visitedAt: s.visitedAt,
+        });
+      }
+    }
+    res.json({ rows, count: rows.length });
+  } catch (err) {
+    res.status(500).json({ message: 'Could not load the catalog queue.' });
+  }
+}
+
+async function sendCatalog(req, res) {
+  try {
+    const run = await FieldRun.findById(req.params.runId);
+    if (!run) return res.status(404).json({ message: 'Run not found.' });
+    const stop = run.stops.find((s) => String(s._id) === String(req.params.stopId));
+    if (!stop) return res.status(404).json({ message: 'Stop not found.' });
+    if (stop.catalogSentAt) return res.json({ ok: true, already: true, run });
+
+    const email = String((req.body || {}).email || stop.contactEmail || '').trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      return res.status(400).json({ message: 'No email on this stop — add one to send the catalog.' });
+    }
+
+    const { sendCatalogEmail } = require('../services/outreachEngine');
+    await sendCatalogEmail(email, { companyName: stop.name });
+
+    stop.catalogSentAt = new Date();
+    stop.contactEmail = email;
+    await run.save();
+
+    // Close the loop on the CRM card: log the send + book the check-in call
+    // ~2 days out (lands in the CRM Today queue — the owner's ask: check-ins
+    // belong in the CRM, not on the map).
+    if (stop.companyKey) {
+      try {
+        const Client = require('../models/Client');
+        const followUp = new Date(Date.now() + 2 * 86400000);
+        followUp.setUTCHours(12, 0, 0, 0);
+        await Client.updateOne(
+          { companyKey: stop.companyKey, 'log.dedupKey': { $ne: `catalog-send:${stop._id}` } },
+          {
+            $push: { log: { at: new Date(), text: `Catalog emailed to ${email} after the visit — check in ${followUp.toISOString().slice(0, 10)} whether they've looked`, kind: 'email', dedupKey: `catalog-send:${stop._id}` } },
+            $set: { lastContact: new Date(), nextFollowUp: followUp },
+          },
+        );
+      } catch (e) { console.warn('[fieldRun] catalog-send CRM log failed:', e.message); }
+    }
+
+    res.json({ ok: true, run });
+  } catch (err) {
+    res.status(err.message && /SMTP|transport|not configured/i.test(err.message) ? 503 : 500)
+      .json({ message: err.message || 'Catalog send failed.' });
   }
 }
 
@@ -279,4 +360,7 @@ async function completeRun(_req, res) {
   }
 }
 
-module.exports = { getCurrent, addStop, removeStop, patchStop, optimize, patchRun, completeRun };
+module.exports = {
+  getCurrent, addStop, removeStop, patchStop, optimize, patchRun, completeRun,
+  catalogQueue, sendCatalog,
+};

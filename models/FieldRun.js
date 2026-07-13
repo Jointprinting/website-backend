@@ -33,6 +33,14 @@ const RunStopSchema = new mongoose.Schema({
   status:    { type: String, enum: STOP_STATUSES, default: 'pending' },
   visitedAt: { type: Date, default: null },
   outcome:   { type: String, default: '' }, // 'pitched' | 'no_buyer' | 'dead' | '' — free-form safe
+
+  // "Send the catalog today" — set by the visit capture; the Field Map's
+  // tonight-queue lists queued-not-sent stops and the send stamps catalogSentAt
+  // (plus the CRM follow-up ~2 days out for the did-you-see-it call).
+  catalogQueued: { type: Boolean, default: false },
+  catalogSentAt: { type: Date, default: null },
+  // The best email captured during the visit — where the catalog goes.
+  contactEmail:  { type: String, default: '' },
 });
 
 const FieldRunSchema = new mongoose.Schema({
