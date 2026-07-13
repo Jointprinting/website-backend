@@ -22,6 +22,8 @@ router.get('/payment-gaps', ctl.paymentGaps);
 router.get('/missing-receipts', ctl.missingReceipts);
 router.get('/nj-sales-tax', ctl.njSalesTax);   // quarterly NJ ST-50 numbers behind the hub reminder
 router.post('/nj-sales-tax/filed', ctl.njSalesTaxFiled); // "Mark filed" — dismisses the quarter's banner (+ optional receipt id)
+router.get('/nj-annual-report', ctl.njAnnualReport);     // $75/yr LLC annual report (due Apr 30) behind the hub reminder
+router.post('/nj-annual-report/filed', ctl.njAnnualReportFiled);
 router.get('/export', ctl.exportCsv);
 router.post('/import', ctl.importCsv);
 

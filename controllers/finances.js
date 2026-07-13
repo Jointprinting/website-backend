@@ -1606,6 +1606,54 @@ const njSalesTax = async (req, res) => {
   }
 };
 
+// ── NJ LLC annual report — the $75/yr state filing ───────────────────────────
+// The LLC was formed in APRIL, and NJ annual reports are due by the END of the
+// anniversary month every year (April 30). The reminder opens ~3 weeks out and
+// holds through a short grace, exactly like the ST-50 banner; a filed year
+// stays dismissed. Marker lives in the njAnnualReportFilings site setting.
+const LLC_ANNIVERSARY_MONTH = 3;   // April (0-based) — formation month
+const LLC_ANNUAL_FEE = 75;         // state fee, before the portal's card surcharge
+
+const njAnnualReport = async (_req, res) => {
+  try {
+    const now = new Date();
+    const dueFor = (y) => new Date(y, LLC_ANNIVERSARY_MONTH + 1, 0, 0, 0, 0); // last day of April
+    const graceEnd = (d) => new Date(d.getTime() + 5 * 86400000);
+    let year = now.getFullYear();
+    let due = dueFor(year);
+    if (now > graceEnd(due)) { year += 1; due = dueFor(year); } // past this year's window → track next year's
+    const openFrom = new Date(due.getTime() - 21 * 86400000);
+    const active = now >= openFrom && now <= graceEnd(due);
+    const SiteSetting = require('../models/SiteSetting');
+    const st = await SiteSetting.findOne({ key: 'njAnnualReportFilings' }).lean().catch(() => null);
+    const filedInfo = (st && st.value && st.value[String(year)]) || null;
+    res.json({
+      active, year, dueDate: due,
+      daysUntilDue: Math.ceil((due.getTime() - now.getTime()) / 86400000),
+      fee: LLC_ANNUAL_FEE,
+      filed: !!filedInfo,
+      filedAt: filedInfo ? filedInfo.filedAt : null,
+    });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+// POST /api/finances/nj-annual-report/filed — { year, receiptId? }.
+const njAnnualReportFiled = async (req, res) => {
+  try {
+    const year = String((req.body || {}).year || '').trim();
+    if (!/^\d{4}$/.test(year)) return res.status(400).json({ message: 'Pass the year, e.g. 2026.' });
+    const receiptId = String((req.body || {}).receiptId || '').trim();
+    const SiteSetting = require('../models/SiteSetting');
+    const entry = { filedAt: new Date().toISOString(), ...(receiptId ? { receiptId } : {}) };
+    await SiteSetting.findOneAndUpdate(
+      { key: 'njAnnualReportFilings' },
+      { $set: { [`value.${year}`]: entry, updatedAt: new Date() } },
+      { upsert: true },
+    );
+    res.json({ ok: true, year, ...entry });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
 // POST /api/finances/nj-sales-tax/filed — the owner marks a quarter's ST-50
 // submitted (ideally right after uploading the state confirmation as a receipt,
 // whose id rides along for the paper trail). Dismisses the hub banner for that
@@ -1631,7 +1679,7 @@ const njSalesTaxFiled = async (req, res) => {
   }
 };
 
-module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears, backfillTransactionLinks, migrateRenamedCategories, config, addCategory, removeCategory, njSalesTax, njSalesTaxFiled };
+module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears, backfillTransactionLinks, migrateRenamedCategories, config, addCategory, removeCategory, njSalesTax, njSalesTaxFiled, njAnnualReport, njAnnualReportFiled };
 module.exports.normalizeCategoryName = normalizeCategoryName;
 module.exports.categoriesWithCustom = categoriesWithCustom;
 module.exports.enrichTransactionLinks = enrichTransactionLinks;

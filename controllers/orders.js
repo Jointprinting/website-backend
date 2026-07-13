@@ -490,6 +490,26 @@ const updateOrder = async (req, res) => {
     if (isPlacedStatus(order.status) && !isPlacedStatus(current.status)) {
       await bumpCustomerOnPlacement(order);
     }
+    // A deal is WON when its order is DELIVERED — the owner's rule ("won is only
+    // done when it's marked delivered"; the manual Win button was retired so a
+    // deal can never be mis-clicked won). Matches by the strongest link first
+    // (the order the deal was seeded from), then project/order number. updateMany
+    // bypasses the pre-save stamp, so wonAt is set explicitly. Best-effort.
+    if (order.status === 'delivered' && current.status !== 'delivered') {
+      try {
+        const Deal = require('../models/Deal');
+        const or = [{ sourceOrderId: order._id }];
+        if (order.projectNumber) or.push({ projectNumber: order.projectNumber });
+        if (order.orderNumber) or.push({ orderNumber: order.orderNumber });
+        const r = await Deal.updateMany(
+          { $or: or, stage: { $in: ['qualifying', 'quoted'] } },
+          { $set: { stage: 'won', wonAt: new Date() } },
+        );
+        if (r.modifiedCount) console.log(`[deals] order ${order.orderNumber || order.projectNumber} delivered → ${r.modifiedCount} deal(s) won`);
+      } catch (e) {
+        console.warn('[deals] delivered→won sync failed:', e.message);
+      }
+    }
     res.json(order);
   } catch (e) {
     res.status(400).json({ message: e.message });
