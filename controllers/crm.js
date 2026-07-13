@@ -1589,33 +1589,58 @@ async function patchOne(req, res) {
     // filled; anyone new is appended; the ★ primary is never disturbed. This
     // is deliberately distinct from a `contacts` edit, which REPLACES the
     // whole array from the company card's editor.
-    if (body.addContact && typeof body.addContact === 'object' && !('contacts' in body)) {
-      const inc = sanitizeContacts([{ ...body.addContact, isPrimary: false }]);
+    // `addContacts` (array) is the same merge for several people at once — the
+    // Field Map's visit capture sends "who I spoke to" + "who's in charge" in
+    // one offline-safe write.
+    const addContactList = Array.isArray(body.addContacts)
+      ? body.addContacts
+      : (body.addContact && typeof body.addContact === 'object' ? [body.addContact] : []);
+    if (addContactList.length && !('contacts' in body)) {
+      const inc = sanitizeContacts(addContactList.map((c) => ({ ...c, isPrimary: false })));
       if (inc.length) {
-        const c = inc[0];
         const cur = await Client.findOne({ companyKey: targetKey }).select('contacts').lean();
-        const existing = (cur && cur.contacts) || [];
-        // Match order: phone/email (the strong keys) via mergeContacts; else
-        // the same NAME — the natural repeat-capture flow is "got the name
-        // first, got their number the next visit", and that second capture
-        // must enrich the existing person, never append a duplicate.
-        const cp = normPhone(c.phone);
-        const ce = normEmail(c.email);
-        const keyMatch = (cp || ce)
-          ? existing.find((ec) => (cp && normPhone(ec.phone) === cp) || (ce && normEmail(ec.email) === ce))
-          : null;
-        const nameKey = String(c.name || '').trim().toLowerCase();
-        const nameMatch = !keyMatch && nameKey
-          ? existing.find((ec) => String(ec.name || '').trim().toLowerCase() === nameKey)
-          : null;
-        if (nameMatch) {
-          set.contacts = existing.map((ec) => (ec === nameMatch
-            ? { ...ec, role: ec.role || c.role, phone: ec.phone || c.phone, email: ec.email || c.email }
-            : ec));
-        } else {
-          set.contacts = mergeContacts(existing, [c]);
+        let existing = (cur && cur.contacts) || [];
+        for (const c of inc) {
+          // Match order: phone/email (the strong keys) via mergeContacts; else
+          // the same NAME — the natural repeat-capture flow is "got the name
+          // first, got their number the next visit", and that second capture
+          // must enrich the existing person, never append a duplicate.
+          const cp = normPhone(c.phone);
+          const ce = normEmail(c.email);
+          const keyMatch = (cp || ce)
+            ? existing.find((ec) => (cp && normPhone(ec.phone) === cp) || (ce && normEmail(ec.email) === ce))
+            : null;
+          const nameKey = String(c.name || '').trim().toLowerCase();
+          const nameMatch = !keyMatch && nameKey
+            ? existing.find((ec) => String(ec.name || '').trim().toLowerCase() === nameKey)
+            : null;
+          if (nameMatch) {
+            existing = existing.map((ec) => (ec === nameMatch
+              ? { ...ec, role: ec.role || c.role, phone: ec.phone || c.phone, email: ec.email || c.email }
+              : ec));
+          } else {
+            existing = mergeContacts(existing, [c]);
+          }
         }
+        set.contacts = existing;
       }
+    }
+
+    // `addTags` unions into the existing tags (vs `tags`, which replaces) — the
+    // Field Map stamps 'road' on visit-captured leads so they segment cleanly
+    // out of the main pipeline instead of clogging it.
+    if (Array.isArray(body.addTags) && body.addTags.length && !('tags' in body)) {
+      const cur = await Client.findOne({ companyKey: targetKey }).select('tags').lean();
+      const existing = (cur && cur.tags) || [];
+      const seen = new Set(existing.map((t) => String(t).trim().toLowerCase()));
+      const merged = [...existing];
+      for (const t of body.addTags) {
+        const s = String(t == null ? '' : t).trim();
+        if (!s || seen.has(s.toLowerCase())) continue;
+        seen.add(s.toLowerCase());
+        merged.push(s);
+      }
+      if (merged.length !== existing.length) set.tags = merged;
     }
 
     // Tags: normalize to a clean string[] — trimmed, non-empty, de-duped
@@ -1677,14 +1702,23 @@ async function patchOne(req, res) {
       }
     }
 
-    // Intent: log a touch.
-    const hasLog = typeof body.logText === 'string' && body.logText.trim() !== '';
+    // Intent: log a touch. `logDedupKey` makes the push idempotent — the Field
+    // Map's offline queue can replay a flaky flush twice, and a visit must
+    // never double-log. (Same dedupKey convention the outreach warm-handoff
+    // log lines use.)
+    let hasLog = typeof body.logText === 'string' && body.logText.trim() !== '';
+    if (hasLog && body.logDedupKey) {
+      const dk = String(body.logDedupKey);
+      const cur = await Client.findOne({ companyKey: targetKey, 'log.dedupKey': dk }).select('_id').lean();
+      if (cur) hasLog = false;   // already logged — skip the push, keep the rest of the patch
+    }
     if (hasLog) {
       const now = new Date();
-      push.log = { at: now, text: body.logText.trim(), kind: (body.kind || 'note') };
+      push.log = { at: now, text: body.logText.trim(), kind: (body.kind || 'note'),
+        ...(body.logDedupKey ? { dedupKey: String(body.logDedupKey) } : {}) };
       set.lastContact = now;
-      if ('nextFollowUp' in body) set.nextFollowUp = body.nextFollowUp || null;
     }
+    if (hasLog && 'nextFollowUp' in body) set.nextFollowUp = body.nextFollowUp || null;
 
     // Intent: reschedule (only when not also logging — logging already handled
     // nextFollowUp above). A bare { nextFollowUp } just moves the date.
