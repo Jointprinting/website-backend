@@ -114,6 +114,9 @@ function computeLocationTax(conf) {
   const items = (conf && Array.isArray(conf.items)) ? conf.items : [];
   const lines = taxed.map(st => {
     const subtotal = items.reduce((sum, it) => {
+      // NJ clothing exemption: an item flagged taxExempt contributes nothing to
+      // the taxable base — a mixed apparel+promo order taxes only the promos.
+      if (it && it.taxExempt) return sum;
       const itemRevenue = ((it && it.sizes) || []).reduce((ss, sz) => ss + n(sz.qty) * n(sz.unitPrice), 0);
       const itemQty = ((it && it.sizes) || []).reduce((q, sz) => q + n(sz.qty), 0);
       if (itemQty <= 0) return sum;
@@ -414,6 +417,14 @@ const OrderSchema = new mongoose.Schema({
       printType:           { type: String, default: '' },
       printDetails:        { type: String, default: '' },    // decoration detail, e.g. "1 color front" — distinguishes a print variant (carried from the quote line)
       color:               { type: String, default: '' },
+      // NJ exempts CLOTHING from sales tax — promo products (grinders, trays,
+      // bags…) are taxable. Per-item so a mixed apparel+promo order taxes only
+      // the promo slice. Seeded from an apparel-keyword guess in the builder;
+      // the owner can flip it per item. computeLocationTax skips exempt items.
+      taxExempt:           { type: Boolean, default: false },
+      // Client-facing estimated turnaround for THIS item (carried from the
+      // quote line the client picked) — shown on the confirmation they sign.
+      turnaroundWeeks:     { type: Number, default: 0 },
       printerName:         { type: String, default: '' },    // who's actually printing this item
       unitCost:            { type: Number, default: 0 },     // internal cost/unit carried from the quote — drives the order's COGS, never shown to the client
       sizes: [{
