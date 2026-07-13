@@ -10,8 +10,8 @@
 //     comments/shares) is a new point; the series is the growth curve, and a
 //     later API integration can append through the same door.
 //
-// The weekly pace goal (1 LinkedIn + 1 IG a week, adjustable) lives in the
-// generic site-settings store under the key `socialPace` — see
+// The weekly pace goal (Instagram-only, adjustable) lives in the generic
+// site-settings store under the key `socialPace` — see
 // controllers/siteSetting.js — so this controller stays purely about posts.
 
 const SocialPost = require('../models/SocialPost');

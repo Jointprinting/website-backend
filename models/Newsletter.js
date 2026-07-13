@@ -25,6 +25,10 @@ const RecipientSchema = new mongoose.Schema({
   error:      { type: String, default: '' },
   openedAt:   { type: Date, default: null },
   openCount:  { type: Number, default: 0 },
+  // Stamped by the one-click List-Unsubscribe endpoint (the same token). The
+  // real enforcement is the CRM doNotEmail + global suppression it also sets;
+  // this records WHERE the opt-out came from.
+  unsubscribedAt: { type: Date, default: null },
 }, { _id: false });
 
 const AttachmentSchema = new mongoose.Schema({
@@ -43,10 +47,11 @@ const NewsletterSchema = new mongoose.Schema({
   heroImage: { type: String, default: '' },   // optional banner image (R2 URL)
   files:     { type: [AttachmentSchema], default: [] },
 
-  // Who it goes to. 'all' = every emailable client; 'customers' = stage
-  // customer/won; 'tag' = a specific CRM tag (audienceTag). doNotEmail is always
-  // excluded, whatever the audience.
-  audience:    { type: String, enum: ['all', 'customers', 'leads', 'tag'], default: 'all' },
+  // Who it goes to. 'customers' (stage customer/won) is the DEFAULT — the
+  // owner's rule: newsletters go to people who already buy, never cold leads.
+  // 'tag' = a specific CRM tag (audienceTag); 'all'/'leads' stay possible but
+  // are never the default. doNotEmail is always excluded, whatever the audience.
+  audience:    { type: String, enum: ['all', 'customers', 'leads', 'tag'], default: 'customers' },
   audienceTag: { type: String, default: '' },
 
   status:  { type: String, enum: ['draft', 'sending', 'sent', 'failed'], default: 'draft', index: true },

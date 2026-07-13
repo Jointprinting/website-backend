@@ -220,6 +220,31 @@ db.once('open', () => {
     }
   }, 7_000);
 
+  // Crash-resume: pick up any newsletter blast a deploy/restart interrupted.
+  // Per-recipient sentAt is the checkpoint, so nothing double-sends and the
+  // tail of the list still goes out.
+  setTimeout(() => {
+    require('./controllers/newsletter').resumeStuckBlasts()
+      .then((n) => { if (n) console.log(`[newsletter] resumed ${n} interrupted blast(s)`); })
+      .catch((e) => console.warn('[newsletter] blast resume failed:', e.message));
+  }, 8_000);
+
+  // ONE-TIME per catalog drop: seed/refresh the promo catalog from the repo's
+  // committed data/promoCatalog.json (the Quoter's promo picker). Idempotent
+  // upserts — bump the -vN when a new vendor PDF is scraped into the file.
+  setTimeout(async () => {
+    const KEY = 'promoCatalogSeed-v1'; // v1: dispopromos client prices + net-cost catalog, Jul 2026
+    try {
+      const migrations = mongoose.connection.db.collection('migrations');
+      if (await migrations.findOne({ _id: KEY })) return;
+      const r = await require('./controllers/promoProducts').seedPromoCatalog();
+      await migrations.insertOne({ _id: KEY, at: new Date(), seeded: r.seeded });
+      console.log(`[promo] catalog seeded — ${r.seeded} product(s) from data/promoCatalog.json`);
+    } catch (e) {
+      console.warn('[promo] catalog seed failed (will retry next boot):', e.message);
+    }
+  }, 9_000);
+
   // DAILY: purge archived lookbooks + content posts older than 60 days —
   // Nate's explicit exception to archive-not-delete, presentation artifacts
   // only (services/archivePurge.js documents the scope + the legacy-stamp
@@ -367,6 +392,7 @@ const lookbookRoutes       = require('./routes/lookbookRoutes');
 const publicLookbookRoutes = require('./routes/publicLookbookRoutes');
 const socialPostRoutes     = require('./routes/socialPostRoutes');
 const newsletterRoutes     = require('./routes/newsletterRoutes');
+const promoProductRoutes   = require('./routes/promoProductRoutes');
 
 app.use('/api/products/ss', ssProxyLimiter);
 app.use('/api/products', productRoutes);
@@ -395,9 +421,20 @@ app.use('/api/lookbooks', express.json({ limit: '2mb' }), lookbookRoutes);
 // Content planner: post bodies are text, but an IG card can carry a small
 // downscaled reference image (data URL), so allow a touch more than 1mb.
 app.use('/api/social', express.json({ limit: '3mb' }), socialPostRoutes);
-app.use('/api/newsletter', express.json({ limit: '25mb' }), newsletterRoutes);
-// Public open-tracking pixel — no auth, addressed by the unguessable per-recipient token.
+// Public newsletter endpoints — no auth, addressed by the unguessable
+// per-recipient token. MOUNTED BEFORE the admin router: the router's
+// requireAdmin runs on every /api/newsletter/* request it sees, so anything
+// public must match first (the pixel used to sit below the router and 401'd —
+// open tracking never recorded).
 app.get('/api/newsletter/t/:token/open.png', require('./controllers/newsletter').openPixel);
+// One-click unsubscribe: GET = human confirm page; POST = RFC 8058 one-click
+// target (mail clients + the page's confirm button).
+app.get('/api/newsletter/u/:token', require('./controllers/newsletter').unsubPage);
+app.post('/api/newsletter/u/:token', express.urlencoded({ extended: false }), require('./controllers/newsletter').oneClickUnsub);
+app.use('/api/newsletter', express.json({ limit: '25mb' }), newsletterRoutes);
+// Promo catalog (the Quoter's promo picker) — imports can carry a whole
+// catalog drop, so give the body some headroom.
+app.use('/api/promo-products', express.json({ limit: '5mb' }), promoProductRoutes);
 app.use('/api/admin/backup', backupRoutes);
 app.use('/api/admin', express.json({ limit: '2mb' }), adminRoutes); // owner-only agent management
 app.use('/api/agent', express.json({ limit: '2mb' }), agentRoutes); // sales-agent portal (self-scoped)

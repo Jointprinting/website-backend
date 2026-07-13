@@ -1,0 +1,5496 @@
+[
+ {
+  "name": "Glass Ashtray Full Color Imprint",
+  "sku": "C-ASHG",
+  "variant": "",
+  "category": "Ashtray",
+  "description": "4\" diameter; glass; available in black, white and clear glass",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color imprint",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 100,
+    "cost": 3.02
+   },
+   {
+    "qty": 200,
+    "cost": 3
+   },
+   {
+    "qty": 500,
+    "cost": 2.93
+   },
+   {
+    "qty": 1000,
+    "cost": 2.86
+   },
+   {
+    "qty": 2500,
+    "cost": 2.79
+   },
+   {
+    "qty": 5000,
+    "cost": 2.72
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 100,
+    "price": 4.32
+   },
+   {
+    "qty": 200,
+    "price": 4.29
+   },
+   {
+    "qty": 500,
+    "price": 4.19
+   },
+   {
+    "qty": 1000,
+    "price": 4.09
+   },
+   {
+    "qty": 2500,
+    "price": 3.99
+   },
+   {
+    "qty": 5000,
+    "price": 3.89
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Carbon Carrying Case with Combination Lock",
+  "sku": "CCC8X4",
+  "variant": "",
+  "category": "Bag",
+  "description": "8\"W x 4\"H, 3\" depth; carbon-lined smell-proof case with combination lock",
+  "moq": null,
+  "turnaround": "3-5 Weeks",
+  "printMethod": "Imprint",
+  "printCost": "Included (1 color); add'l color run charge $.20 per unit",
+  "setupCostNet": "$40 per color (Repeat Setup $20 per color)",
+  "setupCostClient": "$50 per color (repeat setup $25 per color)",
+  "netCostBreaks": [
+   {
+    "qty": 100,
+    "cost": 16.24
+   },
+   {
+    "qty": 250,
+    "cost": 14.94
+   },
+   {
+    "qty": 500,
+    "cost": 14.29
+   },
+   {
+    "qty": 1000,
+    "cost": 13.64
+   },
+   {
+    "qty": 2500,
+    "cost": 12.99
+   },
+   {
+    "qty": 5000,
+    "cost": 12.67
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 100,
+    "price": 24.99
+   },
+   {
+    "qty": 250,
+    "price": 22.99
+   },
+   {
+    "qty": 500,
+    "price": 21.99
+   },
+   {
+    "qty": 1000,
+    "price": 20.99
+   },
+   {
+    "qty": 2500,
+    "price": 19.99
+   },
+   {
+    "qty": 5000,
+    "price": 19.49
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Carbon Stash Bag with Combination Lock",
+  "sku": "CCB11X6",
+  "variant": "",
+  "category": "Bag",
+  "description": "11\"W x 6\"H; carbon-lined smell-proof stash bag with combination lock",
+  "moq": null,
+  "turnaround": "3-5 Weeks",
+  "printMethod": "Imprint",
+  "printCost": "Included (1 color); add'l color run charge $.20 per unit",
+  "setupCostNet": "$40 per color (Repeat Setup $20 per color)",
+  "setupCostClient": "$50 per color (repeat setup $25 per color)",
+  "netCostBreaks": [
+   {
+    "qty": 100,
+    "cost": 10.39
+   },
+   {
+    "qty": 250,
+    "cost": 10.26
+   },
+   {
+    "qty": 500,
+    "cost": 10.07
+   },
+   {
+    "qty": 1000,
+    "cost": 9.74
+   },
+   {
+    "qty": 2500,
+    "cost": 9.42
+   },
+   {
+    "qty": 5000,
+    "cost": 9.09
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 100,
+    "price": 15.99
+   },
+   {
+    "qty": 250,
+    "price": 15.79
+   },
+   {
+    "qty": 500,
+    "price": 15.49
+   },
+   {
+    "qty": 1000,
+    "price": 14.99
+   },
+   {
+    "qty": 2500,
+    "price": 14.49
+   },
+   {
+    "qty": 5000,
+    "price": 13.99
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Carbon Waist Pack",
+  "sku": "CCWP10X6",
+  "variant": "",
+  "category": "Bag",
+  "description": "10\"W x 6\"H, 3\" depth; carbon-lined smell-proof waist pack",
+  "moq": null,
+  "turnaround": "3-5 Weeks",
+  "printMethod": "Imprint",
+  "printCost": "Included (1 color); add'l color run charge $.20 per unit",
+  "setupCostNet": "$40 per color (Repeat Setup $20 per color)",
+  "setupCostClient": "$50 per color (repeat setup $25 per color)",
+  "netCostBreaks": [
+   {
+    "qty": 100,
+    "cost": 16.24
+   },
+   {
+    "qty": 250,
+    "cost": 14.94
+   },
+   {
+    "qty": 500,
+    "cost": 14.29
+   },
+   {
+    "qty": 1000,
+    "cost": 13.64
+   },
+   {
+    "qty": 2500,
+    "cost": 12.99
+   },
+   {
+    "qty": 5000,
+    "cost": 12.67
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 100,
+    "price": 24.99
+   },
+   {
+    "qty": 250,
+    "price": 22.99
+   },
+   {
+    "qty": 500,
+    "price": 21.99
+   },
+   {
+    "qty": 1000,
+    "price": 20.99
+   },
+   {
+    "qty": 2500,
+    "price": 19.99
+   },
+   {
+    "qty": 5000,
+    "price": 19.49
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Exit Bags",
+  "sku": "CEXIT12X9",
+  "variant": "",
+  "category": "Bag",
+  "description": "Mylar exit bag, 12\" W x 9\" H + 4.5\" gusset. Child/odor resistant, zipper options.",
+  "moq": null,
+  "turnaround": "25-30 Business Days",
+  "printMethod": "Full custom",
+  "printCost": "Included in setup (one-time fee)",
+  "setupCostNet": "$120 per color (one-time)",
+  "setupCostClient": "",
+  "netCostBreaks": [
+   {
+    "qty": 5000,
+    "cost": 0.75
+   },
+   {
+    "qty": 10000,
+    "cost": 0.71
+   },
+   {
+    "qty": 25000,
+    "cost": 0.68
+   },
+   {
+    "qty": 50000,
+    "cost": 0.62
+   },
+   {
+    "qty": 100000,
+    "cost": 0.59
+   }
+  ],
+  "clientPriceBreaks": [],
+  "flags": []
+ },
+ {
+  "name": "Exit Bags Overseas",
+  "sku": "CEXIT12X9",
+  "variant": "overseas",
+  "category": "Bag",
+  "description": "12\"W x 9\"H + 4.5\" gusset; overseas; print entire bag; child & odor resistant; several zipper options; shipping included",
+  "moq": null,
+  "turnaround": "12-14 weeks",
+  "printMethod": "Full custom, entire bag",
+  "printCost": "Included in setup (one-time fee)",
+  "setupCostNet": "$120 per color (one-time)",
+  "setupCostClient": "$150 per color (one-time)",
+  "netCostBreaks": [
+   {
+    "qty": 5000,
+    "cost": 0.56
+   },
+   {
+    "qty": 10000,
+    "cost": 0.52
+   },
+   {
+    "qty": 25000,
+    "cost": 0.49
+   },
+   {
+    "qty": 50000,
+    "cost": 0.44
+   },
+   {
+    "qty": 100000,
+    "cost": 0.4
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 5000,
+    "price": 0.75
+   },
+   {
+    "qty": 10000,
+    "price": 0.69
+   },
+   {
+    "qty": 25000,
+    "price": 0.65
+   },
+   {
+    "qty": 50000,
+    "price": 0.58
+   },
+   {
+    "qty": 100000,
+    "price": 0.53
+   }
+  ],
+  "flags": [
+   "Overseas variant; shares SKU CEXIT12X9 with domestic exit bag",
+   "Overseas version with same SKU on page 12 (different pricing/lead time)",
+   "Overseas version; shares SKU with domestic Exit Bags on page 11"
+  ]
+ },
+ {
+  "name": "Mylar Bag Overseas - Eighth OZ",
+  "sku": "CM-1/8OZ",
+  "variant": "overseas",
+  "category": "Bag",
+  "description": "3.43\"W x 5\"H + 2\" gusset; mylar; OVERSEAS production, shipping included",
+  "moq": null,
+  "turnaround": "8-10 weeks",
+  "printMethod": "Full custom, entire bag",
+  "printCost": "Included in setup (one-time fee)",
+  "setupCostNet": "$120 per color (one-time)",
+  "setupCostClient": "$150 per color, or $600 CMYK+W with fades (one-time)",
+  "netCostBreaks": [
+   {
+    "qty": 5000,
+    "cost": 0.21
+   },
+   {
+    "qty": 25000,
+    "cost": 0.18
+   },
+   {
+    "qty": 50000,
+    "cost": 0.12
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 10000,
+    "price": 0.28
+   },
+   {
+    "qty": 25000,
+    "price": 0.24
+   },
+   {
+    "qty": 50000,
+    "price": 0.16
+   }
+  ],
+  "flags": [
+   "Overseas variant; shares SKU CM-1/8OZ with domestic mylar bag",
+   "Overseas version; shares SKU with domestic Mylar bag on page 11"
+  ]
+ },
+ {
+  "name": "Mylar Bag Overseas - Half OZ",
+  "sku": "CM-1/2OZ",
+  "variant": "overseas",
+  "category": "Bag",
+  "description": "5\"W x 8.13\"H + 3\" gusset; mylar; OVERSEAS production, shipping included",
+  "moq": null,
+  "turnaround": "8-10 weeks",
+  "printMethod": "Full custom, entire bag",
+  "printCost": "Included in setup (one-time fee)",
+  "setupCostNet": "$120 per color (one-time)",
+  "setupCostClient": "$150 per color, or $600 CMYK+W with fades (one-time)",
+  "netCostBreaks": [
+   {
+    "qty": 5000,
+    "cost": 0.25
+   },
+   {
+    "qty": 25000,
+    "cost": 0.2
+   },
+   {
+    "qty": 50000,
+    "cost": 0.14
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 10000,
+    "price": 0.33
+   },
+   {
+    "qty": 25000,
+    "price": 0.27
+   },
+   {
+    "qty": 50000,
+    "price": 0.19
+   }
+  ],
+  "flags": [
+   "Overseas variant; shares SKU CM-1/2OZ with domestic mylar bag",
+   "Overseas version; shares SKU with domestic Mylar bag on page 11"
+  ]
+ },
+ {
+  "name": "Mylar Bag Overseas - One Pound",
+  "sku": "CM-LB",
+  "variant": "overseas",
+  "category": "Bag",
+  "description": "12\"W x 19\"H + 5.5\" gusset; mylar; OVERSEAS production, shipping included",
+  "moq": null,
+  "turnaround": "8-10 weeks",
+  "printMethod": "Full custom, entire bag",
+  "printCost": "Included in setup (one-time fee)",
+  "setupCostNet": "$120 per color (one-time)",
+  "setupCostClient": "$150 per color, or $600 CMYK+W with fades (one-time)",
+  "netCostBreaks": [
+   {
+    "qty": 5000,
+    "cost": 1.12
+   },
+   {
+    "qty": 25000,
+    "cost": 0.74
+   },
+   {
+    "qty": 50000,
+    "cost": 0.59
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 10000,
+    "price": 1.49
+   },
+   {
+    "qty": 25000,
+    "price": 0.99
+   },
+   {
+    "qty": 50000,
+    "price": 0.79
+   }
+  ],
+  "flags": [
+   "Overseas variant; shares SKU CM-LB with domestic mylar bag",
+   "Overseas version; shares SKU with domestic Mylar bag on page 11"
+  ]
+ },
+ {
+  "name": "Mylar Bag Overseas - Ounce",
+  "sku": "CM-OZ",
+  "variant": "overseas",
+  "category": "Bag",
+  "description": "5.9\"W x 9\"H + 3.5\" gusset; mylar; OVERSEAS production, shipping included",
+  "moq": null,
+  "turnaround": "8-10 weeks",
+  "printMethod": "Full custom, entire bag",
+  "printCost": "Included in setup (one-time fee)",
+  "setupCostNet": "$120 per color (one-time)",
+  "setupCostClient": "$150 per color, or $600 CMYK+W with fades (one-time)",
+  "netCostBreaks": [
+   {
+    "qty": 5000,
+    "cost": 0.26
+   },
+   {
+    "qty": 25000,
+    "cost": 0.23
+   },
+   {
+    "qty": 50000,
+    "cost": 0.18
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 10000,
+    "price": 0.35
+   },
+   {
+    "qty": 25000,
+    "price": 0.3
+   },
+   {
+    "qty": 50000,
+    "price": 0.24
+   }
+  ],
+  "flags": [
+   "Overseas variant; shares SKU CM-OZ with domestic mylar bag",
+   "Overseas version; shares SKU with domestic Mylar bag on page 11"
+  ]
+ },
+ {
+  "name": "Mylar Bag Overseas - Pre Roll",
+  "sku": "CM-PROLL",
+  "variant": "overseas",
+  "category": "Bag",
+  "description": "5.75\"W x 2.88\"H; mylar; OVERSEAS production, shipping included",
+  "moq": null,
+  "turnaround": "8-10 weeks",
+  "printMethod": "Full custom, entire bag",
+  "printCost": "Included in setup (one-time fee)",
+  "setupCostNet": "$120 per color (one-time)",
+  "setupCostClient": "$150 per color, or $600 CMYK+W with fades (one-time)",
+  "netCostBreaks": [
+   {
+    "qty": 5000,
+    "cost": 0.21
+   },
+   {
+    "qty": 25000,
+    "cost": 0.19
+   },
+   {
+    "qty": 50000,
+    "cost": 0.12
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 10000,
+    "price": 0.28
+   },
+   {
+    "qty": 25000,
+    "price": 0.25
+   },
+   {
+    "qty": 50000,
+    "price": 0.16
+   }
+  ],
+  "flags": [
+   "Overseas variant; shares SKU CM-PROLL with domestic mylar bag",
+   "Overseas version; shares SKU with domestic Mylar bag on page 11"
+  ]
+ },
+ {
+  "name": "Mylar Bag Overseas - Quarter OZ",
+  "sku": "CM-1/4OZ",
+  "variant": "overseas",
+  "category": "Bag",
+  "description": "4\"W x 6.63\"H + 2\" gusset; mylar; OVERSEAS production, shipping included",
+  "moq": null,
+  "turnaround": "8-10 weeks",
+  "printMethod": "Full custom, entire bag",
+  "printCost": "Included in setup (one-time fee)",
+  "setupCostNet": "$120 per color (one-time)",
+  "setupCostClient": "$150 per color, or $600 CMYK+W with fades (one-time)",
+  "netCostBreaks": [
+   {
+    "qty": 5000,
+    "cost": 0.23
+   },
+   {
+    "qty": 25000,
+    "cost": 0.19
+   },
+   {
+    "qty": 50000,
+    "cost": 0.13
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 10000,
+    "price": 0.3
+   },
+   {
+    "qty": 25000,
+    "price": 0.25
+   },
+   {
+    "qty": 50000,
+    "price": 0.17
+   }
+  ],
+  "flags": [
+   "Overseas variant; shares SKU CM-1/4OZ with domestic mylar bag",
+   "Overseas version; shares SKU with domestic Mylar bag on page 11"
+  ]
+ },
+ {
+  "name": "Mylar Barrier Bag - Eighth OZ",
+  "sku": "CM-1/8OZ",
+  "variant": "",
+  "category": "Bag",
+  "description": "3.43\"W x 5\"H + 2\" gusset; mylar barrier bag with zipper, gussets, heat-sealable top; custom logo both sides",
+  "moq": null,
+  "turnaround": "25-30 Business Days",
+  "printMethod": "Full custom, entire bag, both sides",
+  "printCost": "Included in setup (one-time fee)",
+  "setupCostNet": "$120 per color or $480 CMYK+W with fades (one-time)",
+  "setupCostClient": "$150 per color, or $600 CMYK+W with fades (one-time)",
+  "netCostBreaks": [
+   {
+    "qty": 10000,
+    "cost": 0.3
+   },
+   {
+    "qty": 25000,
+    "cost": 0.27
+   },
+   {
+    "qty": 50000,
+    "cost": 0.21
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 10000,
+    "price": 0.4
+   },
+   {
+    "qty": 25000,
+    "price": 0.36
+   },
+   {
+    "qty": 50000,
+    "price": 0.28
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Mylar Barrier Bag - Half OZ",
+  "sku": "CM-1/2OZ",
+  "variant": "",
+  "category": "Bag",
+  "description": "5\"W x 8.13\"H + 3\" gusset; mylar barrier bag with zipper, gussets, heat-sealable top; custom logo both sides",
+  "moq": null,
+  "turnaround": "25-30 Business Days",
+  "printMethod": "Full custom, entire bag, both sides",
+  "printCost": "Included in setup (one-time fee)",
+  "setupCostNet": "$120 per color or $480 CMYK+W with fades (one-time)",
+  "setupCostClient": "$150 per color, or $600 CMYK+W with fades (one-time)",
+  "netCostBreaks": [
+   {
+    "qty": 10000,
+    "cost": 0.34
+   },
+   {
+    "qty": 25000,
+    "cost": 0.29
+   },
+   {
+    "qty": 50000,
+    "cost": 0.23
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 10000,
+    "price": 0.45
+   },
+   {
+    "qty": 25000,
+    "price": 0.39
+   },
+   {
+    "qty": 50000,
+    "price": 0.31
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Mylar Barrier Bag - One Pound",
+  "sku": "CM-LB",
+  "variant": "",
+  "category": "Bag",
+  "description": "12\"W x 19\"H + 5.5\" gusset; mylar barrier bag with zipper, gussets, heat-sealable top; custom logo both sides",
+  "moq": null,
+  "turnaround": "25-30 Business Days",
+  "printMethod": "Full custom, entire bag, both sides",
+  "printCost": "Included in setup (one-time fee)",
+  "setupCostNet": "$120 per color or $480 CMYK+W with fades (one-time)",
+  "setupCostClient": "$150 per color, or $600 CMYK+W with fades (one-time)",
+  "netCostBreaks": [
+   {
+    "qty": 10000,
+    "cost": 1.34
+   },
+   {
+    "qty": 25000,
+    "cost": 1.12
+   },
+   {
+    "qty": 50000,
+    "cost": 0.89
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 10000,
+    "price": 1.79
+   },
+   {
+    "qty": 25000,
+    "price": 1.49
+   },
+   {
+    "qty": 50000,
+    "price": 1.19
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Mylar Barrier Bag - Ounce",
+  "sku": "CM-OZ",
+  "variant": "",
+  "category": "Bag",
+  "description": "5.9\"W x 9\"H + 3.5\" gusset; mylar barrier bag with zipper, gussets, heat-sealable top; custom logo both sides",
+  "moq": null,
+  "turnaround": "25-30 Business Days",
+  "printMethod": "Full custom, entire bag, both sides",
+  "printCost": "Included in setup (one-time fee)",
+  "setupCostNet": "$120 per color or $480 CMYK+W with fades (one-time)",
+  "setupCostClient": "$150 per color, or $600 CMYK+W with fades (one-time)",
+  "netCostBreaks": [
+   {
+    "qty": 10000,
+    "cost": 0.35
+   },
+   {
+    "qty": 25000,
+    "cost": 0.32
+   },
+   {
+    "qty": 50000,
+    "cost": 0.27
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 10000,
+    "price": 0.47
+   },
+   {
+    "qty": 25000,
+    "price": 0.42
+   },
+   {
+    "qty": 50000,
+    "price": 0.36
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Mylar Barrier Bag - Pre Roll",
+  "sku": "CM-PROLL",
+  "variant": "",
+  "category": "Bag",
+  "description": "5.75\"W x 2.88\"H; mylar barrier bag with zipper, gussets, heat-sealable top; custom logo both sides",
+  "moq": null,
+  "turnaround": "25-30 Business Days",
+  "printMethod": "Full custom, entire bag, both sides",
+  "printCost": "Included in setup (one-time fee)",
+  "setupCostNet": "$120 per color or $480 CMYK+W with fades (one-time)",
+  "setupCostClient": "$150 per color, or $600 CMYK+W with fades (one-time)",
+  "netCostBreaks": [
+   {
+    "qty": 10000,
+    "cost": 0.3
+   },
+   {
+    "qty": 25000,
+    "cost": 0.28
+   },
+   {
+    "qty": 50000,
+    "cost": 0.21
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 10000,
+    "price": 0.4
+   },
+   {
+    "qty": 25000,
+    "price": 0.37
+   },
+   {
+    "qty": 50000,
+    "price": 0.28
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Mylar Barrier Bag - Quarter OZ",
+  "sku": "CM-1/4OZ",
+  "variant": "",
+  "category": "Bag",
+  "description": "4\"W x 6.63\"H + 2\" gusset; mylar barrier bag with zipper, gussets, heat-sealable top; custom logo both sides",
+  "moq": null,
+  "turnaround": "25-30 Business Days",
+  "printMethod": "Full custom, entire bag, both sides",
+  "printCost": "Included in setup (one-time fee)",
+  "setupCostNet": "$120 per color or $480 CMYK+W with fades (one-time)",
+  "setupCostClient": "$150 per color, or $600 CMYK+W with fades (one-time)",
+  "netCostBreaks": [
+   {
+    "qty": 10000,
+    "cost": 0.32
+   },
+   {
+    "qty": 25000,
+    "cost": 0.28
+   },
+   {
+    "qty": 50000,
+    "cost": 0.22
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 10000,
+    "price": 0.42
+   },
+   {
+    "qty": 25000,
+    "price": 0.37
+   },
+   {
+    "qty": 50000,
+    "price": 0.29
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Stash Backpack",
+  "sku": "CCBPACK",
+  "variant": "",
+  "category": "Bag",
+  "description": "12\"W x 18\"H, 6\" depth; odor proof, child resistant, water resistant backpack",
+  "moq": null,
+  "turnaround": "3-5 Weeks",
+  "printMethod": "Imprint",
+  "printCost": "Included (1 color); add'l color run charge $.20 per unit",
+  "setupCostNet": "$40 per color (Repeat Setup $20 per color)",
+  "setupCostClient": "$50 per color",
+  "netCostBreaks": [
+   {
+    "qty": 50,
+    "cost": 32.49
+   },
+   {
+    "qty": 100,
+    "cost": 31.19
+   },
+   {
+    "qty": 500,
+    "cost": 29.24
+   },
+   {
+    "qty": 1000,
+    "cost": 25.99
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 50,
+    "price": 49.99
+   },
+   {
+    "qty": 100,
+    "price": 47.99
+   },
+   {
+    "qty": 500,
+    "price": 44.99
+   },
+   {
+    "qty": 1000,
+    "price": 39.99
+   }
+  ],
+  "flags": [
+   "Page 'All types' setup ($50/color, add'l color $.30/unit, repeat $25/color) likely applies; not explicitly tied to backpack"
+  ]
+ },
+ {
+  "name": "Concentrate Jar 5ml",
+  "sku": "CC5ML",
+  "variant": "",
+  "category": "Concentrate Jar",
+  "description": "1.4\"W x .86\"H, 5ml; glass concentrate jar",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40 (Repeat Setup $20)",
+  "setupCostClient": "$50 (repeat setup $25)",
+  "netCostBreaks": [
+   {
+    "qty": 500,
+    "cost": 0.89
+   },
+   {
+    "qty": 1000,
+    "cost": 0.88
+   },
+   {
+    "qty": 2500,
+    "cost": 0.85
+   },
+   {
+    "qty": 5000,
+    "cost": 0.82
+   },
+   {
+    "qty": 10000,
+    "cost": 0.8
+   },
+   {
+    "qty": 25000,
+    "cost": 0.79
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 500,
+    "price": 1.19
+   },
+   {
+    "qty": 1000,
+    "price": 1.17
+   },
+   {
+    "qty": 2500,
+    "price": 1.13
+   },
+   {
+    "qty": 5000,
+    "price": 1.09
+   },
+   {
+    "qty": 10000,
+    "price": 1.07
+   },
+   {
+    "qty": 25000,
+    "price": 1.05
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Concentrate Jar 9ml",
+  "sku": "CC9ML",
+  "variant": "",
+  "category": "Concentrate Jar",
+  "description": "1.64\"W x .88\"H, 9ml; glass concentrate jar",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40 (Repeat Setup $20)",
+  "setupCostClient": "$50 (repeat setup $25)",
+  "netCostBreaks": [
+   {
+    "qty": 500,
+    "cost": 0.94
+   },
+   {
+    "qty": 1000,
+    "cost": 0.91
+   },
+   {
+    "qty": 2500,
+    "cost": 0.88
+   },
+   {
+    "qty": 5000,
+    "cost": 0.86
+   },
+   {
+    "qty": 10000,
+    "cost": 0.84
+   },
+   {
+    "qty": 25000,
+    "cost": 0.83
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 500,
+    "price": 1.25
+   },
+   {
+    "qty": 1000,
+    "price": 1.21
+   },
+   {
+    "qty": 2500,
+    "price": 1.18
+   },
+   {
+    "qty": 5000,
+    "price": 1.15
+   },
+   {
+    "qty": 10000,
+    "price": 1.12
+   },
+   {
+    "qty": 25000,
+    "price": 1.1
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "12 x 8 Dab Mat",
+  "sku": "CDM12X8",
+  "variant": "",
+  "category": "Dab Mat",
+  "description": "12\"W x 8.5\"H; medical and food grade silicone",
+  "moq": null,
+  "turnaround": "4-5 Weeks",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 250,
+    "cost": 4.89
+   },
+   {
+    "qty": 500,
+    "cost": 4.75
+   },
+   {
+    "qty": 1000,
+    "cost": 4.54
+   },
+   {
+    "qty": 2500,
+    "cost": 4.33
+   },
+   {
+    "qty": 5000,
+    "cost": 4.19
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 250,
+    "price": 6.99
+   },
+   {
+    "qty": 500,
+    "price": 6.79
+   },
+   {
+    "qty": 1000,
+    "price": 6.49
+   },
+   {
+    "qty": 2500,
+    "price": 6.19
+   },
+   {
+    "qty": 5000,
+    "price": 5.99
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "16 x 11 Dab Mat",
+  "sku": "CDM16X11",
+  "variant": "",
+  "category": "Dab Mat",
+  "description": "16\"W x 11.5\"H; medical and food grade silicone",
+  "moq": null,
+  "turnaround": "4-5 Weeks",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 250,
+    "cost": 6.99
+   },
+   {
+    "qty": 500,
+    "cost": 6.64
+   },
+   {
+    "qty": 1000,
+    "cost": 6.49
+   },
+   {
+    "qty": 2500,
+    "cost": 6.29
+   },
+   {
+    "qty": 5000,
+    "cost": 6.22
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 250,
+    "price": 9.99
+   },
+   {
+    "qty": 500,
+    "price": 9.49
+   },
+   {
+    "qty": 1000,
+    "price": 9.27
+   },
+   {
+    "qty": 2500,
+    "price": 8.99
+   },
+   {
+    "qty": 5000,
+    "price": 8.89
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "3 x 4 Dab Mat",
+  "sku": "CDM4X3",
+  "variant": "",
+  "category": "Dab Mat",
+  "description": "4\"W x 3\"H; medical and food grade silicone",
+  "moq": null,
+  "turnaround": "4-5 Weeks",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 250,
+    "cost": 3.49
+   },
+   {
+    "qty": 500,
+    "cost": 3.35
+   },
+   {
+    "qty": 1000,
+    "cost": 3.14
+   },
+   {
+    "qty": 2500,
+    "cost": 2.79
+   },
+   {
+    "qty": 5000,
+    "cost": 2.72
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 250,
+    "price": 4.99
+   },
+   {
+    "qty": 500,
+    "price": 4.79
+   },
+   {
+    "qty": 1000,
+    "price": 4.49
+   },
+   {
+    "qty": 2500,
+    "price": 3.99
+   },
+   {
+    "qty": 5000,
+    "price": 3.89
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "8\" Diameter Circle Dab Mat",
+  "sku": "CDM8X8",
+  "variant": "",
+  "category": "Dab Mat",
+  "description": "8\" diameter; medical and food grade silicone",
+  "moq": null,
+  "turnaround": "4-5 Weeks",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 250,
+    "cost": 4.89
+   },
+   {
+    "qty": 500,
+    "cost": 4.75
+   },
+   {
+    "qty": 1000,
+    "cost": 4.54
+   },
+   {
+    "qty": 2500,
+    "cost": 4.33
+   },
+   {
+    "qty": 5000,
+    "cost": 4.19
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 250,
+    "price": 6.99
+   },
+   {
+    "qty": 500,
+    "price": 6.79
+   },
+   {
+    "qty": 1000,
+    "price": 6.49
+   },
+   {
+    "qty": 2500,
+    "price": 6.19
+   },
+   {
+    "qty": 5000,
+    "price": 5.99
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Custom Dab Tool Keychain - Dab Key",
+  "sku": "C-DABKEY",
+  "variant": "",
+  "category": "Dab Tool",
+  "description": "Metal dab tool keychain.",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$50",
+  "setupCostClient": "",
+  "netCostBreaks": [
+   {
+    "qty": 250,
+    "cost": 1.75
+   },
+   {
+    "qty": 500,
+    "cost": 1.73
+   },
+   {
+    "qty": 1000,
+    "cost": 1.71
+   },
+   {
+    "qty": 2500,
+    "cost": 1.68
+   },
+   {
+    "qty": 5000,
+    "cost": 1.65
+   }
+  ],
+  "clientPriceBreaks": [],
+  "flags": []
+ },
+ {
+  "name": "Custom Dabit Card 3 Piece",
+  "sku": "C-DABIT",
+  "variant": "",
+  "category": "Dab Tool",
+  "description": "3.75\" x 1.57\"; metal; 3-piece credit-card-style dab tool",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 100,
+    "cost": 6.49
+   },
+   {
+    "qty": 200,
+    "cost": 6.17
+   },
+   {
+    "qty": 500,
+    "cost": 5.84
+   },
+   {
+    "qty": 1000,
+    "cost": 5.52
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 100,
+    "price": 9.99
+   },
+   {
+    "qty": 250,
+    "price": 9.49
+   },
+   {
+    "qty": 500,
+    "price": 8.99
+   },
+   {
+    "qty": 1000,
+    "price": 8.49
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Dab Tool with Custom Shaped Logo",
+  "sku": "C-DTOOL4",
+  "variant": "",
+  "category": "Dab Tool",
+  "description": "4\"H; metal dab tool with custom shaped logo",
+  "moq": null,
+  "turnaround": "4-5 Weeks",
+  "printMethod": "Full color / custom shaped logo",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 500,
+    "cost": 2.28
+   },
+   {
+    "qty": 1000,
+    "cost": 2.09
+   },
+   {
+    "qty": 2500,
+    "cost": 2.07
+   },
+   {
+    "qty": 5000,
+    "cost": 1.93
+   },
+   {
+    "qty": 10000,
+    "cost": 1.74
+   },
+   {
+    "qty": 25000,
+    "cost": 1.67
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 500,
+    "price": 3.25
+   },
+   {
+    "qty": 1000,
+    "price": 2.99
+   },
+   {
+    "qty": 2500,
+    "price": 2.95
+   },
+   {
+    "qty": 5000,
+    "price": 2.75
+   },
+   {
+    "qty": 10000,
+    "price": 2.49
+   },
+   {
+    "qty": 25000,
+    "price": 2.39
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Custom Glass Tips",
+  "sku": "CGT",
+  "variant": "",
+  "category": "Glass Tip",
+  "description": ".37\"W x 1.37\"H; glass filter tips",
+  "moq": null,
+  "turnaround": "3-4 Weeks",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 1000,
+    "cost": 0.83
+   },
+   {
+    "qty": 2500,
+    "cost": 0.81
+   },
+   {
+    "qty": 5000,
+    "cost": 0.76
+   },
+   {
+    "qty": 10000,
+    "cost": 0.69
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 1000,
+    "price": 1.19
+   },
+   {
+    "qty": 2500,
+    "price": 1.15
+   },
+   {
+    "qty": 5000,
+    "price": 1.09
+   },
+   {
+    "qty": 10000,
+    "price": 0.99
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Black Metal 4 Piece Grinder (40mm)",
+  "sku": "CGNDR-M40",
+  "variant": "",
+  "category": "Grinder",
+  "description": "1.5\"D x 1.3\"H; metal; 4-piece",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color logo or laser etching",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 100,
+    "cost": 5.59
+   },
+   {
+    "qty": 250,
+    "cost": 5.24
+   },
+   {
+    "qty": 500,
+    "cost": 4.89
+   },
+   {
+    "qty": 1000,
+    "cost": 4.54
+   },
+   {
+    "qty": 2500,
+    "cost": 4.48
+   },
+   {
+    "qty": 5000,
+    "cost": 4.38
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 100,
+    "price": 7.99
+   },
+   {
+    "qty": 250,
+    "price": 7.49
+   },
+   {
+    "qty": 500,
+    "price": 6.99
+   },
+   {
+    "qty": 1000,
+    "price": 6.49
+   },
+   {
+    "qty": 2500,
+    "price": 6.4
+   },
+   {
+    "qty": 5000,
+    "price": 6.25
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Black Metal 4 Piece Grinder (50mm)",
+  "sku": "CGNDR-M50",
+  "variant": "",
+  "category": "Grinder",
+  "description": "2\"D x 1.5\"H; metal; 4-piece",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color logo or laser etching",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 100,
+    "cost": 6.29
+   },
+   {
+    "qty": 250,
+    "cost": 5.94
+   },
+   {
+    "qty": 500,
+    "cost": 5.59
+   },
+   {
+    "qty": 1000,
+    "cost": 5.24
+   },
+   {
+    "qty": 2500,
+    "cost": 5.17
+   },
+   {
+    "qty": 5000,
+    "cost": 5.1
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 100,
+    "price": 8.99
+   },
+   {
+    "qty": 250,
+    "price": 8.49
+   },
+   {
+    "qty": 500,
+    "price": 7.99
+   },
+   {
+    "qty": 1000,
+    "price": 7.49
+   },
+   {
+    "qty": 2500,
+    "price": 7.39
+   },
+   {
+    "qty": 5000,
+    "price": 7.29
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Black Metal 4 Piece Grinder (63mm)",
+  "sku": "CGNDR-M63",
+  "variant": "",
+  "category": "Grinder",
+  "description": "2.5\"D x 1.7\"H; metal; 4-piece",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color logo or laser etching",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 100,
+    "cost": 6.99
+   },
+   {
+    "qty": 250,
+    "cost": 6.64
+   },
+   {
+    "qty": 500,
+    "cost": 6.29
+   },
+   {
+    "qty": 1000,
+    "cost": 6.15
+   },
+   {
+    "qty": 2500,
+    "cost": 6.08
+   },
+   {
+    "qty": 5000,
+    "cost": 5.94
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 100,
+    "price": 9.99
+   },
+   {
+    "qty": 250,
+    "price": 9.49
+   },
+   {
+    "qty": 500,
+    "price": 8.99
+   },
+   {
+    "qty": 1000,
+    "price": 8.79
+   },
+   {
+    "qty": 2500,
+    "price": 8.69
+   },
+   {
+    "qty": 5000,
+    "price": 8.49
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Custom Grinder Card",
+  "sku": "CGNDR-GC",
+  "variant": "",
+  "category": "Grinder",
+  "description": "3.4\"W x 2.1\"H; stainless steel; available in silver; card-style grinder",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color, one side",
+  "printCost": "Included (1 side); back side $.28/unit; sleeves $.28 per printed side",
+  "setupCostNet": "$40 per location",
+  "setupCostClient": "$50 per location",
+  "netCostBreaks": [
+   {
+    "qty": 250,
+    "cost": 2.84
+   },
+   {
+    "qty": 500,
+    "cost": 2.77
+   },
+   {
+    "qty": 1000,
+    "cost": 2.73
+   },
+   {
+    "qty": 2500,
+    "cost": 2.63
+   },
+   {
+    "qty": 5000,
+    "cost": 2.6
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 250,
+    "price": 4.05
+   },
+   {
+    "qty": 500,
+    "price": 3.95
+   },
+   {
+    "qty": 1000,
+    "price": 3.9
+   },
+   {
+    "qty": 2500,
+    "price": 3.75
+   },
+   {
+    "qty": 5000,
+    "price": 3.72
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Custom Hemp Biodegradable Grinder",
+  "sku": "CGNDR-HP",
+  "variant": "",
+  "category": "Grinder",
+  "description": "63mm, 2.40\"W x .93\"H; biodegradable hemp plastic; full color logo on top",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color, top of grinder",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 100,
+    "cost": 2.44
+   },
+   {
+    "qty": 250,
+    "cost": 2.28
+   },
+   {
+    "qty": 500,
+    "cost": 2.16
+   },
+   {
+    "qty": 1000,
+    "cost": 2.09
+   },
+   {
+    "qty": 2500,
+    "cost": 2.02
+   },
+   {
+    "qty": 5000,
+    "cost": 1.95
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 100,
+    "price": 3.49
+   },
+   {
+    "qty": 250,
+    "price": 3.25
+   },
+   {
+    "qty": 500,
+    "price": 3.09
+   },
+   {
+    "qty": 1000,
+    "price": 2.99
+   },
+   {
+    "qty": 2500,
+    "price": 2.89
+   },
+   {
+    "qty": 5000,
+    "price": 2.79
+   }
+  ],
+  "flags": [
+   "Appears twice in catalog (p.2 and p.5), identical pricing",
+   "SKU also appears on page 5 (identical pricing); page 5 notes setup is '$50 per location'"
+  ]
+ },
+ {
+  "name": "Plastic Grinder",
+  "sku": "CGNDR-P",
+  "variant": "",
+  "category": "Grinder",
+  "description": "2.4\"D x 1.1\"H; plastic; black & white available",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 240,
+    "cost": 2.44
+   },
+   {
+    "qty": 480,
+    "cost": 2.28
+   },
+   {
+    "qty": 960,
+    "cost": 2.16
+   },
+   {
+    "qty": 2496,
+    "cost": 2.09
+   },
+   {
+    "qty": 4992,
+    "cost": 2.02
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 240,
+    "price": 3.49
+   },
+   {
+    "qty": 480,
+    "price": 3.25
+   },
+   {
+    "qty": 960,
+    "price": 3.09
+   },
+   {
+    "qty": 2496,
+    "price": 2.99
+   },
+   {
+    "qty": 4992,
+    "price": 2.89
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "White Metal 4 Piece Grinder (50mm)",
+  "sku": "CGNDR-W50",
+  "variant": "",
+  "category": "Grinder",
+  "description": "2\"D x 1.7\"H; metal; 4-piece",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color logo or laser etching",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 100,
+    "cost": 6.29
+   },
+   {
+    "qty": 250,
+    "cost": 5.94
+   },
+   {
+    "qty": 500,
+    "cost": 5.59
+   },
+   {
+    "qty": 1000,
+    "cost": 5.24
+   },
+   {
+    "qty": 2500,
+    "cost": 5.17
+   },
+   {
+    "qty": 5000,
+    "cost": 5.1
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 100,
+    "price": 8.99
+   },
+   {
+    "qty": 250,
+    "price": 8.49
+   },
+   {
+    "qty": 500,
+    "price": 7.99
+   },
+   {
+    "qty": 1000,
+    "price": 7.49
+   },
+   {
+    "qty": 2500,
+    "price": 7.39
+   },
+   {
+    "qty": 5000,
+    "price": 7.29
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Biodegradable Hemp Jars 3oz",
+  "sku": "C-HPJ3",
+  "variant": "",
+  "category": "Jar",
+  "description": "1.52\"H x 2.88\" diameter, 3oz; biodegradable hemp plastic; direct print or label",
+  "moq": "200",
+  "turnaround": "7-10 Business Days",
+  "printMethod": "Direct print or label, full color",
+  "printCost": "Included (1 location); add'l location $.28 ea",
+  "setupCostNet": "$40 (2nd location: $40 setup + $.28 ea)",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 200,
+    "cost": 0.86
+   },
+   {
+    "qty": 1000,
+    "cost": 0.8
+   },
+   {
+    "qty": 2400,
+    "cost": 0.79
+   },
+   {
+    "qty": 5000,
+    "cost": 0.77
+   },
+   {
+    "qty": 10000,
+    "cost": 0.71
+   },
+   {
+    "qty": 25000,
+    "cost": 0.68
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 200,
+    "price": 1.15
+   },
+   {
+    "qty": 1000,
+    "price": 1.07
+   },
+   {
+    "qty": 2400,
+    "price": 1.05
+   },
+   {
+    "qty": 5000,
+    "price": 1.02
+   },
+   {
+    "qty": 10000,
+    "price": 0.95
+   },
+   {
+    "qty": 25000,
+    "price": 0.9
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Biodegradable Hemp Jars 4oz",
+  "sku": "C-HPJ4",
+  "variant": "",
+  "category": "Jar",
+  "description": "3.1\"H x 2.3\" diameter, 4oz; child resistant; biodegradable hemp plastic; direct print or label",
+  "moq": "250",
+  "turnaround": "7-10 Business Days",
+  "printMethod": "Direct print or label, full color",
+  "printCost": "Included (1 location); add'l location $.28 ea",
+  "setupCostNet": "$40 (2nd location: $40 setup + $.28 ea)",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 250,
+    "cost": 0.86
+   },
+   {
+    "qty": 500,
+    "cost": 0.83
+   },
+   {
+    "qty": 1000,
+    "cost": 0.8
+   },
+   {
+    "qty": 5000,
+    "cost": 0.77
+   },
+   {
+    "qty": 10000,
+    "cost": 0.71
+   },
+   {
+    "qty": 25000,
+    "cost": 0.68
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 250,
+    "price": 1.15
+   },
+   {
+    "qty": 500,
+    "price": 1.1
+   },
+   {
+    "qty": 1000,
+    "price": 1.07
+   },
+   {
+    "qty": 5000,
+    "price": 1.02
+   },
+   {
+    "qty": 10000,
+    "price": 0.95
+   },
+   {
+    "qty": 25000,
+    "price": 0.9
+   }
+  ],
+  "flags": [
+   "Child resistant"
+  ]
+ },
+ {
+  "name": "Glass Jar 2oz (Direct Print or Label)",
+  "sku": "C-GJ2P / C-GJ2L",
+  "variant": "",
+  "category": "Jar",
+  "description": "2.13\"H x 2.24\" diameter, 2oz; glass; matte white/matte black/clear stocked; direct print (P) or label (L)",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Direct print or label, full color",
+  "printCost": "Included (1 location); 2nd location $.28 each",
+  "setupCostNet": "$40 per location (Repeat Setup $20 per location)",
+  "setupCostClient": "$50 per location (repeat setup $25)",
+  "netCostBreaks": [
+   {
+    "qty": 500,
+    "cost": 1.12
+   },
+   {
+    "qty": 1000,
+    "cost": 1.04
+   },
+   {
+    "qty": 2500,
+    "cost": 0.97
+   },
+   {
+    "qty": 5000,
+    "cost": 0.89
+   },
+   {
+    "qty": 10000,
+    "cost": 0.82
+   },
+   {
+    "qty": 25000,
+    "cost": 0.74
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 500,
+    "price": 1.49
+   },
+   {
+    "qty": 1000,
+    "price": 1.39
+   },
+   {
+    "qty": 2500,
+    "price": 1.29
+   },
+   {
+    "qty": 5000,
+    "price": 1.19
+   },
+   {
+    "qty": 10000,
+    "price": 1.09
+   },
+   {
+    "qty": 25000,
+    "price": 0.99
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Glass Jar 3oz (Direct Print or Label)",
+  "sku": "C-GJ3P / C-GJ3L",
+  "variant": "",
+  "category": "Jar",
+  "description": "2.64\"H x 2.24\" diameter, 3oz; glass; direct print (P) or label (L)",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Direct print or label, full color",
+  "printCost": "Included (1 location); 2nd location $.28 each",
+  "setupCostNet": "$40 per location (Repeat Setup $20 per location)",
+  "setupCostClient": "$50 per location (repeat setup $25)",
+  "netCostBreaks": [
+   {
+    "qty": 500,
+    "cost": 1.19
+   },
+   {
+    "qty": 1000,
+    "cost": 1.12
+   },
+   {
+    "qty": 2500,
+    "cost": 1.04
+   },
+   {
+    "qty": 5000,
+    "cost": 0.97
+   },
+   {
+    "qty": 10000,
+    "cost": 0.89
+   },
+   {
+    "qty": 25000,
+    "cost": 0.82
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 500,
+    "price": 1.59
+   },
+   {
+    "qty": 1000,
+    "price": 1.49
+   },
+   {
+    "qty": 2500,
+    "price": 1.39
+   },
+   {
+    "qty": 5000,
+    "price": 1.29
+   },
+   {
+    "qty": 10000,
+    "price": 1.19
+   },
+   {
+    "qty": 25000,
+    "price": 1.09
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Glass Jar 4oz (Direct Print or Label)",
+  "sku": "C-GJ4P / C-GJ4L",
+  "variant": "",
+  "category": "Jar",
+  "description": "3.15\"H x 2.24\" diameter, 4oz; glass; direct print (P) or label (L)",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Direct print or label, full color",
+  "printCost": "Included (1 location); 2nd location $.28 each",
+  "setupCostNet": "$40 per location (Repeat Setup $20 per location)",
+  "setupCostClient": "$50 per location (repeat setup $25)",
+  "netCostBreaks": [
+   {
+    "qty": 500,
+    "cost": 1.27
+   },
+   {
+    "qty": 1000,
+    "cost": 1.19
+   },
+   {
+    "qty": 2500,
+    "cost": 1.12
+   },
+   {
+    "qty": 5000,
+    "cost": 1.04
+   },
+   {
+    "qty": 10000,
+    "cost": 0.97
+   },
+   {
+    "qty": 25000,
+    "cost": 0.89
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 500,
+    "price": 1.69
+   },
+   {
+    "qty": 1000,
+    "price": 1.59
+   },
+   {
+    "qty": 2500,
+    "price": 1.49
+   },
+   {
+    "qty": 5000,
+    "price": 1.39
+   },
+   {
+    "qty": 10000,
+    "price": 1.29
+   },
+   {
+    "qty": 25000,
+    "price": 1.19
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Custom Branded Bic Lighter",
+  "sku": "C-BIC",
+  "variant": "",
+  "category": "Lighter",
+  "description": "1\"W x 3\"H; plastic; available in black, white, lime & forest green, royal & light blue, yellow, orange, red, pink",
+  "moq": "300",
+  "turnaround": "10-15 Business Days",
+  "printMethod": "1-color logo, 1 side",
+  "printCost": "1 color/1 side included; $.20 per additional color per side (max 4 colors/side, 8 total)",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 300,
+    "cost": 1.32
+   },
+   {
+    "qty": 600,
+    "cost": 1.25
+   },
+   {
+    "qty": 1200,
+    "cost": 1.23
+   },
+   {
+    "qty": 2400,
+    "cost": 1.2
+   },
+   {
+    "qty": 5100,
+    "cost": 1.18
+   },
+   {
+    "qty": 9900,
+    "cost": 1.16
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 300,
+    "price": 1.89
+   },
+   {
+    "qty": 600,
+    "price": 1.79
+   },
+   {
+    "qty": 1200,
+    "price": 1.75
+   },
+   {
+    "qty": 2400,
+    "price": 1.72
+   },
+   {
+    "qty": 5100,
+    "price": 1.69
+   },
+   {
+    "qty": 9900,
+    "price": 1.65
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Custom Branded Clipper Lighter",
+  "sku": "C-CLIP",
+  "variant": "",
+  "category": "Lighter",
+  "description": ".87\"W x 3\"H; clipper-style; full color logo 1 location",
+  "moq": "240",
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color, 1 location",
+  "printCost": "Included (1 location); add'l location run charge $.28 ea",
+  "setupCostNet": "$40 per location",
+  "setupCostClient": "$50 per location",
+  "netCostBreaks": [
+   {
+    "qty": 240,
+    "cost": 1.19
+   },
+   {
+    "qty": 480,
+    "cost": 1.15
+   },
+   {
+    "qty": 960,
+    "cost": 1.12
+   },
+   {
+    "qty": 2400,
+    "cost": 1.08
+   },
+   {
+    "qty": 4800,
+    "cost": 1.01
+   },
+   {
+    "qty": 9600,
+    "cost": 0.98
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 240,
+    "price": 1.7
+   },
+   {
+    "qty": 480,
+    "price": 1.64
+   },
+   {
+    "qty": 960,
+    "price": 1.6
+   },
+   {
+    "qty": 2400,
+    "price": 1.54
+   },
+   {
+    "qty": 4800,
+    "price": 1.44
+   },
+   {
+    "qty": 9600,
+    "price": 1.4
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Custom BRIO Clipper Lighter",
+  "sku": "C-BRIO",
+  "variant": "",
+  "category": "Lighter",
+  "description": "1\"W x 3\"H; refillable clipper-style; full color logo",
+  "moq": "250",
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 250,
+    "cost": 1.23
+   },
+   {
+    "qty": 500,
+    "cost": 1.18
+   },
+   {
+    "qty": 1000,
+    "cost": 1.16
+   },
+   {
+    "qty": 2500,
+    "cost": 1.11
+   },
+   {
+    "qty": 5000,
+    "cost": 1.04
+   },
+   {
+    "qty": 10000,
+    "cost": 0.99
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 250,
+    "price": 1.75
+   },
+   {
+    "qty": 500,
+    "price": 1.69
+   },
+   {
+    "qty": 1000,
+    "price": 1.65
+   },
+   {
+    "qty": 2500,
+    "price": 1.59
+   },
+   {
+    "qty": 5000,
+    "price": 1.49
+   },
+   {
+    "qty": 10000,
+    "price": 1.42
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Custom EZ Reach Bic Lighter",
+  "sku": "C-BIC-EZ",
+  "variant": "",
+  "category": "Lighter",
+  "description": "1\"W x 3\"H x 1.45\" wand; EZ Reach wand lighter",
+  "moq": "240",
+  "turnaround": "3-5 Business Days",
+  "printMethod": "1-color logo (max 4 spot/solid colors front)",
+  "printCost": "1 color included; $.20 (G) per additional color",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 240,
+    "cost": 2.09
+   },
+   {
+    "qty": 480,
+    "cost": 2.04
+   },
+   {
+    "qty": 960,
+    "cost": 2.02
+   },
+   {
+    "qty": 2400,
+    "cost": 1.99
+   },
+   {
+    "qty": 4800,
+    "cost": 1.95
+   },
+   {
+    "qty": 9600,
+    "cost": 1.92
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 240,
+    "price": 2.99
+   },
+   {
+    "qty": 480,
+    "price": 2.92
+   },
+   {
+    "qty": 960,
+    "price": 2.89
+   },
+   {
+    "qty": 2400,
+    "price": 2.85
+   },
+   {
+    "qty": 4800,
+    "price": 2.79
+   },
+   {
+    "qty": 9600,
+    "price": 2.75
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Custom Lighter Fidget Spinner - Puffspin",
+  "sku": "C-PSL",
+  "variant": "",
+  "category": "Lighter",
+  "description": "1.18\"W x 2.95\"H; plastic; fits BIC J26 maxi (with/without sleeve) and MK jet lighter; lighters NOT included",
+  "moq": "50",
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color, 1 location",
+  "printCost": "Included (1 location); add'l location run charge $.28 per unit",
+  "setupCostNet": "$40 per location",
+  "setupCostClient": "$50 per location",
+  "netCostBreaks": [
+   {
+    "qty": 50,
+    "cost": 3.14
+   },
+   {
+    "qty": 100,
+    "cost": 3
+   },
+   {
+    "qty": 250,
+    "cost": 2.79
+   },
+   {
+    "qty": 500,
+    "cost": 2.65
+   },
+   {
+    "qty": 1000,
+    "cost": 2.44
+   },
+   {
+    "qty": 2500,
+    "cost": 2.3
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 50,
+    "price": 4.49
+   },
+   {
+    "qty": 100,
+    "price": 4.29
+   },
+   {
+    "qty": 250,
+    "price": 3.99
+   },
+   {
+    "qty": 500,
+    "price": 3.79
+   },
+   {
+    "qty": 1000,
+    "price": 3.49
+   },
+   {
+    "qty": 2500,
+    "price": 3.29
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Custom MK Jet Lighter",
+  "sku": "C-MKJ",
+  "variant": "",
+  "category": "Lighter",
+  "description": "1\"W x 3.17\"H; jet flame; full color logo 1 location",
+  "moq": "250",
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color, 1 location",
+  "printCost": "Included (1 location); add'l location run charge $.28 ea",
+  "setupCostNet": "$40 per location",
+  "setupCostClient": "$50 per location",
+  "netCostBreaks": [
+   {
+    "qty": 250,
+    "cost": 1.04
+   },
+   {
+    "qty": 500,
+    "cost": 1.01
+   },
+   {
+    "qty": 1000,
+    "cost": 0.97
+   },
+   {
+    "qty": 2500,
+    "cost": 0.95
+   },
+   {
+    "qty": 5000,
+    "cost": 0.9
+   },
+   {
+    "qty": 10000,
+    "cost": 0.83
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 250,
+    "price": 1.49
+   },
+   {
+    "qty": 500,
+    "price": 1.44
+   },
+   {
+    "qty": 1000,
+    "price": 1.39
+   },
+   {
+    "qty": 2500,
+    "price": 1.35
+   },
+   {
+    "qty": 5000,
+    "price": 1.29
+   },
+   {
+    "qty": 10000,
+    "price": 1.19
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Custom USB Plasma Arc Lighter",
+  "sku": "CPLASMA",
+  "variant": "",
+  "category": "Lighter",
+  "description": "1.25\"W x 2.9\"H; zinc alloy; USB rechargeable; available in gold, black, multicolor",
+  "moq": null,
+  "turnaround": "3-4 weeks",
+  "printMethod": "Imprint",
+  "printCost": "Included; add'l color run charge $.20 per color per unit",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50 per color",
+  "netCostBreaks": [
+   {
+    "qty": 100,
+    "cost": 10.49
+   },
+   {
+    "qty": 250,
+    "cost": 10.14
+   },
+   {
+    "qty": 500,
+    "cost": 9.79
+   },
+   {
+    "qty": 1000,
+    "cost": 9.09
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 100,
+    "price": 14.99
+   },
+   {
+    "qty": 250,
+    "price": 14.49
+   },
+   {
+    "qty": 500,
+    "price": 13.99
+   },
+   {
+    "qty": 1000,
+    "price": 12.99
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Custom Wrapped Bic Lighter",
+  "sku": "FC-BIC",
+  "variant": "",
+  "category": "Lighter",
+  "description": "1\"W x 3\"H; delrin plastic; full wrap label",
+  "moq": "1,200 per label",
+  "turnaround": "50-60 Business Days",
+  "printMethod": "Full wrap label",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 1200,
+    "cost": 1.82
+   },
+   {
+    "qty": 2400,
+    "cost": 1.79
+   },
+   {
+    "qty": 5100,
+    "cost": 1.69
+   },
+   {
+    "qty": 10200,
+    "cost": 1.65
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 1200,
+    "price": 2.6
+   },
+   {
+    "qty": 2400,
+    "price": 2.56
+   },
+   {
+    "qty": 5100,
+    "price": 2.42
+   },
+   {
+    "qty": 10200,
+    "price": 2.35
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Puffcase",
+  "sku": "C-PCB",
+  "variant": "",
+  "category": "Lighter",
+  "description": "2.12\"W x 3.75\"H; plastic lighter/joint case; lighter and joints NOT included",
+  "moq": "50",
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color, 1 location",
+  "printCost": "Included (1 location); add'l location run charge $.28 per unit",
+  "setupCostNet": "$40 per location",
+  "setupCostClient": "$50 per location",
+  "netCostBreaks": [
+   {
+    "qty": 50,
+    "cost": 5.24
+   },
+   {
+    "qty": 100,
+    "cost": 4.89
+   },
+   {
+    "qty": 250,
+    "cost": 4.54
+   },
+   {
+    "qty": 500,
+    "cost": 4.19
+   },
+   {
+    "qty": 1000,
+    "cost": 3.84
+   },
+   {
+    "qty": 2500,
+    "cost": 3.49
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 50,
+    "price": 7.49
+   },
+   {
+    "qty": 100,
+    "price": 6.99
+   },
+   {
+    "qty": 250,
+    "price": 6.49
+   },
+   {
+    "qty": 500,
+    "price": 5.99
+   },
+   {
+    "qty": 1000,
+    "price": 5.49
+   },
+   {
+    "qty": 2500,
+    "price": 4.99
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Custom Match Boxes",
+  "sku": "C-MB24",
+  "variant": "",
+  "category": "Match Box",
+  "description": "2-1/4\" x 1-3/8\" x 3/8\"; available in black and white; full color logo on top",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color, top of box",
+  "printCost": "Included (top); add'l location run charge $.28 per unit; 2-location imprint $.28 extra/unit + $40 setup per location",
+  "setupCostNet": "$40 per location (bottom setup waived if same artwork)",
+  "setupCostClient": "$50 per location (bottom setup waived if artwork is the same)",
+  "netCostBreaks": [
+   {
+    "qty": 200,
+    "cost": 0.84
+   },
+   {
+    "qty": 500,
+    "cost": 0.69
+   },
+   {
+    "qty": 1000,
+    "cost": 0.63
+   },
+   {
+    "qty": 2500,
+    "cost": 0.56
+   },
+   {
+    "qty": 5000,
+    "cost": 0.53
+   },
+   {
+    "qty": 10000,
+    "cost": 0.49
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 200,
+    "price": 1.2
+   },
+   {
+    "qty": 500,
+    "price": 0.99
+   },
+   {
+    "qty": 1000,
+    "price": 0.9
+   },
+   {
+    "qty": 2500,
+    "price": 0.8
+   },
+   {
+    "qty": 5000,
+    "price": 0.75
+   },
+   {
+    "qty": 10000,
+    "price": 0.7
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Glass Chillum One Hitters",
+  "sku": "CGC4",
+  "variant": "",
+  "category": "One Hitter",
+  "description": "4\"W; glass chillum",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 250,
+    "cost": 1.23
+   },
+   {
+    "qty": 500,
+    "cost": 1.16
+   },
+   {
+    "qty": 1000,
+    "cost": 1.09
+   },
+   {
+    "qty": 2500,
+    "cost": 1.02
+   },
+   {
+    "qty": 5000,
+    "cost": 0.98
+   },
+   {
+    "qty": 10000,
+    "cost": 0.95
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 250,
+    "price": 1.75
+   },
+   {
+    "qty": 500,
+    "price": 1.65
+   },
+   {
+    "qty": 1000,
+    "price": 1.55
+   },
+   {
+    "qty": 2500,
+    "price": 1.45
+   },
+   {
+    "qty": 5000,
+    "price": 1.4
+   },
+   {
+    "qty": 10000,
+    "price": 1.35
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Pre-Packs One Hitters with Cap",
+  "sku": "C-PPC",
+  "variant": "",
+  "category": "One Hitter",
+  "description": "3.47\"W x 0.58\"H; glass; with cap",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 250,
+    "cost": 1.32
+   },
+   {
+    "qty": 500,
+    "cost": 1.3
+   },
+   {
+    "qty": 1000,
+    "cost": 1.25
+   },
+   {
+    "qty": 2500,
+    "cost": 1.18
+   },
+   {
+    "qty": 5000,
+    "cost": 1.11
+   },
+   {
+    "qty": 10000,
+    "cost": 1.09
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 250,
+    "price": 1.89
+   },
+   {
+    "qty": 500,
+    "price": 1.85
+   },
+   {
+    "qty": 1000,
+    "price": 1.79
+   },
+   {
+    "qty": 2500,
+    "price": 1.69
+   },
+   {
+    "qty": 5000,
+    "price": 1.59
+   },
+   {
+    "qty": 10000,
+    "price": 1.55
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Biodegradable Hemp Pre-Roll Tubes",
+  "sku": "C-HPRT",
+  "variant": "",
+  "category": "Pre-Roll Tube",
+  "description": "116mm; biodegradable hemp plastic; brown & white available; direct print or label (labeled items come with labels applied)",
+  "moq": "1,000",
+  "turnaround": "7-10 Business Days",
+  "printMethod": "Direct print or label, full color",
+  "printCost": "Included (1 location)",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 1000,
+    "cost": 0.43
+   },
+   {
+    "qty": 3000,
+    "cost": 0.41
+   },
+   {
+    "qty": 5000,
+    "cost": 0.38
+   },
+   {
+    "qty": 10000,
+    "cost": 0.35
+   },
+   {
+    "qty": 25000,
+    "cost": 0.34
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 1000,
+    "price": 0.57
+   },
+   {
+    "qty": 3000,
+    "price": 0.54
+   },
+   {
+    "qty": 5000,
+    "price": 0.5
+   },
+   {
+    "qty": 10000,
+    "price": 0.47
+   },
+   {
+    "qty": 25000,
+    "price": 0.45
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Custom Pre-Roll Tubes",
+  "sku": "CDOOB-T",
+  "variant": "",
+  "category": "Pre-Roll Tube",
+  "description": "116mm; BPA free plastic; direct print or label; labeled tubes come with labels applied",
+  "moq": null,
+  "turnaround": "7-10 business days",
+  "printMethod": "Full color logo, direct print or label",
+  "printCost": "",
+  "setupCostNet": "",
+  "setupCostClient": "$50",
+  "netCostBreaks": [],
+  "clientPriceBreaks": [
+   {
+    "qty": 1000,
+    "price": 0.57
+   },
+   {
+    "qty": 3000,
+    "price": 0.54
+   },
+   {
+    "qty": 5000,
+    "price": 0.5
+   },
+   {
+    "qty": 10000,
+    "price": 0.47
+   },
+   {
+    "qty": 25000,
+    "price": 0.45
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Custom Pre-Roll Tubes (Direct Print or Label)",
+  "sku": "CDOOB-T / CDOOB-ST",
+  "variant": "",
+  "category": "Pre-Roll Tube",
+  "description": "BPA-free plastic pre-roll tubes, 116mm. Direct print (CDOOB-T) or label (CDOOB-ST).",
+  "moq": null,
+  "turnaround": "7-10 Business Days",
+  "printMethod": "Direct print or label, full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "",
+  "netCostBreaks": [
+   {
+    "qty": 1000,
+    "cost": 0.43
+   },
+   {
+    "qty": 3000,
+    "cost": 0.41
+   },
+   {
+    "qty": 5000,
+    "cost": 0.38
+   },
+   {
+    "qty": 10000,
+    "cost": 0.35
+   },
+   {
+    "qty": 25000,
+    "cost": 0.34
+   }
+  ],
+  "clientPriceBreaks": [],
+  "flags": []
+ },
+ {
+  "name": "Glass Pre-Roll Tubes with Direct Print",
+  "sku": "CDOOB-GDP",
+  "variant": "",
+  "category": "Pre-Roll Tube",
+  "description": ".8\"W x 4.7\"H; glass; direct print",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Direct print, full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 500,
+    "cost": 0.74
+   },
+   {
+    "qty": 1000,
+    "cost": 0.67
+   },
+   {
+    "qty": 2500,
+    "cost": 0.64
+   },
+   {
+    "qty": 5000,
+    "cost": 0.59
+   },
+   {
+    "qty": 10000,
+    "cost": 0.56
+   },
+   {
+    "qty": 25000,
+    "cost": 0.54
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 500,
+    "price": 0.99
+   },
+   {
+    "qty": 1000,
+    "price": 0.89
+   },
+   {
+    "qty": 2500,
+    "price": 0.85
+   },
+   {
+    "qty": 5000,
+    "price": 0.78
+   },
+   {
+    "qty": 10000,
+    "price": 0.75
+   },
+   {
+    "qty": 25000,
+    "price": 0.72
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Glass Pre-Roll Tubes with Label",
+  "sku": "CDOOB-GST",
+  "variant": "",
+  "category": "Pre-Roll Tube",
+  "description": ".8\"W x 4.7\"H; glass; label applied",
+  "moq": null,
+  "turnaround": "7-10 Business Days",
+  "printMethod": "Label, full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 500,
+    "cost": 0.74
+   },
+   {
+    "qty": 1000,
+    "cost": 0.67
+   },
+   {
+    "qty": 2500,
+    "cost": 0.64
+   },
+   {
+    "qty": 5000,
+    "cost": 0.59
+   },
+   {
+    "qty": 10000,
+    "cost": 0.56
+   },
+   {
+    "qty": 25000,
+    "cost": 0.54
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 500,
+    "price": 0.99
+   },
+   {
+    "qty": 1000,
+    "price": 0.89
+   },
+   {
+    "qty": 2500,
+    "price": 0.85
+   },
+   {
+    "qty": 5000,
+    "price": 0.78
+   },
+   {
+    "qty": 10000,
+    "price": 0.75
+   },
+   {
+    "qty": 25000,
+    "price": 0.72
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Overseas Pre-Roll Tubes",
+  "sku": "CDOOB-CH",
+  "variant": "",
+  "category": "Pre-Roll Tube",
+  "description": "98mm & 116mm (all sizes same price); BPA free plastic; overseas",
+  "moq": null,
+  "turnaround": "10-12 Weeks",
+  "printMethod": "Full color",
+  "printCost": "Included in setup ($96 per color)",
+  "setupCostNet": "$96 per color",
+  "setupCostClient": "$120 per color",
+  "netCostBreaks": [
+   {
+    "qty": 10000,
+    "cost": 0.17
+   },
+   {
+    "qty": 25000,
+    "cost": 0.14
+   },
+   {
+    "qty": 100000,
+    "cost": 0.13
+   },
+   {
+    "qty": 250000,
+    "cost": 0.12
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 10000,
+    "price": 0.22
+   },
+   {
+    "qty": 25000,
+    "price": 0.19
+   },
+   {
+    "qty": 100000,
+    "price": 0.18
+   },
+   {
+    "qty": 250000,
+    "price": 0.17
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Paqcase Pre-roll Pack",
+  "sku": "C-PAQ",
+  "variant": "",
+  "category": "Pre-Roll Tube",
+  "description": "2.5\"W x 5\"H; plastic pre-roll pack case",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 250,
+    "cost": 2.09
+   },
+   {
+    "qty": 500,
+    "cost": 2.02
+   },
+   {
+    "qty": 1000,
+    "cost": 1.95
+   },
+   {
+    "qty": 2500,
+    "cost": 1.88
+   },
+   {
+    "qty": 5000,
+    "cost": 1.81
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 250,
+    "price": 2.99
+   },
+   {
+    "qty": 500,
+    "price": 2.89
+   },
+   {
+    "qty": 1000,
+    "price": 2.79
+   },
+   {
+    "qty": 2500,
+    "price": 2.69
+   },
+   {
+    "qty": 5000,
+    "price": 2.59
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Pre-Rolled Cones 3-Pack (with display case)",
+  "sku": "PRC-3PCK",
+  "variant": "",
+  "category": "Pre-Rolled Cone",
+  "description": "83mm, 98mm & 109mm; 4\"W x 3\"H; sold in 3-packs; pure rice or unbleached papers; comes with custom display case",
+  "moq": "1,080 packs (case qty)",
+  "turnaround": "20-25 Business Days",
+  "printMethod": "Full color, custom display case",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 1080,
+    "cost": 1.24
+   },
+   {
+    "qty": 2160,
+    "cost": 1.16
+   },
+   {
+    "qty": 5400,
+    "cost": 1.13
+   },
+   {
+    "qty": 10800,
+    "cost": 1.09
+   },
+   {
+    "qty": 25200,
+    "cost": 1.04
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 1080,
+    "price": 1.65
+   },
+   {
+    "qty": 2160,
+    "price": 1.55
+   },
+   {
+    "qty": 5400,
+    "price": 1.5
+   },
+   {
+    "qty": 10800,
+    "price": 1.45
+   },
+   {
+    "qty": 25200,
+    "price": 1.39
+   }
+  ],
+  "flags": [
+   "Quantities are in PACKS (3-packs), priced per pack",
+   "Quantities are in packs (3 cones per pack)"
+  ]
+ },
+ {
+  "name": "Pre-Rolled Cones with Custom Tips 1 1/4 (83mm)",
+  "sku": "PRC83",
+  "variant": "",
+  "category": "Pre-Rolled Cone",
+  "description": "83mm; pure rice or unbleached papers; full color logo on tips",
+  "moq": null,
+  "turnaround": "3-4 Weeks",
+  "printMethod": "Full color on tips",
+  "printCost": "Included (tips)",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 900,
+    "cost": 0.39
+   },
+   {
+    "qty": 2700,
+    "cost": 0.32
+   },
+   {
+    "qty": 4500,
+    "cost": 0.29
+   },
+   {
+    "qty": 9000,
+    "cost": 0.26
+   },
+   {
+    "qty": 22500,
+    "cost": 0.17
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 900,
+    "price": 0.52
+   },
+   {
+    "qty": 2700,
+    "price": 0.42
+   },
+   {
+    "qty": 4500,
+    "price": 0.38
+   },
+   {
+    "qty": 9000,
+    "price": 0.32
+   },
+   {
+    "qty": 22500,
+    "price": 0.22
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Pre-Rolled Cones with Custom Tips King (109mm)",
+  "sku": "PRC109",
+  "variant": "",
+  "category": "Pre-Rolled Cone",
+  "description": "109mm; pure rice or unbleached papers; full color logo on tips",
+  "moq": null,
+  "turnaround": "3-4 Weeks",
+  "printMethod": "Full color on tips",
+  "printCost": "Included (tips)",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 700,
+    "cost": 0.41
+   },
+   {
+    "qty": 2100,
+    "cost": 0.33
+   },
+   {
+    "qty": 4900,
+    "cost": 0.29
+   },
+   {
+    "qty": 9100,
+    "cost": 0.26
+   },
+   {
+    "qty": 22400,
+    "cost": 0.18
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 700,
+    "price": 0.54
+   },
+   {
+    "qty": 2100,
+    "price": 0.44
+   },
+   {
+    "qty": 4900,
+    "price": 0.39
+   },
+   {
+    "qty": 9100,
+    "price": 0.34
+   },
+   {
+    "qty": 22400,
+    "price": 0.24
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Pre-Rolled Cones with Custom Tips Slim (98mm)",
+  "sku": "PRC98",
+  "variant": "",
+  "category": "Pre-Rolled Cone",
+  "description": "98mm; pure rice or unbleached papers; full color logo on tips",
+  "moq": null,
+  "turnaround": "3-4 Weeks",
+  "printMethod": "Full color on tips",
+  "printCost": "Included (tips)",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 900,
+    "cost": 0.4
+   },
+   {
+    "qty": 2700,
+    "cost": 0.32
+   },
+   {
+    "qty": 4500,
+    "cost": 0.28
+   },
+   {
+    "qty": 9000,
+    "cost": 0.25
+   },
+   {
+    "qty": 22500,
+    "cost": 0.17
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 900,
+    "price": 0.53
+   },
+   {
+    "qty": 2700,
+    "price": 0.43
+   },
+   {
+    "qty": 4500,
+    "price": 0.38
+   },
+   {
+    "qty": 9000,
+    "price": 0.33
+   },
+   {
+    "qty": 22500,
+    "price": 0.23
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Pre-Rolled Cones with Printed Papers 1 1/4 & King",
+  "sku": "PRC-FC",
+  "variant": "",
+  "category": "Pre-Rolled Cone",
+  "description": "83mm and 109mm; pure rice or unbleached papers; full color logo printed on papers",
+  "moq": null,
+  "turnaround": "4-5 Weeks",
+  "printMethod": "Full color on papers",
+  "printCost": "Included",
+  "setupCostNet": "$40 (Repeat Setup $20)",
+  "setupCostClient": "$50 (repeat setup $25)",
+  "netCostBreaks": [
+   {
+    "qty": 25000,
+    "cost": 0.29
+   },
+   {
+    "qty": 50000,
+    "cost": 0.23
+   },
+   {
+    "qty": 100000,
+    "cost": 0.21
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 25000,
+    "price": 0.39
+   },
+   {
+    "qty": 50000,
+    "price": 0.31
+   },
+   {
+    "qty": 100000,
+    "price": 0.28
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Full Custom Booklet & Box 1 1/4 - Bleached/Unbleached Wood Pulp or Rice",
+  "sku": "CROLL-FC125",
+  "variant": "",
+  "category": "Rolling Paper",
+  "description": "Booklet 3.07\"W x 1.02\"H, paper 3.07\"W x 1.7\"H; rounded box + booklets; bleached/unbleached wood pulp or rice",
+  "moq": null,
+  "turnaround": "20-30 Business Days",
+  "printMethod": "Full color 4-color process on booklets and display boxes",
+  "printCost": "Included; printing on the papers +$.20 per booklet",
+  "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea)",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 1000,
+    "cost": 0.97
+   },
+   {
+    "qty": 2000,
+    "cost": 0.83
+   },
+   {
+    "qty": 5000,
+    "cost": 0.69
+   },
+   {
+    "qty": 10000,
+    "cost": 0.55
+   },
+   {
+    "qty": 25000,
+    "cost": 0.48
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 1000,
+    "price": 1.39
+   },
+   {
+    "qty": 2000,
+    "price": 1.19
+   },
+   {
+    "qty": 5000,
+    "price": 0.99
+   },
+   {
+    "qty": 10000,
+    "price": 0.79
+   },
+   {
+    "qty": 25000,
+    "price": 0.69
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Full Custom Booklet & Box 1 1/4 - Hemp",
+  "sku": "CROLL-FC125H",
+  "variant": "",
+  "category": "Rolling Paper",
+  "description": "1 1/4 size rounded box + booklets; hemp",
+  "moq": null,
+  "turnaround": "20-30 Business Days",
+  "printMethod": "Full color 4-color process on booklets and display boxes",
+  "printCost": "Included; printing on the papers +$.20 per booklet",
+  "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea)",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 1000,
+    "cost": 1
+   },
+   {
+    "qty": 2000,
+    "cost": 0.86
+   },
+   {
+    "qty": 5000,
+    "cost": 0.74
+   },
+   {
+    "qty": 10000,
+    "cost": 0.59
+   },
+   {
+    "qty": 25000,
+    "cost": 0.53
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 1000,
+    "price": 1.43
+   },
+   {
+    "qty": 2000,
+    "price": 1.23
+   },
+   {
+    "qty": 5000,
+    "price": 1.05
+   },
+   {
+    "qty": 10000,
+    "price": 0.85
+   },
+   {
+    "qty": 25000,
+    "price": 0.75
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Full Custom Booklet & Box King Size - Bleached/Unbleached Wood Pulp or Rice",
+  "sku": "CROLL-KINGFC",
+  "variant": "",
+  "category": "Rolling Paper",
+  "description": "King size box; booklet 4.35\"W x 1.02\"H, paper 4.25\"W x 1.7\"H; bleached/unbleached wood pulp or rice",
+  "moq": null,
+  "turnaround": "20-30 Business Days",
+  "printMethod": "Full color 4-color process on booklets and display boxes",
+  "printCost": "Included; printing on the papers +$.20 per booklet",
+  "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea)",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 1000,
+    "cost": 1.01
+   },
+   {
+    "qty": 2000,
+    "cost": 0.9
+   },
+   {
+    "qty": 5000,
+    "cost": 0.73
+   },
+   {
+    "qty": 10000,
+    "cost": 0.59
+   },
+   {
+    "qty": 25000,
+    "cost": 0.52
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 1000,
+    "price": 1.44
+   },
+   {
+    "qty": 2000,
+    "price": 1.29
+   },
+   {
+    "qty": 5000,
+    "price": 1.04
+   },
+   {
+    "qty": 10000,
+    "price": 0.84
+   },
+   {
+    "qty": 25000,
+    "price": 0.74
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Full Custom Booklet & Box King Size - Hemp",
+  "sku": "CROLL-FCKH",
+  "variant": "",
+  "category": "Rolling Paper",
+  "description": "King size box + booklet; hemp",
+  "moq": null,
+  "turnaround": "20-30 Business Days",
+  "printMethod": "Full color 4-color process on booklets and display boxes",
+  "printCost": "Included; printing on the papers +$.20 per booklet",
+  "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea)",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 1000,
+    "cost": 1.03
+   },
+   {
+    "qty": 2000,
+    "cost": 0.95
+   },
+   {
+    "qty": 5000,
+    "cost": 0.76
+   },
+   {
+    "qty": 10000,
+    "cost": 0.62
+   },
+   {
+    "qty": 25000,
+    "cost": 0.55
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 1000,
+    "price": 1.47
+   },
+   {
+    "qty": 2000,
+    "price": 1.35
+   },
+   {
+    "qty": 5000,
+    "price": 1.09
+   },
+   {
+    "qty": 10000,
+    "price": 0.89
+   },
+   {
+    "qty": 25000,
+    "price": 0.79
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Full Custom Booklet & Box w/ Tips 1 1/4 - Bleached/Unbleached Wood Pulp",
+  "sku": "CROLL-FC125WT",
+  "variant": "",
+  "category": "Rolling Paper",
+  "description": "Booklet 3.11\"W x 1.96\"H, paper 3.07\"W x 1.7\"H; with tips; bleached/unbleached wood pulp",
+  "moq": null,
+  "turnaround": "20-30 Business Days",
+  "printMethod": "Full color 4-color process on booklets and display boxes",
+  "printCost": "Included",
+  "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea)",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 1000,
+    "cost": 1.23
+   },
+   {
+    "qty": 2000,
+    "cost": 1.03
+   },
+   {
+    "qty": 5000,
+    "cost": 0.88
+   },
+   {
+    "qty": 10000,
+    "cost": 0.64
+   },
+   {
+    "qty": 25000,
+    "cost": 0.57
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 1000,
+    "price": 1.76
+   },
+   {
+    "qty": 2000,
+    "price": 1.47
+   },
+   {
+    "qty": 5000,
+    "price": 1.26
+   },
+   {
+    "qty": 10000,
+    "price": 0.91
+   },
+   {
+    "qty": 25000,
+    "price": 0.81
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Full Custom Booklet & Box w/ Tips 1 1/4 - Hemp",
+  "sku": "CROLL-HFC125WT",
+  "variant": "",
+  "category": "Rolling Paper",
+  "description": "1 1/4 size with tips; hemp",
+  "moq": null,
+  "turnaround": "20-30 Business Days",
+  "printMethod": "Full color 4-color process on booklets and display boxes",
+  "printCost": "Included",
+  "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea)",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 1000,
+    "cost": 1.25
+   },
+   {
+    "qty": 2000,
+    "cost": 1.07
+   },
+   {
+    "qty": 5000,
+    "cost": 0.92
+   },
+   {
+    "qty": 10000,
+    "cost": 0.68
+   },
+   {
+    "qty": 25000,
+    "cost": 0.61
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 1000,
+    "price": 1.79
+   },
+   {
+    "qty": 2000,
+    "price": 1.53
+   },
+   {
+    "qty": 5000,
+    "price": 1.32
+   },
+   {
+    "qty": 10000,
+    "price": 0.97
+   },
+   {
+    "qty": 25000,
+    "price": 0.87
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Full Custom Booklet & Box w/ Tips King Size - Bleached/Unbleached Wood Pulp or Rice",
+  "sku": "CROLL-KINGFCWT",
+  "variant": "",
+  "category": "Rolling Paper",
+  "description": "Booklet 4.3\"W x 1.9\"H, paper 4.25\"W x 1.7\"H; with tips; bleached/unbleached wood pulp or rice",
+  "moq": null,
+  "turnaround": "20-30 Business Days",
+  "printMethod": "Full color 4-color process on booklets and display boxes",
+  "printCost": "Included",
+  "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea)",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 1000,
+    "cost": 1.27
+   },
+   {
+    "qty": 2000,
+    "cost": 1.06
+   },
+   {
+    "qty": 5000,
+    "cost": 0.92
+   },
+   {
+    "qty": 10000,
+    "cost": 0.67
+   },
+   {
+    "qty": 25000,
+    "cost": 0.6
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 1000,
+    "price": 1.82
+   },
+   {
+    "qty": 2000,
+    "price": 1.52
+   },
+   {
+    "qty": 5000,
+    "price": 1.31
+   },
+   {
+    "qty": 10000,
+    "price": 0.96
+   },
+   {
+    "qty": 25000,
+    "price": 0.86
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Full Custom Booklet & Box w/ Tips King Size - Hemp",
+  "sku": "CROLL-KINGFCWTH",
+  "variant": "",
+  "category": "Rolling Paper",
+  "description": "King size with tips; hemp",
+  "moq": null,
+  "turnaround": "20-30 Business Days",
+  "printMethod": "Full color 4-color process on booklets and display boxes",
+  "printCost": "Included",
+  "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea)",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 1000,
+    "cost": 1.3
+   },
+   {
+    "qty": 2000,
+    "cost": 1.1
+   },
+   {
+    "qty": 5000,
+    "cost": 0.95
+   },
+   {
+    "qty": 10000,
+    "cost": 0.76
+   },
+   {
+    "qty": 25000,
+    "cost": 0.69
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 1000,
+    "price": 1.85
+   },
+   {
+    "qty": 2000,
+    "price": 1.57
+   },
+   {
+    "qty": 5000,
+    "price": 1.36
+   },
+   {
+    "qty": 10000,
+    "price": 1.09
+   },
+   {
+    "qty": 25000,
+    "price": 0.99
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Rolling Papers 1 1/4 Size - Hemp",
+  "sku": "CROLL-P125H",
+  "variant": "",
+  "category": "Rolling Paper",
+  "description": "Booklet 3.07\"W x 1.02\"H; hemp; natural arabic gum",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 250,
+    "cost": 1.09
+   },
+   {
+    "qty": 500,
+    "cost": 1.03
+   },
+   {
+    "qty": 1000,
+    "cost": 0.98
+   },
+   {
+    "qty": 2500,
+    "cost": 0.95
+   },
+   {
+    "qty": 5000,
+    "cost": 0.81
+   },
+   {
+    "qty": 10000,
+    "cost": 0.74
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 250,
+    "price": 1.55
+   },
+   {
+    "qty": 500,
+    "price": 1.47
+   },
+   {
+    "qty": 1000,
+    "price": 1.4
+   },
+   {
+    "qty": 2500,
+    "price": 1.35
+   },
+   {
+    "qty": 5000,
+    "price": 1.15
+   },
+   {
+    "qty": 10000,
+    "price": 1.05
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Rolling Papers 1 1/4 Size - Unbleached Wood Pulp",
+  "sku": "CROLL-P125",
+  "variant": "",
+  "category": "Rolling Paper",
+  "description": "Booklet 3.07\"W x 1.02\"H, paper 3.07\"W x 1.7\"H; unbleached wood pulp; natural arabic gum",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 250,
+    "cost": 1.04
+   },
+   {
+    "qty": 500,
+    "cost": 0.99
+   },
+   {
+    "qty": 1000,
+    "cost": 0.92
+   },
+   {
+    "qty": 2500,
+    "cost": 0.9
+   },
+   {
+    "qty": 5000,
+    "cost": 0.76
+   },
+   {
+    "qty": 10000,
+    "cost": 0.69
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 250,
+    "price": 1.49
+   },
+   {
+    "qty": 500,
+    "price": 1.42
+   },
+   {
+    "qty": 1000,
+    "price": 1.32
+   },
+   {
+    "qty": 2500,
+    "price": 1.29
+   },
+   {
+    "qty": 5000,
+    "price": 1.09
+   },
+   {
+    "qty": 10000,
+    "price": 0.99
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Rolling Papers King Size - Hemp",
+  "sku": "CROLL-PKH",
+  "variant": "",
+  "category": "Rolling Paper",
+  "description": "Booklet 4.35\"W x 1.02\"H; hemp; natural arabic gum",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 250,
+    "cost": 1.11
+   },
+   {
+    "qty": 500,
+    "cost": 1.09
+   },
+   {
+    "qty": 1000,
+    "cost": 1.02
+   },
+   {
+    "qty": 2500,
+    "cost": 0.97
+   },
+   {
+    "qty": 5000,
+    "cost": 0.83
+   },
+   {
+    "qty": 10000,
+    "cost": 0.76
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 250,
+    "price": 1.59
+   },
+   {
+    "qty": 500,
+    "price": 1.55
+   },
+   {
+    "qty": 1000,
+    "price": 1.45
+   },
+   {
+    "qty": 2500,
+    "price": 1.39
+   },
+   {
+    "qty": 5000,
+    "price": 1.19
+   },
+   {
+    "qty": 10000,
+    "price": 1.09
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Rolling Papers King Size - Unbleached Wood Pulp",
+  "sku": "CROLL-PK",
+  "variant": "",
+  "category": "Rolling Paper",
+  "description": "Booklet 4.35\"W x 1.02\"H, paper 4.25\"W x 1.7\"H; unbleached wood pulp",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 250,
+    "cost": 1.08
+   },
+   {
+    "qty": 500,
+    "cost": 1.03
+   },
+   {
+    "qty": 1000,
+    "cost": 0.98
+   },
+   {
+    "qty": 2500,
+    "cost": 0.94
+   },
+   {
+    "qty": 5000,
+    "cost": 0.8
+   },
+   {
+    "qty": 10000,
+    "cost": 0.73
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 250,
+    "price": 1.54
+   },
+   {
+    "qty": 500,
+    "price": 1.47
+   },
+   {
+    "qty": 1000,
+    "price": 1.4
+   },
+   {
+    "qty": 2500,
+    "price": 1.34
+   },
+   {
+    "qty": 5000,
+    "price": 1.14
+   },
+   {
+    "qty": 10000,
+    "price": 1.04
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Labeled Tincture Bottle 15ml (With Custom Box)",
+  "sku": "TB15W-BOX",
+  "variant": "",
+  "category": "Tincture Bottle",
+  "description": "15ml; glass tincture bottle with custom box",
+  "moq": null,
+  "turnaround": "5-10 Business Days",
+  "printMethod": "Label, full color",
+  "printCost": "Included",
+  "setupCostNet": "$40 (Repeat Setup $20)",
+  "setupCostClient": "$50 (repeat setup $25)",
+  "netCostBreaks": [
+   {
+    "qty": 500,
+    "cost": 1.36
+   },
+   {
+    "qty": 1000,
+    "cost": 1.22
+   },
+   {
+    "qty": 2500,
+    "cost": 1.12
+   },
+   {
+    "qty": 5000,
+    "cost": 1.06
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 500,
+    "price": 1.81
+   },
+   {
+    "qty": 1000,
+    "price": 1.62
+   },
+   {
+    "qty": 2500,
+    "price": 1.49
+   },
+   {
+    "qty": 5000,
+    "price": 1.41
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Labeled Tincture Bottle 15ml (Without Box)",
+  "sku": "TB15W",
+  "variant": "",
+  "category": "Tincture Bottle",
+  "description": "15ml; glass tincture bottle; labeled; no box",
+  "moq": null,
+  "turnaround": "5-10 Business Days",
+  "printMethod": "Label, full color",
+  "printCost": "Included",
+  "setupCostNet": "$40 (Repeat Setup $20)",
+  "setupCostClient": "$50 (repeat setup $25)",
+  "netCostBreaks": [
+   {
+    "qty": 500,
+    "cost": 0.76
+   },
+   {
+    "qty": 1000,
+    "cost": 0.64
+   },
+   {
+    "qty": 2500,
+    "cost": 0.56
+   },
+   {
+    "qty": 5000,
+    "cost": 0.52
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 500,
+    "price": 1.01
+   },
+   {
+    "qty": 1000,
+    "price": 0.85
+   },
+   {
+    "qty": 2500,
+    "price": 0.77
+   },
+   {
+    "qty": 5000,
+    "price": 0.69
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Labeled Tincture Bottle 30ml (With Custom Box)",
+  "sku": "TB30W-BOX",
+  "variant": "",
+  "category": "Tincture Bottle",
+  "description": "30ml; glass tincture bottle with custom box",
+  "moq": null,
+  "turnaround": "5-10 Business Days",
+  "printMethod": "Label, full color",
+  "printCost": "Included",
+  "setupCostNet": "$40 (Repeat Setup $20)",
+  "setupCostClient": "$50 (repeat setup $25)",
+  "netCostBreaks": [
+   {
+    "qty": 500,
+    "cost": 1.87
+   },
+   {
+    "qty": 1000,
+    "cost": 1.69
+   },
+   {
+    "qty": 2500,
+    "cost": 1.57
+   },
+   {
+    "qty": 5000,
+    "cost": 1.49
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 500,
+    "price": 2.49
+   },
+   {
+    "qty": 1000,
+    "price": 2.25
+   },
+   {
+    "qty": 2500,
+    "price": 2.09
+   },
+   {
+    "qty": 5000,
+    "price": 1.99
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Labeled Tincture Bottle 30ml (Without Box)",
+  "sku": "TB30W",
+  "variant": "",
+  "category": "Tincture Bottle",
+  "description": "30ml; glass tincture bottle; labeled; no box",
+  "moq": null,
+  "turnaround": "5-10 Business Days",
+  "printMethod": "Label, full color",
+  "printCost": "Included",
+  "setupCostNet": "$40 (Repeat Setup $20)",
+  "setupCostClient": "$50 (repeat setup $25)",
+  "netCostBreaks": [
+   {
+    "qty": 500,
+    "cost": 1.04
+   },
+   {
+    "qty": 1000,
+    "cost": 0.89
+   },
+   {
+    "qty": 2500,
+    "cost": 0.82
+   },
+   {
+    "qty": 5000,
+    "cost": 0.74
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 500,
+    "price": 1.39
+   },
+   {
+    "qty": 1000,
+    "price": 1.19
+   },
+   {
+    "qty": 2500,
+    "price": 1.09
+   },
+   {
+    "qty": 5000,
+    "price": 0.99
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Biodegradable Hemp Plastic Rolling Tray - Medium",
+  "sku": "CTRAY-HPM",
+  "variant": "",
+  "category": "Tray",
+  "description": "10.5\"W x 6\"H; sustainable/biodegradable hemp plastic",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$50 (G)",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 50,
+    "cost": 4.54
+   },
+   {
+    "qty": 100,
+    "cost": 4.47
+   },
+   {
+    "qty": 200,
+    "cost": 4.19
+   },
+   {
+    "qty": 500,
+    "cost": 4.05
+   },
+   {
+    "qty": 1000,
+    "cost": 3.84
+   },
+   {
+    "qty": 2500,
+    "cost": 3.49
+   },
+   {
+    "qty": 5000,
+    "cost": 3.35
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 50,
+    "price": 6.49
+   },
+   {
+    "qty": 100,
+    "price": 6.39
+   },
+   {
+    "qty": 250,
+    "price": 5.99
+   },
+   {
+    "qty": 500,
+    "price": 5.79
+   },
+   {
+    "qty": 1000,
+    "price": 5.49
+   },
+   {
+    "qty": 2500,
+    "price": 4.99
+   },
+   {
+    "qty": 5000,
+    "price": 4.79
+   }
+  ],
+  "flags": [
+   "Appears twice (p.2 and p.6); p.6 lists setup $50 (G), p.2 implies section $40 — used p.6 explicit value",
+   "Also listed on page 6 (identical pricing)"
+  ]
+ },
+ {
+  "name": "Biodegradable Hemp Plastic Rolling Tray - Small",
+  "sku": "CTRAY-HPS",
+  "variant": "",
+  "category": "Tray",
+  "description": "7.1\"W x 5.5\"H; sustainable/biodegradable hemp plastic",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$50 (G)",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 50,
+    "cost": 3.84
+   },
+   {
+    "qty": 100,
+    "cost": 3.77
+   },
+   {
+    "qty": 200,
+    "cost": 3.49
+   },
+   {
+    "qty": 500,
+    "cost": 3.35
+   },
+   {
+    "qty": 1000,
+    "cost": 3.14
+   },
+   {
+    "qty": 2500,
+    "cost": 2.79
+   },
+   {
+    "qty": 5000,
+    "cost": 2.65
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 50,
+    "price": 5.49
+   },
+   {
+    "qty": 100,
+    "price": 5.39
+   },
+   {
+    "qty": 200,
+    "price": 4.99
+   },
+   {
+    "qty": 500,
+    "price": 4.79
+   },
+   {
+    "qty": 1000,
+    "price": 4.49
+   },
+   {
+    "qty": 2500,
+    "price": 3.99
+   },
+   {
+    "qty": 5000,
+    "price": 3.79
+   }
+  ],
+  "flags": [
+   "Appears twice (p.2 and p.6)",
+   "Also listed on page 6 (identical pricing)"
+  ]
+ },
+ {
+  "name": "Full Custom Metal Rolling Tray - Medium",
+  "sku": "CTRAY-TFCM",
+  "variant": "",
+  "category": "Tray",
+  "description": "10.5\"W x 6\"H; metal tin; full custom",
+  "moq": "500",
+  "turnaround": "35-45 Business Days",
+  "printMethod": "Full custom",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 500,
+    "cost": 4.05
+   },
+   {
+    "qty": 1000,
+    "cost": 3.84
+   },
+   {
+    "qty": 3000,
+    "cost": 3.49
+   },
+   {
+    "qty": 5000,
+    "cost": 3.35
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 500,
+    "price": 5.79
+   },
+   {
+    "qty": 1000,
+    "price": 5.49
+   },
+   {
+    "qty": 3000,
+    "price": 4.99
+   },
+   {
+    "qty": 5000,
+    "price": 4.79
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Full Custom Metal Rolling Tray - Small",
+  "sku": "CTRAY-TFCS",
+  "variant": "",
+  "category": "Tray",
+  "description": "7.1\"W x 5.5\"H; metal tin; full custom",
+  "moq": "500",
+  "turnaround": "35-45 Business Days",
+  "printMethod": "Full custom",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 500,
+    "cost": 3.35
+   },
+   {
+    "qty": 1000,
+    "cost": 3.14
+   },
+   {
+    "qty": 3000,
+    "cost": 2.79
+   },
+   {
+    "qty": 5000,
+    "cost": 2.65
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 500,
+    "price": 4.79
+   },
+   {
+    "qty": 1000,
+    "price": 4.49
+   },
+   {
+    "qty": 3000,
+    "price": 3.99
+   },
+   {
+    "qty": 5000,
+    "price": 3.79
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Glass Rolling Tray - Small",
+  "sku": "C-GTRAY-S",
+  "variant": "",
+  "category": "Tray",
+  "description": "7.1\"W x 5.5\"H; glass",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 50,
+    "cost": 4.55
+   },
+   {
+    "qty": 100,
+    "cost": 4.48
+   },
+   {
+    "qty": 250,
+    "cost": 4.41
+   },
+   {
+    "qty": 500,
+    "cost": 4.34
+   },
+   {
+    "qty": 1000,
+    "cost": 4.19
+   },
+   {
+    "qty": 2500,
+    "cost": 3.7
+   },
+   {
+    "qty": 5000,
+    "cost": 3.68
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 50,
+    "price": 6.5
+   },
+   {
+    "qty": 100,
+    "price": 6.4
+   },
+   {
+    "qty": 250,
+    "price": 6.3
+   },
+   {
+    "qty": 500,
+    "price": 6.2
+   },
+   {
+    "qty": 1000,
+    "price": 5.99
+   },
+   {
+    "qty": 2500,
+    "price": 5.29
+   },
+   {
+    "qty": 5000,
+    "price": 5.25
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Quick Print Metal Rolling Tray - Medium",
+  "sku": "CTRAY-TPM",
+  "variant": "",
+  "category": "Tray",
+  "description": "10.5\"W x 6\"H; metal tin",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 50,
+    "cost": 4.54
+   },
+   {
+    "qty": 100,
+    "cost": 4.47
+   },
+   {
+    "qty": 250,
+    "cost": 4.19
+   },
+   {
+    "qty": 500,
+    "cost": 4.05
+   },
+   {
+    "qty": 1000,
+    "cost": 3.84
+   },
+   {
+    "qty": 2500,
+    "cost": 3.49
+   },
+   {
+    "qty": 5000,
+    "cost": 3.35
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 50,
+    "price": 6.49
+   },
+   {
+    "qty": 100,
+    "price": 6.39
+   },
+   {
+    "qty": 250,
+    "price": 5.99
+   },
+   {
+    "qty": 500,
+    "price": 5.79
+   },
+   {
+    "qty": 1000,
+    "price": 5.49
+   },
+   {
+    "qty": 2500,
+    "price": 4.99
+   },
+   {
+    "qty": 5000,
+    "price": 4.79
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Quick Print Metal Rolling Tray - Small",
+  "sku": "CTRAY-TPS",
+  "variant": "",
+  "category": "Tray",
+  "description": "7.1\"W x 5.5\"H; metal tin",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 50,
+    "cost": 3.84
+   },
+   {
+    "qty": 100,
+    "cost": 3.77
+   },
+   {
+    "qty": 250,
+    "cost": 3.49
+   },
+   {
+    "qty": 500,
+    "cost": 3.35
+   },
+   {
+    "qty": 1000,
+    "cost": 3.14
+   },
+   {
+    "qty": 2500,
+    "cost": 2.79
+   },
+   {
+    "qty": 5000,
+    "cost": 2.65
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 50,
+    "price": 5.49
+   },
+   {
+    "qty": 100,
+    "price": 5.39
+   },
+   {
+    "qty": 250,
+    "price": 4.99
+   },
+   {
+    "qty": 500,
+    "price": 4.79
+   },
+   {
+    "qty": 1000,
+    "price": 4.49
+   },
+   {
+    "qty": 2500,
+    "price": 3.99
+   },
+   {
+    "qty": 5000,
+    "price": 3.79
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Quick Print Metal Rolling Tray w/ Magnetic Lid - Medium",
+  "sku": "CTRAY-MLM",
+  "variant": "",
+  "category": "Tray",
+  "description": "10.5\"W x 6\"H; metal tin tray / magnet lid; logo printed on tray and lid",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color on tray and lid",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 50,
+    "cost": 6.29
+   },
+   {
+    "qty": 100,
+    "cost": 6.22
+   },
+   {
+    "qty": 250,
+    "cost": 5.94
+   },
+   {
+    "qty": 500,
+    "cost": 5.8
+   },
+   {
+    "qty": 1000,
+    "cost": 5.59
+   },
+   {
+    "qty": 2500,
+    "cost": 5.24
+   },
+   {
+    "qty": 5000,
+    "cost": 5.1
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 50,
+    "price": 8.99
+   },
+   {
+    "qty": 100,
+    "price": 8.89
+   },
+   {
+    "qty": 250,
+    "price": 8.49
+   },
+   {
+    "qty": 500,
+    "price": 8.29
+   },
+   {
+    "qty": 1000,
+    "price": 7.99
+   },
+   {
+    "qty": 2500,
+    "price": 7.49
+   },
+   {
+    "qty": 5000,
+    "price": 7.29
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Quick Print Metal Rolling Tray w/ Magnetic Lid - Small",
+  "sku": "CTRAY-MLS",
+  "variant": "",
+  "category": "Tray",
+  "description": "7.1\"W x 5.5\"H; metal tin tray / magnet lid; logo printed on tray and lid",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color on tray and lid",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 50,
+    "cost": 5.24
+   },
+   {
+    "qty": 100,
+    "cost": 5.17
+   },
+   {
+    "qty": 250,
+    "cost": 4.89
+   },
+   {
+    "qty": 500,
+    "cost": 4.75
+   },
+   {
+    "qty": 1000,
+    "cost": 4.54
+   },
+   {
+    "qty": 2500,
+    "cost": 4.19
+   },
+   {
+    "qty": 5000,
+    "cost": 4.05
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 50,
+    "price": 7.49
+   },
+   {
+    "qty": 100,
+    "price": 7.39
+   },
+   {
+    "qty": 250,
+    "price": 6.99
+   },
+   {
+    "qty": 500,
+    "price": 6.79
+   },
+   {
+    "qty": 1000,
+    "price": 6.49
+   },
+   {
+    "qty": 2500,
+    "price": 5.99
+   },
+   {
+    "qty": 5000,
+    "price": 5.79
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Custom iKrusher Vape Pen Battery",
+  "sku": "C-VAPEPB",
+  "variant": "",
+  "category": "Vape",
+  "description": ".4\"W x 3.45\"H; 350mAh, 510 thread (fits most cartridges); 3 variable voltages 3.3V-4.3V",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 100,
+    "cost": 4.89
+   },
+   {
+    "qty": 250,
+    "cost": 4.75
+   },
+   {
+    "qty": 500,
+    "cost": 4.54
+   },
+   {
+    "qty": 1000,
+    "cost": 4.19
+   },
+   {
+    "qty": 2500,
+    "cost": 4.12
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 100,
+    "price": 6.99
+   },
+   {
+    "qty": 250,
+    "price": 6.79
+   },
+   {
+    "qty": 500,
+    "price": 6.49
+   },
+   {
+    "qty": 1000,
+    "price": 5.99
+   },
+   {
+    "qty": 2500,
+    "price": 5.89
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Custom Vape Cartridge - iKrusher .5ml",
+  "sku": "C-VCT5",
+  "variant": "",
+  "category": "Vape",
+  "description": ".40\"W x 1.91\"H, .5ml; iKrusher vape cartridge",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 500,
+    "cost": 1.85
+   },
+   {
+    "qty": 1000,
+    "cost": 1.63
+   },
+   {
+    "qty": 2500,
+    "cost": 1.48
+   },
+   {
+    "qty": 5000,
+    "cost": 1.33
+   },
+   {
+    "qty": 10000,
+    "cost": 1.25
+   },
+   {
+    "qty": 25000,
+    "cost": 1.22
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 500,
+    "price": 2.47
+   },
+   {
+    "qty": 1000,
+    "price": 2.17
+   },
+   {
+    "qty": 2500,
+    "price": 1.97
+   },
+   {
+    "qty": 5000,
+    "price": 1.77
+   },
+   {
+    "qty": 10000,
+    "price": 1.67
+   },
+   {
+    "qty": 25000,
+    "price": 1.63
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Custom Vape Cartridge - iKrusher 1ml",
+  "sku": "C-VCT1",
+  "variant": "",
+  "category": "Vape",
+  "description": ".40\"W x 2.34\"H, 1ml; iKrusher vape cartridge",
+  "moq": null,
+  "turnaround": "3-5 Business Days",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 500,
+    "cost": 1.87
+   },
+   {
+    "qty": 1000,
+    "cost": 1.64
+   },
+   {
+    "qty": 2500,
+    "cost": 1.49
+   },
+   {
+    "qty": 5000,
+    "cost": 1.34
+   },
+   {
+    "qty": 10000,
+    "cost": 1.27
+   },
+   {
+    "qty": 25000,
+    "cost": 1.24
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 500,
+    "price": 2.49
+   },
+   {
+    "qty": 1000,
+    "price": 2.19
+   },
+   {
+    "qty": 2500,
+    "price": 1.99
+   },
+   {
+    "qty": 5000,
+    "price": 1.79
+   },
+   {
+    "qty": 10000,
+    "price": 1.69
+   },
+   {
+    "qty": 25000,
+    "price": 1.65
+   }
+  ],
+  "flags": []
+ },
+ {
+  "name": "Vape Lanyard with Silicone Ring",
+  "sku": "C-VLANS8",
+  "variant": "",
+  "category": "Vape",
+  "description": ".5\"W x 35\" length, 8mm silicone ring; polyester; fits vape pen batteries and Juul-size vapes",
+  "moq": null,
+  "turnaround": "3-4 Weeks",
+  "printMethod": "Full color",
+  "printCost": "Included",
+  "setupCostNet": "$40",
+  "setupCostClient": "$50",
+  "netCostBreaks": [
+   {
+    "qty": 500,
+    "cost": 0.97
+   },
+   {
+    "qty": 1000,
+    "cost": 0.83
+   },
+   {
+    "qty": 5000,
+    "cost": 0.81
+   },
+   {
+    "qty": 10000,
+    "cost": 0.77
+   },
+   {
+    "qty": 25000,
+    "cost": 0.74
+   }
+  ],
+  "clientPriceBreaks": [
+   {
+    "qty": 500,
+    "price": 1.39
+   },
+   {
+    "qty": 1000,
+    "price": 1.19
+   },
+   {
+    "qty": 5000,
+    "price": 1.15
+   },
+   {
+    "qty": 10000,
+    "price": 1.1
+   },
+   {
+    "qty": 25000,
+    "price": 1.05
+   }
+  ],
+  "flags": []
+ }
+]

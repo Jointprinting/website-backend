@@ -41,12 +41,13 @@ const VALIDATORS = {
     return { dataUrl };
   },
 
-  // The Content planner's weekly posting goal — posts per week per platform
-  // (0 = paused). The owner sets the pace; 7/week is the sane ceiling.
+  // The Content planner's weekly posting goal — posts per week (0 = paused).
+  // Instagram-only by owner decision (LinkedIn dropped — writes strip any
+  // legacy linkedin key so it ages out of the stored setting on next save).
   socialPace: (v) => {
     if (!v || typeof v !== 'object') throw new Error('Expected object value.');
     const clamp = (n) => Math.max(0, Math.min(7, Math.round(Number(n) || 0)));
-    return { linkedin: clamp(v.linkedin), instagram: clamp(v.instagram) };
+    return { instagram: clamp(v.instagram) };
   },
 };
 
@@ -59,8 +60,8 @@ const DEFAULTS = {
     accentColor: '#1a3d2b',
   },
   brandLogo: { dataUrl: '' },
-  // Start where Nate asked: one LinkedIn + one Instagram post a week.
-  socialPace: { linkedin: 1, instagram: 1 },
+  // Instagram-only (owner decision): one post a week to start.
+  socialPace: { instagram: 1 },
 };
 
 async function getSetting(req, res) {
