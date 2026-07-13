@@ -12,7 +12,13 @@ const mongoose = require('mongoose');
 //   scheduled  → has a target date (scheduledFor) on the weekly plan
 //   posted     → live; postedAt stamps the week it counts toward the pace
 //                goal, postUrl links the live post, stats snapshots accrue
-const PLATFORMS     = ['', 'linkedin', 'instagram'];   // '' = unassigned idea
+// Instagram is THE platform — the owner dropped LinkedIn (never used it, and a
+// pace goal that demanded LinkedIn posts made "week crushed" unreachable).
+// PLATFORMS drives validation + the UI; the schema enum below still ACCEPTS
+// 'linkedin' so the handful of legacy posts keep loading/archiving cleanly —
+// they just can't be assigned to new work.
+const PLATFORMS        = ['', 'instagram'];             // '' = unassigned idea
+const LEGACY_PLATFORMS = ['', 'linkedin', 'instagram']; // schema-only: old docs stay valid
 const POST_STATUSES = ['idea', 'drafted', 'scheduled', 'posted'];
 
 // One engagement reading, taken whenever the owner pastes the numbers in
@@ -26,7 +32,7 @@ const StatSnapshotSchema = new mongoose.Schema({
 }, { _id: false });
 
 const SocialPostSchema = new mongoose.Schema({
-  platform: { type: String, enum: PLATFORMS, default: '' },
+  platform: { type: String, enum: LEGACY_PLATFORMS, default: '' },
   status:   { type: String, enum: POST_STATUSES, default: 'idea', index: true },
 
   title: { type: String, default: '' },     // short vault handle ("dispo tour recap")

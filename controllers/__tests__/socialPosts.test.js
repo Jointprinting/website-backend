@@ -16,7 +16,8 @@ test('cleanPostFields whitelists — stray fields never reach the write', () => 
 });
 
 test('platform/status only accept vocabulary values', () => {
-  assert.equal(cleanPostFields({ platform: 'LinkedIn' }).platform, 'linkedin');
+  assert.equal(cleanPostFields({ platform: 'Instagram' }).platform, 'instagram');
+  assert.equal(cleanPostFields({ platform: 'linkedin' }).platform, '', 'LinkedIn dropped → unassigned');
   assert.equal(cleanPostFields({ platform: 'tiktok' }).platform, '', 'unknown platform → unassigned');
   assert.equal(cleanPostFields({ status: 'posted' }).status, 'posted');
   assert.equal(cleanPostFields({ status: 'yolo' }).status, undefined, 'unknown status is dropped');
@@ -24,8 +25,8 @@ test('platform/status only accept vocabulary values', () => {
 
 test('postUrl requires http(s); refImage requires a data: URL', () => {
   assert.equal(cleanPostFields({ postUrl: 'javascript:alert(1)' }).postUrl, '');
-  assert.equal(cleanPostFields({ postUrl: 'https://www.linkedin.com/posts/x' }).postUrl,
-    'https://www.linkedin.com/posts/x');
+  assert.equal(cleanPostFields({ postUrl: 'https://www.instagram.com/p/x' }).postUrl,
+    'https://www.instagram.com/p/x');
   assert.equal(cleanPostFields({ refImage: 'https://evil/img.png' }).refImage, '');
   assert.equal(cleanPostFields({ refImage: 'data:image/jpeg;base64,abc' }).refImage,
     'data:image/jpeg;base64,abc');

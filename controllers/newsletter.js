@@ -15,6 +15,7 @@ const Newsletter = require('../models/Newsletter');
 const Client = require('../models/Client');
 const TriageReply = require('../models/TriageReply');
 const r2 = require('../services/r2');
+const { suppress, suppressedSet } = require('../services/suppression');
 
 const PUBLIC_BASE = String(process.env.OUTREACH_PUBLIC_API_BASE || process.env.PUBLIC_API_BASE || '').replace(/\/+$/, '');
 
@@ -51,9 +52,32 @@ const bodyToHtml = (text) => {
 
 const fileIcon = (kind) => kind === 'pdf' ? '📄' : kind === 'image' ? '🖼️' : '📎';
 
+// One-click unsubscribe URL for a recipient (RFC 8058 target + the footer
+// link). Only exists when the public base + a per-recipient token do.
+function unsubUrlFor(recipient) {
+  return (PUBLIC_BASE && recipient && recipient.token)
+    ? `${PUBLIC_BASE}/api/newsletter/u/${recipient.token}` : '';
+}
+
+// Deliverability headers for one recipient: List-Unsubscribe (mailto + https)
+// and List-Unsubscribe-Post (RFC 8058 one-click) — the signals Gmail/Yahoo now
+// REQUIRE from bulk senders before they'll trust a blast.
+function unsubHeaders(recipient) {
+  const url = unsubUrlFor(recipient);
+  const reply = replyTo();
+  const targets = [
+    reply ? `<mailto:${reply}?subject=Unsubscribe>` : '',
+    url ? `<${url}>` : '',
+  ].filter(Boolean);
+  if (!targets.length) return {};
+  const h = { 'List-Unsubscribe': targets.join(', ') };
+  if (url) h['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
+  return h;
+}
+
 // The branded HTML shell — clean, light, mobile-friendly. Open pixel + file
-// buttons + an honest unsubscribe line (we key opt-out off the CRM doNotEmail,
-// so the link is a mailto that the owner actions).
+// buttons + an honest unsubscribe line: the one-click link when the recipient
+// has a token, else a mailto the owner actions.
 function renderHtml(nl, recipient) {
   const pixel = (PUBLIC_BASE && recipient.token)
     ? `<img src="${PUBLIC_BASE}/api/newsletter/t/${recipient.token}/open.png" width="1" height="1" alt="" style="display:none">`
@@ -83,7 +107,11 @@ function renderHtml(nl, recipient) {
       </div>
       <div style="text-align:center;color:rgba(17,26,20,0.42);font-size:11.5px;line-height:1.6;margin-top:18px;">
         Joint Printing · your merch department${reply ? ` · <a href="mailto:${esc(reply)}" style="color:#15803d;">reply anytime</a>` : ''}<br>
-        ${reply ? `Prefer not to get these? <a href="mailto:${esc(reply)}?subject=Unsubscribe" style="color:rgba(17,26,20,0.42);">Unsubscribe</a>.` : ''}
+        ${(() => {
+          const u = unsubUrlFor(recipient);
+          if (u) return `Prefer not to get these? <a href="${esc(u)}" style="color:rgba(17,26,20,0.42);">Unsubscribe</a>.`;
+          return reply ? `Prefer not to get these? <a href="mailto:${esc(reply)}?subject=Unsubscribe" style="color:rgba(17,26,20,0.42);">Unsubscribe</a>.` : '';
+        })()}
       </div>
     </div>
   </body></html>`;
@@ -105,7 +133,11 @@ async function resolveAudience(audience, tag) {
     seen.add(email);
     out.push({ companyKey: c.companyKey || '', name: c.companyName || c.clientName || '', email });
   }
-  return out;
+  // Global suppression list (unsubscribes, hard bounces — from ANY tool) is the
+  // final gate, same as outreach: doNotEmail catches the company, this catches
+  // the address.
+  const suppressed = await suppressedSet(out.map((r) => r.email));
+  return out.filter((r) => !suppressed.has(r.email));
 }
 
 // ── CRUD ────────────────────────────────────────────────────────────────────
@@ -229,6 +261,60 @@ const sendTest = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
+// The blast loop, shared by the send endpoint and the boot-time crash resume.
+// RESUME-SAFE by construction: it only touches recipients with no sentAt, no
+// failed flag, and no unsubscribe — so re-running it after a crash/restart can
+// never double-send the head of the list or drop the tail. Progress persists
+// every few sends; pacing keeps a fresh sending domain from firehosing.
+async function runBlast(nl) {
+  const t = transport();
+  let sent = 0;
+  for (const r of nl.recipients) {
+    if (r.sentAt || r.failed || r.unsubscribedAt) continue;
+    try {
+      await t.sendMail({
+        from: fromAddress(), to: r.email, replyTo: replyTo() || undefined,
+        subject: nl.subject, html: renderHtml(nl, r),
+        headers: {
+          ...(nl.preheader ? { 'X-Preheader': nl.preheader } : {}),
+          // Gmail/Yahoo bulk-sender requirement: mailto + one-click https unsub.
+          ...unsubHeaders(r),
+        },
+      });
+      r.sentAt = new Date(); sent += 1;
+    } catch (err) {
+      r.failed = true; r.error = String(err.message || 'send failed').slice(0, 200);
+    }
+    // Persist progress + pace every few sends.
+    if (sent % 5 === 0) { await nl.save().catch(() => {}); await new Promise((rs) => setTimeout(rs, 1500)); }
+  }
+  nl.status = nl.recipients.some((x) => x.sentAt) ? 'sent' : 'failed';
+  nl.sentAt = nl.sentAt || new Date();
+  await nl.save().catch(() => {});
+}
+
+// Boot-time crash resume: a deploy/restart mid-blast leaves a newsletter stuck
+// on 'sending' with an unsent tail. Pick each one up where it stopped — the
+// per-recipient sentAt IS the checkpoint. Called once from server.js.
+async function resumeStuckBlasts() {
+  if (!canSend()) return 0;
+  const stuck = await Newsletter.find({ status: 'sending' });
+  let resumed = 0;
+  for (const nl of stuck) {
+    const remaining = (nl.recipients || []).filter((r) => !r.sentAt && !r.failed && !r.unsubscribedAt).length;
+    if (!remaining) { // everyone handled — just close it out
+      nl.status = nl.recipients.some((r) => r.sentAt) ? 'sent' : 'failed';
+      nl.sentAt = nl.sentAt || new Date();
+      await nl.save().catch(() => {});
+      continue;
+    }
+    console.log(`[newsletter] resuming interrupted blast "${nl.subject}" — ${remaining} recipient(s) left`);
+    resumed += 1;
+    await runBlast(nl).catch((e) => console.warn('[newsletter] resume failed:', e.message));
+  }
+  return resumed;
+}
+
 // Send to the whole audience. Paced in small batches with a short pause so a
 // new sending domain isn't a firehose. Idempotent per newsletter: refuses to
 // re-send an already-sent one.
@@ -248,31 +334,75 @@ const sendNewsletter = async (req, res) => {
     await nl.save();
 
     // Respond immediately; the blast runs in the background so the request can't
-    // time out on a big list. Progress shows on the newsletter's stats.
+    // time out on a big list. Progress shows on the newsletter's stats; a crash
+    // mid-blast is picked back up by resumeStuckBlasts on the next boot.
     res.json({ ok: true, sending: nl.recipients.length });
-
-    (async () => {
-      const t = transport();
-      let sent = 0;
-      for (const r of nl.recipients) {
-        try {
-          await t.sendMail({
-            from: fromAddress(), to: r.email, replyTo: replyTo() || undefined,
-            subject: nl.subject, html: renderHtml(nl, r),
-            headers: nl.preheader ? { 'X-Preheader': nl.preheader } : undefined,
-          });
-          r.sentAt = new Date(); sent += 1;
-        } catch (err) {
-          r.failed = true; r.error = String(err.message || 'send failed').slice(0, 200);
-        }
-        // Persist progress + pace every few sends.
-        if (sent % 5 === 0) { await nl.save().catch(() => {}); await new Promise((rs) => setTimeout(rs, 1500)); }
-      }
-      nl.status = nl.recipients.some((r) => r.sentAt) ? 'sent' : 'failed';
-      nl.sentAt = new Date();
-      await nl.save().catch(() => {});
-    })().catch(() => {});
+    runBlast(nl).catch(() => {});
   } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+// ── One-click unsubscribe (public, token-addressed) ─────────────────────────
+// POST is the RFC 8058 one-click target (mail clients call it directly) and
+// the confirm button on the GET page. It flips the SAME switches the rest of
+// the system already trusts — global suppression + CRM doNotEmail — so an
+// unsubscribed customer drops out of every future audience automatically.
+// GET shows a tiny confirm page instead of unsubscribing outright, so a
+// link-prefetching mail scanner can never opt someone out by accident.
+async function applyUnsubscribe(token) {
+  if (!token) return null;
+  const nl = await Newsletter.findOne({ 'recipients.token': token });
+  if (!nl) return null;
+  const r = (nl.recipients || []).find((x) => x.token === token);
+  if (!r) return null;
+  if (!r.unsubscribedAt) {
+    r.unsubscribedAt = new Date();
+    await nl.save().catch(() => {});
+  }
+  await suppress(r.email, { reason: 'newsletter-unsubscribe', source: 'newsletter' });
+  if (r.companyKey) {
+    await Client.updateOne(
+      { companyKey: r.companyKey },
+      {
+        $set: { doNotEmail: true },
+        $push: { log: { at: new Date(), text: 'Unsubscribed via newsletter one-click link', kind: 'email', dedupKey: `nl-unsub:${token}` } },
+      },
+    ).catch(() => {});
+  }
+  return r;
+}
+
+// Minimal branded page shell for the public unsubscribe flow.
+const unsubShell = (inner) => `<!doctype html><html><body style="margin:0;background:#f4f4f1;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+  <div style="max-width:420px;margin:80px auto;padding:32px;background:#fff;border:1px solid rgba(15,26,19,0.1);border-radius:16px;text-align:center;color:#111a14;">
+    <div style="font-size:12px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:#15803d;margin-bottom:14px;">Joint Printing</div>
+    ${inner}
+  </div></body></html>`;
+
+const unsubPage = async (req, res) => {
+  try {
+    const token = String(req.params.token || '');
+    const nl = token ? await Newsletter.findOne({ 'recipients.token': token }).select('recipients.token recipients.unsubscribedAt').lean() : null;
+    const r = nl && (nl.recipients || []).find((x) => x.token === token);
+    if (!r) return res.status(404).send(unsubShell('<p>This unsubscribe link isn&#39;t valid anymore.</p>'));
+    if (r.unsubscribedAt) return res.send(unsubShell('<p><b>You&#39;re unsubscribed.</b><br>You won&#39;t get these emails anymore.</p>'));
+    return res.send(unsubShell(`
+      <p style="margin:0 0 18px;">Stop getting Joint Printing newsletters?</p>
+      <form method="POST"><button type="submit" style="background:#15803d;color:#fff;border:none;border-radius:10px;padding:12px 22px;font-weight:700;font-size:14px;cursor:pointer;">Unsubscribe</button></form>`));
+  } catch (e) {
+    res.status(500).send(unsubShell('<p>Something went wrong — just reply to the email and we&#39;ll take you off the list.</p>'));
+  }
+};
+
+const oneClickUnsub = async (req, res) => {
+  try {
+    const r = await applyUnsubscribe(String(req.params.token || ''));
+    if (!r) return res.status(404).send(unsubShell('<p>This unsubscribe link isn&#39;t valid anymore.</p>'));
+    // Mail clients only need the 200; humans (from the GET page's form) get the
+    // confirmation.
+    res.send(unsubShell('<p><b>You&#39;re unsubscribed.</b><br>You won&#39;t get these emails anymore.</p>'));
+  } catch (e) {
+    res.status(500).send(unsubShell('<p>Something went wrong — just reply to the email and we&#39;ll take you off the list.</p>'));
+  }
 };
 
 // Open pixel — 1×1 transparent PNG, never 404s to the mail client.
@@ -310,12 +440,14 @@ async function computeStats(nl) {
     audience: recips.length, sent: sent.length,
     opened: opened.length, openRate: sent.length ? Math.round(opened.length / sent.length * 100) : 0,
     replied, failed: recips.filter((r) => r.failed).length,
+    unsubscribed: recips.filter((r) => r.unsubscribedAt).length,
   };
 }
 
 module.exports = {
   listNewsletters, createNewsletter, getNewsletter, patchNewsletter,
   uploadFile, previewAudience, sendTest, sendNewsletter, openPixel,
+  unsubPage, oneClickUnsub, resumeStuckBlasts,
   // exported for reuse/tests
-  bodyToHtml, resolveAudience, canSend,
+  bodyToHtml, resolveAudience, canSend, unsubHeaders, unsubUrlFor, runBlast, applyUnsubscribe,
 };
