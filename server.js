@@ -248,11 +248,18 @@ db.once('open', () => {
   // committed data/promoCatalog.json (the Quoter's promo picker). Idempotent
   // upserts — bump the -vN when a new vendor PDF is scraped into the file.
   setTimeout(async () => {
-    const KEY = 'promoCatalogSeed-v1'; // v1: dispopromos client prices + net-cost catalog, Jul 2026
+    // v2: full audit against both vendor PDFs — Exit Bag client prices seeded,
+    // overseas turnarounds corrected, numeric MOQs (commas seeded null),
+    // client-side (G) surcharges alongside net, hazmat fee flags, CDOOB-T
+    // dupe merged (its 'CDOOB-T / CDOOB-ST' doc archives below — no deletes).
+    const KEY = 'promoCatalogSeed-v2';
     try {
       const migrations = mongoose.connection.db.collection('migrations');
       if (await migrations.findOne({ _id: KEY })) return;
       const r = await require('./controllers/promoProducts').seedPromoCatalog();
+      await require('./models/PromoProduct').updateOne(
+        { sku: 'CDOOB-T / CDOOB-ST', variant: '' },
+        { $set: { archived: true, archivedAt: new Date() } });
       await migrations.insertOne({ _id: KEY, at: new Date(), seeded: r.seeded });
       console.log(`[promo] catalog seeded — ${r.seeded} product(s) from data/promoCatalog.json`);
     } catch (e) {

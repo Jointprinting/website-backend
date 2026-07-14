@@ -4,7 +4,7 @@
   "sku": "C-ASHG",
   "variant": "",
   "category": "Ashtray",
-  "description": "4\" diameter; glass; available in black, white and clear glass",
+  "description": "4\" diameter; glass; available in white and clear glass",
   "moq": null,
   "turnaround": "3-5 Business Days",
   "printMethod": "Full color imprint",
@@ -74,7 +74,7 @@
   "moq": null,
   "turnaround": "3-5 Weeks",
   "printMethod": "Imprint",
-  "printCost": "Included (1 color); add'l color run charge $.20 per unit",
+  "printCost": "Included (1 color); add'l color run charge $.20 net / $.30 (G) client per unit",
   "setupCostNet": "$40 per color (Repeat Setup $20 per color)",
   "setupCostClient": "$50 per color (repeat setup $25 per color)",
   "netCostBreaks": [
@@ -140,7 +140,7 @@
   "moq": null,
   "turnaround": "3-5 Weeks",
   "printMethod": "Imprint",
-  "printCost": "Included (1 color); add'l color run charge $.20 per unit",
+  "printCost": "Included (1 color); add'l color run charge $.20 net / $.30 (G) client per unit",
   "setupCostNet": "$40 per color (Repeat Setup $20 per color)",
   "setupCostClient": "$50 per color (repeat setup $25 per color)",
   "netCostBreaks": [
@@ -206,7 +206,7 @@
   "moq": null,
   "turnaround": "3-5 Weeks",
   "printMethod": "Imprint",
-  "printCost": "Included (1 color); add'l color run charge $.20 per unit",
+  "printCost": "Included (1 color); add'l color run charge $.20 net / $.30 (G) client per unit",
   "setupCostNet": "$40 per color (Repeat Setup $20 per color)",
   "setupCostClient": "$50 per color (repeat setup $25 per color)",
   "netCostBreaks": [
@@ -274,7 +274,7 @@
   "printMethod": "Full custom",
   "printCost": "Included in setup (one-time fee)",
   "setupCostNet": "$120 per color (one-time)",
-  "setupCostClient": "",
+  "setupCostClient": "$150 per color (one-time)",
   "netCostBreaks": [
    {
     "qty": 5000,
@@ -297,7 +297,28 @@
     "cost": 0.59
    }
   ],
-  "clientPriceBreaks": [],
+  "clientPriceBreaks": [
+   {
+    "qty": 5000,
+    "price": 1.0
+   },
+   {
+    "qty": 10000,
+    "price": 0.94
+   },
+   {
+    "qty": 25000,
+    "price": 0.9
+   },
+   {
+    "qty": 50000,
+    "price": 0.83
+   },
+   {
+    "qty": 100000,
+    "price": 0.78
+   }
+  ],
   "flags": []
  },
  {
@@ -307,7 +328,7 @@
   "category": "Bag",
   "description": "12\"W x 9\"H + 4.5\" gusset; overseas; print entire bag; child & odor resistant; several zipper options; shipping included",
   "moq": null,
-  "turnaround": "12-14 weeks",
+  "turnaround": "10-12 weeks",
   "printMethod": "Full custom, entire bag",
   "printCost": "Included in setup (one-time fee)",
   "setupCostNet": "$120 per color (one-time)",
@@ -369,7 +390,7 @@
   "category": "Bag",
   "description": "3.43\"W x 5\"H + 2\" gusset; mylar; OVERSEAS production, shipping included",
   "moq": null,
-  "turnaround": "8-10 weeks",
+  "turnaround": "10-12 weeks",
   "printMethod": "Full custom, entire bag",
   "printCost": "Included in setup (one-time fee)",
   "setupCostNet": "$120 per color (one-time)",
@@ -414,7 +435,7 @@
   "category": "Bag",
   "description": "5\"W x 8.13\"H + 3\" gusset; mylar; OVERSEAS production, shipping included",
   "moq": null,
-  "turnaround": "8-10 weeks",
+  "turnaround": "10-12 weeks",
   "printMethod": "Full custom, entire bag",
   "printCost": "Included in setup (one-time fee)",
   "setupCostNet": "$120 per color (one-time)",
@@ -459,7 +480,7 @@
   "category": "Bag",
   "description": "12\"W x 19\"H + 5.5\" gusset; mylar; OVERSEAS production, shipping included",
   "moq": null,
-  "turnaround": "8-10 weeks",
+  "turnaround": "10-12 weeks",
   "printMethod": "Full custom, entire bag",
   "printCost": "Included in setup (one-time fee)",
   "setupCostNet": "$120 per color (one-time)",
@@ -504,7 +525,7 @@
   "category": "Bag",
   "description": "5.9\"W x 9\"H + 3.5\" gusset; mylar; OVERSEAS production, shipping included",
   "moq": null,
-  "turnaround": "8-10 weeks",
+  "turnaround": "10-12 weeks",
   "printMethod": "Full custom, entire bag",
   "printCost": "Included in setup (one-time fee)",
   "setupCostNet": "$120 per color (one-time)",
@@ -549,7 +570,7 @@
   "category": "Bag",
   "description": "5.75\"W x 2.88\"H; mylar; OVERSEAS production, shipping included",
   "moq": null,
-  "turnaround": "8-10 weeks",
+  "turnaround": "10-12 weeks",
   "printMethod": "Full custom, entire bag",
   "printCost": "Included in setup (one-time fee)",
   "setupCostNet": "$120 per color (one-time)",
@@ -594,7 +615,7 @@
   "category": "Bag",
   "description": "4\"W x 6.63\"H + 2\" gusset; mylar; OVERSEAS production, shipping included",
   "moq": null,
-  "turnaround": "8-10 weeks",
+  "turnaround": "10-12 weeks",
   "printMethod": "Full custom, entire bag",
   "printCost": "Included in setup (one-time fee)",
   "setupCostNet": "$120 per color (one-time)",
@@ -893,7 +914,7 @@
   "moq": null,
   "turnaround": "3-5 Weeks",
   "printMethod": "Imprint",
-  "printCost": "Included (1 color); add'l color run charge $.20 per unit",
+  "printCost": "Included (1 color); add'l color run charge $.20 net / $.30 (G) client per unit",
   "setupCostNet": "$40 per color (Repeat Setup $20 per color)",
   "setupCostClient": "$50 per color",
   "netCostBreaks": [
@@ -1335,7 +1356,9 @@
    }
   ],
   "clientPriceBreaks": [],
-  "flags": []
+  "flags": [
+   "Net catalog only — no published client price; set the client price manually"
+  ]
  },
  {
   "name": "Custom Dabit Card 3 Piece",
@@ -1710,7 +1733,7 @@
   "moq": null,
   "turnaround": "3-5 Business Days",
   "printMethod": "Full color, one side",
-  "printCost": "Included (1 side); back side $.28/unit; sleeves $.28 per printed side",
+  "printCost": "Included (1 side); back side $.28 net / $.35 (G) client per unit; sleeves $.28 net / $.35 (G) client per printed side",
   "setupCostNet": "$40 per location",
   "setupCostClient": "$50 per location",
   "netCostBreaks": [
@@ -1825,7 +1848,7 @@
   ],
   "flags": [
    "Appears twice in catalog (p.2 and p.5), identical pricing",
-   "SKU also appears on page 5 (identical pricing); page 5 notes setup is '$50 per location'"
+   "Net setup $40 per location (client $50 per location)"
   ]
  },
  {
@@ -1958,12 +1981,12 @@
   "variant": "",
   "category": "Jar",
   "description": "1.52\"H x 2.88\" diameter, 3oz; biodegradable hemp plastic; direct print or label",
-  "moq": "200",
+  "moq": 200,
   "turnaround": "7-10 Business Days",
   "printMethod": "Direct print or label, full color",
-  "printCost": "Included (1 location); add'l location $.28 ea",
+  "printCost": "Included (1 location); add'l location $.28 net / $.35 (G) client ea",
   "setupCostNet": "$40 (2nd location: $40 setup + $.28 ea)",
-  "setupCostClient": "$50",
+  "setupCostClient": "$50 (2nd location: $50 setup + $.35 ea)",
   "netCostBreaks": [
    {
     "qty": 200,
@@ -2024,12 +2047,12 @@
   "variant": "",
   "category": "Jar",
   "description": "3.1\"H x 2.3\" diameter, 4oz; child resistant; biodegradable hemp plastic; direct print or label",
-  "moq": "250",
+  "moq": 250,
   "turnaround": "7-10 Business Days",
   "printMethod": "Direct print or label, full color",
-  "printCost": "Included (1 location); add'l location $.28 ea",
+  "printCost": "Included (1 location); add'l location $.28 net / $.35 (G) client ea",
   "setupCostNet": "$40 (2nd location: $40 setup + $.28 ea)",
-  "setupCostClient": "$50",
+  "setupCostClient": "$50 (2nd location: $50 setup + $.35 ea)",
   "netCostBreaks": [
    {
     "qty": 250,
@@ -2095,7 +2118,7 @@
   "moq": null,
   "turnaround": "3-5 Business Days",
   "printMethod": "Direct print or label, full color",
-  "printCost": "Included (1 location); 2nd location $.28 each",
+  "printCost": "Included (1 location); 2nd location $.28 net / $.35 (G) client each",
   "setupCostNet": "$40 per location (Repeat Setup $20 per location)",
   "setupCostClient": "$50 per location (repeat setup $25)",
   "netCostBreaks": [
@@ -2161,7 +2184,7 @@
   "moq": null,
   "turnaround": "3-5 Business Days",
   "printMethod": "Direct print or label, full color",
-  "printCost": "Included (1 location); 2nd location $.28 each",
+  "printCost": "Included (1 location); 2nd location $.28 net / $.35 (G) client each",
   "setupCostNet": "$40 per location (Repeat Setup $20 per location)",
   "setupCostClient": "$50 per location (repeat setup $25)",
   "netCostBreaks": [
@@ -2227,7 +2250,7 @@
   "moq": null,
   "turnaround": "3-5 Business Days",
   "printMethod": "Direct print or label, full color",
-  "printCost": "Included (1 location); 2nd location $.28 each",
+  "printCost": "Included (1 location); 2nd location $.28 net / $.35 (G) client each",
   "setupCostNet": "$40 per location (Repeat Setup $20 per location)",
   "setupCostClient": "$50 per location (repeat setup $25)",
   "netCostBreaks": [
@@ -2290,10 +2313,10 @@
   "variant": "",
   "category": "Lighter",
   "description": "1\"W x 3\"H; plastic; available in black, white, lime & forest green, royal & light blue, yellow, orange, red, pink",
-  "moq": "300",
+  "moq": 300,
   "turnaround": "10-15 Business Days",
   "printMethod": "1-color logo, 1 side",
-  "printCost": "1 color/1 side included; $.20 per additional color per side (max 4 colors/side, 8 total)",
+  "printCost": "1 color/1 side included; add'l color per side $.20 net / $.25 (G) client (max 4 colors/side, 8 total)",
   "setupCostNet": "$40",
   "setupCostClient": "$50",
   "netCostBreaks": [
@@ -2356,10 +2379,10 @@
   "variant": "",
   "category": "Lighter",
   "description": ".87\"W x 3\"H; clipper-style; full color logo 1 location",
-  "moq": "240",
+  "moq": 240,
   "turnaround": "3-5 Business Days",
   "printMethod": "Full color, 1 location",
-  "printCost": "Included (1 location); add'l location run charge $.28 ea",
+  "printCost": "Included (1 location); add'l location run charge $.28 net / $.35 (G) client ea",
   "setupCostNet": "$40 per location",
   "setupCostClient": "$50 per location",
   "netCostBreaks": [
@@ -2414,7 +2437,9 @@
     "price": 1.4
    }
   ],
-  "flags": []
+  "flags": [
+   "Hazmat ship fee: $25 (net) per 240-480 units — add to quote"
+  ]
  },
  {
   "name": "Custom BRIO Clipper Lighter",
@@ -2422,7 +2447,7 @@
   "variant": "",
   "category": "Lighter",
   "description": "1\"W x 3\"H; refillable clipper-style; full color logo",
-  "moq": "250",
+  "moq": 250,
   "turnaround": "3-5 Business Days",
   "printMethod": "Full color",
   "printCost": "Included",
@@ -2480,7 +2505,9 @@
     "price": 1.42
    }
   ],
-  "flags": []
+  "flags": [
+   "Hazmat ship fee: $25 (net) per 500 units — add to quote"
+  ]
  },
  {
   "name": "Custom EZ Reach Bic Lighter",
@@ -2488,10 +2515,10 @@
   "variant": "",
   "category": "Lighter",
   "description": "1\"W x 3\"H x 1.45\" wand; EZ Reach wand lighter",
-  "moq": "240",
+  "moq": 240,
   "turnaround": "3-5 Business Days",
   "printMethod": "1-color logo (max 4 spot/solid colors front)",
-  "printCost": "1 color included; $.20 (G) per additional color",
+  "printCost": "1 color included; add'l color $.20 net / $.25 (G) client",
   "setupCostNet": "$40",
   "setupCostClient": "$50",
   "netCostBreaks": [
@@ -2554,10 +2581,10 @@
   "variant": "",
   "category": "Lighter",
   "description": "1.18\"W x 2.95\"H; plastic; fits BIC J26 maxi (with/without sleeve) and MK jet lighter; lighters NOT included",
-  "moq": "50",
+  "moq": 50,
   "turnaround": "3-5 Business Days",
   "printMethod": "Full color, 1 location",
-  "printCost": "Included (1 location); add'l location run charge $.28 per unit",
+  "printCost": "Included (1 location); add'l location run charge $.28 net / $.35 (G) client per unit",
   "setupCostNet": "$40 per location",
   "setupCostClient": "$50 per location",
   "netCostBreaks": [
@@ -2620,10 +2647,10 @@
   "variant": "",
   "category": "Lighter",
   "description": "1\"W x 3.17\"H; jet flame; full color logo 1 location",
-  "moq": "250",
+  "moq": 250,
   "turnaround": "3-5 Business Days",
   "printMethod": "Full color, 1 location",
-  "printCost": "Included (1 location); add'l location run charge $.28 ea",
+  "printCost": "Included (1 location); add'l location run charge $.28 net / $.35 (G) client ea",
   "setupCostNet": "$40 per location",
   "setupCostClient": "$50 per location",
   "netCostBreaks": [
@@ -2678,7 +2705,9 @@
     "price": 1.19
    }
   ],
-  "flags": []
+  "flags": [
+   "Hazmat ship fee: $25 (net) per 500 units — add to quote"
+  ]
  },
  {
   "name": "Custom USB Plasma Arc Lighter",
@@ -2689,7 +2718,7 @@
   "moq": null,
   "turnaround": "3-4 weeks",
   "printMethod": "Imprint",
-  "printCost": "Included; add'l color run charge $.20 per color per unit",
+  "printCost": "Included; add'l color run charge $.20 net / $.25 (G) client per color per unit",
   "setupCostNet": "$40",
   "setupCostClient": "$50 per color",
   "netCostBreaks": [
@@ -2736,7 +2765,7 @@
   "variant": "",
   "category": "Lighter",
   "description": "1\"W x 3\"H; delrin plastic; full wrap label",
-  "moq": "1,200 per label",
+  "moq": 1200,
   "turnaround": "50-60 Business Days",
   "printMethod": "Full wrap label",
   "printCost": "Included",
@@ -2778,7 +2807,9 @@
     "price": 2.35
    }
   ],
-  "flags": []
+  "flags": [
+   "MOQ 1,200 per label; must be ordered in increments of 300"
+  ]
  },
  {
   "name": "Puffcase",
@@ -2786,10 +2817,10 @@
   "variant": "",
   "category": "Lighter",
   "description": "2.12\"W x 3.75\"H; plastic lighter/joint case; lighter and joints NOT included",
-  "moq": "50",
+  "moq": 50,
   "turnaround": "3-5 Business Days",
   "printMethod": "Full color, 1 location",
-  "printCost": "Included (1 location); add'l location run charge $.28 per unit",
+  "printCost": "Included (1 location); add'l location run charge $.28 net / $.35 (G) client per unit",
   "setupCostNet": "$40 per location",
   "setupCostClient": "$50 per location",
   "netCostBreaks": [
@@ -2855,7 +2886,7 @@
   "moq": null,
   "turnaround": "3-5 Business Days",
   "printMethod": "Full color, top of box",
-  "printCost": "Included (top); add'l location run charge $.28 per unit; 2-location imprint $.28 extra/unit + $40 setup per location",
+  "printCost": "Included (top); add'l location run charge $.28 net / $.35 (G) client per unit; 2-location imprint adds setup per location ($40 net / $50 (G) client)",
   "setupCostNet": "$40 per location (bottom setup waived if same artwork)",
   "setupCostClient": "$50 per location (bottom setup waived if artwork is the same)",
   "netCostBreaks": [
@@ -3050,7 +3081,7 @@
   "variant": "",
   "category": "Pre-Roll Tube",
   "description": "116mm; biodegradable hemp plastic; brown & white available; direct print or label (labeled items come with labels applied)",
-  "moq": "1,000",
+  "moq": 1000,
   "turnaround": "7-10 Business Days",
   "printMethod": "Direct print or label, full color",
   "printCost": "Included (1 location)",
@@ -3107,50 +3138,13 @@
   "sku": "CDOOB-T",
   "variant": "",
   "category": "Pre-Roll Tube",
-  "description": "116mm; BPA free plastic; direct print or label; labeled tubes come with labels applied",
-  "moq": null,
-  "turnaround": "7-10 business days",
-  "printMethod": "Full color logo, direct print or label",
-  "printCost": "",
-  "setupCostNet": "",
-  "setupCostClient": "$50",
-  "netCostBreaks": [],
-  "clientPriceBreaks": [
-   {
-    "qty": 1000,
-    "price": 0.57
-   },
-   {
-    "qty": 3000,
-    "price": 0.54
-   },
-   {
-    "qty": 5000,
-    "price": 0.5
-   },
-   {
-    "qty": 10000,
-    "price": 0.47
-   },
-   {
-    "qty": 25000,
-    "price": 0.45
-   }
-  ],
-  "flags": []
- },
- {
-  "name": "Custom Pre-Roll Tubes (Direct Print or Label)",
-  "sku": "CDOOB-T / CDOOB-ST",
-  "variant": "",
-  "category": "Pre-Roll Tube",
-  "description": "BPA-free plastic pre-roll tubes, 116mm. Direct print (CDOOB-T) or label (CDOOB-ST).",
+  "description": "116mm; BPA-free plastic; direct print (CDOOB-T) or label (CDOOB-ST); labeled tubes come with labels applied",
   "moq": null,
   "turnaround": "7-10 Business Days",
-  "printMethod": "Direct print or label, full color",
+  "printMethod": "Full color logo, direct print or label",
   "printCost": "Included",
   "setupCostNet": "$40",
-  "setupCostClient": "",
+  "setupCostClient": "$50",
   "netCostBreaks": [
    {
     "qty": 1000,
@@ -3173,7 +3167,28 @@
     "cost": 0.34
    }
   ],
-  "clientPriceBreaks": [],
+  "clientPriceBreaks": [
+   {
+    "qty": 1000,
+    "price": 0.57
+   },
+   {
+    "qty": 3000,
+    "price": 0.54
+   },
+   {
+    "qty": 5000,
+    "price": 0.5
+   },
+   {
+    "qty": 10000,
+    "price": 0.47
+   },
+   {
+    "qty": 25000,
+    "price": 0.45
+   }
+  ],
   "flags": []
  },
  {
@@ -3422,7 +3437,7 @@
   "variant": "",
   "category": "Pre-Rolled Cone",
   "description": "83mm, 98mm & 109mm; 4\"W x 3\"H; sold in 3-packs; pure rice or unbleached papers; comes with custom display case",
-  "moq": "1,080 packs (case qty)",
+  "moq": 1080,
   "turnaround": "20-25 Business Days",
   "printMethod": "Full color, custom display case",
   "printCost": "Included",
@@ -3474,7 +3489,8 @@
   ],
   "flags": [
    "Quantities are in PACKS (3-packs), priced per pack",
-   "Quantities are in packs (3 cones per pack)"
+   "Quantities are in packs (3 cones per pack)",
+   "MOQ 1,080 packs (one case)"
   ]
  },
  {
@@ -3702,7 +3718,7 @@
   "moq": null,
   "turnaround": "20-30 Business Days",
   "printMethod": "Full color 4-color process on booklets and display boxes",
-  "printCost": "Included; printing on the papers +$.20 per booklet",
+  "printCost": "Included; printing on the papers +$.20 net / $.25 (G) client per booklet",
   "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea)",
   "setupCostClient": "$50",
   "netCostBreaks": [
@@ -3749,7 +3765,9 @@
     "price": 0.69
    }
   ],
-  "flags": []
+  "flags": [
+   "Magnets: $.12 net vs $.10 (G) catalog client price — BELOW COST; quote $.15+ or confirm with Cannabis Promotions"
+  ]
  },
  {
   "name": "Full Custom Booklet & Box 1 1/4 - Hemp",
@@ -3760,7 +3778,7 @@
   "moq": null,
   "turnaround": "20-30 Business Days",
   "printMethod": "Full color 4-color process on booklets and display boxes",
-  "printCost": "Included; printing on the papers +$.20 per booklet",
+  "printCost": "Included; printing on the papers +$.20 net / $.25 (G) client per booklet",
   "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea)",
   "setupCostClient": "$50",
   "netCostBreaks": [
@@ -3807,7 +3825,9 @@
     "price": 0.75
    }
   ],
-  "flags": []
+  "flags": [
+   "Magnets: $.12 net vs $.10 (G) catalog client price — BELOW COST; quote $.15+ or confirm with Cannabis Promotions"
+  ]
  },
  {
   "name": "Full Custom Booklet & Box King Size - Bleached/Unbleached Wood Pulp or Rice",
@@ -3818,7 +3838,7 @@
   "moq": null,
   "turnaround": "20-30 Business Days",
   "printMethod": "Full color 4-color process on booklets and display boxes",
-  "printCost": "Included; printing on the papers +$.20 per booklet",
+  "printCost": "Included; printing on the papers +$.20 net / $.25 (G) client per booklet",
   "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea)",
   "setupCostClient": "$50",
   "netCostBreaks": [
@@ -3865,7 +3885,9 @@
     "price": 0.74
    }
   ],
-  "flags": []
+  "flags": [
+   "Magnets: $.12 net vs $.10 (G) catalog client price — BELOW COST; quote $.15+ or confirm with Cannabis Promotions"
+  ]
  },
  {
   "name": "Full Custom Booklet & Box King Size - Hemp",
@@ -3876,7 +3898,7 @@
   "moq": null,
   "turnaround": "20-30 Business Days",
   "printMethod": "Full color 4-color process on booklets and display boxes",
-  "printCost": "Included; printing on the papers +$.20 per booklet",
+  "printCost": "Included; printing on the papers +$.20 net / $.25 (G) client per booklet",
   "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea)",
   "setupCostClient": "$50",
   "netCostBreaks": [
@@ -3923,7 +3945,9 @@
     "price": 0.79
    }
   ],
-  "flags": []
+  "flags": [
+   "Magnets: $.12 net vs $.10 (G) catalog client price — BELOW COST; quote $.15+ or confirm with Cannabis Promotions"
+  ]
  },
  {
   "name": "Full Custom Booklet & Box w/ Tips 1 1/4 - Bleached/Unbleached Wood Pulp",
@@ -4694,8 +4718,8 @@
    }
   ],
   "flags": [
-   "Appears twice (p.2 and p.6); p.6 lists setup $50 (G), p.2 implies section $40 — used p.6 explicit value",
-   "Also listed on page 6 (identical pricing)"
+   "Appears twice (p.2 and p.6); also in client catalog twice (identical pricing)",
+   "Net setup conflict in vendor PDF: $40 (p.2) vs $50 (p.6) — using $50; confirm with Cannabis Promotions"
   ]
  },
  {
@@ -4771,8 +4795,9 @@
    }
   ],
   "flags": [
-   "Appears twice (p.2 and p.6)",
-   "Also listed on page 6 (identical pricing)"
+   "Appears twice (p.2 and p.6); also in client catalog twice (identical pricing)",
+   "Net setup conflict in vendor PDF: $40 (p.2) vs $50 (p.6) — using $50; confirm with Cannabis Promotions",
+   "Client PDF tier conflict: 3rd tier qty 200 (p.3) vs 250 (p.6) — using 200; confirm before quoting 200-249"
   ]
  },
  {
@@ -4781,7 +4806,7 @@
   "variant": "",
   "category": "Tray",
   "description": "10.5\"W x 6\"H; metal tin; full custom",
-  "moq": "500",
+  "moq": 500,
   "turnaround": "35-45 Business Days",
   "printMethod": "Full custom",
   "printCost": "Included",
@@ -4831,7 +4856,7 @@
   "variant": "",
   "category": "Tray",
   "description": "7.1\"W x 5.5\"H; metal tin; full custom",
-  "moq": "500",
+  "moq": 500,
   "turnaround": "35-45 Business Days",
   "printMethod": "Full custom",
   "printCost": "Included",

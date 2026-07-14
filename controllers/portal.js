@@ -25,6 +25,14 @@ const norm = (n) => String(n || '').replace(/^#/, '').replace(/^0+/, '').toUpper
 // GET /api/portal/:token — public, token-gated.
 async function getPortal(req, res) {
   try {
+    // ── HALTED (owner, 2026-07-14) ──────────────────────────────────────────
+    // A magic link is bearer access: forwarded once, a third party can read
+    // the client's order totals. The portal stays dark until it sits behind a
+    // real sign-in (Google, v2). Existing minted links die right here. Flip
+    // PORTAL_ENABLED=true on the API host only when the owner re-approves.
+    if (process.env.PORTAL_ENABLED !== 'true') {
+      return res.status(404).json({ message: 'This link is invalid or no longer available.', reason: 'invalid' });
+    }
     const token = String(req.params.token || '').trim();
     if (!token) return res.status(404).json({ message: 'This link is invalid.', reason: 'invalid' });
     const client = await Client.findOne({ portalToken: token })

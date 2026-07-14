@@ -2717,6 +2717,11 @@ async function updateLogEntry(req, res) {
 // expire).
 async function portalMint(req, res) {
   try {
+    // HALTED (owner, 2026-07-14): no new portal links until the portal sits
+    // behind a real sign-in — see controllers/portal.js. Revoke stays live.
+    if (process.env.PORTAL_ENABLED !== 'true') {
+      return res.status(503).json({ message: 'The client portal is switched off pending the security rework (sign-in gated v2).' });
+    }
     const key = req.params.companyKey;
     if (!key) return res.status(400).json({ message: 'companyKey required' });
     const doc = await Client.findOne({ companyKey: key });
