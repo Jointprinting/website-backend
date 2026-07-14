@@ -5,7 +5,7 @@
 // arrays in, plain plan out) so the whole thing is unit-testable with no DB, and
 // so the migration is a two-step "plan → apply" the controller can dry-run.
 
-const { dealStageFromOrderStatus } = require('../models/Deal');
+const { dealStageFromOrderStatus, OPEN_STAGES } = require('../models/Deal');
 
 // ── Derive-client ─────────────────────────────────────────────────────────────
 
@@ -20,13 +20,13 @@ function isClientFromDeals(deals) {
 // The business's derived pipeline status from its deals (+ order reality as a
 // backstop, since a placed order is a win even if no deal was recorded):
 //   client   — has a won deal, or a placed order
-//   active   — has an open deal (qualifying/quoted) in play
+//   active   — has an open deal (details_needed/quoting/quote_sent) in play
 //   prospect — none of the above (a lead we haven't opened a deal with yet)
 // PURE. `hasPlacedOrder` folds in the existing order-reality signal.
 function deriveBusinessStatus(deals, hasPlacedOrder = false) {
   const arr = (Array.isArray(deals) ? deals : []).filter((d) => d && !d.archived);
   if (hasPlacedOrder || arr.some((d) => d.stage === 'won')) return 'client';
-  if (arr.some((d) => d.stage === 'qualifying' || d.stage === 'quoted')) return 'active';
+  if (arr.some((d) => OPEN_STAGES.includes(d.stage))) return 'active';
   return 'prospect';
 }
 
@@ -92,9 +92,12 @@ function groupOrdersByJob(orders) {
 // placed/won > higher value > oldest (a stable tiebreak). Never an archived doc
 // (they're excluded upstream by the migration query, but guard anyway).
 function pickSurvivor(group) {
+  // "Order reality" rank: a placed/fulfilled doc outranks a quote doc even
+  // though (post-cutover) neither maps to a 'won' DEAL stage until delivery.
+  const PLACED = ['placed', 'in_production', 'shipped', 'delivered'];
   const score = (o) => [
     (o.projectNumber && o.orderNumber) ? 1 : 0,
-    dealStageFromOrderStatus(o.status) === 'won' ? 1 : 0,
+    PLACED.includes(String(o.status)) ? 1 : 0,
     Number(o.totalValue) || 0,
   ];
   return group.slice().sort((a, b) => {

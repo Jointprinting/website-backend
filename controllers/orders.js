@@ -502,7 +502,7 @@ const updateOrder = async (req, res) => {
         if (order.projectNumber) or.push({ projectNumber: order.projectNumber });
         if (order.orderNumber) or.push({ orderNumber: order.orderNumber });
         const r = await Deal.updateMany(
-          { $or: or, stage: { $in: ['qualifying', 'quoted'] } },
+          { $or: or, stage: { $in: Deal.OPEN_STAGES } },
           { $set: { stage: 'won', wonAt: new Date() } },
         );
         if (r.modifiedCount) console.log(`[deals] order ${order.orderNumber || order.projectNumber} delivered → ${r.modifiedCount} deal(s) won`);
@@ -1102,75 +1102,121 @@ function pickLiveProjectForCompany(orders) {
 // contactName?, contactEmail?, contactPhone? }. companyKey is honored when sent;
 // otherwise derived from the names exactly like Order.companyKey, so the link
 // matches everywhere.
-const createOrGetProjectForCompany = async (req, res) => {
+// Every job gets a DEAL CARD: create-or-get the open deal for a project, so the
+// pipeline board always shows the job the moment a project exists. Idempotent —
+// an existing deal for this project/order (open OR closed) is returned as-is,
+// never duplicated or resurrected. Best-effort by contract (callers warn+continue).
+async function ensureDealForProject(order, { title = '', value = 0 } = {}) {
+  const Deal = require('../models/Deal');
+  const projectNumber = String(order.projectNumber || '');
+  const orderNumber = String(order.orderNumber || '');
+  if (!projectNumber && !orderNumber) return null;
+  const or = [];
+  if (projectNumber) or.push({ projectNumber });
+  if (orderNumber) or.push({ orderNumber });
+  const existing = await Deal.findOne({ $or: or, archived: { $ne: true } })
+    .sort({ createdAt: -1 }).lean();
+  if (existing) return existing;
+  const deal = await Deal.create({
+    dealNumber: `D-${await nextNumber('deal')}`,
+    companyKey: order.companyKey || '',
+    companyName: order.companyName || order.clientName || '',
+    title: title || (projectNumber ? `Project #${projectNumber}` : `Order #${orderNumber}`),
+    stage: 'quoting',
+    value: Number(value) || Number(order.totalValue) || 0,
+    orderNumber,
+    projectNumber,
+    sourceOrderId: String(order._id || ''),
+    origin: 'order',
+  });
+  return deal.toObject();
+}
+
+// The reusable core of the LEAD -> QUOTE handoff (also powers the CRM's "Start
+// new job"). Returns { order, created }. `forceNew: true` skips the live-project
+// reuse — an explicit "start ANOTHER job" must never hijack the project that's
+// mid-delivery for the same company.
+async function ensureProjectForCompany(body = {}, { forceNew = false } = {}) {
+  const companyName = (body.companyName || '').toString().trim();
+  const clientName  = (body.clientName  || '').toString().trim();
+  const bodyKey = (body.companyKey || '').toString().trim();
+  // The Order model ALWAYS keys an order by deriveCompanyKey(names) (pre-save
+  // hook), so that's the key the project will actually carry. Key the CRM
+  // 'quoting' card and the reuse lookup off that SAME derived key so the project
+  // and its CRM record can never orphan (and the idempotent reuse query finds
+  // the company's existing orders — which are stored under the derived key too,
+  // NOT necessarily the frozen Client identity key the caller passed). Fall back
+  // to an explicit companyKey only when there are no names to derive from.
+  const key = deriveCompanyKey(companyName, clientName) || bodyKey;
+  if (!key) { const err = new Error('companyKey (or a company/client name) is required'); err.status = 400; throw err; }
+
+  // Ensure the company is also a first-class CRM record at the 'quoting' stage,
+  // so the order-centric pipeline board (and Companies / Today) shows it the
+  // moment it's quoting — not just once some other path creates a Client row.
+  // Best-effort + idempotent + UP-only (never regresses an owner-advanced or
+  // closed stage); a CRM hiccup must never block minting the project.
   try {
-    const body = req.body || {};
-    const companyName = (body.companyName || '').toString().trim();
-    const clientName  = (body.clientName  || '').toString().trim();
-    const bodyKey = (body.companyKey || '').toString().trim();
-    // The Order model ALWAYS keys an order by deriveCompanyKey(names) (pre-save
-    // hook), so that's the key the project will actually carry. Key the CRM
-    // 'quoting' card and the reuse lookup off that SAME derived key so the project
-    // and its CRM record can never orphan (and the idempotent reuse query finds
-    // the company's existing orders — which are stored under the derived key too,
-    // NOT necessarily the frozen Client identity key the caller passed). Fall back
-    // to an explicit companyKey only when there are no names to derive from.
-    const key = deriveCompanyKey(companyName, clientName) || bodyKey;
-    if (!key) return res.status(400).json({ message: 'companyKey (or a company/client name) is required' });
+    await ensureCompanyForQuoting(key, { companyName, clientName, dealValue: Number(body.dealValue) || 0 });
+  } catch (e) {
+    console.warn('[orders] ensureCompanyForQuoting skipped:', e.message);
+  }
 
-    // Ensure the company is also a first-class CRM record at the 'quoting' stage,
-    // so the order-centric pipeline board (and Companies / Today) shows it the
-    // moment it's quoting — not just once some other path creates a Client row.
-    // Best-effort + idempotent + UP-only (never regresses an owner-advanced or
-    // closed stage); a CRM hiccup must never block minting the project.
-    try {
-      await ensureCompanyForQuoting(key, { companyName, clientName, dealValue: Number(body.dealValue) || 0 });
-    } catch (e) {
-      console.warn('[orders] ensureCompanyForQuoting skipped:', e.message);
-    }
-
-    // Reuse an existing live project for this company -> idempotent re-entry.
-    // Match the canonical (derived) key OR the caller's passed key, so a project
-    // stored under either is reused rather than duplicated — including ones minted
-    // before this reconciliation. Pick the one to work WITHOUT minting a new number.
+  // Reuse an existing live project for this company -> idempotent re-entry.
+  // Match the canonical (derived) key OR the caller's passed key, so a project
+  // stored under either is reused rather than duplicated — including ones minted
+  // before this reconciliation. Pick the one to work WITHOUT minting a new number.
+  if (!forceNew) {
     const reuseKeys = [...new Set([key, bodyKey].filter(Boolean))];
     const existingOrders = await Order.find({ companyKey: { $in: reuseKeys } }).lean();
     const reuse = pickLiveProjectForCompany(existingOrders);
-    if (reuse) return res.json({ order: reuse, created: false });
+    if (reuse) return { order: reuse, created: false };
+  }
 
-    // Nothing live -> create the project. Mirrors createFromSubmission: next
-    // project # from the shared sequence, status starts at 'quoted', carry the
-    // deal's contact + value so the order page opens pre-seeded. companyKey is
-    // recomputed by the model's pre-save hook from the names, so we pass names.
-    const dealValue = Number(body.dealValue) || 0;
-    const contactBits = [
-      body.contactName  && `Contact: ${body.contactName}`,
-      body.contactEmail && `Email: ${body.contactEmail}`,
-      body.contactPhone && `Phone: ${body.contactPhone}`,
-      dealValue > 0     && `Estimated deal value: $${dealValue.toLocaleString('en-US')}`,
-    ].filter(Boolean).join('\n');
+  // Nothing live -> create the project. Mirrors createFromSubmission: next
+  // project # from the shared sequence, status starts at 'quoted', carry the
+  // deal's contact + value so the order page opens pre-seeded. companyKey is
+  // recomputed by the model's pre-save hook from the names, so we pass names.
+  const dealValue = Number(body.dealValue) || 0;
+  const contactBits = [
+    body.contactName  && `Contact: ${body.contactName}`,
+    body.contactEmail && `Email: ${body.contactEmail}`,
+    body.contactPhone && `Phone: ${body.contactPhone}`,
+    dealValue > 0     && `Estimated deal value: $${dealValue.toLocaleString('en-US')}`,
+  ].filter(Boolean).join('\n');
 
-    const projectNumber = await nextNumber('project');
-    const order = await Order.create({
-      projectNumber,
-      companyName,
-      clientName: clientName || body.contactName || '',
-      status:     'quoted',
-      // Seed the quote total from the deal value so the project isn't $0 before a
-      // quote is built; it's overwritten the moment a real quote/confirmation is
-      // saved (computeQuoteTotals / computeConfirmationTotals own totalValue then).
-      totalValue: dealValue,
-      notes:      contactBits,
-      importedFrom: 'crm-quoting',
-      activity: [{
-        kind: 'created', actor: 'admin',
-        message: `Project #${projectNumber} created from CRM (moved to quoting)`,
-        at: new Date(),
-      }],
-    });
-    return res.status(201).json({ order: order.toObject(), created: true });
+  const projectNumber = await nextNumber('project');
+  const order = await Order.create({
+    projectNumber,
+    companyName,
+    clientName: clientName || body.contactName || '',
+    status:     'quoted',
+    // Seed the quote total from the deal value so the project isn't $0 before a
+    // quote is built; it's overwritten the moment a real quote/confirmation is
+    // saved (computeQuoteTotals / computeConfirmationTotals own totalValue then).
+    totalValue: dealValue,
+    notes:      contactBits,
+    importedFrom: 'crm-quoting',
+    activity: [{
+      kind: 'created', actor: 'admin',
+      message: `Project #${projectNumber} created from CRM (moved to quoting)`,
+      at: new Date(),
+    }],
+  });
+  return { order: order.toObject(), created: true };
+}
+
+const createOrGetProjectForCompany = async (req, res) => {
+  try {
+    const { order, created } = await ensureProjectForCompany(req.body || {});
+    // The job's deal card rides along automatically — the board shows every job.
+    try {
+      await ensureDealForProject(order, { value: Number((req.body || {}).dealValue) || 0 });
+    } catch (e) {
+      console.warn('[orders] ensureDealForProject skipped:', e.message);
+    }
+    return res.status(created ? 201 : 200).json({ order, created });
   } catch (e) {
-    res.status(500).json({ message: e.message });
+    res.status(e.status || 500).json({ message: e.message });
   }
 };
 
@@ -1627,13 +1673,32 @@ const backfillConfirmationCogs = async () => {
   return fixed;
 };
 
+// POST /api/orders/ups-check — run the UPS auto-delivered sweep on demand and
+// return the per-order report (the Studio's "check UPS now" button, and the
+// way to verify the integration right after the env keys go in).
+const upsCheck = async (_req, res) => {
+  try {
+    const { runUpsTick, upsConfigured } = require('../services/upsTracking');
+    if (!upsConfigured()) {
+      return res.status(503).json({
+        configured: false,
+        message: 'UPS keys not set — add UPS_CLIENT_ID and UPS_CLIENT_SECRET on the API host.',
+      });
+    }
+    res.json(await runUpsTick());
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 module.exports = {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
   dashboard, attention, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
   cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups, assignMockupNumber,
-  duplicateMockup, createOrGetProjectForCompany, backfillConfirmationCogs,
+  duplicateMockup, createOrGetProjectForCompany, backfillConfirmationCogs, upsCheck,
   // exported for tests / reuse
   isPlacedStatus, bumpCustomerOnPlacement, pickLiveProjectForCompany, isLiveProject,
   orderPlacedAt, etAgeDays, buildMockupVariation,
+  ensureProjectForCompany, ensureDealForProject,
 };

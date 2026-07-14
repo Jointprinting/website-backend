@@ -182,6 +182,57 @@ const connectAccount = async (req, res) => {
     let igUserId = String((req.body || {}).igUserId || '').trim();
     if (!token) return res.status(400).json({ message: 'Paste the access token first.' });
 
+    // "Instagram API with Instagram login" tokens (IGAA…/IGQV…) speak to
+    // graph.instagram.com and involve no Facebook Page at all — a completely
+    // different resolve path from the classic Page-linked flow below.
+    if (/^IG/i.test(token)) {
+      const { IG_GRAPH } = require('../services/instagramSync');
+      let tokenExpiresAt = null;
+      // Dashboard "Generate token" already returns a long-lived (~60d) token;
+      // exchange only helps short-lived OAuth ones. Best-effort, needs the
+      // Instagram app secret.
+      if (process.env.INSTAGRAM_APP_SECRET) {
+        try {
+          const data = await graphGet('access_token', {
+            grant_type: 'ig_exchange_token',
+            client_secret: process.env.INSTAGRAM_APP_SECRET,
+            access_token: token,
+          }, IG_GRAPH);
+          if (data.access_token) {
+            token = data.access_token;
+            if (data.expires_in) tokenExpiresAt = new Date(Date.now() + data.expires_in * 1000);
+          }
+        } catch (e) { /* keep the pasted token — it's usually already long-lived */ }
+      }
+      let prof;
+      try {
+        prof = await graphGet('me', {
+          fields: 'user_id,username,followers_count,media_count,profile_picture_url',
+          access_token: token,
+        }, IG_GRAPH);
+      } catch (e) {
+        return res.status(400).json({
+          message: `Instagram rejected this token: ${String(graphErrorMessage(e)).slice(0, 300)} — use the token from your Instagram app's "Generate token" button (API setup page), with the account added as an Instagram Tester.`,
+        });
+      }
+      await SocialAccount.findOneAndUpdate(
+        { platform: 'instagram' },
+        { $set: {
+          igUserId: String(prof.user_id || prof.id || ''),
+          accessToken: token, apiHost: 'instagram',
+          // Dashboard tokens run ~60 days; the sync's refresh keeps rewinding
+          // this before it lapses.
+          tokenExpiresAt: tokenExpiresAt || new Date(Date.now() + 60 * 86400000),
+          username: prof.username || '', followers: Number(prof.followers_count) || 0,
+          mediaCount: Number(prof.media_count) || 0, profilePicUrl: prof.profile_picture_url || '',
+          lastSyncError: '',
+        } },
+        { upsert: true },
+      );
+      syncInstagram().catch(() => {});
+      return res.json({ account: await readMasked() });
+    }
+
     let tokenExpiresAt = null;
     if (process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET) {
       try {

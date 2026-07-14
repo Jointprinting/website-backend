@@ -16,21 +16,32 @@ const { isClientFromDeals, deriveBusinessStatus, planMigration, groupOrdersByJob
 const { sanitizeDeal } = require('../deals');
 
 // ── Order status → deal stage ────────────────────────────────────────────────
+// Owner's rule: a deal is WON only at delivery — a placed/in-production/shipped
+// order is still an OPEN deal (quote_sent), so the auto-win fires exactly once,
+// at the delivered tick.
 test('dealStageFromOrderStatus maps order reality to the pipeline', () => {
-  assert.equal(Deal.dealStageFromOrderStatus('quoted'), 'quoted');
-  assert.equal(Deal.dealStageFromOrderStatus('approved'), 'quoted');
-  assert.equal(Deal.dealStageFromOrderStatus('placed'), 'won');
-  assert.equal(Deal.dealStageFromOrderStatus('in_production'), 'won');
-  assert.equal(Deal.dealStageFromOrderStatus('shipped'), 'won');
+  assert.equal(Deal.dealStageFromOrderStatus('quoted'), 'quoting');
+  assert.equal(Deal.dealStageFromOrderStatus('approved'), 'quote_sent');
+  assert.equal(Deal.dealStageFromOrderStatus('placed'), 'quote_sent');
+  assert.equal(Deal.dealStageFromOrderStatus('in_production'), 'quote_sent');
+  assert.equal(Deal.dealStageFromOrderStatus('shipped'), 'quote_sent');
   assert.equal(Deal.dealStageFromOrderStatus('delivered'), 'won');
   assert.equal(Deal.dealStageFromOrderStatus('cancelled'), 'lost');
-  assert.equal(Deal.dealStageFromOrderStatus(''), 'quoted');       // unknown → open
+  assert.equal(Deal.dealStageFromOrderStatus(''), 'quoting');      // unknown → open
+});
+
+// The schema default must always be a live stage — a stale default (e.g. the
+// retired 'qualifying') would make every stage-less create fail validation.
+test('Deal schema default stage is a live open stage', () => {
+  const d = new Deal({ companyKey: 'x' });
+  assert.ok(Deal.DEAL_STAGES.includes(d.stage));
+  assert.ok(Deal.OPEN_STAGES.includes(d.stage));
 });
 
 // ── Derive-client (≥1 won deal = client) ─────────────────────────────────────
 test('isClientFromDeals: true only with a live won deal', () => {
   assert.equal(isClientFromDeals([{ stage: 'won' }]), true);
-  assert.equal(isClientFromDeals([{ stage: 'quoted' }, { stage: 'lost' }]), false);
+  assert.equal(isClientFromDeals([{ stage: 'quoting' }, { stage: 'lost' }]), false);
   assert.equal(isClientFromDeals([{ stage: 'won', archived: true }]), false); // archived doesn't count
   assert.equal(isClientFromDeals([]), false);
   assert.equal(isClientFromDeals(null), false);
@@ -39,8 +50,9 @@ test('isClientFromDeals: true only with a live won deal', () => {
 test('deriveBusinessStatus: client > active > prospect', () => {
   assert.equal(deriveBusinessStatus([{ stage: 'won' }]), 'client');
   assert.equal(deriveBusinessStatus([], true), 'client');                  // placed order, no deal recorded
-  assert.equal(deriveBusinessStatus([{ stage: 'qualifying' }]), 'active');
-  assert.equal(deriveBusinessStatus([{ stage: 'quoted' }, { stage: 'lost' }]), 'active');
+  assert.equal(deriveBusinessStatus([{ stage: 'details_needed' }]), 'active');
+  assert.equal(deriveBusinessStatus([{ stage: 'quoting' }, { stage: 'lost' }]), 'active');
+  assert.equal(deriveBusinessStatus([{ stage: 'quote_sent' }]), 'active');
   assert.equal(deriveBusinessStatus([{ stage: 'lost' }]), 'prospect');     // only a dead deal
   assert.equal(deriveBusinessStatus([]), 'prospect');
 });
@@ -60,7 +72,7 @@ test('planMigration: one deal per order, stage mapped from status', () => {
   assert.equal(acmeWon.value, 500);
   assert.equal(acmeWon.origin, 'migration');
   assert.equal(acmeWon.migrationBatch, 'b1');
-  assert.equal(toCreate.find(d => d.sourceOrderId === 'o2').stage, 'quoted');
+  assert.equal(toCreate.find(d => d.sourceOrderId === 'o2').stage, 'quoting');
   assert.equal(toCreate.find(d => d.sourceOrderId === 'o3').stage, 'lost');
 });
 
@@ -78,7 +90,7 @@ test('planMigration collapses duplicate Order docs for one job into a single dea
   const { toCreate } = planMigration({ orders, clients: [], existingDeals: [], batchId: 'b5' });
   assert.equal(toCreate.length, 1, 'one job → one deal, not two');
   const d = toCreate[0];
-  assert.equal(d.stage, 'won', 'the placed doc wins as survivor');
+  assert.equal(d.stage, 'quote_sent', 'the placed doc wins as survivor (open until delivered)');
   assert.equal(d.sourceOrderId, 'full');
   assert.equal(d.orderNumber, '1021');
   assert.equal(d.projectNumber, '30', 'both numbers merged onto the one deal');
@@ -102,7 +114,7 @@ test('groupOrdersByJob: unions on a shared number, keeps distinct jobs apart', (
 test('planMigration is IDEMPOTENT — orders that already have a deal are skipped', () => {
   const existingDeals = [
     { sourceOrderId: 'o1', companyKey: 'acme', stage: 'won' },
-    { sourceOrderId: 'o2', companyKey: 'acme', stage: 'quoted' },
+    { sourceOrderId: 'o2', companyKey: 'acme', stage: 'quoting' },
     { sourceOrderId: 'o3', companyKey: 'beta', stage: 'lost' },
   ];
   const { toCreate, skippedOrders } = planMigration({ orders: ORDERS, clients: [], existingDeals, batchId: 'b2' });
@@ -135,8 +147,9 @@ test('planMigration: a won company that already has an order is NOT double-count
 test('sanitizeDeal: requires companyKey on create, validates stage, clamps value', () => {
   assert.equal(sanitizeDeal({}, { create: true }).error, 'companyKey is required');
   assert.ok(sanitizeDeal({ companyKey: 'acme', stage: 'nope' }).error);
-  const { set } = sanitizeDeal({ companyKey: ' acme ', title: 'Reorder', value: -5, stage: 'quoting' === 'quoting' ? 'quoted' : 'quoted' });
+  assert.ok(sanitizeDeal({ companyKey: 'acme', stage: 'quoted' }).error, 'retired stage rejected post-cutover');
+  const { set } = sanitizeDeal({ companyKey: ' acme ', title: 'Reorder', value: -5, stage: 'quoting' });
   assert.equal(set.companyKey, 'acme');
   assert.equal(set.value, 0);            // negative clamped
-  assert.equal(set.stage, 'quoted');
+  assert.equal(set.stage, 'quoting');
 });

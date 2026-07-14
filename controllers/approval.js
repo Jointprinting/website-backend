@@ -25,6 +25,27 @@ const DEFAULT_TRACKING_STEPS = () => ([
 // Notification target. Override with APPROVAL_NOTIFY_EMAIL.
 const NOTIFY_EMAIL = process.env.APPROVAL_NOTIFY_EMAIL || process.env.EMAIL_FROM || 'nate@jointprinting.com';
 
+// Deal pipeline auto-advance: sharing the quote/approval link moves the job's
+// deal to 'quote_sent' (mirrors the delivered→won hook in orders.js — matched
+// by the strongest link first, best-effort, never blocks the share). Fires from
+// both the link mint (opening the share dialog = intent to share) and the
+// email send; already-sent/closed deals are untouched.
+async function markQuoteSent(order) {
+  try {
+    const Deal = require('../models/Deal');
+    const or = [{ sourceOrderId: String(order._id) }];
+    if (order.projectNumber) or.push({ projectNumber: order.projectNumber });
+    if (order.orderNumber) or.push({ orderNumber: order.orderNumber });
+    const r = await Deal.updateMany(
+      { $or: or, stage: { $in: ['details_needed', 'quoting'] } },
+      { $set: { stage: 'quote_sent', quoteSentAt: new Date() } },
+    );
+    if (r.modifiedCount) console.log(`[deals] quote shared for ${order.orderNumber || order.projectNumber} → ${r.modifiedCount} deal(s) at quote_sent`);
+  } catch (e) {
+    console.warn('[deals] quote-sent sync failed:', e.message);
+  }
+}
+
 // ── Admin: generate / fetch the project's approval link token ─────────────────
 // Accepts ttlDays in the body (default 7, capped at 365). A request with a
 // non-default ttlDays rotates the token so the previous link expires too.
@@ -63,6 +84,8 @@ const ensureApprovalToken = async (req, res) => {
       order.approvalTokenExpiresAt = new Date(now + requestedDays * 24 * 60 * 60 * 1000);
       await order.save();
     }
+
+    await markQuoteSent(order);
 
     res.json({
       token: order.approvalToken,

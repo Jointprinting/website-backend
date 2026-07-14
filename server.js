@@ -156,6 +156,11 @@ db.once('open', () => {
   // A cheap no-op until the owner connects the account in the tab.
   require('./services/instagramSync').startInstagramSync();
 
+  // UPS auto-delivered: hourly, checks open orders whose client timeline has a
+  // UPS tracking link and flips them to delivered (deal auto-wins, client page
+  // updates instantly). Idle until UPS_CLIENT_ID/UPS_CLIENT_SECRET are set.
+  require('./services/upsTracking').startUpsTracking();
+
   // Weekly push of the full backup (incl. R2 receipt images) to Google Drive.
   // No-op until the admin connects Drive — safe to start unconditionally.
   require('./services/gdriveBackup').startGoogleDriveBackup();
@@ -183,6 +188,16 @@ db.once('open', () => {
       .then((n) => { if (n) console.log(`[approval] set an expiry on ${n} legacy approval link(s).`); })
       .catch((e) => console.warn('[approval] legacy-token expiry backfill failed:', e.message));
   }, 5_500);
+
+  // Idempotent: fold the retired 4-stage deal pipeline onto the 5-stage one
+  // (qualifying → details_needed, quoted → quoting) so the trimmed enum can
+  // never reject an old deal's save. Runs early — deal edits revalidate the
+  // whole doc, so an un-migrated stage would 400 every edit.
+  setTimeout(() => {
+    require('./controllers/deals').migrateDealStages()
+      .then((n) => { if (n) console.log(`[deals] stage cutover: migrated ${n} deal(s) to the 5-stage pipeline.`); })
+      .catch((e) => console.warn('[deals] stage cutover failed:', e.message));
+  }, 2_000);
 
   // ONE-TIME: stamp pre-gate confirmations as already-published so the new
   // publish gate doesn't bounce an in-flight client to the "we're finalizing"

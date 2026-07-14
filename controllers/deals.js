@@ -118,6 +118,49 @@ async function deleteDeal(req, res) {
   }
 }
 
+// POST /api/deals/start-job { companyKey, title?, value?, reuse? }
+// The CRM's one-tap "Start new job": mints the project AND its deal card in one
+// go, then the frontend drops the owner straight into the project to build
+// mockups/quote. By default it always starts a FRESH project (a repeat client's
+// in-flight delivery must never be hijacked); pass reuse:true to attach to the
+// company's live project instead (the classic lead handoff behavior).
+async function startJob(req, res) {
+  try {
+    const body = req.body || {};
+    const companyKey = String(body.companyKey || '').trim();
+    if (!companyKey) return res.status(400).json({ message: 'companyKey is required' });
+    const c = await Client.findOne({ companyKey }).select('companyName clientName').lean();
+    const { ensureProjectForCompany, ensureDealForProject } = require('./orders');
+    const { order, created } = await ensureProjectForCompany({
+      companyKey,
+      companyName: String(body.companyName || (c && c.companyName) || '').trim(),
+      clientName: String((c && c.clientName) || '').trim(),
+      dealValue: Number(body.value) || 0,
+    }, { forceNew: !body.reuse });
+    const deal = await ensureDealForProject(order, {
+      title: String(body.title || '').trim().slice(0, 200),
+      value: Number(body.value) || 0,
+    });
+    res.status(created ? 201 : 200).json({ deal, order, created });
+  } catch (e) {
+    res.status(e.status || 500).json({ message: e.message });
+  }
+}
+
+// Idempotent boot cutover (server.js): fold the retired 4-stage pipeline onto
+// the 5-stage one — qualifying → details_needed, quoted → quoting ('quoting',
+// NOT 'quote_sent': a built-but-never-sent quote must not read as sent; the
+// approval-share hook promotes it when the link really goes out). updateMany
+// bypasses enum validation, and archived deals migrate too (a restore must
+// come back with a valid stage). Without this, ANY edit of an old deal would
+// throw on the whole-doc revalidation in updateDeal's load+save.
+async function migrateDealStages() {
+  const a = await Deal.updateMany({ stage: 'qualifying' }, { $set: { stage: 'details_needed' } });
+  const b = await Deal.updateMany({ stage: 'quoted' }, { $set: { stage: 'quoting' } });
+  const n = (a.modifiedCount || 0) + (b.modifiedCount || 0);
+  return n;
+}
+
 // ── Reversible migration ──────────────────────────────────────────────────────
 
 // Load the plan inputs once (lean, additive read — nothing is mutated here).
@@ -214,6 +257,7 @@ module.exports = {
   winDeal: setDealOutcome('won'),
   loseDeal: setDealOutcome('lost'),
   migrateFromOrders, rollbackMigration, migrationStatus,
+  startJob, migrateDealStages,
   // pure helper (unit-tested)
   sanitizeDeal,
 };

@@ -8,7 +8,7 @@ const {
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
   dashboard, attention, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
   cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups, assignMockupNumber,
-  duplicateMockup, createOrGetProjectForCompany,
+  duplicateMockup, createOrGetProjectForCompany, upsCheck,
 } = require('../controllers/orders');
 const { ensureApprovalToken, sendApprovalLink, publishConfirmation, updateTracking, initTracking } = require('../controllers/approval');
 const orderDupSweep = require('../controllers/orderDupSweep');
@@ -47,6 +47,8 @@ router.get('/cleanup-candidates',         cleanupCandidates);
 router.post('/cleanup-delete',            cleanupDelete);
 router.post('/merge-company',             mergeCompany);
 router.post('/mockups/auto-link',         autoLinkMockups);
+// UPS auto-delivered on demand (STATIC — above '/:id'). 503 until keys are set.
+router.post('/ups-check',                 upsCheck);
 router.get('/dashboard',                  dashboard);
 router.get('/attention',                  attention);
 router.get('/analytics',                  analytics);
