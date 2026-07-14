@@ -313,18 +313,14 @@ async function _download(url) {
 // into "needs review". The goal: you only touch the genuine edge cases.
 //   • If it matches an expense already in the ledger → LINK to it (attach the
 //     file, no new charge). Handles the historical back-catalog safely.
-//   • Else, for a going-forward single upload that read cleanly → BOOK it as a
-//     new expense (no order # required — software/gas/travel are just general).
-//   • Else (low confidence, no amount, flagged, or a zip whose item isn't in the
-//     ledger) → leave it in review.
+//   • Else, a confident clean read BOOKS ITSELF as a new ledger row (owner's
+//     2026-07 decision: "receipts should just work, no Book click"). The
+//     controller's autoBookFromScan runs the exact order-flow decide +
+//     duplicate probe confirm() uses — refunds, shaky reads, anonymous
+//     receipts, and likely-duplicates all decline and fall through.
+//   • Else → review, where the owner confirms it (the inbox in Finances).
 // Runs sequentially (queue concurrency is 1), so linked ledger rows are excluded
 // from the next receipt's search and two receipts can't grab the same entry.
-// Receipts are a BACKUP / evidence layer — they NEVER create ledger entries on
-// their own (the ledger, from the spreadsheet, is the source of truth and it
-// reconciles to the bank). The only automatic action is attaching a receipt's
-// file to the matching expense ALREADY in the ledger. A credit/refund never
-// matches an expense. Everything else waits in review, where you confirm it —
-// which is how a brand-new cost (or one with no receipt) actually gets entered.
 async function _autoResolve(r) {
   const Transaction = require('../models/Transaction');
   const round2 = (v) => Math.round((Number(v) + Number.EPSILON) * 100) / 100;
@@ -358,6 +354,17 @@ async function _autoResolve(r) {
       r.transactionId = cands[0]._id; r.status = 'booked'; r.reviewedAt = new Date();
       return;
     }
+  }
+
+  // No existing row to attach to → a clean, confident read books itself.
+  // (Lazy require: the receipts controller requires this service at load time,
+  // so the reverse edge must resolve at call time, not import time.)
+  try {
+    const { autoBookFromScan } = require('../controllers/receipts');
+    const outcome = await autoBookFromScan(r);
+    if (outcome === 'booked') { r.status = 'booked'; r.reviewedAt = new Date(); return; }
+  } catch (err) {
+    console.warn('[receipts] auto-book declined:', err.message);
   }
   r.status = 'review';
 }

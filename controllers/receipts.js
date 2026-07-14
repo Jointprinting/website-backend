@@ -280,6 +280,48 @@ const update = async (req, res) => {
 // Body may carry corrected fields. Creates/updates the linked expense
 // Transaction with the receipt file attached. A same-order/same-amount match
 // triggers a 409 duplicate warning unless `force` is set — Nate stays in control.
+// Auto-book a cleanly-read receipt as a NEW ledger row — the scanner's
+// going-forward path (owner's call: "receipts should just work, no Book click").
+// This is confirm()'s decision core with NO owner overrides and NO force:
+// order-flow decide → guards → duplicate probe → enrich → create. Anything the
+// least bit ambiguous returns 'review' so the inbox only ever holds genuine
+// edge cases. Returns 'booked' | 'review'.
+const autoBookFromScan = async (rec) => {
+  const e = rec.extracted ? rec.extracted.toObject() : {};
+  const amount = Math.abs(num(e.amount));
+  if (!amount) return 'review';
+  // The model's own uncertainty is the first gate — a shaky read waits for eyes.
+  if (!['high', 'medium'].includes(String(rec.confidence))) return 'review';
+  const date = e.date ? new Date(e.date) : new Date();
+  const orderNumber = digits(e.orderNumber);
+  const order = await _findLinkedOrder(orderNumber);
+  const decided = scanner.decideTransaction(e, order);
+  // Refunds/credits flip a row's direction — misbooking one corrupts COGS, so
+  // they always go through the owner.
+  if (decided.isCredit) return 'review';
+  // No counter-party AND no order link → too anonymous to book blind.
+  if (!decided.party && !orderNumber) return 'review';
+  const { type, category, party } = decided;
+  // Duplicate probe (same shape as confirm's 409 guard) — a hit parks the
+  // receipt in review instead of double-booking; the owner decides there.
+  const dupQ = { type, amount };
+  if (orderNumber) dupQ.orderNumber = orderNumber; else dupQ.party = party;
+  if (await Transaction.findOne(dupQ).lean()) return 'review';
+
+  const fields = {
+    date, type, category, orderNumber, isCredit: false,
+    party, description: e.summary || '', amount,
+    receiptUrl: rec.fileUrl, source: 'receipt',
+  };
+  const enriched = await require('./finances')
+    .enrichTransactionLinks({ ...fields }, { isExpense: type === 'expense' })
+    .catch(() => fields);
+  const txn = await Transaction.create(enriched);
+  rec.transactionId = txn._id;
+  await _learnVendorOrder(party, type, orderNumber);
+  return 'booked';
+};
+
 const confirm = async (req, res) => {
   try {
     const rec = await Receipt.findById(req.params.id);
@@ -516,6 +558,6 @@ const archiveRest = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
-module.exports = { upload, scan, batch, list, getOne, reprocess, update, confirm, remove, reconcile, bulkReconcile, clearAll, resetReceipts, archiveRest };
+module.exports = { upload, scan, batch, list, getOne, reprocess, update, confirm, remove, reconcile, bulkReconcile, clearAll, resetReceipts, archiveRest, autoBookFromScan };
 // Pure receipt→vendor learning decision (no DB) — exported for unit tests.
 module.exports.vendorOrderLearnPlan = vendorOrderLearnPlan;
