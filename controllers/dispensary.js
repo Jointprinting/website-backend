@@ -149,6 +149,124 @@ async function listDispensaries(req, res) {
   }
 }
 
+// ── POST /api/roadtrip/dispensaries/corridor ─────────────────────────────────
+// The corridor day planner's scan: given a driving route's polyline (the
+// frontend gets it from Mapbox Directions — from where I am, through the towns
+// I pass, to where I'm sleeping) and a half-width in miles, return every
+// independent dispensary inside that band, ordered by where along the drive it
+// falls. One indexed whole-route bbox prefilter (the scalar {lat,lng} compound
+// index — no geo index exists), then an in-memory point-to-polyline prune so a
+// diagonal route's fat rectangle doesn't drown the list in off-corridor pins.
+
+const CORRIDOR_MAX_POINTS = 600;   // decimated polyline the frontend sends
+const CORRIDOR_MAX_MI = 12;        // widest allowed half-width
+
+// Prune docs to within bufferMi of the polyline, stamping each survivor with
+// its perpendicular distance and its progress (0..1) along the drive. Local
+// equirectangular frame in miles — plenty accurate at corridor scale. PURE
+// (exported for tests).
+function corridorPrune(points, docs, bufferMi) {
+  if (!Array.isArray(points) || points.length < 2) return [];
+  const midLat = points.reduce((s, p) => s + p.lat, 0) / points.length;
+  const kx = 69 * Math.cos((midLat * Math.PI) / 180);
+  const ky = 69;
+  const P = points.map((p) => ({ x: p.lng * kx, y: p.lat * ky }));
+  const cum = [0];
+  for (let i = 1; i < P.length; i += 1) {
+    cum.push(cum[i - 1] + Math.hypot(P[i].x - P[i - 1].x, P[i].y - P[i - 1].y));
+  }
+  const total = cum[cum.length - 1] || 1;
+  const out = [];
+  for (const d of docs) {
+    const qx = d.lng * kx, qy = d.lat * ky;
+    let best = Infinity, bestT = 0;
+    for (let i = 1; i < P.length; i += 1) {
+      const ax = P[i - 1].x, ay = P[i - 1].y;
+      const dx = P[i].x - ax, dy = P[i].y - ay;
+      const len2 = dx * dx + dy * dy;
+      let t = len2 ? ((qx - ax) * dx + (qy - ay) * dy) / len2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      const px = ax + t * dx, py = ay + t * dy;
+      const dist = Math.hypot(qx - px, qy - py);
+      if (dist < best) {
+        best = dist;
+        bestT = (cum[i - 1] + t * (cum[i] - cum[i - 1])) / total;
+      }
+    }
+    if (best <= bufferMi) out.push({ doc: d, distanceMi: Math.round(best * 10) / 10, progress: bestT });
+  }
+  out.sort((a, b) => a.progress - b.progress);
+  return out;
+}
+
+async function corridor(req, res) {
+  try {
+    const body = req.body || {};
+    const raw = Array.isArray(body.points) ? body.points : [];
+    const points = raw
+      .map((p) => ({ lat: parseFloat(p && p.lat), lng: parseFloat(p && p.lng) }))
+      .filter((p) => isFinite(p.lat) && isFinite(p.lng))
+      .slice(0, CORRIDOR_MAX_POINTS);
+    if (points.length < 2) return res.status(400).json({ message: 'points (the route polyline) are required.' });
+    const bufferMi = Math.max(1, Math.min(CORRIDOR_MAX_MI, parseFloat(body.bufferMi) || 3));
+
+    // Whole-route bbox, padded by the corridor half-width (deg ≈ mi/69; lng
+    // scaled by cos(midLat)) — one indexed range query, then the real prune.
+    const midLat = points.reduce((s, p) => s + p.lat, 0) / points.length;
+    const latPad = bufferMi / 69;
+    const lngPad = bufferMi / (69 * Math.max(0.2, Math.cos((midLat * Math.PI) / 180)));
+    const filter = {
+      active: true, hidden: false,
+      isChain: { $ne: true },
+      lat: { $gte: Math.min(...points.map((p) => p.lat)) - latPad, $lte: Math.max(...points.map((p) => p.lat)) + latPad },
+      lng: { $gte: Math.min(...points.map((p) => p.lng)) - lngPad, $lte: Math.max(...points.map((p) => p.lng)) + lngPad },
+    };
+    const cap = 4000;
+    const docs = await Dispensary.find(filter).limit(cap).lean();
+    for (const d of docs) d.segment = d.segment || deriveSegment(d.state, d.source);
+
+    const pruned = corridorPrune(points, docs, bufferMi);
+
+    // Same CRM join the viewport list uses, so corridor rows carry the stage.
+    const companyKeys = [...new Set(pruned.map(({ doc: d }) => d.companyKey).filter(Boolean))];
+    const matchKeys = [...new Set(pruned.map(({ doc: d }) => d.matchKey).filter(Boolean))];
+    const clients = companyKeys.length || matchKeys.length
+      ? await Client.find(
+          { $or: [{ companyKey: { $in: companyKeys } }, { matchKey: { $in: matchKeys } }] },
+          { companyKey: 1, matchKey: 1, stage: 1 }
+        ).lean()
+      : [];
+    const byCompanyKey = new Map();
+    const byMatchKey = new Map();
+    for (const c of clients) {
+      if (c.companyKey) byCompanyKey.set(c.companyKey, c);
+      if (c.matchKey) byMatchKey.set(c.matchKey, c);
+    }
+
+    const results = pruned.map(({ doc: d, distanceMi, progress }) => {
+      const crmClient = byCompanyKey.get(d.companyKey) || byMatchKey.get(d.matchKey) || null;
+      return {
+        _id: d._id,
+        name: d.name,
+        address: [d.address, d.city].filter(Boolean).join(', ') + (d.zip ? ` ${d.zip}` : ''),
+        lat: d.lat, lng: d.lng,
+        phone: d.phone,
+        segment: d.segment,
+        verified: d.verified,
+        lastVisitedAt: d.lastVisitedAt,
+        companyKey: d.companyKey,
+        crm: crmClient ? { companyKey: crmClient.companyKey, stage: crmClient.stage } : null,
+        distanceMi, progress,
+      };
+    });
+
+    res.json({ count: results.length, capped: docs.length >= cap, bufferMi, results });
+  } catch (err) {
+    console.error('[dispensary] corridor error:', err.message);
+    res.status(500).json({ message: 'Corridor scan failed.' });
+  }
+}
+
 // ── GET /api/roadtrip/dispensaries/coverage ──────────────────────────────────
 // Per-state ingest/enrichment status for the coverage panel: which of the 24
 // rec states have data, how fresh, how enriched — plus the medical-only list
@@ -434,7 +552,7 @@ async function scanOsm(req, res) {
 }
 
 module.exports = {
-  listDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, scanOsm,
+  listDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, scanOsm, corridor,
   // pure — unit-tested
-  tileKeyFor, bboxTooLarge, stateFromAddress,
+  tileKeyFor, bboxTooLarge, stateFromAddress, corridorPrune,
 };
