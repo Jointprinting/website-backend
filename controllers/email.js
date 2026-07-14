@@ -378,6 +378,145 @@ exports.sendWebworksLead = async (req, res) => {
 exports.validateWebworksPayload = validateWebworksPayload;
 exports.composeWebworksNotes = composeWebworksNotes;
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  JP ATOM — studio lead intake (/atom/contact)
+//
+//  Same ContactSubmission pipeline (→ Studio Inquiries inbox), tagged
+//  source:'atom'. Questions fit the product: what shop, what they run on
+//  today, monthly volume, what they need the studio to do. Phone optional —
+//  software buyers balk at required phone fields.
+// ─────────────────────────────────────────────────────────────────────────────
+function validateAtomPayload(body) {
+  const errors = [];
+  const name          = (body.name || '').trim();
+  const companyName   = (body.companyName || body.shopName || '').trim();
+  const email         = (body.email || '').trim();
+  const phone         = (body.phone || '').trim();
+  const runsOn        = (body.runsOn || '').toString().trim().slice(0, 300);      // what they use today
+  const monthlyVolume = (body.monthlyVolume || '').trim().slice(0, 40);
+  const interests     = (body.interests || '').toString().trim().slice(0, 300);   // what matters most
+  const notes         = (body.notes || '').toString();
+
+  if (!name)        errors.push('name is required');
+  if (!companyName) errors.push('shop / company name is required');
+  if (!email)       errors.push('email is required');
+  if (email && !validator.isEmail(email)) errors.push('email is invalid');
+  if (phone && !isPlausiblePhone(phone)) errors.push('phone format is invalid');
+  if (notes.length > 5000) errors.push('notes is too long');
+
+  return { errors, cleaned: { name, companyName, email, phone, runsOn, monthlyVolume, interests, notes } };
+}
+
+function composeAtomNotes(c) {
+  return [
+    c.runsOn        && `Runs on today: ${c.runsOn}`,
+    c.monthlyVolume && `Monthly orders: ${c.monthlyVolume}`,
+    c.interests     && `Wants: ${c.interests}`,
+    c.notes         && `\n${c.notes}`,
+  ].filter(Boolean).join('\n');
+}
+
+exports.sendAtomLead = async (req, res) => {
+  let submission = null;
+  try {
+    const honeypotTriggered = !!(req.body.website || req.body._hp);
+    const { errors, cleaned } = validateAtomPayload(req.body);
+    if (errors.length) {
+      cleanupFiles(req);
+      return res.status(400).json({ message: 'Validation failed', errors });
+    }
+
+    submission = await ContactSubmission.create({
+      name: cleaned.name,
+      companyName: cleaned.companyName,
+      email: cleaned.email,
+      // Model requires phone; software leads often skip it — store a dash.
+      phone: cleaned.phone || '-',
+      notes: composeAtomNotes(cleaned),
+      source: 'atom',
+      ipAddress: req.ip,
+      userAgent: (req.headers['user-agent'] || '').slice(0, 500),
+      honeypot: honeypotTriggered,
+    });
+
+    if (honeypotTriggered) {
+      cleanupFiles(req);
+      return res.status(200).json({ message: 'OK' });
+    }
+
+    const toAddress   = process.env.EMAIL_TO;
+    const fromAddress = process.env.EMAIL_FROM || process.env.SMTP_USER;
+    const row = (label, val) => `<p><strong>${label}:</strong> ${escapeHtml(val) || '-'}</p>`;
+    await transporter.sendMail({
+      from: `"JP Atom" <${fromAddress}>`,
+      to: toAddress,
+      replyTo: cleaned.email,
+      subject: `New JP Atom lead – ${cleaned.companyName}`,
+      text: [
+        'New JP Atom studio lead', '',
+        `Name: ${cleaned.name}`, `Shop: ${cleaned.companyName}`,
+        `Email: ${cleaned.email}`, `Phone: ${cleaned.phone || '-'}`,
+        `Runs on today: ${cleaned.runsOn || '-'}`,
+        `Monthly orders: ${cleaned.monthlyVolume || '-'}`,
+        `Wants: ${cleaned.interests || '-'}`,
+        `Notes: ${cleaned.notes || '-'}`, '',
+        `Submission ID: ${submission._id}`,
+      ].join('\n'),
+      html: `
+        <h2>New JP Atom studio lead</h2>
+        ${row('Name', cleaned.name)}
+        ${row('Shop', cleaned.companyName)}
+        <p><strong>Email:</strong> <a href="mailto:${escapeHtml(cleaned.email)}">${escapeHtml(cleaned.email)}</a></p>
+        ${row('Phone', cleaned.phone)}
+        ${row('Runs on today', cleaned.runsOn)}
+        ${row('Monthly orders', cleaned.monthlyVolume)}
+        ${row('Wants', cleaned.interests)}
+        <p><strong>Notes:</strong><br>${escapeHtml(cleaned.notes).replace(/\n/g, '<br>') || '-'}</p>
+        <hr>
+        <p style="color:#666;font-size:12px">Submission ID: ${submission._id} · source: JP Atom</p>
+      `,
+    });
+
+    try {
+      await transporter.sendMail({
+        from: `"JP Atom" <${fromAddress}>`,
+        to: cleaned.email,
+        subject: 'Got it — JP Atom',
+        text: `Hey ${cleaned.name.split(' ')[0]},\n\nThanks for raising your hand for JP Atom. I'll reach out within one business day to set up a quick walkthrough with your shop's numbers in it.\n\nMeanwhile the live demo is always open: jointprinting.com/atom/demo\n\n— Nate\nJP Atom · built inside a working merch shop`,
+        html: `
+          <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;color:#1a1a1a;line-height:1.6">
+            <h2 style="color:#7c3aed;margin-bottom:6px">Got it, ${escapeHtml(cleaned.name.split(' ')[0])} ⚛</h2>
+            <p>Thanks for raising your hand for <strong>JP Atom</strong> for ${escapeHtml(cleaned.companyName)}.</p>
+            <p>I'll reach out within one business day to set up a quick walkthrough — with your shop's numbers in it, not demo data.</p>
+            <p>Meanwhile the live demo is always open:
+              <br><a href="https://jointprinting.com/atom/demo" style="color:#7c3aed;font-weight:700">jointprinting.com/atom/demo</a></p>
+            <p style="margin-top:24px">— Nate<br><span style="color:#666">JP Atom · built inside a working merch shop</span></p>
+          </div>
+        `,
+      });
+    } catch (autoErr) {
+      console.warn('JP Atom auto-reply failed (continuing):', autoErr.message);
+    }
+
+    submission.emailStatus = 'sent';
+    await submission.save();
+    cleanupFiles(req);
+    return res.status(200).json({ message: 'Lead received', id: submission._id });
+  } catch (err) {
+    console.error('❌ Error in sendAtomLead:', err);
+    if (submission) {
+      submission.emailStatus = 'failed';
+      submission.emailError = String(err.message || err).slice(0, 500);
+      try { await submission.save(); } catch (_) {}
+    }
+    cleanupFiles(req);
+    return res.status(500).json({
+      message: "We couldn't send the email, but we saved your request — Nate will reach out shortly.",
+    });
+  }
+};
+exports.validateAtomPayload = validateAtomPayload;
+
 function webworksAutoReplyHtml(c) {
   const plan = c.planInterest && c.planInterest.toLowerCase() !== 'not sure yet'
     ? `<p>You mentioned you're leaning toward the <strong>${escapeHtml(c.planInterest)}</strong> plan — we'll build the recommendation around that (and it's easy to change).</p>`

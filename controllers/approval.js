@@ -49,6 +49,32 @@ async function markQuoteSent(order) {
 // ── Admin: generate / fetch the project's approval link token ─────────────────
 // Accepts ttlDays in the body (default 7, capped at 365). A request with a
 // non-default ttlDays rotates the token so the previous link expires too.
+// Copy the live quoteLines into the published snapshot the client page serves
+// (quoteLinesPublished + quotePushedAt). Lids are minted first so every
+// snapshot line can be mapped back to its live line when the client picks.
+// Saves the order. No-op payload-wise for orders with no quote lines.
+async function _pushQuoteSnapshot(order) {
+  Order.ensureQuoteLineIds(order.quoteLines || []);
+  order.markModified('quoteLines');
+  order.quoteLinesPublished = (order.quoteLines || []).map((l) =>
+    (typeof l.toObject === 'function' ? l.toObject() : { ...l }));
+  order.quotePushedAt = new Date();
+  await order.save();
+  return order;
+}
+
+// POST /api/orders/:id/quote/push — owner explicitly updates what the client
+// sees. The builder autosaves quoteLines constantly; this is the "send my
+// edits to their link" moment.
+const pushQuote = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Project not found' });
+    await _pushQuoteSnapshot(order);
+    res.json({ ok: true, pushedAt: order.quotePushedAt, lines: order.quoteLinesPublished.length });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
 const ensureApprovalToken = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
@@ -84,6 +110,11 @@ const ensureApprovalToken = async (req, res) => {
       order.approvalTokenExpiresAt = new Date(now + requestedDays * 24 * 60 * 60 * 1000);
       await order.save();
     }
+
+    // Sharing IS pushing: the moment a link goes out (or is copied to send),
+    // the client should see exactly the quote on screen right now. From here
+    // on, builder edits stay owner-side until the next explicit push.
+    await _pushQuoteSnapshot(order);
 
     await markQuoteSent(order);
 
@@ -329,16 +360,30 @@ const publicGetProject = async (req, res) => {
         link: s.link || '',
       }));
 
+    // The quote the client sees: the PUSHED snapshot once one exists (builder
+    // edits stay owner-side until the next push), live lines for legacy orders
+    // that predate pushing. Hidden lines are owner-only parking — filtered out
+    // entirely. Accepted flags are live truth (the client's own picks land on
+    // the live lines), merged back in by lid.
+    const acceptedByLid = new Map((order.quoteLines || [])
+      .filter(l => l && l.lid).map(l => [l.lid, !!l.accepted]));
+    const publicQuoteSrc = ((order.quotePushedAt && Array.isArray(order.quoteLinesPublished)
+      ? order.quoteLinesPublished : order.quoteLines) || [])
+      .filter(l => l && !l.hiddenFromClient)
+      .map(l => (l.lid && acceptedByLid.has(l.lid) ? { ...(typeof l.toObject === 'function' ? l.toObject() : l), accepted: acceptedByLid.get(l.lid) } : l));
+
     // Client-safe quote lines: resolve the unit price server-side and strip
     // every internal field. Costs, markup, and supplier must NEVER reach the
     // public payload — anyone with the approval link can read the raw JSON.
-    const safeQuoteLines = (order.quoteLines || []).map(l => {
+    const safeQuoteLines = publicQuoteSrc.map(l => {
       const n = (v) => Number(v) || 0;
       const qty = n(l.qty);
       const setupShip = n(l.setupCost) + n(l.shippingCost);
       const unitCogs = n(l.blankCost) + n(l.printCost) + (qty > 0 ? setupShip / qty : 0);
       return {
         qty,
+        // Stable pick handle — the picker posts these back (publicSelectOptions).
+        lid:          l.lid || '',
         group:        l.group        || '',
         accepted:     !!l.accepted,
         styleCode:    l.styleCode    || '',
@@ -371,8 +416,11 @@ const publicGetProject = async (req, res) => {
     // total on the read-only approve screen) — the stored values pass through.
     const published = _confPublished(order.confirmation);
     const draftHidden = !published && _hasConfContent(order.confirmation);
+    // Quote-derived fallback total computes over what the CLIENT sees (the
+    // pushed view with their live picks merged), so it can never leak a price
+    // the owner is still editing.
     const publicTotalValue = draftHidden
-      ? Order.computeQuoteTotals(order.quoteLines || []).totalValue
+      ? Order.computeQuoteTotals(publicQuoteSrc).totalValue
       : order.totalValue;
 
     res.json({
@@ -573,8 +621,14 @@ const publicSelectOptions = async (req, res) => {
     }
 
     const lines = doc.quoteLines || [];
-    const groups = [...new Set(lines.map(l => l.group).filter(Boolean))];
-    const standaloneCount = lines.filter(l => !l.group).length;
+    // Validate against the view the CLIENT was actually served: the pushed
+    // snapshot when one exists (live otherwise), hidden lines filtered — the
+    // exact array publicGetProject built their page from.
+    const view = ((doc.quotePushedAt && Array.isArray(doc.quoteLinesPublished)
+      ? doc.quoteLinesPublished : lines) || [])
+      .filter(l => l && !l.hiddenFromClient);
+    const groups = [...new Set(view.map(l => l.group).filter(Boolean))];
+    const standaloneCount = view.filter(l => !l.group).length;
     // A quote with no option-groups but real standalone lines is a valid
     // "accept this quote" — the client accepts and lands on the waiting screen
     // while the owner finalizes the confirmation (so EVERY quote routes through
@@ -583,36 +637,52 @@ const publicSelectOptions = async (req, res) => {
     if (groups.length === 0 && standaloneCount === 0) {
       return res.status(400).json({ message: 'This quote has no line items to accept yet.' });
     }
+    // Picks arrive as stable line ids (lid strings) from the current client
+    // page, or as indexes INTO THE SERVED VIEW from a not-yet-refreshed one.
+    // Resolve each to a view entry; every pick must land on a grouped option.
     const picksRaw = (req.body && req.body.picks) || [];
-    const picks = Array.isArray(picksRaw) ? [...new Set(picksRaw.map(Number))] : [];
-    if (!picks.every(i => Number.isInteger(i) && i >= 0 && i < lines.length && lines[i].group)) {
-      return res.status(400).json({ message: 'Invalid selection — please refresh the page and try again.' });
+    const pickedEntries = [];
+    for (const p of Array.isArray(picksRaw) ? [...new Set(picksRaw)] : []) {
+      const entry = typeof p === 'string' && p
+        ? view.find(l => l.lid === p)
+        : (Number.isInteger(Number(p)) ? view[Number(p)] : null);
+      if (!entry || !entry.group) {
+        return res.status(400).json({ message: 'Invalid selection — please refresh the page and try again.' });
+      }
+      pickedEntries.push(entry);
     }
     // AT MOST one option per group. The client takes the options they want and
     // can skip whole groups entirely — a 10-option pitch where they only want 5
     // is a valid selection, not an error. Two picks in the same group (which
     // are alternatives, not add-ons) is the only invalid shape.
     for (const g of groups) {
-      const inGroup = picks.filter(i => lines[i].group === g);
-      if (inGroup.length > 1) {
+      if (pickedEntries.filter(l => l.group === g).length > 1) {
         return res.status(400).json({ message: `Please choose just one option for "${g}" — or skip it.` });
       }
     }
     // The order can't be empty: require at least one picked option, unless the
     // quote carries always-included standalone lines that stand on their own.
-    if (picks.length === 0 && standaloneCount === 0) {
+    if (pickedEntries.length === 0 && standaloneCount === 0) {
       return res.status(400).json({ message: 'Pick at least one option to continue.' });
     }
 
     const email = String((req.body && req.body.email) || '').slice(0, 254).trim() || _recipientEmail(req);
     const now = new Date();
-    const pickSet = new Set(picks);
+    // Map picks onto the LIVE lines by lid (identity when the view IS the live
+    // array — legacy path). A snapshot line whose live line was deleted since
+    // the push simply doesn't land; the summary below still reflects the pick.
+    const pickedLids = new Set(pickedEntries.map(l => l.lid).filter(Boolean));
+    const pickedLive = new Set(pickedEntries.filter(l => !l.lid && lines.includes(l)));
     // A line is "accepted" (part of the committed order) if the client picked it
-    // OR it's an always-included standalone line. Marking standalone lines here
-    // is what tells the totals math the client has committed — so a selection of
-    // "decline every group, keep only the standalone items" still books its real
-    // value instead of reading as an un-picked $0 quote.
-    lines.forEach((l, i) => { l.accepted = pickSet.has(i) || !l.group; });
+    // OR it's an always-included standalone line (hidden lines never count).
+    // Marking standalone lines here is what tells the totals math the client has
+    // committed — so a selection of "decline every group, keep only the
+    // standalone items" still books its real value instead of reading as an
+    // un-picked $0 quote.
+    lines.forEach((l) => {
+      l.accepted = !l.hiddenFromClient
+        && ((l.lid && pickedLids.has(l.lid)) || pickedLive.has(l) || !l.group);
+    });
     doc.markModified('quoteLines');
     doc.optionsPickedAt = now;
     const chosen = lines.filter(l => l.accepted || !l.group);
@@ -1098,6 +1168,7 @@ const initTracking = async (req, res) => {
 module.exports = {
   ensureApprovalToken,
   sendApprovalLink,
+  pushQuote,
   publicOrderDoc,
   notifyAdmin,  // reused by lookbooks (same best-effort heads-up email)
   publicGetProject, publicApprove, publicRequestChanges, publicSelectOptions,

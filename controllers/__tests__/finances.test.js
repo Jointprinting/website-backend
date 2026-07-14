@@ -237,11 +237,23 @@ test('take-home view: the three figures reconcile (net = leftInBusiness + takeHo
 // ── revenue / COGS / profit / margin ─────────────────────────────────────────
 test('empty input is all zeroes', () => {
   assert.deepEqual(summarizeCompanyFinance([], []), {
-    revenue: 0, cogs: 0, estimatedCogs: 0, profit: 0, margin: 0, outstanding: 0, orderCount: 0, paidCount: 0, receiptCount: 0,
+    revenue: 0, cogs: 0, estimatedCogs: 0, profit: 0, profitIsEstimate: false, margin: 0, outstanding: 0, orderCount: 0, paidCount: 0, receiptCount: 0,
   });
   assert.deepEqual(summarizeCompanyFinance(undefined, undefined), {
-    revenue: 0, cogs: 0, estimatedCogs: 0, profit: 0, margin: 0, outstanding: 0, orderCount: 0, paidCount: 0, receiptCount: 0,
+    revenue: 0, cogs: 0, estimatedCogs: 0, profit: 0, profitIsEstimate: false, margin: 0, outstanding: 0, orderCount: 0, paidCount: 0, receiptCount: 0,
   });
+});
+
+// Owner report ("$16k revenue, $16k profit on one $8k job"): with an empty
+// expense ledger, profit must fall back to the order-stored COGS estimate —
+// never read as revenue-with-zero-cost.
+test('profit falls back to estimatedCogs when no receipts exist', () => {
+  const orders = [{ status: 'delivered', totalValue: 8000, cogs: 7500 }];
+  const s = summarizeCompanyFinance(orders, []);
+  assert.equal(s.revenue, 8000);           // collected-order fallback
+  assert.equal(s.cogs, 0);                 // no receipts
+  assert.equal(s.profit, 500);             // revenue − estimate, NOT revenue
+  assert.equal(s.profitIsEstimate, true);
 });
 
 test('revenue counts income/Client Sales (+ Refund contra); COGS only expense/COGS categories', () => {

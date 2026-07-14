@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 
 function deriveCompanyKey(companyName, clientName) {
   const raw = (companyName || clientName || '').toString();
@@ -21,7 +22,9 @@ function deriveCompanyKey(companyName, clientName) {
 // "pitch 10, take the 5 you want" case). A built confirmation supersedes this
 // entirely in the save hooks — the client's approved confirmation is the money.
 function computeQuoteTotals(lines, orderSetup, orderShip) {
-  const all = Array.isArray(lines) ? lines : [];
+  // Hidden lines are owner-only parking — never part of what the client can
+  // take, so never part of the money.
+  const all = (Array.isArray(lines) ? lines : []).filter(l => l && !l.hiddenFromClient);
   if (!all.some(l => l && l.accepted)) return { totalValue: 0, cogs: 0 };
   // Post-pick: accepted picks + always-included standalone lines only. Grouped
   // alternatives the client didn't accept (a declined category, or the two
@@ -516,6 +519,13 @@ const OrderSchema = new mongoose.Schema({
     // are standalone (always included). `accepted` records the client's pick.
     group:        { type: String, default: '' },
     accepted:     { type: Boolean, default: false },
+    // Stable line id — survives reorders/edits so the client's picks (made
+    // against the PUSHED snapshot below) always map back to the right live
+    // line. Minted/deduped server-side on every save (ensureQuoteLineIds).
+    lid:          { type: String, default: '' },
+    // Owner-only parking: a hidden line stays in the builder (costs, notes,
+    // math) but never reaches the client page and never counts in totals.
+    hiddenFromClient: { type: Boolean, default: false },
     // The design the client signs off when picking this option: a studio
     // mockup number, and/or an uploaded image (data URL or hosted URL) for
     // items the vendor renders externally — glass ashtrays etc. have no
@@ -549,6 +559,12 @@ const OrderSchema = new mongoose.Schema({
     turnaroundWeeks: { type: Number, default: 0 },
     _id: false,
   }],
+  // The quote the CLIENT currently sees. Autosave keeps editing quoteLines
+  // freely; the public approval page serves this snapshot once it exists, so
+  // mid-edit numbers never flash at the client. "Push update" (and sharing
+  // the link) copies quoteLines → here. Null/absent = legacy behavior (live).
+  quoteLinesPublished: { type: [mongoose.Schema.Types.Mixed], default: undefined },
+  quotePushedAt:       { type: Date, default: null },
   orderDate:     { type: Date },
   shipDate:      { type: Date },
   deliveredDate: { type: Date },
@@ -585,9 +601,24 @@ const OrderSchema = new mongoose.Schema({
 // Recomputes are gated on the fields actually changing, so unrelated saves
 // (approval-token rotation, tracking ticks) can't clobber a hand-corrected
 // total.
+// Every quote line carries a unique stable `lid` — the pick-mapping handle
+// between the published snapshot and the live lines. Minted where missing;
+// duplicates (a grid row copied with {...spread}) keep the FIRST and re-mint
+// the rest. Mutates in place; safe on subdocs and plain objects alike.
+function ensureQuoteLineIds(lines) {
+  const seen = new Set();
+  for (const l of Array.isArray(lines) ? lines : []) {
+    if (!l) continue;
+    if (!l.lid || seen.has(l.lid)) l.lid = crypto.randomBytes(8).toString('hex');
+    seen.add(l.lid);
+  }
+  return lines;
+}
+
 OrderSchema.pre('save', function (next) {
   this.companyKey = deriveCompanyKey(this.companyName, this.clientName);
   const lines = Array.isArray(this.quoteLines) ? this.quoteLines : [];
+  if (this.isNew || this.isModified('quoteLines')) ensureQuoteLineIds(lines);
   // On brand-new docs only react to actual content — imports and manual
   // creates carry a hand-set totalValue with no quote lines, and the old
   // length>0 guard kept those intact.
@@ -620,6 +651,7 @@ OrderSchema.pre('findOneAndUpdate', async function () {
     set.companyKey = deriveCompanyKey(set.companyName, set.clientName);
   }
   if (Array.isArray(set.quoteLines)) {
+    ensureQuoteLineIds(set.quoteLines);
     const t = computeQuoteTotals(set.quoteLines, set.setupCost, set.shippingCost);
     set.cogs = t.cogs;
     // The confirmation total stays authoritative if one exists — look it up
@@ -650,6 +682,7 @@ module.exports.PLACED_STATUSES = PLACED_STATUSES;
 module.exports.PAYMENT_FEES = PAYMENT_FEES;
 module.exports.deriveCompanyKey = deriveCompanyKey;
 module.exports.computeQuoteTotals = computeQuoteTotals;
+module.exports.ensureQuoteLineIds = ensureQuoteLineIds;
 module.exports.computeConfirmationTotals = computeConfirmationTotals;
 module.exports.computeConfirmationCogs = computeConfirmationCogs;
 module.exports.computeLocationTax = computeLocationTax;
