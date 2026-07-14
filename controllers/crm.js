@@ -2708,6 +2708,47 @@ async function updateLogEntry(req, res) {
 // Unlike the bulk /archive, this is an explicit single-card act, so it archives
 // even an order-bearing company (the owner deliberately chose this card) and
 // records the reason.
+// ── Client portal link (magic-link, view-only) ────────────────────────────────
+// POST /api/crm/:companyKey/portal — mint (or return) the company's portal
+// token. IDEMPOTENT: an existing live token comes back unchanged so the owner
+// can re-copy the same URL forever; minting after a revoke issues a fresh one.
+// DELETE /api/crm/:companyKey/portal — revoke: CLEARS the token (a leaked URL
+// dies at the public lookup — the only kill switch, since portal links don't
+// expire).
+async function portalMint(req, res) {
+  try {
+    const key = req.params.companyKey;
+    if (!key) return res.status(400).json({ message: 'companyKey required' });
+    const doc = await Client.findOne({ companyKey: key });
+    if (!doc) return res.status(404).json({ message: 'No CRM record for that key.' });
+    if (!doc.portalToken) {
+      doc.portalToken = require('crypto').randomBytes(16).toString('hex');
+      doc.portalTokenCreatedAt = new Date();
+      doc.portalRevokedAt = null;
+      await doc.save();
+    }
+    res.json({ token: doc.portalToken, createdAt: doc.portalTokenCreatedAt });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
+async function portalRevoke(req, res) {
+  try {
+    const key = req.params.companyKey;
+    if (!key) return res.status(400).json({ message: 'companyKey required' });
+    const doc = await Client.findOneAndUpdate(
+      { companyKey: key },
+      { $set: { portalToken: '', portalRevokedAt: new Date() } },
+      { new: true },
+    ).select('companyKey portalRevokedAt').lean();
+    if (!doc) return res.status(404).json({ message: 'No CRM record for that key.' });
+    res.json({ ok: true, revoked: true });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
 async function archiveOne(req, res) {
   try {
     const key = req.params.companyKey;
@@ -2931,6 +2972,7 @@ module.exports = {
   archiveCompanies,
   unarchiveCompanies,
   autoArchiveDeadColdProspects,
+  portalMint, portalRevoke,
   deleteLogEntry,
   updateLogEntry,
   archiveOne,

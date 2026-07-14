@@ -1103,6 +1103,9 @@ module.exports = {
   publicGetProject, publicApprove, publicRequestChanges, publicSelectOptions,
   publishConfirmation,
   updateTracking, initTracking,
+  // Publish-gate primitives — shared with the client portal so its per-order
+  // totals obey the exact same draft-hiding rules as the approval page.
+  _confPublished, _hasConfContent,
   DEFAULT_TRACKING_STEPS,
   // Exported for unit tests (pure helpers).
   _pickedAtForCycle, _currentApprovalStatus,

@@ -432,6 +432,9 @@ app.use('/api/triage', express.json({ limit: '2mb' }), triageRoutes);
 app.use('/api/signals', signalsRoutes);
 app.use('/api/public/lookbooks', express.json(), publicLookbookRoutes);
 app.use('/api/public', express.json(), publicApprovalRoutes);
+// Client portal: one magic link per company (Client.portalToken is the gate,
+// checked in the controller — no auth middleware, like the approval routes).
+app.use('/api/portal', express.json(), require('./routes/portalRoutes'));
 app.use('/api/lookbooks', express.json({ limit: '2mb' }), lookbookRoutes);
 // Content planner: post bodies are text, but an IG card can carry a small
 // downscaled reference image (data URL), so allow a touch more than 1mb.
