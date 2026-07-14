@@ -99,7 +99,7 @@ exports.getUnseenCount = async (req, res) => {
     // count (existing callers unchanged).
     const source = (req.query && req.query.source) || '';
     const filter = { status: 'new', seenByAdmin: { $ne: true }, honeypot: { $ne: true } };
-    if (['contact', 'webworks'].includes(source)) filter.source = source;
+    if (['contact', 'webworks', 'atom'].includes(source)) filter.source = source;
     const count = await ContactSubmission.countDocuments(filter);
     return res.json({ count });
   } catch (err) {
@@ -115,7 +115,7 @@ exports.markAllSeen = async (req, res) => {
     // owner never looked at. No/invalid source → original mark-everything.
     const source = (req.body && req.body.source) || (req.query && req.query.source) || '';
     const filter = { seenByAdmin: { $ne: true } };
-    if (['contact', 'webworks'].includes(source)) filter.source = source;
+    if (['contact', 'webworks', 'atom'].includes(source)) filter.source = source;
     await ContactSubmission.updateMany(filter, { $set: { seenByAdmin: true } });
     return res.json({ ok: true });
   } catch (err) {
