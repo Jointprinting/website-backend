@@ -27,6 +27,8 @@ const {
   archiveOne,
   unarchiveOne,
   matchCandidates,
+  portalMint,
+  portalRevoke,
 } = require('../controllers/crm');
 const {
   reconcilePreview,
@@ -86,6 +88,9 @@ router.patch('/:companyKey', patchOne);
 //   • reword ONE log entry inline (typo fixes; timestamp/kind untouched)
 router.post('/:companyKey/archive',   archiveOne);
 router.post('/:companyKey/unarchive', unarchiveOne);
+// Client-portal magic link: mint/return the company's token, or revoke it.
+router.post('/:companyKey/portal',   portalMint);
+router.delete('/:companyKey/portal', portalRevoke);
 router.delete('/:companyKey/log/:entryId', deleteLogEntry);
 router.patch('/:companyKey/log/:entryId', updateLogEntry);
 

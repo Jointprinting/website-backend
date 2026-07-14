@@ -136,6 +136,15 @@ const ClientSchema = new mongoose.Schema({
   // that run's batch id, so the whole batch is identifiable and reversible as a
   // unit. Empty for records the reconcile never touched.
   reconcileBatchId: { type: String, default: '', index: true },
+
+  // ── Client portal (magic-link, view-only) ──────────────────────────────────
+  // One long-lived token per company: /portal/<token> shows every order's
+  // status + timeline + links to the live approval pages. No expiry — revoking
+  // CLEARS the token (the only kill switch, so a leaked URL dies at the DB
+  // lookup). '' = no live portal. Indexed for the public lookup.
+  portalToken:          { type: String, default: '', index: true },
+  portalTokenCreatedAt: { type: Date, default: null },
+  portalRevokedAt:      { type: Date, default: null },
 }, { timestamps: true });
 
 ClientSchema.statics.CRM_STAGES     = CRM_STAGES;
