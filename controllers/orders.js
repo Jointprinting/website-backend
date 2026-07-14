@@ -838,7 +838,8 @@ const cleanupCandidates = async (req, res) => {
   try {
     const orders = await Order.find({}).select(
       'projectNumber orderNumber companyName clientName companyKey ' +
-      'totalValue items quoteLines mockupNumbers files status createdAt'
+      'totalValue items quoteLines mockupNumbers files status createdAt ' +
+      'paid importedFrom orderDate archived'
     ).lean();
 
     const empty = orders.filter(o =>
@@ -870,11 +871,47 @@ const cleanupCandidates = async (req, res) => {
         variants: [...g.variants.entries()].map(([name, count]) => ({ name, count })),
       }));
 
+    // REVENUE TWINS — the Bract House pattern: one physical job represented by
+    // 2+ non-archived COLLECTED orders (delivered/paid), each carrying
+    // totalValue, so every per-company revenue rollup silently doubles. We
+    // only FLAG (the owner archives the twin himself — a legit repeat order
+    // looks identical to a duplicate from here, so no auto-action). Suspicion
+    // is strongest when values match to the dollar or one doc is a clone.
+    const collectedByCo = {};
+    orders.forEach(o => {
+      if (o.archived) return;
+      const collected = o.status === 'delivered'
+        || (o.paid === true && o.status !== 'cancelled' && o.status !== 'quoted');
+      if (!collected || !o.companyKey) return;
+      (collectedByCo[o.companyKey] = collectedByCo[o.companyKey] || []).push(o);
+    });
+    const revenueTwins = Object.values(collectedByCo)
+      .filter(list => list.length > 1)
+      .map(list => {
+        const values = list.map(o => Math.round(Number(o.totalValue) || 0));
+        const sameValue = new Set(values).size < values.length;
+        const hasClone = list.some(o => /^duplicate:/.test(o.importedFrom || ''));
+        return {
+          companyKey: list[0].companyKey,
+          companyName: list[0].companyName || list[0].clientName || list[0].companyKey,
+          suspicion: sameValue ? 'same dollar value' : hasClone ? 'one is a clone' : 'multiple collected orders',
+          strong: sameValue || hasClone,
+          totalCounted: values.reduce((a, b) => a + b, 0),
+          orders: list.map(o => ({
+            _id: o._id, projectNumber: o.projectNumber, orderNumber: o.orderNumber,
+            status: o.status, paid: !!o.paid, totalValue: o.totalValue,
+            orderDate: o.orderDate, importedFrom: o.importedFrom || '',
+          })).sort((a, b) => new Date(a.orderDate || 0) - new Date(b.orderDate || 0)),
+        };
+      })
+      .sort((a, b) => (b.strong ? 1 : 0) - (a.strong ? 1 : 0) || b.totalCounted - a.totalCounted);
+
     res.json({
       empty: empty.map(o => ({
         _id: o._id, projectNumber: o.projectNumber, createdAt: o.createdAt, status: o.status,
       })),
       nameCollisions,
+      revenueTwins,
     });
   } catch (e) {
     res.status(500).json({ message: e.message });
