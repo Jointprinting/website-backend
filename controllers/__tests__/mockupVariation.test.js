@@ -12,10 +12,10 @@ const SRC = {
   name: 'Eastern Green Grinder',
   thumbnail: 'data:image/png;base64,thumb',
   client: 'Eastern Green Dispensary',
-  pageState: { mockupNum: '#000148B', title: 'Grinder', template: 2, frontBlankBase64: 'data:x' },
+  pageState: { mockupNum: '#000148B', pdfName: '000148B.pdf', title: 'Grinder', template: 2, frontBlankBase64: 'data:x' },
   pages: [
-    { mockupNum: '#000148B', view: 'front' },
-    { mockupNum: '#000148B', view: 'back' },
+    { mockupNum: '#000148B', pdfName: '000148B.pdf', view: 'front' },
+    { mockupNum: '#000148B', pdfName: '000148B.pdf', view: 'back' },
   ],
   extraViews: ['data:image/png;base64,view2'],
   remoteId: 'orig-uuid',
@@ -26,6 +26,10 @@ test('restamps the new mockup number everywhere the old one lives', () => {
   assert.equal(v.pageState.mockupNum, '#000148F');
   assert.ok(v.pages.every((p) => p.mockupNum === '#000148F'));
   assert.equal(v.remoteId, 'var-123');
+  // the export filename follows the NEW number — a variation must never
+  // export over its source's PDF (owner: "duplicates export as the next one")
+  assert.equal(v.pageState.pdfName, '000148F.pdf');
+  assert.ok(v.pages.every((p) => p.pdfName === '000148F.pdf'));
   // the art itself rides along untouched
   assert.equal(v.pageState.frontBlankBase64, 'data:x');
   assert.equal(v.thumbnail, SRC.thumbnail);
