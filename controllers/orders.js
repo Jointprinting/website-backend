@@ -1575,12 +1575,18 @@ const assignMockupNumber = async (req, res) => {
 
 // The clone body for a mockup variation: same art/pages, NEW identity. The new
 // mockup number is restamped everywhere the old one lives (pageState + every
-// multi-page entry), the name gets a "· v2/v3…" suffix keyed off the letter so
-// two variations never share a display name, and the remoteId is fresh so the
-// studio treats it as its own file. PURE — exported for tests.
+// multi-page entry) — including the export PDF filename, which is re-derived
+// from the new number so variation C exports as 000145C.pdf instead of
+// inheriting the source's 000145A.pdf. The name gets a "· v2/v3…" suffix keyed
+// off the letter so two variations never share a display name, and the
+// remoteId is fresh so the studio treats it as its own file. PURE — exported
+// for tests.
 function buildMockupVariation(src, newNum, remoteId) {
   const s = src || {};
-  const restamp = (ps) => (ps && typeof ps === 'object' ? { ...ps, mockupNum: newNum } : ps);
+  const pdfName = newNum ? `${String(newNum).replace(/^#/, '')}.pdf` : '';
+  const restamp = (ps) => (ps && typeof ps === 'object'
+    ? { ...ps, mockupNum: newNum, ...(pdfName ? { pdfName } : {}) }
+    : ps);
   const letter = String(newNum || '').replace(/^#?\d*/, '');
   return {
     store: 'mockups',
