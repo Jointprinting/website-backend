@@ -2,7 +2,7 @@
 const express = require('express');
 const router = express.Router();
 
-const { sendContactEmail, sendWebworksLead } = require('../controllers/email');
+const { sendContactEmail, sendWebworksLead, sendAtomLead } = require('../controllers/email');
 
 router.post('/send-contact', sendContactEmail);
 // /send-mockup-request retired with the public /customize page — the Contact form
@@ -13,5 +13,8 @@ router.post('/send-contact', sendContactEmail);
 // pipeline + Studio inbox, tagged source:'webworks'; inherits the /api/email
 // contactLimiter + multipart parsing mounted in server.js.
 router.post('/webworks-lead', sendWebworksLead);
+
+// JP Atom studio leads (from /atom/contact). Same pipeline, source:'atom'.
+router.post('/atom-lead', sendAtomLead);
 
 module.exports = router;

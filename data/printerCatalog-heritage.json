@@ -1,0 +1,498 @@
+{
+  "meta": {
+    "source": "Heritage Screen Printing, Inc. — Wholesale Pricing and Resource Guide",
+    "revisedEffective": "2025-01-01",
+    "currency": "USD",
+    "pageNumbering": "Page references below use the printed page numbers shown on the catalog pages. PDF page = printed page + 1 (PDF p1 is the cover, PDF p2 is the table of contents).",
+    "extractedOn": "2026-07-14"
+  },
+  "printer": {
+    "name": "Heritage Screen Printing, Inc.",
+    "established": 1983,
+    "type": "Full service, contract garment decorating firm",
+    "location": "Warminster, PA",
+    "state": "PA",
+    "contact": {
+      "address": "331 York Road, Warminster, PA 18974",
+      "phone": "215-672-2382",
+      "website": "hsp1.com",
+      "instagram": "@heritage_screenprinting",
+      "returnsEmail": "support@hsp1.com",
+      "dropShipAddress": "Heritage Screen Printing, attn: receiving, 331 York Road, Warminster, PA 18974"
+    },
+    "capabilities": [
+      "screen_printing",
+      "embroidery",
+      "dtg",
+      "digitally_printed_media_wide_format",
+      "heat_pressed_vinyl_personalization",
+      "digitizing_and_vectoring",
+      "ecommerce_fulfillment"
+    ],
+    "marketsServed": [
+      "Promotional products distributors",
+      "Uniform companies",
+      "Traditional retail",
+      "Web based fulfillment",
+      "Garment manufacturers"
+    ],
+    "memberships": ["ASI #700490", "UPIC #HSP1", "PPAI", "PAPPA", "SGIA", "Impressions Top Volume Decorator"],
+    "onlineSystem": "hsp1.com — order status, online art approvals, account management, package tracking, e-mail notifications, color charts, font charts"
+  },
+  "screenPrinting": {
+    "pageRefs": "Printed pages 4-6 (overview p4, price grids p5, additional charges p6)",
+    "inks": "Phthalate compliant plastisol inks; vibrant colors and accurate Pantones",
+    "minimums": {
+      "perPrintPerColor": 20.0,
+      "note": "$20.00 MINIMUM PER PRINT, PER COLOR."
+    },
+    "priceGrids": {
+      "unit": "Unit prices are per piece, per location",
+      "colorCountColumns": ["1", "2", "3", "4-5", "6-8", "9-12"],
+      "darkInkOnLightGarments": {
+        "note": "Examples include, but are not limited to: black ink on a white tee, royal blue ink on a daisy tee, dolphin orange ink on an ash tee, koala brown ink on tan tee.",
+        "rows": [
+          { "quantityDozens": 1, "pieces": 12, "prices": { "1": 2.95, "2": 3.75, "3": 3.9, "4-5": 7.1, "6-8": 9.1, "9-12": null } },
+          { "quantityDozens": 2, "pieces": 24, "prices": { "1": 2.15, "2": 2.9, "3": 3.2, "4-5": 5.65, "6-8": 7.75, "9-12": null } },
+          { "quantityDozens": 3, "pieces": 36, "prices": { "1": 1.75, "2": 2.35, "3": 2.8, "4-5": 4.3, "6-8": 6.3, "9-12": 8.75 } },
+          { "quantityDozens": 4, "pieces": 48, "prices": { "1": 1.55, "2": 2.1, "3": 2.35, "4-5": 3.55, "6-8": 5.3, "9-12": 7.75 } },
+          { "quantityDozens": 6, "pieces": 72, "prices": { "1": 1.3, "2": 1.7, "3": 1.85, "4-5": 2.85, "6-8": 4.3, "9-12": 6.25 } },
+          { "quantityDozens": 12, "pieces": 144, "prices": { "1": 1.15, "2": 1.25, "3": 1.45, "4-5": 1.6, "6-8": 2.35, "9-12": 4.0 } },
+          { "quantityDozens": 24, "pieces": 288, "prices": { "1": 1.0, "2": 1.15, "3": 1.25, "4-5": 1.35, "6-8": 1.95, "9-12": 2.8 } },
+          { "quantityDozens": 36, "pieces": 432, "prices": { "1": 0.9, "2": 1.1, "3": 1.2, "4-5": 1.3, "6-8": 1.7, "9-12": 2.7 } },
+          { "quantityDozens": 48, "pieces": 576, "prices": { "1": 0.8, "2": 0.95, "3": 1.05, "4-5": 1.15, "6-8": 1.6, "9-12": 2.6 } },
+          { "quantityDozens": 96, "pieces": 1152, "prices": { "1": 0.75, "2": 0.85, "3": 0.95, "4-5": 1.05, "6-8": 1.3, "9-12": 2.3 } },
+          { "quantityDozens": 200, "pieces": 2400, "prices": { "1": 0.55, "2": 0.75, "3": 0.85, "4-5": 1.0, "6-8": 1.15, "9-12": 1.85 } },
+          { "quantityDozens": "500+", "pieces": "6000+", "prices": { "1": 0.5, "2": 0.6, "3": 0.7, "4-5": 0.8, "6-8": 0.9, "9-12": 1.7 } }
+        ]
+      },
+      "lightInkOnDarkGarments": {
+        "note": "Unit prices are per location & includes flashing. Examples include, but are not limited to: white ink on ANY color tee, athletic gold ink on a royal blue tee, any shimmer/metallic ink, any fluorescent color ink.",
+        "importantNote": "IMPORTANT NOTE FOR DARK GARMENTS: Count the number of colors in the design and add 1 extra color to account for a white underbase to maintain color vibrancy & accurate Pantone representation. See the handy guide on pages 17 & 18.",
+        "rows": [
+          { "quantityDozens": 1, "pieces": 12, "prices": { "1": 3.25, "2": 4.1, "3": 4.3, "4-5": 7.5, "6-8": 10.25, "9-12": null } },
+          { "quantityDozens": 2, "pieces": 24, "prices": { "1": 2.4, "2": 3.2, "3": 3.65, "4-5": 6.25, "6-8": 8.75, "9-12": null } },
+          { "quantityDozens": 3, "pieces": 36, "prices": { "1": 2.05, "2": 2.7, "3": 3.25, "4-5": 4.85, "6-8": 7.5, "9-12": 10.0 } },
+          { "quantityDozens": 4, "pieces": 48, "prices": { "1": 1.9, "2": 2.4, "3": 2.65, "4-5": 4.15, "6-8": 6.0, "9-12": 8.45 } },
+          { "quantityDozens": 6, "pieces": 72, "prices": { "1": 1.55, "2": 2.05, "3": 2.2, "4-5": 3.35, "6-8": 4.85, "9-12": 6.95 } },
+          { "quantityDozens": 12, "pieces": 144, "prices": { "1": 1.35, "2": 1.5, "3": 1.65, "4-5": 1.85, "6-8": 2.85, "9-12": 4.5 } },
+          { "quantityDozens": 24, "pieces": 288, "prices": { "1": 1.25, "2": 1.35, "3": 1.45, "4-5": 1.55, "6-8": 2.15, "9-12": 3.25 } },
+          { "quantityDozens": 36, "pieces": 432, "prices": { "1": 1.15, "2": 1.25, "3": 1.35, "4-5": 1.5, "6-8": 2.0, "9-12": 3.15 } },
+          { "quantityDozens": 48, "pieces": 576, "prices": { "1": 0.95, "2": 1.1, "3": 1.2, "4-5": 1.35, "6-8": 1.85, "9-12": 3.05 } },
+          { "quantityDozens": 96, "pieces": 1152, "prices": { "1": 0.9, "2": 1.05, "3": 1.15, "4-5": 1.25, "6-8": 1.5, "9-12": 2.7 } },
+          { "quantityDozens": 200, "pieces": 2400, "prices": { "1": 0.65, "2": 0.9, "3": 0.95, "4-5": 1.0, "6-8": 1.35, "9-12": 2.15 } },
+          { "quantityDozens": "500+", "pieces": "6000+", "prices": { "1": 0.6, "2": 0.7, "3": 0.8, "4-5": 0.9, "6-8": 1.1, "9-12": 2.0 } }
+        ]
+      }
+    },
+    "screenFees": {
+      "perScreen": 20.0,
+      "screensKeptOnFileDays": 14,
+      "reorderWithin14Days": "If you reorder the exact same job within 14 calendar days, no screen charges will be applied.",
+      "resetFeeAfter14DaysPerScreen": 10.0,
+      "notes": [
+        "If any minor changes are made while submitting a 'reorder' that affects the color separations, the job would be considered a 'new' job and new screen fees would apply.",
+        "Different print locations on different types of garments require a different set of screens. For example, if your order contains both shirts and pants getting the exact same imprint, two sets of screens are required and will be charged to your invoice."
+      ]
+    },
+    "artworkRequirements": {
+      "spotColor": "Vector formats .ai, .eps, .pdf (compatible with Adobe Illustrator CS6); convert text to outlines/curves; convert colors to spot colors with Heritage Color Chart or Pantone colors; stroked paths 4 point minimum; art sized to desired printing size.",
+      "fourColorProcess": "Vector formats or any format supporting transparencies (.psd, .tif, .png, 200-300 ppi). Best suited for complex photorealistic designs meant for white goods; a white highlight screen may be required (additional charges apply); spot Pantones can be added on request.",
+      "artAdjustmentFee": { "perHour": 60.0, "minimumHours": 0.5, "note": "If artwork requirements are not met and you cannot adjust, Heritage will adjust files at $60.00 per hour, 1/2 hour minimum." },
+      "fileSubmission": "Via e-mail, online file sharing services (Dropbox preferred), or online system at hsp1.com."
+    },
+    "additionalCharges": [
+      { "name": "Digital art proof", "price": 0, "note": "FREE, includes one revision if necessary. Additional revisions are $15.00 per revision session.", "additionalRevisionPerSession": 15.0 },
+      { "name": "Art (creation, major revisions, adjusting customer provided files)", "perHour": 60.0, "minimumHours": 0.5 },
+      { "name": "Simple art changes (changing a date, adding text, resizing or rearranging, etc.)", "flatFeePerRevisionSession": 15.0 },
+      { "name": "Vector file release fee", "price": 20.0 },
+      { "name": "Ink color change", "pricePerColor": 10.0 },
+      { "name": "PANTONE color matching", "pricePerColor": 20.0 },
+      { "name": "Pre-production sample", "pricePerColorPerLocation": 20.0, "note": "$20.00 per color, per location, plus screen charges. If a sample is waived, the customer agrees to accept the finished product 'as is'. Samples are non-refundable." },
+      { "name": "Oversized screens", "pricePerScreen": 30.0, "note": "Imprint sizes vary, contact to inquire." }
+    ],
+    "specialPlacementsAndFabrics": [
+      { "name": "Mesh jerseys or shorts", "surchargePercentOnPrintPrice": 50 },
+      { "name": "100% polyester goods (Poly Blocking underbase)", "charge": "Add 1 extra screen and 1 extra color print price", "note": "If garment is not prepped for dye migration, it is highly recommended to add a Poly Blocking underbase (more info on page 19).", "conflictNote": "CONFLICT: Printed page 19 states the grey blocker underbase cost 'is included in the 25% markup on 100% polyester goods' — a 25% markup not mentioned on printed page 6, which instead prices it as +1 screen and +1 color. Both statements recorded verbatim; confirm with Heritage which applies." },
+      { "name": "Vertical sleeve and leg print", "surchargePercentOnPrintPrice": 50 },
+      { "name": "1-color size tag relabel print", "priceEach": 1.0, "upToPieces": 144, "above144": "PER QUOTE" },
+      { "name": "Imprints on or above pockets", "surchargePercentOnPrintPrice": 25 },
+      { "name": "1-color imprint on polypropylene bags", "surchargePercentOnPrintPrice": 25 },
+      { "name": "2-ply items", "surchargePercentOnPrintPrice": 50, "note": "These are a case-by-case basis. Please contact us with imprint details BEFORE submitting a purchase order." },
+      { "name": "Jumbo Prints, Soft Hand, Discharge Inks", "surchargePercentOnPrintPrice": 50 }
+    ],
+    "specialtyInks": [
+      { "name": "NYLON ink on jackets (1 dozen or less)", "leftChestPerColor": 4.0, "fullBackPerColor": 6.0 },
+      { "name": "NYLON ink on jackets (over 1 dozen)", "surchargePercentOnPrintCharge": 50 },
+      { "name": "NYLON ink on bags", "surchargePercentOnPrintCharge": 25 },
+      { "name": "WATER BASED, DISCHARGE, HIGH DENSITY, PUFF, and GLITTER inks", "price": "PER QUOTE", "note": "Underbase is also required. We will need to see artwork first to determine if these methods will work with art and substrate." },
+      { "name": "METALLIC FOIL", "price": "PER QUOTE", "note": "A variety of colors are available, contact us!" }
+    ],
+    "simulatedProcess": {
+      "description": "Best suited for complex photorealistic designs meant for colored and dark goods; also works on white goods. Always factor in the need for both a white underbase screen and a white highlight screen.",
+      "upTo6Colors": { "flatFeePerLocation": 200.0, "note": "In addition to the print price based on quantity (see price grid). The flat fee includes art setup, screens, and ink mixing.", "gridPageRefNote": "PDF text says 'See grid on page 4' but the price grid is on printed page 5 (page-reference typo in the catalog)." },
+      "eachAdditionalColor": 30.0,
+      "maxColors": 12,
+      "notes": "Art department determines color count; 8 colors is most common. Final print will have variations from on-screen art; pre-production sample HIGHLY recommended. Allow additional turnaround time on simulated process jobs."
+    },
+    "underbaseGuide": {
+      "pageRefs": "Printed pages 17-18 (full per-ink-color matrix, guideline only); white underbase vs flashing explained on printed page 15; white highlight on printed page 16",
+      "legend": {
+        "X": "Doesn't need an underbase — unless there's a very specific reason one is requested/needed.",
+        "~": "Situational — most pastel garment colors are fairly light, so an underbase isn't required unless you want the ink to be extra vibrant. On light heathers the heather pattern commonly shows slightly through the ink; plan for an underbase to avoid that.",
+        "check": "Underbase needed — plan for an underbase in your pricing. Yellow sparkle, red glitter, and glow in the dark are toppings rather than colors and need a similar color under them; on medium to dark garments an additional white base is usually required as well.",
+        "specialSituation": "Special situation — dark ink colors usually don't need an underbase, but for low-contrast combos (dark ink on dark/black garments) consider an underbase to boost vibrancy; Heritage highly recommends both a white underbase and white highlight for vibrancy and color accuracy."
+      },
+      "summary": {
+        "neverNeedUnderbase": ["white", "russell grey", "black", "cream #1", "cream #5", "platinum", "silver shimmer", "metallic gold", "gold shimmer"],
+        "situationalOnPrimariesDarksBlack": ["battleship grey"],
+        "specialSituationColors": ["charcoal grey (darks/black)", "burnt orange", "dallas scarlet", "russell cardinal", "wildberry", "burgundy", "maroon", "russell purple", "navy blue (darks/black)", "hunter green", "forest green", "koala brown"],
+        "toppingsAlwaysNeedBaseUnderneath": ["yellow sparkle", "red glitter", "glow in the dark"],
+        "typicalPattern": "Most standard and fluorescent ink colors: no underbase on white/very light garments, situational on light/pastels, underbase needed on primaries/darks/black. Sand is also situational on primaries. Consult the full chart on printed pages 17-18 for exact per-color guidance."
+      },
+      "pricingImpact": "An underbase is an extra color/screen: it bumps the job into the next color-count price bracket and adds a screen charge. Flashing (included in the light-ink-on-dark grid) is not the same as an underbase."
+    },
+    "polyesterDyeMigration": {
+      "pageRef": "Printed page 19",
+      "greyBlockerUnderbase": "A specially formulated ink that acts as a barrier between the fabric and the final imprint; absorbs garment dye. Note: a thicker imprint will result.",
+      "costAsStatedOnPage19": "The cost is included in the 25% markup on 100% polyester goods.",
+      "costAsStatedOnPage6": "100% polyester goods: add 1 extra screen and 1 extra color print price for a Poly Blocking underbase.",
+      "conflictNote": "These two statements disagree (25% markup vs +1 screen and +1 color). Do not assume either — confirm with Heritage."
+    }
+  },
+  "embroidery": {
+    "pageRefs": "Printed pages 7-8",
+    "equipment": "Latest Tajima machines, rayon or polyester threads",
+    "minimumOrder": 20.0,
+    "priceGrid": {
+      "unit": "Per piece",
+      "includesUpToThreadColors": 15,
+      "stitchCountColumns": ["up to 2500", "2501-5000", "5001-7500", "7501-15000", "15001-17500"],
+      "rows": [
+        { "quantity": "1", "prices": { "up to 2500": 20.0, "2501-5000": 20.0, "5001-7500": 20.0, "7501-15000": 20.0, "15001-17500": 20.0 } },
+        { "quantity": "2-5", "prices": { "up to 2500": 9.0, "2501-5000": 9.0, "5001-7500": 9.5, "7501-15000": 10.0, "15001-17500": 12.5 } },
+        { "quantity": "6-11", "prices": { "up to 2500": 7.35, "2501-5000": 7.6, "5001-7500": 7.85, "7501-15000": 8.85, "15001-17500": 12.0 } },
+        { "quantity": "12-23", "prices": { "up to 2500": 4.7, "2501-5000": 4.85, "5001-7500": 5.65, "7501-15000": 5.9, "15001-17500": 6.75 } },
+        { "quantity": "24-47", "prices": { "up to 2500": 4.25, "2501-5000": 4.35, "5001-7500": 4.65, "7501-15000": 4.9, "15001-17500": 6.25 } },
+        { "quantity": "48-71", "prices": { "up to 2500": 3.35, "2501-5000": 3.75, "5001-7500": 4.2, "7501-15000": 4.75, "15001-17500": 5.25 } },
+        { "quantity": "72-143", "prices": { "up to 2500": 3.25, "2501-5000": 3.45, "5001-7500": 3.95, "7501-15000": 4.2, "15001-17500": 4.6 } },
+        { "quantity": "144-499", "prices": { "up to 2500": 3.1, "2501-5000": 3.2, "5001-7500": 3.6, "7501-15000": 3.9, "15001-17500": 4.35 } },
+        { "quantity": "500+", "prices": { "up to 2500": 2.65, "2501-5000": 2.85, "5001-7500": 3.2, "7501-15000": 3.5, "15001-17500": 3.75 } }
+      ]
+    },
+    "digitizing": {
+      "customerSuppliedDstFile": {
+        "acceptedFormats": [".DST", ".PXF"],
+        "freeDigitalExport": 1,
+        "initialSewOut": 15.0,
+        "additionalSewOuts": 15.0,
+        "additionalSewOutsNote": "Additional sew-outs are $15.00 each up to 10K stitches.",
+        "designEditPerEdit": 15.0,
+        "note": "Sew-out proofs are available upon request. If same logo goes on flat apparel and caps, two different .DST files are required."
+      },
+      "heritageCreatesDstFile": {
+        "typicalCostRange": [30.0, 60.0],
+        "typicalCostNote": "Prices vary based on stitch count. The higher the stitch count, the more costly it is. The average cost is usually $30-$60 per stitch count. (Wording verbatim from catalog.)",
+        "editsAndAdditionalSewOuts": { "perHour": 60.0, "minimumHours": 0.25, "note": "Edit times vary based on stitch count, number of thread colors, and overall complexity of the design." },
+        "preferredArtFormats": "Vectored .ai/.eps/.pdf (Illustrator CS6 compatible), text converted to outlines; .JPGs also accepted. Indicate Robison-Anton thread color numbers."
+      }
+    },
+    "additionalCharges": [
+      { "name": "High stitch count designs (over 17,500)", "addPer1000Stitches": 0.55, "note": "For regularly hooped items; full fronts/backs by quote." },
+      { "name": "Dakota Collectibles designs", "smallDesign": 20.0, "largeDesign": 30.0 },
+      { "name": "Keyboard or lettering set-up", "price": 15.0 },
+      { "name": "3D puff embroidery on caps", "addPerPiece50OrLess": 3.0, "addPerPiece51OrMore": 2.0 },
+      { "name": "METALLIC thread", "addPerPiece": 0.75 },
+      { "name": "APPLIQUE, SIM STITCH, TACKLE TWILL, and FLOCKING", "price": "PER QUOTE", "note": "Please allow additional turn around time." },
+      { "name": "JACKET BACKS and other large designs", "price": "PER QUOTE", "note": "Require a very high stitch count; Heritage would like to view the art before an order is placed. Please allow additional turn around time." },
+      { "name": "HEAVY DUTY items (Carhartt jackets, for example)", "price": "May incur additional hooping and handling fees" },
+      { "name": "HIDDEN ZIPPER POCKET areas", "addEach": 1.0, "note": "For hooping in these areas." },
+      { "name": "Sew in customer supplied woven labels", "price": "PER QUOTE" },
+      { "name": "Pre-production sample", "pricePerLocation": 20.0, "note": "If a sample is waived, the customer agrees to accept the finished product 'as is'. Samples are non-refundable." },
+      { "name": "DST file release fee", "price": 20.0 }
+    ]
+  },
+  "dtg": {
+    "pageRefs": "Printed pages 9-10",
+    "minimumOrder": 20.0,
+    "notes": [
+      "100% cotton provides the most vibrant prints and is always recommended first; blends print with varying results.",
+      "Cannot match Pantone colors (CMYK only); cannot print neon or metallic inks.",
+      "Above pricing is based on averages of ink consumption. Prices are subject to change based upon review of art.",
+      "Pretreatment may be noticed around the printed area; vanishes after a maximum of two wash cycles."
+    ],
+    "imprintSizeColumns": ["4x4", "7x8", "10x12", "14x16"],
+    "priceGrids": {
+      "whiteGarments": {
+        "rows": [
+          { "quantity": "1", "prices": { "4x4": 20.0, "7x8": 20.0, "10x12": 20.0, "14x16": 20.0 } },
+          { "quantity": "2", "prices": { "4x4": 10.0, "7x8": 10.0, "10x12": 10.0, "14x16": 10.0 } },
+          { "quantity": "3-11", "prices": { "4x4": 7.25, "7x8": 8.0, "10x12": 9.0, "14x16": 9.5 } },
+          { "quantity": "12-24", "prices": { "4x4": 4.75, "7x8": 5.5, "10x12": 5.75, "14x16": 6.75 } },
+          { "quantity": "25+", "prices": { "4x4": 3.75, "7x8": 4.5, "10x12": 4.75, "14x16": 5.75 } }
+        ]
+      },
+      "blackGarments": {
+        "rows": [
+          { "quantity": "1", "prices": { "4x4": 20.0, "7x8": 20.0, "10x12": 20.0, "14x16": 20.0 } },
+          { "quantity": "2", "prices": { "4x4": 10.0, "7x8": 10.0, "10x12": 10.0, "14x16": 10.0 } },
+          { "quantity": "3-11", "prices": { "4x4": 6.5, "7x8": 7.0, "10x12": 7.5, "14x16": 7.75 } },
+          { "quantity": "12-24", "prices": { "4x4": 5.5, "7x8": 6.0, "10x12": 7.0, "14x16": 7.25 } },
+          { "quantity": "25+", "prices": { "4x4": 4.5, "7x8": 5.0, "10x12": 6.5, "14x16": 7.0 } }
+        ]
+      },
+      "colorGarments": {
+        "rows": [
+          { "quantity": "1", "prices": { "4x4": 20.0, "7x8": 20.0, "10x12": 20.0, "14x16": 20.0 } },
+          { "quantity": "2", "prices": { "4x4": 10.0, "7x8": 10.0, "10x12": 10.0, "14x16": 10.0 } },
+          { "quantity": "3-11", "prices": { "4x4": 6.75, "7x8": 7.5, "10x12": 7.75, "14x16": 8.5 } },
+          { "quantity": "12-24", "prices": { "4x4": 5.75, "7x8": 6.5, "10x12": 7.5, "14x16": 7.75 } },
+          { "quantity": "25+", "prices": { "4x4": 4.75, "7x8": 5.5, "10x12": 7.0, "14x16": 7.5 } }
+        ]
+      }
+    },
+    "gridAnomalyNote": "As printed: at the 3-11 quantity tier, black-garment prices are LOWER than white-garment prices (e.g. 6.50 vs 7.25 at 4x4), but at 12-24 and 25+ tiers black-garment prices are HIGHER than white. Recorded exactly as the catalog shows; may be intentional (white uses more ink at low qty tiers is unusual) — worth confirming.",
+    "additionalCharges": [
+      { "name": "Art (creation, major revisions, adjusting customer provided files, color corrections)", "perHour": 60.0, "minimumHours": 0.5 },
+      { "name": "Simple art changes (changing a date, adding text, resizing or rearranging, etc.)", "flatFee": 20.0, "note": "Note: the screen printing section prices simple changes at $15.00 per revision session; the DTG section says flat fee of $20.00. Recorded both as printed." },
+      { "name": "Pre-production sample", "pricePerLocation": 20.0, "note": "If a sample is waived, the customer agrees to accept the finished product 'as is'. Samples are non-refundable." }
+    ]
+  },
+  "digitallyPrintedMedia": {
+    "pageRefs": "Printed pages 11-12",
+    "minimumOrder": 20.0,
+    "vinylBanners": { "perSquareFootAsLowAs": 5.99, "hemmingPerLinearFoot": 3.0, "grommets": 0 },
+    "postersAndPhotoEnlargements": { "perSquareFootAsLowAs": 4.99 },
+    "notes": [
+      "Pricing based on full color digital printing. Depending on design simplicity, screen printing or CAD CUT vinyl is also available for a reduced price — upon review of art Heritage determines the most economical way to proceed.",
+      "Custom sizing available: PER QUOTE.",
+      "Magnet pricing is based on rectangular shapes only. Custom magnet shapes available: PER QUOTE.",
+      "Cannot match Pantone colors; cannot print neon or metallic inks. Allow 1/8 inch bleed for edge-to-edge printing; custom cut shapes need an EPS with cutting path stroked 100% magenta."
+    ],
+    "stickersAndDecals": {
+      "sizeColumns": ["2x3.5", "3x6", "4x8", "6x10"],
+      "unit": "Per piece",
+      "rows": [
+        { "quantity": "25", "prices": { "2x3.5": 1.6, "3x6": 2.9, "4x8": 5.6, "6x10": 6.3 } },
+        { "quantity": "50", "prices": { "2x3.5": 1.4, "3x6": 2.3, "4x8": 4.3, "6x10": 5.3 } },
+        { "quantity": "100", "prices": { "2x3.5": 1.0, "3x6": 1.3, "4x8": 2.3, "6x10": 2.3 } },
+        { "quantity": "250", "prices": { "2x3.5": 0.95, "3x6": 1.15, "4x8": 1.3, "6x10": 2.15 } },
+        { "quantity": "500", "prices": { "2x3.5": 0.75, "3x6": 0.95, "4x8": 1.25, "6x10": 1.95 } },
+        { "quantity": "1000+", "prices": { "2x3.5": 0.55, "3x6": 0.75, "4x8": 1.15, "6x10": 1.8 } }
+      ]
+    },
+    "fridgeMagnets": {
+      "material": "0.15 mil",
+      "sizeColumns": ["2x3.5", "3x6", "4x8", "6x10"],
+      "unit": "Per piece",
+      "rows": [
+        { "quantity": "5", "prices": { "2x3.5": 5.0, "3x6": 7.0, "4x8": 8.0, "6x10": 9.0 } },
+        { "quantity": "10", "prices": { "2x3.5": 5.0, "3x6": 6.5, "4x8": 7.5, "6x10": 8.5 } },
+        { "quantity": "25", "prices": { "2x3.5": 3.0, "3x6": 6.0, "4x8": 7.0, "6x10": 8.0 } },
+        { "quantity": "50", "prices": { "2x3.5": 2.75, "3x6": 4.0, "4x8": 4.0, "6x10": 5.0 } },
+        { "quantity": "100", "prices": { "2x3.5": 2.25, "3x6": 3.25, "4x8": 3.75, "6x10": 4.25 } },
+        { "quantity": "250", "prices": { "2x3.5": 2.0, "3x6": 2.75, "4x8": 3.0, "6x10": 3.75 } },
+        { "quantity": "500", "prices": { "2x3.5": 1.8, "3x6": 1.75, "4x8": 2.0, "6x10": 2.8 } },
+        { "quantity": "1000+", "prices": { "2x3.5": 0.95, "3x6": 1.3, "4x8": 1.55, "6x10": 2.05 } }
+      ],
+      "anomalyNote": "As printed: at 500 qty, the 2x3.5 magnet ($1.80) costs MORE than the larger 3x6 magnet ($1.75). Possible typo in the catalog; recorded exactly as shown."
+    },
+    "carMagnets": {
+      "material": "0.30 mil",
+      "sizeColumns": ["12x12", "12x18", "12x24", "18x24", "24x24"],
+      "unit": "Per piece",
+      "rows": [
+        { "quantity": "2", "prices": { "12x12": 45.0, "12x18": 50.0, "12x24": 70.0, "18x24": 76.0, "24x24": 80.0 } },
+        { "quantity": "4", "prices": { "12x12": 35.0, "12x18": 37.0, "12x24": 41.0, "18x24": 45.0, "24x24": 51.0 } },
+        { "quantity": "6", "prices": { "12x12": 31.0, "12x18": 33.0, "12x24": 35.0, "18x24": 41.0, "24x24": 45.0 } },
+        { "quantity": "10", "prices": { "12x12": 25.0, "12x18": 28.0, "12x24": 29.0, "18x24": 35.0, "24x24": 39.0 } },
+        { "quantity": "20+", "prices": "PER QUOTE" }
+      ]
+    },
+    "corrugatedLawnSigns18x24": {
+      "description": "18\" x 24\" corrugated lawn signs",
+      "unit": "Per piece",
+      "rows": [
+        { "quantity": "2-4", "oneSide": 20.0, "twoSides": 25.0 },
+        { "quantity": "5-9", "oneSide": 16.0, "twoSides": 21.0 },
+        { "quantity": "10-24", "oneSide": 15.0, "twoSides": 19.0 },
+        { "quantity": "25-49", "oneSide": 12.0, "twoSides": 17.0 },
+        { "quantity": "50-99", "oneSide": 10.0, "twoSides": 12.0 },
+        { "quantity": "100+", "oneSide": "PER QUOTE", "twoSides": "PER QUOTE" }
+      ]
+    }
+  },
+  "personalization": {
+    "pageRef": "Printed page 13",
+    "embroideryLeftChestNames": {
+      "oneLine": 6.75,
+      "twoLines": 9.0,
+      "threeLines": 10.0,
+      "unit": "Per piece",
+      "note": "Price is based on max size of 1\" tall per line. Custom sizing and additional fonts are available PER QUOTE.",
+      "popularFonts": ["Allegra Script", "Custom Script", "Full Block", "Block", "Designer Script", "Goudy Bold", "Brush Script", "Euroserif", "Old English", "Brantford", "Franklin Bold", "Two Color Block"]
+    },
+    "heatSealedVinyl": {
+      "note": "Personalization on screen printed goods is done via heat pressed vinyl.",
+      "playerName": { "2inTall": 5.0, "3inTall": 6.5, "unit": "Per line of text" },
+      "playerNumber": { "upTo6inTall": 1.75, "8inTall": 2.25, "unit": "Per digit" },
+      "twoColorPlayerName": { "2inTall": 11.0, "unit": "Per line of text" },
+      "twoColorPlayerNumber": { "upTo6inTall": 6.5, "8inTall": 7.5, "unit": "Per digit" },
+      "customSizingAndFonts": "PER QUOTE",
+      "premiumColorSurchargePercent": 30,
+      "premiumColors": ["Neon Pink", "Neon Yellow", "Neon Orange", "Neon Green", "Antique Silver", "Old Gold"],
+      "popularFonts": ["Pro Block", "Varsity", "Block", "Two Color"]
+    }
+  },
+  "addOns": [
+    { "name": "Individual folding, poly bagging, and size stickers — standard t-shirts", "pricePerPiece": 0.4, "section": "Post production, printed page 14" },
+    { "name": "Individual folding, poly bagging, and size stickers — sweatshirts and hoodies", "pricePerPiece": 0.6, "section": "Post production, printed page 14" },
+    { "name": "1-color size tag relabel print", "priceEach": 1.0, "upToPieces": 144, "above144": "PER QUOTE", "section": "Post production p14 and Screen printing p6 (consistent in both)" },
+    { "name": "Adding hang tags", "price": "PER QUOTE", "section": "Post production, printed page 14" },
+    { "name": "Oversized screens", "pricePerScreen": 30.0, "section": "Screen printing, printed page 6" },
+    { "name": "Rush fees", "see": "policies.rushFees" },
+    { "name": "Art charges", "perHour": 60.0, "minimumHours": 0.5, "note": "Applies across screen printing, DTG, and digitally printed media sections. Simple changes: $15.00 flat per revision session (screen printing) / $20.00 flat (DTG)." },
+    { "name": "Split shipping", "serviceFeePerLocation": 5.0, "section": "Insurance, printed page 31" },
+    { "name": "UPS/FedEx third-party billing chargeback surcharge", "surchargePercent": 25, "note": "Heritage will assess a 25% surcharge onto UPS or FedEx chargebacks when using third party billing for address corrections and other carrier adjustments.", "section": "Shipping, printed page 14" },
+    { "name": "Order cancellation fee", "price": 15.0, "note": "Plus responsibility for any work already done (artwork/digitization, screens, pre-production samples).", "section": "Return policy, printed page 31" },
+    { "name": "Returned check fee", "price": 40.0, "section": "Payment terms, printed page 31" }
+  ],
+  "postProduction": {
+    "pageRef": "Printed page 14",
+    "boxing": "All products boxed using the printer's fold method (per dozen, per size) unless otherwise specified or customer opts for poly-bagging. Boxes not overloaded; generally ~72 shirts per box (adult sizes S-XL). Customers may provide their own labels, tags, business cards, etc. with application instructions.",
+    "pickUp": {
+      "showroomHours": "Monday through Thursday 8:30 am - 5 pm; Friday 7 am - 3:30 pm. Weekend meetings by appointment only.",
+      "closedHolidays": ["New Year's Day", "Memorial Day", "4th of July", "Labor Day", "Thanksgiving Day", "Christmas Day"]
+    },
+    "delivery": "Delivery pricing based on order quantity and delivery location — PER QUOTE. Free local delivery options to qualified accounts.",
+    "shipping": {
+      "carriers": "Mainly ships UPS; can ship through any major carrier (FedEx, UPS, USPS). Customer UPS/FedEx account numbers kept on file for fast processing.",
+      "insurance": "All shipments automatically insured with the minimum carrier rates; additional insurance may be purchased (tell Heritage the estimated amount to insure).",
+      "thirdPartyBillingSurchargePercent": 25,
+      "transitNote": "Check fedex.com/ups.com/usps.com transit time maps based on Heritage's 18974 zip code; factor transit time on top of production time."
+    }
+  },
+  "maxImprintSizes": {
+    "pageRef": "Printed page 22",
+    "unit": "inches, width x tall (single number = tall)",
+    "basedOn": "Gildan adult tees, Gildan youth tees, Jerzees 996 for hoodies (hoodie size = vertical space from hood seam to top of pocket pouch). Numbers may need adjustment per garment model (e.g. Bella 6004 needs a smaller pallet).",
+    "adult": {
+      "fullFrontBack": { "screenPrinting": "15 x 17", "embroidery": "15 x 15", "vinyl": "14.5 x 18", "dtg": "16 x 18" },
+      "leftRightChest": { "screenPrinting": "5 x 5", "embroidery": "5 x 5", "vinyl": "5 x 5", "dtg": "5 x 5" },
+      "verticalSleeve": { "screenPrinting": "3.5 x 17", "embroidery": "4 x 4", "vinyl": "3 x 18", "dtg": null },
+      "smallHoodieFullFront": { "screenPrinting": "8 tall", "embroidery": "8.5 tall", "vinyl": "8.5 tall", "dtg": "9 tall" },
+      "mediumHoodieFullFront": { "screenPrinting": "10 tall", "embroidery": "10 tall", "vinyl": "10 tall", "dtg": "9 tall" },
+      "largeHoodieFullFront": { "screenPrinting": "12 tall", "embroidery": "12 tall", "vinyl": "12 tall", "dtg": "9 tall" }
+    },
+    "youth": {
+      "fullFrontBack": { "screenPrinting": "9 x 9", "embroidery": "9 x 9", "vinyl": "9 x 11", "dtg": "10 x 12" },
+      "leftRightChest": { "screenPrinting": "3.5 x 3.5", "embroidery": "3.5 x 3.5", "vinyl": "3.5 x 3.5", "dtg": "3.5 x 3.5" },
+      "sleeve": { "screenPrinting": "3 x 11", "embroidery": "4 x 4", "vinyl": "3 x 13", "dtg": null },
+      "smallHoodieFullFront": { "screenPrinting": "4 tall", "embroidery": "4 tall", "vinyl": "4 tall", "dtg": "4 tall" },
+      "mediumHoodieFullFront": { "screenPrinting": "8 tall", "embroidery": "8 tall", "vinyl": "8 tall", "dtg": "8 tall" },
+      "largeHoodieFullFront": { "screenPrinting": "10 tall", "embroidery": "10 tall", "vinyl": "10 tall", "dtg": "9 tall" },
+      "xlHoodieFullFront": { "screenPrinting": "12 tall", "embroidery": "13.5 tall", "vinyl": "13.5 tall", "dtg": "13.5 tall" }
+    },
+    "other": {
+      "standardLegPrint": { "screenPrinting": "3 x 15", "embroidery": "4 x 4", "vinyl": "3 x 18", "dtg": null },
+      "onPocketPrint": { "screenPrinting": "3 x 2.75", "embroidery": null, "vinyl": "3 x 2.75", "dtg": null },
+      "adultBaseballCap": { "screenPrinting": "2.5 x 4", "embroidery": "5 x 2.25", "vinyl": "4.5 x 2.5", "dtg": null },
+      "tagImprint": { "screenPrinting": "3 x 3", "embroidery": null, "vinyl": "3 x 3", "dtg": null },
+      "onesies": { "screenPrinting": "5 x 5", "embroidery": "5 x 5", "vinyl": "5 x 5", "dtg": "5 x 5" }
+    },
+    "screenChargeNote": "Different sized imprints per garment size are accommodated — you will be charged for each screen. If art doesn't fit a garment size/location after proof approval, customer is financially responsible for all charges up to that point (printing, screen set-ups, art charges, etc.)."
+  },
+  "colorCharts": {
+    "screenPrintingStandardInkColors": ["White", "Russell Grey", "Battleship Grey", "Charcoal Grey", "Black", "Poly Blocker Base", "872c", "Maize", "Lemon Yellow", "Athletic Gold", "Mango", "Cantaloupe", "Premium Orange", "Dolphin Orange", "Clockwork Orange", "Burnt Orange", "Soft Red", "Scarlet Red", "Drake Red", "Dallas Scarlet", "Russell Cardinal", "Wildberry", "Burgundy", "Maroon", "Blush", "Tootie Fruti Pink", "Awareness Pink", "Rhodamine Red", "Lavender", "Vineyard Purple", "Purple", "Russell Purple", "Island Blue", "Sky Blue", "Bright Blue", "Turquoise", "Columbia Blue", "Deep Aqua", "Royal Blue", "Reflex Blue", "Navy Blue", "Seafoam Green", "Electric Green", "Army Green", "Meadow Green", "Blacklight Green", "Spring Green", "Dallas Green", "Kelly Green", "Hunter Green", "Forest Green", "Cream #1", "Cream #5", "Sand", "Rebel Flesh", "Vegas Gold", "Old Gold", "Alpha Amber", "Army Tan", "Light Olive", "Suede", "Spice Brown", "Koala Brown"],
+    "screenPrintingFluorescentInkColors": ["Fluorescent Yellow", "Fluorescent Orange", "Fluorescent Red", "Fluorescent Pink", "Fluorescent Purple", "Fluorescent Blue", "Fluorescent Green"],
+    "screenPrintingSpecialtyInkColors": ["Platinum", "Silver Shimmer", "Metallic Gold", "Gold Shimmer", "Yellow Sparkle", "Red Glitter", "Glow in the Dark"],
+    "specialtyInkNote": "Yellow Sparkle, Red Glitter, and Glow in the Dark are toppings, not ink colors — they must be printed on top of another ink color (e.g. red glitter on a dark garment = 3-color job: white base, red ink, red glitter). Yellow Sparkle and Glow in the Dark are more effective on lighter, solid ink colors.",
+    "heatPressedVinylColors": ["White", "Storm Grey", "Black", "Lemon Yellow", "Medium Yellow", "Athletic Gold", "Tangerine", "Orange", "Texas Orange", "Medium Pink", "Flame Red", "Red", "Hot Pink", "Crimson", "Maroon", "Lavender", "Violet", "Wine", "Royal Purple", "Ice Blue", "Sky Blue", "Lilac", "Columbia Blue", "Sapphire", "Bright Blue", "Royal Blue", "Navy", "Aqua Green", "Teal", "Mint", "Bright Green", "Apple", "Lime Green", "Kelly Green", "Forest Green", "Olive Drab", "Vanilla Cream", "Vegas Gold", "Chocolate Brown"],
+    "premiumHeatPressedVinylColors": { "surchargePercent": 30, "colors": ["Neon Pink", "Neon Yellow", "Neon Orange", "Neon Green", "Antique Silver", "Old Gold"] },
+    "embroideryThreadColors": "Full thread color charts on printed pages 26-28 (~190 named colors with suggested Pantone references, including 'New Embroidery Thread Colors': Cadet Blue, Blue Spruce, Purple Twist, Hedge, Fern Green, Moss, Perfect Ruby, Bright Blue, Enchanted Sea, Pro Violet, Madeira 1749). No per-color pricing; embroidery pricing includes up to 15 thread colors. Pink Glow is a glow-in-the-dark thread; Van Gogh Blue is Twister Tweed two-color pattern."
+  },
+  "policies": {
+    "pageRefs": "Printed pages 29-31; post production / shipping page 14; fulfillment page 3",
+    "minimums": {
+      "screenPrinting": "$20.00 minimum per print, per color",
+      "embroidery": "$20.00 minimum on all orders",
+      "dtg": "$20.00 minimum on all orders",
+      "digitallyPrintedMedia": "$20.00 minimum on all orders"
+    },
+    "quotes": {
+      "validDays": 30,
+      "note": "Quotes are based solely on the information provided (quantities, size breakdowns, colors of goods/inks, brand and style number, decoration methods, state of art/production files). Undisclosed information found at PO submission or during production may deem a quote invalid and additional charges may apply; Heritage will attempt to notify before proceeding."
+    },
+    "deposits": { "percentIfHeritageSuppliesBlanks": 50, "note": "Once a quote is approved, a 50% deposit is required to start processing your order if Heritage Screen Printing, Inc. supplies the blank goods." },
+    "garmentSupply": {
+      "model": "Primarily contract decoration on customer-supplied goods (drop-shipped to Heritage); Heritage can also supply blank goods (50% deposit required).",
+      "freeShippingVendorPrograms": ["SanMar PSST", "S&S Activewear", "alphabroder"],
+      "freeShippingNote": "FREE SHIPPING when using preferred vendor programs — must have an account with these vendors and drop ship to Heritage's address; PO# on packages must match PO# on the hsp1.com order.",
+      "goodsHolding": "Goods received on your behalf are held until production. Goods left behind or here past 90 days will be donated or discarded (Heritage will attempt to notify first)."
+    },
+    "orderSubmission": {
+      "formalPO": "A formal PO must be submitted with all pertinent info: quantities, size breakdowns, colors of goods and inks, brand/style number, decoration methods, properly formatted art files, UPS/FedEx account number, shipping address, and in-hands date. Undisclosed information may change the timeline.",
+      "artProofs": "Purchase orders processed in order received. Art proofs may take up to 24 hours to become available for approval, unless otherwise specified. Approving the PDF proof binds you to the terms on page 1 of the proof; Heritage is not responsible for mistakes on a wrongfully approved proof.",
+      "extraProductionTimeSituations": ["multi-department orders", "extremely large quantities", "three or more print locations", "specialty projects", "goods arriving individually packaged (polybagged)", "goods arriving from multiple warehouses", "multiple designs on a single purchase order"]
+    },
+    "turnaround": {
+      "standard": "Turn around time varies throughout the year — contact your customer service representative for the current week's turn around time.",
+      "productionStart": "Standard production time begins upon submission of purchase order, arrival of ALL products, and approval of ALL final art.",
+      "fulfillmentOrders": "Fulfillment: order placed to mailed out is typically 2-4 business days. Continental US First Class 2-5 business days; Priority mail 1-3 business days; international up to 4 weeks."
+    },
+    "rushFees": {
+      "note": "Rush fee may be required if overtime is needed to meet a deadline. Rush charges apply to all printing and artwork totals on the invoice.",
+      "minimumRushFee": 30.0,
+      "minimumNote": "A minimum rush fee of $30 will be applied when the additional percentage charged equals less than $30.",
+      "tiers": [
+        { "requestedTurnaround": "24 hours", "additionalPercent": 100 },
+        { "requestedTurnaround": "2 days", "additionalPercent": 50 },
+        { "requestedTurnaround": "3 days", "additionalPercent": 30 },
+        { "requestedTurnaround": "4 days", "additionalPercent": 20 }
+      ]
+    },
+    "spoilageAllowance": "Heritage Screen Printing, Inc. reserves the right to 3-5% spoilage rate on all contract orders, even though the spoilage rate is far below this. Returns which fall into this small percentage will not be accepted.",
+    "preProductionSamples": "Strongly recommended before producing an entire run (especially new apparel/substrate or unfamiliar decoration method). If forfeited, you accept the finished product 'as is'. Samples are 100% non-refundable.",
+    "artFileRetention": {
+      "heritageCreated": "All artwork created, edited, or digitized by Heritage kept on file for one calendar year; these files remain property of Heritage Screen Printing, Inc.",
+      "customerSupplied": "Customer-supplied art/embroidery/digital files are customer property, used only per the PO/request; kept on file up to 60 days unless used for production, in which case kept for one year.",
+      "releaseFees": { "vectorFileRelease": 20.0, "dstFileRelease": 20.0 }
+    },
+    "insurance": {
+      "contractOrders": "All contract orders are insured for 100% of their value once received at Heritage, and remain insured until shipped out.",
+      "dropShippedPackages": "Packages drop shipped from Heritage via UPS, USPS, FedEx and other carriers are insured for the carrier's minimum per carton (UPS & FedEx @ $100.00, USPS Ground Advantage @ $100.00) unless otherwise noted on the purchase order.",
+      "splitShippingFeePerLocation": 5.0
+    },
+    "paymentTerms": {
+      "terms": "F.O.B., COD, or certified check. Acceptance of company check or net 30 terms requires prior approval via review of a Heritage credit application (allow 90 days for review).",
+      "financeChargeMonthlyPercent": 1.5,
+      "financeChargeAnnualPercent": 18,
+      "financeChargeNote": "Charged on balances over 30 days.",
+      "returnedCheckFee": 40.0,
+      "creditCards": "VISA, MasterCard, Discover, and AMEX accepted. Any invoice may be adjusted up 5% for credit card payments after an invoice is 30 days old.",
+      "creditCardLateAdjustmentPercent": 5
+    },
+    "returnPolicy": {
+      "claims": "All claims must be made in writing to support@hsp1.com within 72 hours of receipt of merchandise. Return authorization # required; include PO#, invoice # and work order #; mark damage area with tape or removable mark.",
+      "condition": "Garments must be returned in the same condition received; returns not accepted if washed, worn, laundered, dyed, soiled, etc.",
+      "cancellation": { "fee": 15.0, "note": "If an order is cancelled, you are still responsible for any work done (artwork/digitization, screen creation, pre-production samples) plus a $15.00 order cancellation fee for administrative costs." },
+      "guideAcknowledgement": "With this guide in your possession, Heritage assumes you have thoroughly read and understand its contents. Returns will not be accepted if the reasoning is unjustifiable."
+    },
+    "fulfillmentProgram": {
+      "pageRef": "Printed page 3",
+      "methods": ["Screen Printing", "Direct To Garment", "Embroidery"],
+      "flow": "Submit daily orders in Heritage's spreadsheet template; Heritage orders the blank goods; art files submitted via Dropbox; items finished with folding and poly-bagging (customer-provided business cards / washing instructions inserted gladly); shipped via USPS with tracking provided.",
+      "pricing": "Prices vary — set up an appointment with a sales representative; pricing determined after discussing the business (imprinting methods, shipping, pricing)."
+    }
+  },
+  "flagsForOwner": [
+    "POLYESTER UPCHARGE CONFLICT: Printed page 6 prices the Poly Blocking underbase for 100% polyester goods as '+1 extra screen and +1 extra color print price'; printed page 19 says the grey blocker underbase cost 'is included in the 25% markup on 100% polyester goods'. No 25% markup for polyester appears anywhere else. Both recorded; confirm with Heritage before quoting polyester jobs.",
+    "DTG GRID ODDITY: At the 3-11 qty tier, black garments are priced LOWER than white garments (e.g. 6.50 vs 7.25 at 4x4), but higher at 12-24 and 25+ tiers. Recorded exactly as printed.",
+    "FRIDGE MAGNET ODDITY: At 500 qty, 2x3.5 ($1.80) costs more than the larger 3x6 ($1.75). Possible typo; recorded as printed.",
+    "SIMPLE ART CHANGE FEE differs by section: $15.00 flat per revision session (screen printing, p6) vs $20.00 flat (DTG, p10). Likely intentional per-department pricing, but worth knowing.",
+    "Simulated process copy says 'see grid on page 4' but the screen printing price grid is on printed page 5 (internal page-reference typo).",
+    "9-12 color screen printing is N/A at 1 and 2 dozen quantities (both grids).",
+    "Embroidery digitizing wording is ambiguous as printed: 'The average cost is usually $30-$60 per stitch count' — presumably means $30-$60 per design depending on stitch count; kept verbatim.",
+    "Rush fee 4-day tier is 20%, but the catalog's own example shows $30 added on a $100 order — that is the $30 minimum rush fee kicking in (20% of $100 = $20 < $30), consistent with the stated minimum."
+  ]
+}

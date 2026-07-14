@@ -24,9 +24,10 @@ const ContactSubmissionSchema = new mongoose.Schema({
   seenByAdmin:  { type: Boolean, default: false, index: true },
 
   // Which business the lead is for: 'contact' = Joint Printing merch inquiry
-  // (the default), 'webworks' = a JP Webworks website lead. Lets the Studio
-  // Inquiries inbox badge + route the two without a second collection.
-  source:       { type: String, enum: ['contact', 'webworks'], default: 'contact', index: true },
+  // (the default), 'webworks' = a JP Webworks website lead, 'atom' = a JP Atom
+  // studio lead (from /atom/contact). Lets the Studio Inquiries inbox badge +
+  // route them without a second collection.
+  source:       { type: String, enum: ['contact', 'webworks', 'atom'], default: 'contact', index: true },
   // JP Webworks-only lead details (empty for merch inquiries).
   webworks: {
     businessType:   { type: String, trim: true, maxlength: 160, default: '' },

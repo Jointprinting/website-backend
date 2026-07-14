@@ -3719,7 +3719,7 @@
   "turnaround": "20-30 Business Days",
   "printMethod": "Full color 4-color process on booklets and display boxes",
   "printCost": "Included; printing on the papers +$.20 net / $.25 (G) client per booklet",
-  "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea)",
+  "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea net / $.15 (G) client)",
   "setupCostClient": "$50",
   "netCostBreaks": [
    {
@@ -3766,7 +3766,7 @@
    }
   ],
   "flags": [
-   "Magnets: $.12 net vs $.10 (G) catalog client price — BELOW COST; quote $.15+ or confirm with Cannabis Promotions"
+   "Magnets: quote $.15 (G) client (owner decision 7/14/26; net $.12)"
   ]
  },
  {
@@ -3779,7 +3779,7 @@
   "turnaround": "20-30 Business Days",
   "printMethod": "Full color 4-color process on booklets and display boxes",
   "printCost": "Included; printing on the papers +$.20 net / $.25 (G) client per booklet",
-  "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea)",
+  "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea net / $.15 (G) client)",
   "setupCostClient": "$50",
   "netCostBreaks": [
    {
@@ -3826,7 +3826,7 @@
    }
   ],
   "flags": [
-   "Magnets: $.12 net vs $.10 (G) catalog client price — BELOW COST; quote $.15+ or confirm with Cannabis Promotions"
+   "Magnets: quote $.15 (G) client (owner decision 7/14/26; net $.12)"
   ]
  },
  {
@@ -3839,7 +3839,7 @@
   "turnaround": "20-30 Business Days",
   "printMethod": "Full color 4-color process on booklets and display boxes",
   "printCost": "Included; printing on the papers +$.20 net / $.25 (G) client per booklet",
-  "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea)",
+  "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea net / $.15 (G) client)",
   "setupCostClient": "$50",
   "netCostBreaks": [
    {
@@ -3886,7 +3886,7 @@
    }
   ],
   "flags": [
-   "Magnets: $.12 net vs $.10 (G) catalog client price — BELOW COST; quote $.15+ or confirm with Cannabis Promotions"
+   "Magnets: quote $.15 (G) client (owner decision 7/14/26; net $.12)"
   ]
  },
  {
@@ -3899,7 +3899,7 @@
   "turnaround": "20-30 Business Days",
   "printMethod": "Full color 4-color process on booklets and display boxes",
   "printCost": "Included; printing on the papers +$.20 net / $.25 (G) client per booklet",
-  "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea)",
+  "setupCostNet": "$40 (Repeat Setup $20; Add Magnets $.12 ea net / $.15 (G) client)",
   "setupCostClient": "$50",
   "netCostBreaks": [
    {
@@ -3946,7 +3946,7 @@
    }
   ],
   "flags": [
-   "Magnets: $.12 net vs $.10 (G) catalog client price — BELOW COST; quote $.15+ or confirm with Cannabis Promotions"
+   "Magnets: quote $.15 (G) client (owner decision 7/14/26; net $.12)"
   ]
  },
  {
@@ -4719,7 +4719,7 @@
   ],
   "flags": [
    "Appears twice (p.2 and p.6); also in client catalog twice (identical pricing)",
-   "Net setup conflict in vendor PDF: $40 (p.2) vs $50 (p.6) — using $50; confirm with Cannabis Promotions"
+   "Owner decision 7/14/26: net setup $50 (higher of the PDF conflict)"
   ]
  },
  {
@@ -4744,7 +4744,7 @@
     "cost": 3.77
    },
    {
-    "qty": 200,
+    "qty": 250,
     "cost": 3.49
    },
    {
@@ -4774,7 +4774,7 @@
     "price": 5.39
    },
    {
-    "qty": 200,
+    "qty": 250,
     "price": 4.99
    },
    {
@@ -4796,8 +4796,7 @@
   ],
   "flags": [
    "Appears twice (p.2 and p.6); also in client catalog twice (identical pricing)",
-   "Net setup conflict in vendor PDF: $40 (p.2) vs $50 (p.6) — using $50; confirm with Cannabis Promotions",
-   "Client PDF tier conflict: 3rd tier qty 200 (p.3) vs 250 (p.6) — using 200; confirm before quoting 200-249"
+   "Owner decision 7/14/26: net setup $50 (higher of the PDF conflict); 3rd tier starts at 250"
   ]
  },
  {

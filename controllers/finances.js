@@ -650,17 +650,25 @@ function summarizeCompanyFinance(orders, transactions) {
   // empty ledger, so it can never double-count a booked sale.
   if (revenue === 0 && realizedOrderValue > 0) revenue = realizedOrderValue;
 
-  const profit = round2(revenue - cogs);   // profit is on the ACTUAL (receipt) cost
+  // Profit uses the ACTUAL (receipt) cost when any exists; with an empty
+  // expense ledger it falls back to the order-stored estimate — the same
+  // fallback shape revenue uses. Without this, a company with no receipts
+  // read profit == revenue (a "$16k profit" on an $8k job with real costs),
+  // which is a lie in the optimistic direction — the worst kind.
+  const costForProfit = cogs > 0 ? cogs : estimatedCogs;
+  const profit = round2(revenue - costForProfit);
+  const profitIsEstimate = cogs <= 0 && estimatedCogs > 0;
 
   return {
     revenue: round2(revenue),
     cogs: round2(cogs),                      // ACTUAL (receipts) — the headline cost
     estimatedCogs: round2(estimatedCogs),    // ESTIMATE (confirmation) — shown alongside
     profit,
+    profitIsEstimate,                        // true → profit derived from estimatedCogs
     margin: pct(profit, revenue),
     outstanding: round2(outstanding),
     orderCount,
-    paidCount,
+    paidCount,                               // collected orders backing the revenue fallback
     receiptCount,                            // how much of the cost is receipt-backed
   };
 }

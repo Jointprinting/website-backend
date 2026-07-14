@@ -10,7 +10,7 @@ const {
   cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups, assignMockupNumber,
   duplicateMockup, createOrGetProjectForCompany, upsCheck,
 } = require('../controllers/orders');
-const { ensureApprovalToken, sendApprovalLink, publishConfirmation, updateTracking, initTracking } = require('../controllers/approval');
+const { ensureApprovalToken, sendApprovalLink, pushQuote, publishConfirmation, updateTracking, initTracking } = require('../controllers/approval');
 const orderDupSweep = require('../controllers/orderDupSweep');
 const { confirmationPdf } = require('../controllers/confirmationPdf');
 const vendorRebuild = require('../controllers/vendorRebuild');
@@ -31,6 +31,9 @@ router.post('/from-submission/:submissionId', createFromSubmission);
 // router.use(requireAdmin) above.
 router.post('/for-company',               createOrGetProjectForCompany);
 router.post('/:id/approval-link',         ensureApprovalToken);
+// Explicitly update what the client's quote link shows (the builder autosaves
+// owner-side; this is the "send my edits" moment).
+router.post('/:id/quote/push',            pushQuote);
 router.post('/:id/approval-link/send',    sendApprovalLink);
 // "Push to client": flip the finalized confirmation live on the existing link.
 router.post('/:id/confirmation/publish',  publishConfirmation);

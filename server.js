@@ -247,12 +247,29 @@ db.once('open', () => {
   // ONE-TIME per catalog drop: seed/refresh the promo catalog from the repo's
   // committed data/promoCatalog.json (the Quoter's promo picker). Idempotent
   // upserts — bump the -vN when a new vendor PDF is scraped into the file.
+  // ONE-TIME per catalog drop: seed/refresh the printer network from the
+  // repo's committed data/printerCatalog-*.json files (Heritage PA first).
   setTimeout(async () => {
+    const KEY = 'printerSeed-v1'; // v1: Heritage Screen Printing 2025 guide
+    try {
+      const migrations = mongoose.connection.db.collection('migrations');
+      if (await migrations.findOne({ _id: KEY })) return;
+      const r = await require('./controllers/printers').seedPrinters();
+      await migrations.insertOne({ _id: KEY, at: new Date(), seeded: r.seeded });
+      console.log(`[printers] network seeded — ${r.seeded} printer(s) from data/printerCatalog-*.json`);
+    } catch (e) {
+      console.warn('[printers] seed failed (will retry next boot):', e.message);
+    }
+  }, 9_500);
+
+  setTimeout(async () => {
+    // v3: owner's vendor decisions — CTRAY-HPS third tier starts at 250,
+    // booklet magnets quote $.15 (G) client-side.
     // v2: full audit against both vendor PDFs — Exit Bag client prices seeded,
     // overseas turnarounds corrected, numeric MOQs (commas seeded null),
     // client-side (G) surcharges alongside net, hazmat fee flags, CDOOB-T
     // dupe merged (its 'CDOOB-T / CDOOB-ST' doc archives below — no deletes).
-    const KEY = 'promoCatalogSeed-v2';
+    const KEY = 'promoCatalogSeed-v3';
     try {
       const migrations = mongoose.connection.db.collection('migrations');
       if (await migrations.findOne({ _id: KEY })) return;
@@ -445,6 +462,8 @@ app.use('/api/portal', express.json(), require('./routes/portalRoutes'));
 // Preorder links: owner management + the public commit page (token-gated).
 app.use('/api/preorders', express.json(), require('./routes/preorderRoutes'));
 app.use('/api/preorder', express.json(), require('./routes/publicPreorderRoutes'));
+// Printer network — the quoter's printer picker + reference pricing.
+app.use('/api/printers', express.json(), require('./routes/printerRoutes'));
 app.use('/api/lookbooks', express.json({ limit: '2mb' }), lookbookRoutes);
 // Content planner: post bodies are text, but an IG card can carry a small
 // downscaled reference image (data URL), so allow a touch more than 1mb.
