@@ -16,7 +16,7 @@ const {
 } = require('../controllers/roadTripLead');
 
 const {
-  listDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, scanOsm,
+  listDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, scanOsm, corridor,
 } = require('../controllers/dispensary');
 
 const {
@@ -33,6 +33,7 @@ router.use(requireAdmin);
 router.get   ('/dispensaries',              listDispensaries);
 router.get   ('/dispensaries/coverage',     coverage);
 router.post  ('/dispensaries/scan-osm',     scanOsm);   // free OSM viewport sweep
+router.post  ('/dispensaries/corridor',     corridor);  // route-band scan for the day planner
 router.post  ('/dispensaries/ingest/:state', ingest);
 router.post  ('/dispensaries/enrich',       enrich);
 router.post  ('/dispensaries/geocode',      geocode);
