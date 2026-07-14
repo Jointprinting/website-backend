@@ -6,41 +6,51 @@ const mongoose = require('mongoose');
 // Now a business (Client, keyed by companyKey) has MANY deals, each with its own
 // lifecycle, and the business's "client" status is DERIVED from them (≥1 won deal).
 //
-// A deal can exist BEFORE there's a quote — the "qualifying" stage, where the owner
-// is still chasing the order details from a (often cold) lead. Once quoted it links
-// to an Order (orderNumber/projectNumber); winning it (manually, or auto when its
-// order is placed) closes it and — if it's the business's first win — makes them a
-// client.
+// A deal can exist BEFORE there's a quote — the "details_needed" stage, where the
+// owner is still chasing product/design details. Once work starts it links to an
+// Order (orderNumber/projectNumber); it wins ONLY when that order is delivered
+// (auto — there is no manual Win), and a first win makes the business a client.
 //
 // Reversibility: deals created by the one-time "set up deals from my orders"
 // migration are stamped with `origin: 'migration'` + a `migrationBatch` id, so the
 // whole migration is undoable by deleting that batch. The migration NEVER modifies
 // Orders or Clients, so deleting the migrated deals restores the exact prior state.
 
-// The deal pipeline. Ordered from open → closed. 'qualifying' (chasing the order
-// details, pre-quote) → 'quoted' (a quote/order exists) → 'won' / 'lost'.
-const DEAL_STAGES = ['qualifying', 'quoted', 'won', 'lost'];
+// The deal pipeline, matched to how the owner actually works a job. Ordered from
+// open → closed:
+//   'details_needed' — chasing product + design details from the client
+//   'quoting'        — details in hand; mockups and the quote are being built
+//   'quote_sent'     — the quote/approval link went to the client
+//   'won'            — ONLY when the linked order is delivered (owner's rule; no
+//                      manual Win button anywhere)
+//   'lost'
+// (Cutover note: the old 4-stage pipeline was qualifying → quoted → won/lost.
+// migrateDealStages() in controllers/deals.js maps qualifying → details_needed and
+// quoted → quoting at boot — 'quoting' not 'quote_sent', so a built-but-never-sent
+// quote can't read as sent; the share-link hook promotes it when it really goes out.)
+const DEAL_STAGES = ['details_needed', 'quoting', 'quote_sent', 'won', 'lost'];
 const WON_STAGE = 'won';
-const OPEN_STAGES = ['qualifying', 'quoted'];      // still in play
+const OPEN_STAGES = ['details_needed', 'quoting', 'quote_sent'];   // still in play
 const CLOSED_STAGES = ['won', 'lost'];
 
 // Which deal stage an existing Order's status maps to (used by the migration that
 // seeds deals from orders, and by the auto-sync when an order changes status).
-// Mirrors models/Order.js PLACED_STATUSES: placed+ = won; quoted/approved = quoted;
-// cancelled = lost. PURE.
+// A placed/in-production/shipped order is still an OPEN deal ('quote_sent') — the
+// owner's rule is a deal wins only at delivery. PURE.
 function dealStageFromOrderStatus(status) {
   switch (String(status || '')) {
-    case 'placed':
-    case 'in_production':
-    case 'shipped':
     case 'delivered':
       return 'won';
     case 'cancelled':
       return 'lost';
-    case 'quoted':
+    case 'placed':
+    case 'in_production':
+    case 'shipped':
     case 'approved':
+      return 'quote_sent';
+    case 'quoted':
     default:
-      return 'quoted';
+      return 'quoting';
   }
 }
 
@@ -51,7 +61,7 @@ const DealSchema = new mongoose.Schema({
   companyKey:  { type: String, required: true, index: true },
   companyName: { type: String, default: '' },               // denormalized for the card, no join needed
   title:       { type: String, default: '' },               // "Spring hoodies", "Reorder", etc.
-  stage:       { type: String, enum: DEAL_STAGES, default: 'qualifying', index: true },
+  stage:       { type: String, enum: DEAL_STAGES, default: 'details_needed', index: true },
   value:       { type: Number, default: 0 },                // estimated deal value (owner's guess pre-quote; the order's total once quoted)
 
   // Which account owns this deal — an AdminUser _id (string). '' = the owner's.
@@ -67,6 +77,7 @@ const DealSchema = new mongoose.Schema({
   // safe to re-run and never duplicates. Empty for a pure pre-quote deal.
   sourceOrderId: { type: String, default: '', index: true },
 
+  quoteSentAt: { type: Date, default: null },   // first time the quote/approval link went out
   wonAt:      { type: Date, default: null },
   lostAt:     { type: Date, default: null },
   lostReason: { type: String, default: '' },
@@ -89,7 +100,7 @@ const DealSchema = new mongoose.Schema({
   archivedReason: { type: String, default: '' },
 }, { timestamps: true });
 
-// Keep won/lost timestamps honest with the stage, whichever path set it.
+// Keep won/lost/quote-sent timestamps honest with the stage, whichever path set it.
 DealSchema.pre('save', function (next) {
   if (this.isModified('stage')) {
     if (this.stage === 'won') {
@@ -103,6 +114,7 @@ DealSchema.pre('save', function (next) {
       this.wonAt = null;
       this.lostAt = null;
     }
+    if (this.stage === 'quote_sent' && !this.quoteSentAt) this.quoteSentAt = new Date();
   }
   next();
 });

@@ -22,6 +22,9 @@ const SocialAccount = require('../models/SocialAccount');
 const SocialPost = require('../models/SocialPost');
 
 const GRAPH = 'https://graph.facebook.com/v21.0';
+// "Instagram API with Instagram login" host — used when the owner connected
+// with an IGAA… token from an Instagram app (no Facebook Page involved).
+const IG_GRAPH = 'https://graph.instagram.com';
 const MEDIA_LIMIT = 25;            // most-recent media swept per sync
 const HISTORY_CAP = 400;           // daily follower points kept (~13 months)
 const RESNAP_AFTER_MS = 7 * 24 * 60 * 60 * 1000;   // unchanged numbers re-snapshot weekly
@@ -52,9 +55,37 @@ function shouldSnapshot(lastSnap, next, now = new Date()) {
   return (now - new Date(lastSnap.at || 0)) > RESNAP_AFTER_MS;
 }
 
-async function graphGet(path, params) {
-  const { data } = await axios.get(`${GRAPH}/${path}`, { params, timeout: 20000 });
+async function graphGet(path, params, base = GRAPH) {
+  const { data } = await axios.get(`${base}/${path}`, { params, timeout: 20000 });
   return data;
+}
+
+// Which host this account's token speaks to.
+function baseFor(acct) {
+  return acct && acct.apiHost === 'instagram' ? IG_GRAPH : GRAPH;
+}
+
+// Instagram-login tokens (graph.instagram.com) are long-lived (~60 days) and
+// self-refreshing: one GET bumps the clock another 60 days as long as the
+// token is ≥24h old and unexpired. Called from the 12h sync when the stored
+// expiry is unknown or inside 15 days — so a connected account never lapses
+// while the sync is alive. Best-effort; a failure just leaves the old token.
+async function refreshIgToken(acct) {
+  if (!acct || acct.apiHost !== 'instagram' || !acct.accessToken) return false;
+  const daysLeft = acct.tokenExpiresAt ? (new Date(acct.tokenExpiresAt) - Date.now()) / 86400000 : 0;
+  if (daysLeft > 15) return false;
+  try {
+    const data = await graphGet('refresh_access_token', {
+      grant_type: 'ig_refresh_token', access_token: acct.accessToken,
+    }, IG_GRAPH);
+    if (data && data.access_token) {
+      acct.accessToken = data.access_token;
+      acct.tokenExpiresAt = new Date(Date.now() + (Number(data.expires_in) || 60 * 86400) * 1000);
+      await acct.save();
+      return true;
+    }
+  } catch (e) { /* keep the current token — it may simply be <24h old */ }
+  return false;
 }
 
 // Meta wraps its real message three levels deep — unwrap it once, here, for
@@ -67,9 +98,9 @@ function graphErrorMessage(e) {
 // Best-effort per-media view count. Reels/videos report `views`; some photo
 // media types don't — a missing metric is 0, never an error that kills the
 // sync.
-async function mediaViews(mediaId, accessToken) {
+async function mediaViews(mediaId, accessToken, base = GRAPH) {
   try {
-    const data = await graphGet(`${mediaId}/insights`, { metric: 'views', access_token: accessToken });
+    const data = await graphGet(`${mediaId}/insights`, { metric: 'views', access_token: accessToken }, base);
     const row = (data.data || [])[0];
     const v = row && row.values && row.values[0] && row.values[0].value;
     return Number(v) || 0;
@@ -83,12 +114,17 @@ async function syncInstagram() {
   const acct = await SocialAccount.findOne({ platform: 'instagram' });
   if (!acct || !acct.accessToken || !acct.igUserId) return { skipped: 'not-connected' };
   const now = new Date();
+  const base = baseFor(acct);
   try {
-    // 1. Account card numbers + the daily follower-growth point.
-    const prof = await graphGet(acct.igUserId, {
+    // Instagram-login tokens self-refresh — keep the 60-day clock wound.
+    await refreshIgToken(acct).catch(() => {});
+
+    // 1. Account card numbers + the daily follower-growth point. On the
+    // Instagram host, /me is the professional account itself (no Page hop).
+    const prof = await graphGet(base === IG_GRAPH ? 'me' : acct.igUserId, {
       fields: 'followers_count,media_count,username,profile_picture_url',
       access_token: acct.accessToken,
-    });
+    }, base);
     acct.followers = Number(prof.followers_count) || 0;
     acct.mediaCount = Number(prof.media_count) || 0;
     acct.username = prof.username || acct.username;
@@ -102,11 +138,11 @@ async function syncInstagram() {
     }
 
     // 2. Recent media + their engagement.
-    const media = await graphGet(`${acct.igUserId}/media`, {
+    const media = await graphGet(base === IG_GRAPH ? 'me/media' : `${acct.igUserId}/media`, {
       fields: 'id,caption,permalink,timestamp,media_type,like_count,comments_count',
       limit: MEDIA_LIMIT,
       access_token: acct.accessToken,
-    });
+    }, base);
     const items = media.data || [];
 
     // 3. Join against the planner by normalized URL. Only the LAST snapshot
@@ -121,7 +157,7 @@ async function syncInstagram() {
     // Insight calls are independent — fetch them together instead of 25
     // sequential round-trips (this latency sits behind the Sync-now button).
     const viewsById = new Map(await Promise.all(
-      items.map(async (m) => [m.id, await mediaViews(m.id, acct.accessToken)]),
+      items.map(async (m) => [m.id, await mediaViews(m.id, acct.accessToken, base)]),
     ));
 
     let updated = 0;
@@ -194,4 +230,4 @@ function startInstagramSync() {
   setInterval(run, 12 * 60 * 60 * 1000);
 }
 
-module.exports = { syncInstagram, startInstagramSync, normalizePostUrl, shouldSnapshot, graphGet, graphErrorMessage, GRAPH };
+module.exports = { syncInstagram, startInstagramSync, normalizePostUrl, shouldSnapshot, graphGet, graphErrorMessage, GRAPH, IG_GRAPH, baseFor, refreshIgToken };

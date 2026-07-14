@@ -10,6 +10,11 @@ const SocialAccountSchema = new mongoose.Schema({
 
   igUserId:  { type: String, default: '' },   // the IG *Business* user id (not the @handle)
   username:  { type: String, default: '' },
+  // Which Meta surface the token speaks to. 'facebook' = classic Page-linked
+  // token via graph.facebook.com; 'instagram' = "Instagram API with Instagram
+  // login" token (IGAA…) via graph.instagram.com. Set at connect time from the
+  // token itself; the sync picks its host off this.
+  apiHost: { type: String, enum: ['facebook', 'instagram'], default: 'facebook' },
   // Long-lived Meta user access token (~60 days). The sync surfaces
   // tokenExpiresAt so the tab can warn before it lapses; refreshing is a
   // re-paste (or automatic when FACEBOOK_APP_ID/SECRET are configured and the
