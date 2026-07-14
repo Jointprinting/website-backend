@@ -61,6 +61,27 @@ async function listItems(req, res) {
   }
 }
 
+// GET /library/:store/full?ids=a,b,c — full documents for specific remoteIds.
+// The studio's sync pulls the light summary list first, decides which items
+// are actually new (or newer than its local copy), and fetches only those
+// here — so a steady-state open downloads a few KB of metadata instead of
+// every mockup's inline base64. Capped per call; the studio batches.
+async function getByRemoteIds(req, res) {
+  try {
+    const { store } = req.params;
+    if (!['blanks','logos','mockups'].includes(store))
+      return res.status(400).json({ message: 'Invalid store.' });
+    const ids = String(req.query.ids || '')
+      .split(',').map((s) => s.trim()).filter(Boolean).slice(0, 50);
+    if (!ids.length) return res.json([]);
+    const items = await StudioLibraryItem.find({ store, remoteId: { $in: ids } }).lean();
+    res.json(items);
+  } catch (err) {
+    console.error('[studioLibrary] getByRemoteIds error:', err);
+    res.status(500).json({ message: 'Failed to fetch items.' });
+  }
+}
+
 async function saveItem(req, res) {
   try {
     const { store } = req.params;
@@ -164,4 +185,4 @@ async function deleteByRemoteId(req, res) {
   }
 }
 
-module.exports = { listItems, saveItem, deleteItem, deleteByRemoteId, backfillRemoteIds };
+module.exports = { listItems, getByRemoteIds, saveItem, deleteItem, deleteByRemoteId, backfillRemoteIds };
