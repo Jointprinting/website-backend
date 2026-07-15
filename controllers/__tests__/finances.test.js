@@ -786,3 +786,70 @@ test('categoriesWithCustom: built-ins first, customs before Other, dupes dropped
   assert.equal(cats.filter((c) => c.toLowerCase() === 'software').length, 1);      // built-in wins
   assert.deepEqual(categoriesWithCustom([]), categoriesWithCustom());              // no customs = built-ins
 });
+
+// ── CSV import guards (parseLedgerCsv) ───────────────────────────────────────
+// Import is a DESTRUCTIVE replace of every source:'import' row, so the parse
+// must refuse anything that would wipe the ledger down to nothing. These pin the
+// guard rails; the controller only reaches deleteMany when { docs } comes back.
+const { parseLedgerCsv } = require('../finances');
+
+const LEDGER_HEADER = 'Date,Type,Category,Order #,Customer/Vendor,Description,Amount,QB Synced';
+
+test('parseLedgerCsv: a good ledger CSV → docs with the right shape', () => {
+  const csv = [
+    LEDGER_HEADER,
+    '2026-01-05,Income,Client Sales,#0000021,Acme Co,Tees,1500,Yes',
+    '2026-02-10,Expense,Printer COGS,21,Heritage,Print run,600,No',
+  ].join('\n');
+  const r = parseLedgerCsv(csv);
+  assert.equal(r.error, undefined);
+  assert.equal(r.docs.length, 2);
+  assert.equal(r.docs[0].type, 'income');
+  assert.equal(r.docs[0].amount, 1500);
+  assert.equal(r.docs[0].orderNumber, '0000021');   // digits-only, leading zeros preserved as stored
+  assert.equal(r.docs[0].source, 'import');
+  assert.equal(r.docs[0].year, 2026);
+  assert.equal(r.docs[1].type, 'expense');
+});
+
+test('parseLedgerCsv: empty / header-only file → error, no docs', () => {
+  assert.ok(parseLedgerCsv('').error);
+  assert.ok(parseLedgerCsv(null).error);
+  assert.ok(parseLedgerCsv(LEDGER_HEADER).error);   // header but no data rows
+});
+
+test('parseLedgerCsv: wrong file (missing Date/Amount columns) → error, never an empty wipe', () => {
+  // A totally unrelated CSV — the footgun that used to delete everything then
+  // insert nothing. Must be refused on the columns, not silently emptied.
+  const wrong = ['Name,Email,Phone', 'Bob,bob@x.com,555-1212'].join('\n');
+  const r = parseLedgerCsv(wrong);
+  assert.ok(r.error);
+  assert.match(r.error, /Date/);
+  assert.equal(r.docs, undefined);
+});
+
+test('parseLedgerCsv: right columns but every row unusable (undated / zero) → error', () => {
+  const csv = [
+    LEDGER_HEADER,
+    ',Income,Client Sales,,Acme,No date,1500,Yes',   // undated → skipped
+    '2026-03-01,Expense,Other,,,Zero,0,No',          // zero amount → skipped
+  ].join('\n');
+  const r = parseLedgerCsv(csv);
+  assert.ok(r.error);
+  assert.equal(r.docs, undefined);
+});
+
+test('parseLedgerCsv: legacy "Customer Sales" is normalized to "Client Sales"', () => {
+  const csv = [LEDGER_HEADER, '2026-01-01,Income,Customer Sales,,Acme,Old name,500,Yes'].join('\n');
+  const r = parseLedgerCsv(csv);
+  assert.equal(r.docs[0].category, 'Client Sales');
+  assert.equal(r.docs[0].type, 'income');
+});
+
+test('parseLedgerCsv: a negative Refund row → income + credit (nets revenue down)', () => {
+  const csv = [LEDGER_HEADER, '2026-04-01,,Refund,21,Acme,Return,-120,No'].join('\n');
+  const r = parseLedgerCsv(csv);
+  assert.equal(r.docs[0].type, 'income');    // inferred from category when Type blank
+  assert.equal(r.docs[0].amount, 120);       // stored positive
+  assert.equal(r.docs[0].isCredit, true);    // negative ledger amount = credit
+});
