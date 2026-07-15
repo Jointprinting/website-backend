@@ -9,13 +9,16 @@
 const mongoose = require('mongoose');
 
 const commitmentSchema = new mongoose.Schema({
-  name:    { type: String, required: true, trim: true },
-  contact: { type: String, default: '', trim: true },   // phone or email, their choice
-  itemId:  { type: String, required: true },
-  size:    { type: String, default: '' },
-  qty:     { type: Number, required: true, min: 1 },
-  note:    { type: String, default: '', trim: true },
-  at:      { type: Date, default: Date.now },
+  name:      { type: String, required: true, trim: true },
+  contact:   { type: String, default: '', trim: true },   // phone or email, their choice
+  itemId:    { type: String, required: true },
+  variant:   { type: String, default: '' },   // brand the customer chose (label snapshot)
+  color:     { type: String, default: '' },   // garment color the customer chose
+  size:      { type: String, default: '' },
+  qty:       { type: Number, required: true, min: 1 },
+  unitPrice: { type: Number, default: 0 },     // price snapshot at commit — the record of what they'll owe
+  note:      { type: String, default: '', trim: true },
+  at:        { type: Date, default: Date.now },
 }, { _id: true });
 
 const preorderLinkSchema = new mongoose.Schema({

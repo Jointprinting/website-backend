@@ -23,8 +23,8 @@ test('tally: people dedupe by name (case-insensitive), units sum, per-item/size 
 });
 
 test('tally: empty/missing commitments → zeroes, not crashes', () => {
-  assert.deepEqual(_tally([]), { people: 0, totalQty: 0, byItem: {} });
-  assert.deepEqual(_tally(undefined), { people: 0, totalQty: 0, byItem: {} });
+  assert.deepEqual(_tally([]), { people: 0, totalQty: 0, revenue: 0, byItem: {} });
+  assert.deepEqual(_tally(undefined), { people: 0, totalQty: 0, revenue: 0, byItem: {} });
 });
 
 test('cleanItems: labels required, ids minted when missing, sizes trimmed and capped', () => {
@@ -82,4 +82,49 @@ test('publicProgress: no MOQ (0) → plain open tally, never a "goal reached" ba
   // nothing committed yet → still nothing to show
   const empty = _publicProgress({ moq: 0 }, T(0, 0));
   assert.deepEqual(empty.tally, { people: 0, totalQty: 0 });
+});
+
+// ── Brand variants + revenue (per-design pricing) ────────────────────────────
+test('_cleanItems: brand variants — name required, price money-rounded, colors capped', () => {
+  const [it] = _cleanItems([{
+    label: 'Staff tee',
+    sizes: ['S', 'M'],
+    variants: [
+      { name: 'Gildan 5000', price: '18.5', colors: ['Black', 'White', ' ', 'Navy'] },
+      { name: 'Bella 3001', price: 24.999, colors: ['Vintage Black'] },
+      { name: '', price: 10 },                       // no name → dropped
+    ],
+  }]);
+  assert.equal(it.variants.length, 2);
+  assert.equal(it.variants[0].name, 'Gildan 5000');
+  assert.equal(it.variants[0].price, 18.5);
+  assert.deepEqual(it.variants[0].colors, ['Black', 'White', 'Navy']);   // blank dropped
+  assert.equal(it.variants[1].price, 25);                                // rounded to cents
+  assert.ok(it.variants[0].id);                                          // id minted
+});
+
+test('_cleanItems: a legacy item with no variants stays exactly as before', () => {
+  const [it] = _cleanItems([{ label: 'Promo mug', sizes: [] }]);
+  assert.equal(it.label, 'Promo mug');
+  assert.deepEqual(it.variants, []);
+});
+
+test('tally: committed revenue = Σ qty × unitPrice, with per-item + per-variant rollup', () => {
+  const t = _tally([
+    { name: 'Dana', itemId: 'tee', variant: 'Gildan', color: 'Black', size: 'M', qty: 2, unitPrice: 18.5 },
+    { name: 'Ray',  itemId: 'tee', variant: 'Bella',  color: 'Navy',  size: 'L', qty: 1, unitPrice: 25 },
+    { name: 'Ray',  itemId: 'hat', qty: 3, unitPrice: 12 },                 // no variant (legacy-style)
+  ]);
+  assert.equal(t.totalQty, 6);
+  assert.equal(t.revenue, 18.5 * 2 + 25 + 12 * 3);        // 98
+  assert.equal(t.byItem.tee.revenue, 62);                 // 37 + 25
+  assert.equal(t.byItem.tee.byVariant['Gildan · Black'], 2);
+  assert.equal(t.byItem.tee.byVariant['Bella · Navy'], 1);
+  assert.equal(t.byItem.hat.revenue, 36);
+});
+
+test('tally: an un-priced (legacy) drop has revenue 0 — unchanged behavior', () => {
+  const t = _tally([{ name: 'A', itemId: 'x', size: 'M', qty: 5 }]);
+  assert.equal(t.revenue, 0);
+  assert.equal(t.byItem.x.revenue, 0);
 });
