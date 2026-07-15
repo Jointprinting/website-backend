@@ -1168,7 +1168,12 @@ async function getDashboard(req, res) {
       // Classified by ET calendar day (dayDiffFromToday): <0 overdue, 0 due
       // today, 1..7 within the rolling week — so the split agrees with the
       // owner's clock, not the server's UTC day.
-      if (!CLOSED_STAGES.includes(c.stage) && c.nextFollowUp) {
+      // A SNOOZED card is deliberately out until its snooze passes — the same gate
+      // /today (getToday) and cadenceBucketFor use. Without this, snoozing a card
+      // left it inflating the headline Overdue / Due-today counts, so the big
+      // number contradicted the Today list + cockpit right below it.
+      const snoozed = c.snoozedUntil && new Date(c.snoozedUntil).getTime() > now.getTime();
+      if (!CLOSED_STAGES.includes(c.stage) && c.nextFollowUp && !snoozed) {
         const diff = dayDiffFromToday(c.nextFollowUp, now);
         if (diff != null) {
           if (diff < 0) overdue += 1;
