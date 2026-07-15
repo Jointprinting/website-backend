@@ -62,6 +62,32 @@ test('rampCap doubles each week and tops out at the max cap', () => {
   assert.equal(rampCap(365, 500), 500); // never exceeds max
 });
 
+test('rampCap shape is env-configurable without a code change (defaults reproduce the curve above)', () => {
+  const modPath = require.resolve('../outreachEngine');
+  const saved = {
+    start: process.env.OUTREACH_RAMP_START,
+    mult: process.env.OUTREACH_RAMP_MULTIPLIER,
+    week: process.env.OUTREACH_RAMP_WEEK_DAYS,
+  };
+  try {
+    process.env.OUTREACH_RAMP_START = '40';
+    process.env.OUTREACH_RAMP_MULTIPLIER = '2';
+    process.env.OUTREACH_RAMP_WEEK_DAYS = '7';
+    delete require.cache[modPath];
+    const eng = require('../outreachEngine');
+    assert.equal(eng.rampCap(0, 1000), 40);    // opens higher now
+    assert.equal(eng.rampCap(7, 1000), 80);    // still doubles weekly
+    assert.equal(eng.rampCap(14, 1000), 160);
+    assert.equal(eng.rampCap(0, 25), 25);      // still clamped by OUTREACH_DAILY_CAP
+  } finally {
+    for (const [k, v] of [['OUTREACH_RAMP_START', saved.start], ['OUTREACH_RAMP_MULTIPLIER', saved.mult], ['OUTREACH_RAMP_WEEK_DAYS', saved.week]]) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+    delete require.cache[modPath];
+    require('../outreachEngine'); // restore the default-env module for other suites
+  }
+});
+
 test('rampCap: no first send yet (or garbage) → week-one pace; cap wins early', () => {
   assert.equal(rampCap(null, 500), 10);
   assert.equal(rampCap(undefined, 500), 10);

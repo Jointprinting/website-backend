@@ -83,6 +83,14 @@ const BATCH_PER_TICK = parseInt(process.env.OUTREACH_BATCH_PER_TICK || '5', 10);
 // No single recipient domain gets hammered in one day (a chain's shared inbox,
 // or a clump of gmail.com leads) — protects both them and our reputation.
 const DOMAIN_DAILY_CAP = parseInt(process.env.OUTREACH_DOMAIN_DAILY_CAP || '15', 10);
+// Warm-up ramp SHAPE — env-tunable so caps can be lifted without a code change.
+// Defaults reproduce the original 10 → 20 → 40 … weekly-doubling curve EXACTLY,
+// so an unset-env deploy changes nothing. To climb faster once a domain is warmed:
+// raise OUTREACH_RAMP_START (opening sends/day) or OUTREACH_RAMP_MULTIPLIER (per-week
+// growth), or shorten OUTREACH_RAMP_WEEK_DAYS — always still capped by OUTREACH_DAILY_CAP.
+const RAMP_START      = parseFloat(process.env.OUTREACH_RAMP_START || '10');
+const RAMP_MULTIPLIER = parseFloat(process.env.OUTREACH_RAMP_MULTIPLIER || '2');
+const RAMP_WEEK_DAYS  = parseInt(process.env.OUTREACH_RAMP_WEEK_DAYS || '7', 10);
 // How long a claimed (leased) row is hidden from other workers before it's
 // eligible again — crash-safety without permanently stranding a row.
 const LEASE_MS = parseInt(process.env.OUTREACH_LEASE_MS || String(10 * 60 * 1000), 10);
@@ -133,8 +141,9 @@ const smtpConfigured  = () => {
 function rampCap(daysSinceFirstSend, maxCap = DAILY_CAP_MAX) {
   const days = Number.isFinite(daysSinceFirstSend) && daysSinceFirstSend >= 0
     ? daysSinceFirstSend : 0;
-  const week = Math.floor(days / 7);
-  const geometric = 10 * Math.pow(2, week); // 10, 20, 40, 80, 160, 320, …
+  const weekDays = RAMP_WEEK_DAYS > 0 ? RAMP_WEEK_DAYS : 7;
+  const week = Math.floor(days / weekDays);
+  const geometric = RAMP_START * Math.pow(RAMP_MULTIPLIER, week); // default 10, 20, 40, 80, …
   return Math.min(geometric, maxCap);
 }
 
