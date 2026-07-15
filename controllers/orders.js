@@ -18,7 +18,7 @@ const { nextNumber, bumpCounterTo } = require('../utils/sequence');
 // Mockup Lab numbering (colours = letters A→Z→AA, edits = trailing version) —
 // one shared engine so the API and the studio editor never drift. See
 // utils/mockupNumbers.js.
-const { letterToNum, nextColorLetter, nextEditVersion, parseMockupNum } = require('../utils/mockupNumbers');
+const { letterToNum, nextColorLetter, nextEditVersion, parseMockupNum, baseForProject } = require('../utils/mockupNumbers');
 const { etToday, etDayKey } = require('../utils/time');
 const r2 = require('../services/r2');
 
@@ -1582,11 +1582,9 @@ const autoLinkMockups = async (req, res) => {
   }
 };
 
-// Excel-style letter sequence: A…Z, AA, AB, … so the series never dead-ends.
-// (The old single-letter regex made everything after the 26th mockup collide
-// on "AA" forever — multi-letter suffixes were invisible to the max scan.)
-// (Numbering helpers — letterToNum / nextColorLetter / nextEditVersion — now live
-// in utils/mockupNumbers.js, shared with the studio editor and unit-tested.)
+// Numbering helpers — letterToNum / nextColorLetter (A…Z, AA, AB… so colours
+// never dead-end past 26) / nextEditVersion — live in utils/mockupNumbers.js,
+// shared with the studio editor and unit-tested.
 
 // Atomically reserve the next mockup number (A, B, C…) for a project AND link
 // it to the order in one step. Compute-then-claim with a conditional write:
@@ -1623,6 +1621,52 @@ const assignMockupNumber = async (req, res) => {
     const got = await _reserveMockupNumber(req.params.id);
     if (!got) return res.status(404).json({ message: 'Project not found' });
     if (!got.mockupNum) return res.status(400).json({ message: 'Project has no number to letter against.' });
+    return res.json({ mockupNum: got.mockupNum, projectId: got.order._id });
+  } catch (e) {
+    res.status(e.message && e.message.includes('reserve') ? 409 : 500).json({ message: e.message });
+  }
+};
+
+// Atomically reserve the next EDIT VERSION of one colour lane (#150A → #150A2),
+// linked to the order — same compute-then-claim as _reserveMockupNumber, but it
+// bumps the trailing version instead of the colour letter. `sourceNum` is any
+// number in the lane (#150A or #150A3); it must belong to THIS project (same
+// base) so an edit can't pollute another project's numbers. Returns
+// { order, mockupNum } — '' when sourceNum is foreign/unparseable; null when the
+// order doesn't exist.
+async function _reserveMockupVersion(orderId, sourceNum) {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const order = await Order.findById(orderId).select('projectNumber mockupNumbers');
+    if (!order) return null;
+
+    const base = baseForProject(order.projectNumber);
+    const src = parseMockupNum(sourceNum);
+    if (!src || (base && src.base !== base)) return { order, mockupNum: '' };
+
+    const next = nextEditVersion(sourceNum, order.mockupNumbers || []);
+    if (!next) return { order, mockupNum: '' };
+
+    const r = await Order.updateOne(
+      { _id: order._id, mockupNumbers: { $ne: next } },
+      { $push: { mockupNumbers: next } },
+    );
+    if (r.modifiedCount === 1) return { order, mockupNum: next };
+  }
+  throw new Error('Could not reserve a mockup version — too many concurrent saves. Try again.');
+}
+
+// POST /api/orders/:id/mockups/version — reserve the next EDIT version of a
+// colour lane for the studio's "save as edit": an edit of #150A becomes #150A2,
+// grouped under the original by their shared base+letter. Body: { sourceNum }
+// (any number in the lane). Returns { mockupNum: "#000150A2" }.
+const versionMockupNumber = async (req, res) => {
+  try {
+    const sourceNum = String((req.body || {}).sourceNum || (req.body || {}).mockupNum || '').trim();
+    if (!sourceNum) return res.status(400).json({ message: 'Pass the source mockup number (sourceNum).' });
+    if (!parseMockupNum(sourceNum)) return res.status(400).json({ message: 'That is not a valid mockup number to version.' });
+    const got = await _reserveMockupVersion(req.params.id, sourceNum);
+    if (!got) return res.status(404).json({ message: 'Project not found' });
+    if (!got.mockupNum) return res.status(400).json({ message: 'That mockup does not belong to this project.' });
     return res.json({ mockupNum: got.mockupNum, projectId: got.order._id });
   } catch (e) {
     res.status(e.message && e.message.includes('reserve') ? 409 : 500).json({ message: e.message });
@@ -1758,7 +1802,7 @@ module.exports = {
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
   dashboard, attention, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
   cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups, assignMockupNumber,
-  duplicateMockup, createOrGetProjectForCompany, backfillConfirmationCogs, upsCheck,
+  versionMockupNumber, duplicateMockup, createOrGetProjectForCompany, backfillConfirmationCogs, upsCheck,
   // exported for tests / reuse
   isPlacedStatus, bumpCustomerOnPlacement, pickLiveProjectForCompany, isLiveProject,
   orderPlacedAt, etAgeDays, buildMockupVariation,
