@@ -31,6 +31,9 @@ const preorderLinkSchema = new mongoose.Schema({
   orderId:       { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null },
   title: { type: String, required: true, trim: true },
   note:  { type: String, default: '', trim: true },
+  // Where committers pick up (store name + address). Shown on commit + on both
+  // links so everyone knows where it lands — no shipping addresses collected.
+  pickupLocation: { type: String, default: '', trim: true },
   // What people commit to. Sizes optional (promo items have none).
   items: [{
     id:    { type: String, required: true },
