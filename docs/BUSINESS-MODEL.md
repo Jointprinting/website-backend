@@ -42,8 +42,10 @@
   auto-charge, by explicit decision). Processing fees auto-booked as COGS:
   **CC 2.99% / ACH 1%** (`PAYMENT_FEES`, mirrored frontend/backend). Payment method is
   asked per sale, never defaulted per client.
-- **Sales tax:** per-ship-to-location, merchandise only. Rates (mirror of
-  `STATE_TAX_RATES`): NJ 6.625, NY 8, CT 6.35, MA 6.25, VT 6, PA 6.
+- **Sales tax:** per-ship-to-location, merchandise only, **NJ nexus only** — the
+  auto-prefill (`STATE_TAX_RATES`) fills a rate for NJ (6.625) alone; every other
+  state prefills 0 (untaxed), with a manual per-location override if a new nexus
+  is ever registered. NJ clothing is exempt (per-item `taxExempt`); promos taxed.
 - **Printer routing strategy (owner's words, manual today):** pick the printer
   **closest to the client but NOT in the client's state** — minimize print+ship cost
   while avoiding creating a **sales-tax nexus**. Fields exist on Vendor

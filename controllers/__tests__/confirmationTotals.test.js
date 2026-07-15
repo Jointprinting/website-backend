@@ -303,8 +303,8 @@ test('grand total has no sub-cent drift', () => {
 });
 
 // ── STATE_TAX_RATES map ──────────────────────────────────────────────────────
-test('STATE_TAX_RATES covers the owner territory with expected rates', () => {
-  assert.deepEqual(STATE_TAX_RATES, { NJ: 6.625, NY: 8, CT: 6.35, MA: 6.25, VT: 6, PA: 6 });
+test('STATE_TAX_RATES auto-prefills ONLY NJ (the only nexus) — no other state', () => {
+  assert.deepEqual(STATE_TAX_RATES, { NJ: 6.625 });
 });
 
 // Round to cents to keep float noise out of the assertions.

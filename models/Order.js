@@ -48,10 +48,15 @@ function computeQuoteTotals(lines, orderSetup, orderShip) {
   return { totalValue, cogs };
 }
 
-// Default sales-tax rates (percent) for the owner's territory. Choosing a
-// state in the confirmation's per-location shipTos PRE-FILLS that location's
-// taxRate; the owner can always override per location. Keyed by USPS code.
-const STATE_TAX_RATES = { NJ: 6.625, NY: 8, CT: 6.35, MA: 6.25, VT: 6, PA: 6 };
+// Auto-prefill sales-tax rate (percent) for the owner's ONLY nexus: New Jersey.
+// Joint Printing is NJ-based and registered nowhere else, so it collects NJ tax
+// on NJ-bound taxable goods and NOTHING on out-of-state shipments (which it keeps
+// nexus-free by routing print/ship through a printer outside the client's state).
+// Choosing a state on a confirmation shipTo PRE-FILLS its taxRate ONLY for NJ;
+// any other state prefills nothing (stays 0 = untaxed). The per-location "Tax
+// rate %" field is a manual override, so a new nexus can still be typed in by
+// hand if the owner ever registers elsewhere. Keyed by USPS code.
+const STATE_TAX_RATES = { NJ: 6.625 };
 
 // Round-half-up to cents. Confirmation grand totals and tax lines are summed in
 // floating point and MUST be snapped to cents at their final points, or they
