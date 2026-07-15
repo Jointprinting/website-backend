@@ -16,12 +16,28 @@ const MAX_ITEMS = 20;
 const MAX_QTY = 10000;
 const DEFAULT_EXPIRES_DAYS = 14;
 
+const MAX_VARIANTS = 6;   // owner pitches ~3 brands per design; leave headroom
+const money2 = (v) => Math.max(0, Math.round((Number(v) || 0) * 100) / 100);
+
 const _cleanItems = (items) => (Array.isArray(items) ? items : [])
   .map((it) => ({
     id: String((it && it.id) || '') || crypto.randomBytes(4).toString('hex'),
     label: String((it && it.label) || '').trim().slice(0, 120),
     sizes: (Array.isArray(it && it.sizes) ? it.sizes : [])
       .map((s) => String(s || '').trim().slice(0, 12)).filter(Boolean).slice(0, 12),
+    // Brand options the customer chooses between — each with its own customer
+    // price (the client's tier + markup collapsed to one per-unit price) and its
+    // garment colors. Empty = a legacy item (label + sizes, no priced choice).
+    variants: (Array.isArray(it && it.variants) ? it.variants : [])
+      .map((v) => ({
+        id: String((v && v.id) || '') || crypto.randomBytes(4).toString('hex'),
+        name: String((v && v.name) || '').trim().slice(0, 60),
+        price: money2(v && v.price),
+        colors: (Array.isArray(v && v.colors) ? v.colors : [])
+          .map((c) => String(c || '').trim().slice(0, 40)).filter(Boolean).slice(0, 24),
+      }))
+      .filter((v) => v.name)
+      .slice(0, MAX_VARIANTS),
   }))
   .filter((it) => it.label)
   .slice(0, MAX_ITEMS);
@@ -51,15 +67,24 @@ function tally(commitments) {
   const rows = Array.isArray(commitments) ? commitments : [];
   const people = new Set(rows.map((c) => `${c.name}`.trim().toLowerCase())).size;
   const totalQty = rows.reduce((t, c) => t + (Number(c.qty) || 0), 0);
+  // Committed revenue = Σ qty × the price snapshot each commitment carries. 0 for
+  // legacy/un-priced drops (unitPrice defaults to 0), so old drops are unchanged.
+  const revenue = money2(rows.reduce((t, c) => t + (Number(c.qty) || 0) * (Number(c.unitPrice) || 0), 0));
   const byItem = {};
   for (const c of rows) {
     const k = c.itemId;
-    if (!byItem[k]) byItem[k] = { qty: 0, bySize: {} };
-    byItem[k].qty += Number(c.qty) || 0;
+    if (!byItem[k]) byItem[k] = { qty: 0, revenue: 0, bySize: {}, byVariant: {} };
+    const q = Number(c.qty) || 0;
+    byItem[k].qty += q;
+    byItem[k].revenue = money2(byItem[k].revenue + q * (Number(c.unitPrice) || 0));
     const sz = c.size || '—';
-    byItem[k].bySize[sz] = (byItem[k].bySize[sz] || 0) + (Number(c.qty) || 0);
+    byItem[k].bySize[sz] = (byItem[k].bySize[sz] || 0) + q;
+    if (c.variant) {
+      const vk = c.color ? `${c.variant} · ${c.color}` : c.variant;
+      byItem[k].byVariant[vk] = (byItem[k].byVariant[vk] || 0) + q;
+    }
   }
-  return { people, totalQty, byItem };
+  return { people, totalQty, revenue, byItem };
 }
 
 // POST /api/preorders — mint. Body: { title, note, items, companyKey,
@@ -161,7 +186,10 @@ async function getPublicPreorder(req, res) {
       title: link.title,
       note: link.note,
       pickupLocation: link.pickupLocation || '',
-      items: link.items.map((it) => ({ id: it.id, label: it.label, sizes: it.sizes })),
+      items: link.items.map((it) => ({
+        id: it.id, label: it.label, sizes: it.sizes,
+        variants: (it.variants || []).map((v) => ({ id: v.id, name: v.name, price: v.price, colors: v.colors })),
+      })),
       logo: logo ? logo.imageDataUrl : null,
       open: link.isOpen(),
       expiresAt: link.expiresAt,
@@ -193,14 +221,29 @@ async function commitPreorder(req, res) {
     const entries = (Array.isArray(b.entries) ? b.entries : [])
       .map((e) => ({
         itemId: String((e && e.itemId) || ''),
+        variantId: String((e && e.variantId) || ''),
+        color: String((e && e.color) || '').trim().slice(0, 40),
         size: String((e && e.size) || '').trim().slice(0, 12),
         qty: Math.min(Math.max(Math.round(Number(e && e.qty) || 0), 0), MAX_QTY),
       }))
       .filter((e) => e.qty > 0 && byId.has(e.itemId))
-      // A size is only meaningful when the item actually offers it.
-      .map((e) => ({ ...e, size: (byId.get(e.itemId).sizes || []).includes(e.size) ? e.size : '' }))
+      .map((e) => {
+        const it = byId.get(e.itemId);
+        const variants = it.variants || [];
+        // Resolve the chosen brand: a single-variant item auto-selects; a
+        // multi-variant item must match a real one (else the entry can't be priced).
+        let v = null;
+        if (variants.length === 1) v = variants[0];
+        else if (variants.length > 1) v = variants.find((x) => x.id === e.variantId) || null;
+        if (variants.length && !v) return null;
+        // Size / color only count when the item / brand actually offers them.
+        const size = (it.sizes || []).includes(e.size) ? e.size : '';
+        const color = v && (v.colors || []).includes(e.color) ? e.color : '';
+        return { itemId: e.itemId, variant: v ? v.name : '', color, size, qty: e.qty, unitPrice: v ? (Number(v.price) || 0) : 0 };
+      })
+      .filter(Boolean)
       .slice(0, 40);
-    if (!entries.length) return res.status(400).json({ message: 'Pick at least one quantity.' });
+    if (!entries.length) return res.status(400).json({ message: 'Pick at least one quantity (and a brand where the item offers a choice).' });
 
     link.commitments.push(...entries.map((e) => ({ name, contact, note, ...e })));
     await link.save();
@@ -245,14 +288,17 @@ async function getClientPreorder(req, res) {
       title: link.title,
       note: link.note,
       pickupLocation: link.pickupLocation || '',
-      items: link.items.map((it) => ({ id: it.id, label: it.label, sizes: it.sizes })),
+      items: link.items.map((it) => ({
+        id: it.id, label: it.label, sizes: it.sizes,
+        variants: (it.variants || []).map((v) => ({ id: v.id, name: v.name, price: v.price, colors: v.colors })),
+      })),
       logo: logo ? logo.imageDataUrl : null,
       open: link.isOpen(),
       expiresAt: link.expiresAt,
       moq: link.moq || 0,
       customerToken: link.token,                 // the link the organizer shares with their people
       // Full breakdown — the organizer sees everything, MOQ or not.
-      tally: { people: t.people, totalQty: t.totalQty, byItem: t.byItem },
+      tally: { people: t.people, totalQty: t.totalQty, revenue: t.revenue, byItem: t.byItem },
       moqReached: link.moq > 0 ? t.totalQty >= link.moq : false,
     });
   } catch (e) {
