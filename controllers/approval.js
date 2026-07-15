@@ -4,6 +4,7 @@ const StudioLibraryItem = require('../models/StudioLibraryItem');
 const ClientLogo = require('../models/ClientLogo');
 const sendEmail = require('../utils/sendEmail');
 const { nextNumber } = require('../utils/sequence');
+const { appendClientLog } = require('../services/clientLog');
 
 const DEFAULT_TTL_DAYS = 7;
 const MAX_TTL_DAYS     = 365;
@@ -1006,6 +1007,17 @@ const sendApprovalLink = async (req, res) => {
       });
     }
     await order.save();
+
+    // Mirror the "quote/proof sent" milestone onto the CRM client's timeline
+    // (owner's ask). Best-effort; deduped by the approval token, so a re-send on
+    // the SAME link doesn't re-log but a fresh link (new cycle) does.
+    if (sentTo.length > 0 && order.companyKey) {
+      appendClientLog(order.companyKey, {
+        text: `Quote / proof sent to ${sentTo.join(', ')}`,
+        kind: 'quote',
+        dedupKey: `quote-sent:${order.approvalToken}`,
+      });
+    }
 
     // Every send failed — surface it (the token/expiry changes are still saved,
     // so a retry can reuse the same link).
