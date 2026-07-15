@@ -15,6 +15,10 @@ const { getDefaultsFor } = require('./clients');
 // won/lost/dormant record. Order writes never depend on this succeeding.
 const { promoteCompanyToCustomerOnPlacement, ensureCompanyForQuoting } = require('./crm');
 const { nextNumber, bumpCounterTo } = require('../utils/sequence');
+// Mockup Lab numbering (colours = letters A→Z→AA, edits = trailing version) —
+// one shared engine so the API and the studio editor never drift. See
+// utils/mockupNumbers.js.
+const { letterToNum, nextColorLetter, nextEditVersion, parseMockupNum } = require('../utils/mockupNumbers');
 const { etToday, etDayKey } = require('../utils/time');
 const r2 = require('../services/r2');
 
@@ -1581,32 +1585,8 @@ const autoLinkMockups = async (req, res) => {
 // Excel-style letter sequence: A…Z, AA, AB, … so the series never dead-ends.
 // (The old single-letter regex made everything after the 26th mockup collide
 // on "AA" forever — multi-letter suffixes were invisible to the max scan.)
-function _letterToNum(s) {
-  let n = 0;
-  for (const c of s) n = n * 26 + (c.charCodeAt(0) - 64);
-  return n;
-}
-function _numToLetter(n) {
-  let s = '';
-  while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); }
-  return s;
-}
-
-// Compute the next consecutive mockup letter for a project, mirroring the
-// studio's client-side _nextMockupNum so numbers stay consistent: base is
-// "#" + projectNumber padded to 6 digits, then A, B, C, … Z, AA, AB, …
-function _nextMockupLetter(projectNumber, existing) {
-  const projNumRaw = String(projectNumber || '').split('-')[0];
-  if (!projNumRaw) return '';
-  const base = `#${projNumRaw.padStart(6, '0')}`;
-  const nums = (existing || [])
-    .filter(m => m && m.startsWith(base))
-    .map(m => m.slice(base.length).toUpperCase())
-    .filter(l => /^[A-Z]+$/.test(l))
-    .map(_letterToNum);
-  const max = nums.length ? Math.max(...nums) : 0;
-  return `${base}${_numToLetter(max + 1)}`;
-}
+// (Numbering helpers — letterToNum / nextColorLetter / nextEditVersion — now live
+// in utils/mockupNumbers.js, shared with the studio editor and unit-tested.)
 
 // Atomically reserve the next mockup number (A, B, C…) for a project AND link
 // it to the order in one step. Compute-then-claim with a conditional write:
@@ -1621,7 +1601,7 @@ async function _reserveMockupNumber(orderId) {
     const order = await Order.findById(orderId).select('projectNumber mockupNumbers');
     if (!order) return null;
 
-    const next = _nextMockupLetter(order.projectNumber, order.mockupNumbers || []);
+    const next = nextColorLetter(order.projectNumber, order.mockupNumbers || []);
     if (!next) return { order, mockupNum: '' };
 
     const r = await Order.updateOne(
@@ -1666,7 +1646,7 @@ function buildMockupVariation(src, newNum, remoteId) {
   const letter = String(newNum || '').replace(/^#?\d*/, '');
   return {
     store: 'mockups',
-    name: `${String(s.name || 'Mockup').replace(/\s*·\s*v\d+$/i, '')} · v${_letterToNum(letter) || 2}`,
+    name: `${String(s.name || 'Mockup').replace(/\s*·\s*v\d+$/i, '')} · v${letterToNum(letter) || 2}`,
     data: s.data || '',
     thumbnail: s.thumbnail || '',
     client: s.client || '',
