@@ -86,6 +86,7 @@ async function createPreorder(req, res) {
       clientToken: crypto.randomBytes(12).toString('hex'),
       companyKey, projectNumber, orderId,
       title, note: String(b.note || '').trim().slice(0, 600),
+      pickupLocation: String(b.pickupLocation || '').trim().slice(0, 200),
       items,
       moq: Math.max(0, Math.round(Number(b.moq) || 0)),
       expiresAt: days > 0 ? new Date(Date.now() + days * 86400000) : null,
@@ -133,6 +134,7 @@ async function updatePreorder(req, res) {
     }
     if (b.title !== undefined) set.title = String(b.title || '').trim().slice(0, 140);
     if (b.note !== undefined) set.note = String(b.note || '').trim().slice(0, 600);
+    if (b.pickupLocation !== undefined) set.pickupLocation = String(b.pickupLocation || '').trim().slice(0, 200);
     if (b.moq !== undefined) set.moq = Math.max(0, Math.round(Number(b.moq) || 0));
     if (!Object.keys(set).length) return res.status(400).json({ message: 'Nothing to update.' });
     const link = await PreorderLink.findByIdAndUpdate(req.params.id, { $set: set }, { new: true }).lean();
@@ -158,6 +160,7 @@ async function getPublicPreorder(req, res) {
     res.json({
       title: link.title,
       note: link.note,
+      pickupLocation: link.pickupLocation || '',
       items: link.items.map((it) => ({ id: it.id, label: it.label, sizes: it.sizes })),
       logo: logo ? logo.imageDataUrl : null,
       open: link.isOpen(),
@@ -241,6 +244,7 @@ async function getClientPreorder(req, res) {
     res.json({
       title: link.title,
       note: link.note,
+      pickupLocation: link.pickupLocation || '',
       items: link.items.map((it) => ({ id: it.id, label: it.label, sizes: it.sizes })),
       logo: logo ? logo.imageDataUrl : null,
       open: link.isOpen(),
