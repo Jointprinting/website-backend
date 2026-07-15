@@ -22,6 +22,7 @@ const {
   isTaxCustomLine,
   hasBakedPaymentFee,
   roundCents,
+  dealValueSyncPlan,
 } = require('../../models/Order');
 
 // ── Factories ────────────────────────────────────────────────────────────────
@@ -338,4 +339,35 @@ test('computeConfirmationTotals reports totalUnits across items', () => {
   const conf = { items: [item(10, 20), { sizes: [{ label: 'S', qty: 5, unitPrice: 20 }, { label: 'M', qty: 7, unitPrice: 20 }] }] };
   assert.equal(computeConfirmationTotals(conf).totalUnits, 22);
   assert.equal(computeConfirmationTotals({ items: [] }).totalUnits, 0);
+});
+
+// ── dealValueSyncPlan — the pipeline deal value follows the order total ───────
+// The post-save hook uses this pure planner to decide whether (and how) to push
+// an order's real total onto its auto-created deal. Owner's call: the deal value
+// is his conversational guess, so once the order has a real total that wins — but
+// only for deals born FROM the order (origin:'order'), never his manual ones.
+test('dealValueSyncPlan: a real total → updateMany plan scoped to origin:order + open', () => {
+  const plan = dealValueSyncPlan({ totalValue: 1450, projectNumber: 'P-12', orderNumber: '0000021' });
+  assert.ok(plan);
+  assert.equal(plan.value, 1450);
+  assert.deepEqual(plan.filter.$or, [{ projectNumber: 'P-12' }, { orderNumber: '0000021' }]);
+  assert.equal(plan.filter.origin, 'order');           // never touches a manual deal
+  assert.deepEqual(plan.filter.archived, { $ne: true }); // never resurrects an archived one
+});
+
+test('dealValueSyncPlan: $0 / empty / mid-edit order → null (never wipes a deal to $0)', () => {
+  assert.equal(dealValueSyncPlan({ totalValue: 0,  projectNumber: 'P-1' }), null);
+  assert.equal(dealValueSyncPlan({ totalValue: -5, orderNumber: '21' }), null);
+  assert.equal(dealValueSyncPlan({ projectNumber: 'P-1' }), null);      // no total at all
+  assert.equal(dealValueSyncPlan(null), null);
+});
+
+test('dealValueSyncPlan: no identifiers → null (nothing to match a deal on)', () => {
+  assert.equal(dealValueSyncPlan({ totalValue: 900 }), null);
+  assert.equal(dealValueSyncPlan({ totalValue: 900, projectNumber: '', orderNumber: '' }), null);
+});
+
+test('dealValueSyncPlan: matches on whichever identifier the order carries', () => {
+  assert.deepEqual(dealValueSyncPlan({ totalValue: 10, projectNumber: 'P-9' }).filter.$or, [{ projectNumber: 'P-9' }]);
+  assert.deepEqual(dealValueSyncPlan({ totalValue: 10, orderNumber: 55 }).filter.$or, [{ orderNumber: '55' }]);
 });
