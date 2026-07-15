@@ -26,6 +26,25 @@ const _cleanItems = (items) => (Array.isArray(items) ? items : [])
   .filter((it) => it.label)
   .slice(0, MAX_ITEMS);
 
+// What the PUBLIC is allowed to see of the tally. Owner's FOMO rule: when a drop
+// carries a MOQ, the running count stays HIDDEN until the drop PASSES it — an
+// empty/low bar reads as unpopular, a full one is social proof — then it reveals
+// (with the goal) as a "it's happening" progress bar. With no MOQ (0) it's a plain
+// open tally shown as-is. The OWNER side never uses this (it always sees the full
+// tally + moq via listPreorders). Pure — unit-tested.
+function publicProgress(link, t) {
+  const moq = Math.max(0, Number(link && link.moq) || 0);
+  const totalQty = (t && t.totalQty) || 0;
+  const people = (t && t.people) || 0;
+  const reached = moq > 0 ? totalQty >= moq : true;
+  const reveal = moq === 0 ? people > 0 : reached;      // show numbers to the public?
+  return {
+    moqReached: moq > 0 && reached,
+    moq: (moq > 0 && reached) ? moq : undefined,         // reveal the goal only once it's hit
+    tally: reveal ? { people, totalQty } : { people: 0, totalQty: 0 },
+  };
+}
+
 // Rollup used by both sides: how many people, how many units, per-item/size.
 // Public gets the totals; the owner ALSO gets the per-row breakdown.
 function tally(commitments) {
@@ -67,6 +86,7 @@ async function createPreorder(req, res) {
       companyKey, projectNumber, orderId,
       title, note: String(b.note || '').trim().slice(0, 600),
       items,
+      moq: Math.max(0, Math.round(Number(b.moq) || 0)),
       expiresAt: days > 0 ? new Date(Date.now() + days * 86400000) : null,
     });
     res.status(201).json({ preorder: link.toObject() });
@@ -105,6 +125,7 @@ async function updatePreorder(req, res) {
     }
     if (b.title !== undefined) set.title = String(b.title || '').trim().slice(0, 140);
     if (b.note !== undefined) set.note = String(b.note || '').trim().slice(0, 600);
+    if (b.moq !== undefined) set.moq = Math.max(0, Math.round(Number(b.moq) || 0));
     if (!Object.keys(set).length) return res.status(400).json({ message: 'Nothing to update.' });
     const link = await PreorderLink.findByIdAndUpdate(req.params.id, { $set: set }, { new: true }).lean();
     if (!link) return res.status(404).json({ message: 'Preorder not found.' });
@@ -125,7 +146,7 @@ async function getPublicPreorder(req, res) {
     const logo = link.companyKey
       ? await ClientLogo.findOne({ companyKey: link.companyKey }).select('imageDataUrl').lean()
       : null;
-    const t = tally(link.commitments);
+    const pub = publicProgress(link, tally(link.commitments));
     res.json({
       title: link.title,
       note: link.note,
@@ -133,7 +154,9 @@ async function getPublicPreorder(req, res) {
       logo: logo ? logo.imageDataUrl : null,
       open: link.isOpen(),
       expiresAt: link.expiresAt,
-      tally: { people: t.people, totalQty: t.totalQty },
+      moq: pub.moq,               // the goal — only sent once the drop has hit it
+      moqReached: pub.moqReached,
+      tally: pub.tally,           // hidden (zeros) until MOQ is passed
     });
   } catch (e) {
     console.error('[preorder] public read failed:', e.message);
@@ -185,8 +208,8 @@ async function commitPreorder(req, res) {
       ).catch(() => {});
     }
 
-    const t = tally(link.commitments);
-    res.status(201).json({ ok: true, tally: { people: t.people, totalQty: t.totalQty } });
+    const pub = publicProgress(link, tally(link.commitments));
+    res.status(201).json({ ok: true, moq: pub.moq, moqReached: pub.moqReached, tally: pub.tally });
   } catch (e) {
     console.error('[preorder] commit failed:', e.message);
     res.status(500).json({ message: 'Something went wrong on our end — please try again.' });
@@ -196,5 +219,5 @@ async function commitPreorder(req, res) {
 module.exports = {
   createPreorder, listPreorders, updatePreorder,
   getPublicPreorder, commitPreorder,
-  _tally: tally, _cleanItems,
+  _tally: tally, _cleanItems, _publicProgress: publicProgress,
 };

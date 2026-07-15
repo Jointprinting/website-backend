@@ -32,6 +32,11 @@ const preorderLinkSchema = new mongoose.Schema({
     label: { type: String, required: true, trim: true },
     sizes: { type: [String], default: [] },
   }],
+  // Minimum order quantity for the whole drop to be "a go". 0 = no minimum (an
+  // open tally). Drives the group-buy psychology: the public FOMO progress bar
+  // only reveals ONCE the drop has passed its MOQ (owner's rule — an empty bar
+  // reads as unpopular; a full one is social proof). The owner always sees it.
+  moq:       { type: Number, default: 0, min: 0 },
   expiresAt: { type: Date, default: null },   // null = open until revoked
   revokedAt: { type: Date, default: null },
   commitments: { type: [commitmentSchema], default: [] },
