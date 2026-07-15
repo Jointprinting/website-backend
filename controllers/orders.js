@@ -7,6 +7,7 @@ const PurchaseOrder = require('../models/PurchaseOrder');
 // REUSE the canonical key + the single PLACED_STATUSES list so "placed order"
 // means exactly the same thing here as in the CRM.
 const { deriveCompanyKey, PLACED_STATUSES } = require('../models/Order');
+const { appendClientLog } = require('../services/clientLog');
 const { normalizeOrderNumber, orderActualCost, dedupeOrdersForRollup } = require('./finances');
 const { getDefaultsFor } = require('./clients');
 // REUSE the CRM's customer-promotion (which itself reuses promoteStage) so a
@@ -508,6 +509,23 @@ const updateOrder = async (req, res) => {
         if (r.modifiedCount) console.log(`[deals] order ${order.orderNumber || order.projectNumber} delivered → ${r.modifiedCount} deal(s) won`);
       } catch (e) {
         console.warn('[deals] delivered→won sync failed:', e.message);
+      }
+    }
+    // Mirror the big milestones onto the CRM client's activity timeline so the
+    // company card shows what actually happened (owner's ask). Best-effort +
+    // deduped per milestone so a re-transition can't spam the log.
+    if (order.companyKey) {
+      const num = order.orderNumber || order.projectNumber || '';
+      const label = num ? `#${num}` : 'this order';
+      const id = num || String(order._id);
+      if (isPlacedStatus(order.status) && !isPlacedStatus(current.status)) {
+        appendClientLog(order.companyKey, { text: `Order ${label} placed`, kind: 'order', dedupKey: `order-placed:${id}` });
+      }
+      if (order.status === 'delivered' && current.status !== 'delivered') {
+        appendClientLog(order.companyKey, { text: `Order ${label} delivered`, kind: 'order', dedupKey: `order-delivered:${id}` });
+      }
+      if (body.paid === true && current.paid !== true) {
+        appendClientLog(order.companyKey, { text: `Order ${label} marked paid`, kind: 'payment', dedupKey: `order-paid:${id}` });
       }
     }
     res.json(order);
