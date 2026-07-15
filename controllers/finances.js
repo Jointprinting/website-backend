@@ -214,48 +214,77 @@ function inferRowType(typeCell, category) {
   return INCOME_CATS.has(String(category || '').trim().toLowerCase()) ? 'income' : 'expense';
 }
 
+// Parse a JP Ledger CSV into Transaction docs, or explain why it can't. PURE
+// (no DB) + exported so the guard rails below are unit-tested — because import is
+// a DESTRUCTIVE replace, the difference between "0 valid rows" and "wrong file"
+// must be decided before we ever touch the ledger. Returns { error } (a
+// human-facing 400 message) OR { docs } (a non-empty array ready to insert).
+function parseLedgerCsv(text) {
+  const lines = String(text || '').split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length < 2) return { error: 'CSV has no rows.' };
+  const header = parseCsvLine(lines[0]).map((h) => h.trim().toLowerCase());
+  const col = (name) => header.findIndex((h) => h.includes(name));
+  const ix = {
+    date: col('date'), type: col('type'), category: col('category'),
+    order: col('order'), party: header.findIndex((h) => h.includes('customer') || h.includes('vendor')),
+    desc: col('description'), amount: col('amount'), qb: col('qb'),
+  };
+  // The two columns the whole ledger is keyed on. If they're absent this isn't a
+  // JP Ledger export (wrong file / wrong sheet) — bail BEFORE any delete so a
+  // mistaken upload can't wipe the ledger down to nothing.
+  if (ix.date < 0 || ix.amount < 0) {
+    return { error: 'This doesn’t look like a JP Ledger CSV — it’s missing the Date and/or Amount columns. Nothing was imported.' };
+  }
+  const docs = [];
+  for (let i = 1; i < lines.length; i++) {
+    const c = parseCsvLine(lines[i]);
+    const date = new Date(c[ix.date]);
+    const rawAmount = num(c[ix.amount]);
+    const amount = Math.abs(rawAmount);
+    if (isNaN(date.getTime()) || !amount) continue;   // skip undated / zero-amount rows
+    let category = String(c[ix.category] || 'Other').trim() || 'Other';
+    // Legacy exports say "Customer Sales" — normalize to the renamed category
+    // so a round-trip re-import can't resurrect the old name.
+    if (/^customer sales$/i.test(category)) category = 'Client Sales';
+    docs.push({
+      date,
+      type: inferRowType(c[ix.type], category),       // explicit Type wins; else infer from category
+      category,
+      orderNumber: String(c[ix.order] || '').replace(/[^0-9]/g, ''),
+      party: String(c[ix.party] || '').trim(),
+      description: String(c[ix.desc] || '').trim(),
+      amount,
+      isCredit: rawAmount < 0,   // a negative ledger amount = a credit / return
+      qbSynced: /yes/i.test(String(c[ix.qb] || '')),
+      year: date.getUTCFullYear(),
+      source: 'import',
+    });
+  }
+  // A wrong/garbled file (or the header row alone) parses to zero usable rows.
+  // Since import REPLACES the previous import, an empty result must never
+  // proceed — that would delete every imported row and leave nothing behind.
+  if (docs.length === 0) {
+    return { error: 'No valid rows found in that file — nothing was imported. Your existing ledger is untouched.' };
+  }
+  return { docs };
+}
+
 // POST /api/finances/import  — body: { csv } in the JP Ledger schema
 // (Date,Type,Category,Order #,Customer/Vendor,Description,Amount,QB Synced).
 // Replaces all imported rows (source:'import') so re-importing is idempotent.
 const importCsv = async (req, res) => {
   try {
-    const text = (req.body && req.body.csv) || '';
-    const lines = text.split(/\r?\n/).filter((l) => l.trim());
-    if (lines.length < 2) return res.status(400).json({ message: 'CSV has no rows.' });
-    const header = parseCsvLine(lines[0]).map((h) => h.trim().toLowerCase());
-    const col = (name) => header.findIndex((h) => h.includes(name));
-    const ix = {
-      date: col('date'), type: col('type'), category: col('category'),
-      order: col('order'), party: header.findIndex((h) => h.includes('customer') || h.includes('vendor')),
-      desc: col('description'), amount: col('amount'), qb: col('qb'),
-    };
-    const docs = [];
-    for (let i = 1; i < lines.length; i++) {
-      const c = parseCsvLine(lines[i]);
-      const date = ix.date >= 0 ? new Date(c[ix.date]) : new Date('');
-      const rawAmount = num(c[ix.amount]);
-      const amount = Math.abs(rawAmount);
-      if (isNaN(date.getTime()) || !amount) continue;   // skip undated / zero-amount rows
-      let category = String(c[ix.category] || 'Other').trim() || 'Other';
-      // Legacy exports say "Customer Sales" — normalize to the renamed category
-      // so a round-trip re-import can't resurrect the old name.
-      if (/^customer sales$/i.test(category)) category = 'Client Sales';
-      docs.push({
-        date,
-        type: inferRowType(c[ix.type], category),       // explicit Type wins; else infer from category
-        category,
-        orderNumber: String(c[ix.order] || '').replace(/[^0-9]/g, ''),
-        party: String(c[ix.party] || '').trim(),
-        description: String(c[ix.desc] || '').trim(),
-        amount,
-        isCredit: rawAmount < 0,   // a negative ledger amount = a credit / return
-        qbSynced: /yes/i.test(String(c[ix.qb] || '')),
-        year: date.getUTCFullYear(),
-        source: 'import',
-      });
-    }
-    await Transaction.deleteMany({ source: 'import' });
+    const parsed = parseLedgerCsv(req.body && req.body.csv);
+    if (parsed.error) return res.status(400).json({ message: parsed.error });
+    const docs = parsed.docs;
+    // Replace the previous import WITHOUT a data-loss window: capture the rows
+    // that exist now, insert the fresh set FIRST, then delete only those prior
+    // ids. If insertMany throws, nothing was deleted — the old ledger survives;
+    // and deleting by prior-id can't touch the rows we just wrote. (Ordering is
+    // the safety net; the parse guards above already blocked the empty-wipe.)
+    const priorIds = (await Transaction.find({ source: 'import' }, { _id: 1 }).lean()).map((d) => d._id);
     await Transaction.insertMany(docs);
+    if (priorIds.length) await Transaction.deleteMany({ _id: { $in: priorIds } });
     res.json({ imported: docs.length });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
@@ -1741,3 +1770,4 @@ module.exports.processingFeeRate = processingFeeRate;
 module.exports.computeProcessingFee = computeProcessingFee;
 module.exports.buildProcessingFeeDoc = buildProcessingFeeDoc;
 module.exports.inferRowType = inferRowType;
+module.exports.parseLedgerCsv = parseLedgerCsv;
