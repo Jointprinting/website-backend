@@ -17,6 +17,7 @@ const assert = require('node:assert/strict');
 const {
   summarizeCompanyFinance,
   normalizeOrderNumber,
+  dedupeOrdersForRollup,
   companyKeyByOrderNumber,
   orderRevenueCost,
   orderActualCost,
@@ -185,6 +186,41 @@ test('summarizeCompanyFinance: cogs is ACTUAL (receipts); estimatedCogs sums Ord
   assert.equal(out.receiptCount,  1);     // one COGS row carried a receipt file
 });
 
+// ── dedupeOrdersForRollup: collapse number-twins, KEEP the numberless ─────────
+test('dedupeOrdersForRollup collapses order-number twins but keeps un-numbered jobs', () => {
+  const rows = [
+    order({ orderNumber: '#0000021', status: 'delivered', paid: true, totalValue: 1000 }),
+    order({ orderNumber: '21',       status: 'delivered', paid: true, totalValue: 1000 }), // twin of the above (canonical #21)
+    order({ orderNumber: '22',       status: 'placed',    paid: false, totalValue: 500 }),
+    order({ orderNumber: '',         status: 'quoted',    paid: false, totalValue: 300 }), // un-numbered quote A
+    order({ orderNumber: '',         status: 'quoted',    paid: false, totalValue: 400 }), // un-numbered quote B (distinct)
+  ];
+  const out = dedupeOrdersForRollup(rows);
+  assert.equal(out.length, 4); // 5 docs -> 4 jobs: the two #21 collapse; both quotes stay
+  assert.equal(out.filter((o) => normalizeOrderNumber(o.orderNumber)).length, 2);  // #21 (once) + #22
+  assert.equal(out.filter((o) => !normalizeOrderNumber(o.orderNumber)).length, 2); // both quotes preserved
+});
+
+// ── revenue-twins can't double a company's realized revenue / COGS / counts ───
+test('summarizeCompanyFinance de-dups revenue-twins but still counts un-numbered jobs', () => {
+  // The historical double-count bug: one physical delivered job stored as TWO
+  // docs. Plus a real second numbered job and a still-quoted (un-numbered) order.
+  const orders = [
+    order({ orderNumber: '#000141', status: 'delivered', paid: true,  totalValue: 2000, cogs: 1200 }),
+    order({ orderNumber: '141',     status: 'delivered', paid: true,  totalValue: 2000, cogs: 1200 }), // TWIN
+    order({ orderNumber: '150',     status: 'placed',    paid: false, totalValue: 900,  cogs: 500 }),  // open, unpaid
+    order({ orderNumber: '',        status: 'quoted',    paid: false, totalValue: 700,  cogs: 400 }),  // quote, no invoice #
+  ];
+  // Empty expense ledger → revenue falls back to collected order value and profit
+  // to the order-stored estimate — the exact fallbacks that used to double on twins.
+  const out = summarizeCompanyFinance(orders, []);
+  assert.equal(out.revenue,       2000); // the ONE delivered job, not 4000
+  assert.equal(out.paidCount,     1);    // one collected job, not two
+  assert.equal(out.orderCount,    3);    // 4 docs -> 3 real jobs (twin collapsed)
+  assert.equal(out.outstanding,   900);  // the open 'placed' order (a quote is not a receivable)
+  assert.equal(out.estimatedCogs, 2100); // 1200 (once, not twice) + 500 + 400
+});
+
 // ── M7: pct guard (no Infinity/NaN on a ~zero denominator) ───────────────────
 test('pct guards a zero / sub-cent / non-finite denominator', () => {
   assert.equal(pct(500, 1000), 50);
@@ -329,9 +365,9 @@ test('outstanding is independent of revenue (ledger vs invoiced are different le
 
 test('non-numeric totalValue is treated as 0 for outstanding', () => {
   const orders = [
-    order({ status: 'placed', paid: false, totalValue: undefined }),
-    order({ status: 'placed', paid: false, totalValue: null }),
-    order({ status: 'placed', paid: false, totalValue: '300' }),  // numeric string still counts (num())
+    order({ orderNumber: '201', status: 'placed', paid: false, totalValue: undefined }),
+    order({ orderNumber: '202', status: 'placed', paid: false, totalValue: null }),
+    order({ orderNumber: '203', status: 'placed', paid: false, totalValue: '300' }), // numeric string still counts (num())
   ];
   const out = summarizeCompanyFinance(orders, []);
   assert.equal(out.outstanding, 300);
@@ -377,8 +413,8 @@ test('revenue falls back to collected order value when the ledger has no sale ro
   // owner books payment in QuickBooks, not the in-app ledger. With no Client-Sales
   // Tx, revenue falls back to the delivered/paid order value.
   const orders = [
-    order({ status: 'delivered', paid: true,  totalValue: 5000 }),
-    order({ status: 'delivered', paid: true,  totalValue: 2000 }),
+    order({ orderNumber: '301', status: 'delivered', paid: true,  totalValue: 5000 }),
+    order({ orderNumber: '302', status: 'delivered', paid: true,  totalValue: 2000 }),
   ];
   const out = summarizeCompanyFinance(orders, []);   // NO ledger rows
   assert.equal(out.revenue, 7000);
