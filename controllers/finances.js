@@ -623,7 +623,10 @@ function summarizeCompanyFinance(orders, transactions) {
   let paidCount = 0;
   let estimatedCogs = 0;        // the confirmation/quote estimate, summed off Orders
   let realizedOrderValue = 0;   // Σ totalValue of collected (delivered/paid) orders
-  for (const o of (orders || [])) {
+  // Collapse revenue-twins (one job stored as two docs) to one canonical record,
+  // while keeping un-numbered/quoted orders — so a duplicate can't double this
+  // company's realized revenue / estimated COGS / outstanding on the CRM card.
+  for (const o of dedupeOrdersForRollup(orders)) {
     if (!o) continue;
     orderCount += 1;
     estimatedCogs += num(o.cogs);            // each Order's stored estimate (quote/confirmation)
@@ -872,6 +875,30 @@ function dedupeOrdersByNumber(orders) {
     m.set(k, _moreCanonicalOrder(m.get(k), o));
   }
   return [...m.values()];
+}
+
+// Like dedupeOrdersByNumber, but for WHOLE-COMPANY / headline ROLLUPS that must
+// count every real job exactly once — INCLUDING orders that don't have a number
+// yet. It collapses docs that SHARE a normalized order number (the true duplicate
+// "revenue twins", keeping the most-canonical via _moreCanonicalOrder) but KEEPS
+// every un-numbered order as its own job: a still-quoted order has no invoice
+// number, so it can't be a number-twin, and dropping it would hide real
+// outstanding/pipeline value. (dedupeOrdersByNumber, by contrast, is for
+// number-KEYED views — missing-receipts, by-order — and intentionally discards the
+// numberless.) This is the guard for the "one physical job stored as two docs
+// doubles the revenue" class, applied uniformly across the dashboard, the Clients
+// overview, the analytics rollup, and the CRM company card so they can never
+// disagree.
+function dedupeOrdersForRollup(orders) {
+  const byNum = new Map();
+  const unnumbered = [];
+  for (const o of (orders || [])) {
+    if (!o) continue;
+    const k = normalizeOrderNumber(o.orderNumber);
+    if (!k) { unnumbered.push(o); continue; }
+    byNum.set(k, _moreCanonicalOrder(byNum.get(k), o));
+  }
+  return [...byNum.values(), ...unnumbered];
 }
 
 function expectedReceiptCats(order, pos) {
@@ -1696,6 +1723,7 @@ module.exports.buildLedgerCsv = buildLedgerCsv;
 // view) + tests. All keyed off the SAME Transaction truth via these helpers.
 module.exports.summarizeCompanyFinance = summarizeCompanyFinance;
 module.exports.normalizeOrderNumber = normalizeOrderNumber;
+module.exports.dedupeOrdersForRollup = dedupeOrdersForRollup;
 module.exports.companyKeyByOrderNumber = companyKeyByOrderNumber;
 module.exports.projectNumberByOrderNumber = projectNumberByOrderNumber;
 module.exports.orderRevenueCost = orderRevenueCost;

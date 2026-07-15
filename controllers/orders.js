@@ -7,7 +7,7 @@ const PurchaseOrder = require('../models/PurchaseOrder');
 // REUSE the canonical key + the single PLACED_STATUSES list so "placed order"
 // means exactly the same thing here as in the CRM.
 const { deriveCompanyKey, PLACED_STATUSES } = require('../models/Order');
-const { normalizeOrderNumber, orderActualCost } = require('./finances');
+const { normalizeOrderNumber, orderActualCost, dedupeOrdersForRollup } = require('./finances');
 const { getDefaultsFor } = require('./clients');
 // REUSE the CRM's customer-promotion (which itself reuses promoteStage) so a
 // placed order bumps the company to 'customer' without ever regressing a
@@ -548,32 +548,46 @@ const dashboard = async (req, res) => {
     const startOfYear  = new Date(now.getFullYear(), 0, 1);
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    const [stats] = await Order.aggregate([
-      // Archived (soft-deleted / reverted) orders must not count toward revenue,
-      // open-order, or unpaid totals — they're gone from the working view.
-      { $match: { archived: { $ne: true } } },
-      { $group: {
-        _id: null,
-        revenueAllTime: { $sum: { $cond: [{ $eq: ['$status', 'delivered'] }, '$totalValue', 0] } },
-        revenueThisYear: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'delivered'] }, { $gte: [{ $ifNull: ['$deliveredDate', '$orderDate'] }, startOfYear] }] }, '$totalValue', 0] } },
-        revenueThisMonth: { $sum: { $cond: [{ $and: [{ $eq: ['$status', 'delivered'] }, { $gte: [{ $ifNull: ['$deliveredDate', '$orderDate'] }, startOfMonth] }] }, '$totalValue', 0] } },
-        openOrders: { $sum: { $cond: [{ $in: ['$status', ['approved', 'placed', 'in_production', 'shipped']] }, 1, 0] } },
-        openQuotes: { $sum: { $cond: [{ $eq: ['$status', 'quoted'] }, 1, 0] } },
-        // Unpaid = genuinely-open orders only (approved/placed/in_production/shipped).
-        // Delivered is collected (payment precedes delivery), quoted isn't a
-        // receivable, cancelled is dead — matching the per-client rollups so the
-        // header "unpaid" agrees with the CRM card and Clients overview.
-        unpaidTotal: { $sum: { $cond: [{ $and: [{ $eq: ['$paid', false] }, { $in: ['$status', ['approved', 'placed', 'in_production', 'shipped']] }] }, '$totalValue', 0] } },
-      }},
-    ]);
+    // Load + collapse revenue-twins to one canonical job (keeping un-numbered /
+    // quoted orders) BEFORE summing, so a duplicated order doc can't double the
+    // headline revenue — the same dedupe the Clients overview, analytics, and CRM
+    // company card use, so the four surfaces can never disagree. (An aggregation
+    // can't express the JS normalize/canonical rules; the order set is small, so
+    // this walks in memory like the sibling rollups already do.) Archived orders
+    // are excluded in the query — they're gone from the working view.
+    const OPEN = ['approved', 'placed', 'in_production', 'shipped'];
+    const n = (v) => Number(v) || 0;
+    const orders = dedupeOrdersForRollup(
+      await Order.find({ archived: { $ne: true } })
+        .select('status totalValue paid orderNumber deliveredDate orderDate').lean(),
+    );
+    const stats = { revenueAllTime: 0, revenueThisYear: 0, revenueThisMonth: 0, openOrders: 0, openQuotes: 0, unpaidTotal: 0 };
+    for (const o of orders) {
+      const tv = n(o.totalValue);
+      if (o.status === 'delivered') {
+        stats.revenueAllTime += tv;
+        const when = o.deliveredDate || o.orderDate;   // mirrors $ifNull(deliveredDate, orderDate)
+        if (when && new Date(when) >= startOfYear)  stats.revenueThisYear  += tv;
+        if (when && new Date(when) >= startOfMonth) stats.revenueThisMonth += tv;
+      }
+      // Unpaid = genuinely-open orders only (approved/placed/in_production/shipped).
+      // Delivered is collected (payment precedes delivery), quoted isn't a
+      // receivable, cancelled is dead — matching the per-client rollups so the
+      // header "unpaid" agrees with the CRM card and Clients overview.
+      if (OPEN.includes(o.status)) {
+        stats.openOrders += 1;
+        if (o.paid === false) stats.unpaidTotal += tv;
+      }
+      if (o.status === 'quoted') stats.openQuotes += 1;
+    }
 
     res.json({
-      revenueAllTime:   (stats && stats.revenueAllTime)   || 0,
-      revenueThisYear:  (stats && stats.revenueThisYear)  || 0,
-      revenueThisMonth: (stats && stats.revenueThisMonth) || 0,
-      openOrders:       (stats && stats.openOrders)       || 0,
-      openQuotes:       (stats && stats.openQuotes)       || 0,
-      unpaidTotal:      (stats && stats.unpaidTotal)      || 0,
+      revenueAllTime:   +stats.revenueAllTime.toFixed(2),
+      revenueThisYear:  +stats.revenueThisYear.toFixed(2),
+      revenueThisMonth: +stats.revenueThisMonth.toFixed(2),
+      openOrders:       stats.openOrders,
+      openQuotes:       stats.openQuotes,
+      unpaidTotal:      +stats.unpaidTotal.toFixed(2),
     });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -708,7 +722,11 @@ const clientsSummary = async (req, res) => {
   try {
     // Exclude archived (soft-deleted / deduped) orders so this per-client rollup
     // matches the dashboard header and the CRM company card, which both do.
-    const orders = await Order.find({ archived: { $ne: true } }).select('status totalValue companyName clientName companyKey updatedAt orderDate paid').lean();
+    const raw = await Order.find({ archived: { $ne: true } }).select('status totalValue companyName clientName companyKey updatedAt orderDate paid orderNumber').lean();
+    // Collapse revenue-twins (one job stored twice) to one canonical record, while
+    // keeping un-numbered/quoted orders — so a duplicate can't double a client's
+    // deliveredRevenue / openValue / unpaidValue here.
+    const orders = dedupeOrdersForRollup(raw);
 
     const byKey = {};
     orders.forEach(o => {
@@ -765,7 +783,10 @@ const analytics = async (req, res) => {
 
     // Archived (soft-deleted / deduped) orders must not inflate the headline
     // analytics — same exclusion the dashboard and per-client rollups use.
-    const orders = await Order.find({ archived: { $ne: true } }).select('status totalValue cogs orderDate companyName clientName companyKey quoteLines').lean();
+    const raw = await Order.find({ archived: { $ne: true } }).select('status totalValue cogs orderDate companyName clientName companyKey quoteLines orderNumber paid').lean();
+    // Collapse revenue-twins to one canonical job (keep un-numbered/quoted) so a
+    // duplicated doc can't double revenue-by-month, top-client, or margin totals.
+    const orders = dedupeOrdersForRollup(raw);
 
     // Revenue by month (delivered only, last 12 months)
     const monthBuckets = {};
