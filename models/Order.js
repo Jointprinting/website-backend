@@ -682,7 +682,44 @@ OrderSchema.pre('findOneAndUpdate', async function () {
   this.setUpdate(u);
 });
 
+// ── Pipeline deal value tracks the order total ────────────────────────────────
+// The owner's hand-set deal value is a conversational guess; once an order has a
+// REAL total (from its quote or confirmation) that IS the number — so deals that
+// were auto-created FROM an order (origin:'order') follow the order's totalValue.
+// Manually-created deals (other origins) keep their hand-set value untouched.
+// Pure planner (unit-tested) → thin DB write in the post hooks; best-effort, so a
+// deal-sync hiccup can never fail the order write itself.
+function dealValueSyncPlan(order) {
+  const value = Number(order && order.totalValue) || 0;
+  if (value <= 0) return null;                 // never wipe a deal to $0 on an emptied / mid-edit order
+  const or = [];
+  if (order.projectNumber != null && String(order.projectNumber) !== '') or.push({ projectNumber: String(order.projectNumber) });
+  if (order.orderNumber   != null && String(order.orderNumber)   !== '') or.push({ orderNumber: String(order.orderNumber) });
+  if (!or.length) return null;
+  return { value, filter: { $or: or, origin: 'order', archived: { $ne: true } } };
+}
+
+async function applyDealValueSync(order) {
+  try {
+    const plan = dealValueSyncPlan(order);
+    if (!plan) return;
+    const Deal = require('./Deal');
+    await Deal.updateMany(plan.filter, { $set: { value: plan.value } });
+  } catch (e) {
+    console.warn('[order] deal value sync skipped:', e.message);
+  }
+}
+
+OrderSchema.post('save', async function (doc) { await applyDealValueSync(doc); });
+OrderSchema.post('findOneAndUpdate', async function (res) {
+  if (!res) return;
+  const set = (this.getUpdate() || {}).$set || this.getUpdate() || {};
+  const totalValue = set && set.totalValue != null ? set.totalValue : res.totalValue;
+  await applyDealValueSync({ projectNumber: res.projectNumber, orderNumber: res.orderNumber, totalValue });
+});
+
 module.exports = mongoose.model('Order', OrderSchema);
+module.exports.dealValueSyncPlan = dealValueSyncPlan;
 module.exports.PLACED_STATUSES = PLACED_STATUSES;
 module.exports.PAYMENT_FEES = PAYMENT_FEES;
 module.exports.deriveCompanyKey = deriveCompanyKey;

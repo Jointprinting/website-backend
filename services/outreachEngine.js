@@ -93,14 +93,15 @@ const SEND_PRIORITY_FILTERS = [{ stepIndex: { $gt: 0 } }, { stepIndex: 0 }];
 // Inter-send pacing jitter (cron path only) — breaks the "all at :00:00" burst.
 const PACE_MIN_MS = 5000;
 const PACE_MAX_MS = 20000;
-// Owner's call: the footer carries NO postal address — just a bare "Unsubscribe".
-// We do NOT read OUTREACH_POSTAL_ADDRESS here on purpose: even if that env var is
-// still set on the host (it was previously the owner's home address), nothing is
-// printed, so the address can never leak into a cold email. (CAN-SPAM technically
-// wants a valid physical mailing address on commercial mail; if a PO box / virtual
-// address is ever adopted, set POSTAL_ADDRESS to it and prepend `${POSTAL_ADDRESS}
-// <br>` back into composeMessage's footer.)
-const POSTAL_ADDRESS = '';
+// CAN-SPAM requires a valid physical postal address on every commercial send.
+// We read it from OUTREACH_POSTAL_ADDRESS on the HOST rather than hard-coding it —
+// the address is the owner's and doesn't belong in the repo, and this way it can
+// be changed (or corrected) with one env edit, no redeploy. Set it to the full
+// mailing address, e.g. "Joint Printing, 7 Elliot Drive, Township, NJ 07000", and
+// every outreach email prints it above the unsubscribe line. Unset/blank ('') =
+// the bare reply-based opt-out footer, exactly as before. composeMessage already
+// wires postalHtml/postalText into the footer — this constant is the only gate.
+const POSTAL_ADDRESS = String(process.env.OUTREACH_POSTAL_ADDRESS || '').trim();
 // Public base URL of THIS API (e.g. https://api.jointprinting.com) — powers the
 // unsubscribe link + open pixel. Without it we fall back to reply-to-opt-out
 // wording (still compliant) and skip open tracking.
