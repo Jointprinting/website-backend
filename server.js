@@ -63,7 +63,7 @@ const OWN_JSON_PREFIXES = [
   '/api/studio', '/api/site-settings', '/api/orders', '/api/client-logos',
   '/api/clients', '/api/crm', '/api/outreach', '/api/triage', '/api/public',
   '/api/jpw', '/api/gdrive', '/api/finances', '/api/receipts', '/api/lookbooks',
-  '/api/social', '/api/newsletter',
+  '/api/social', '/api/newsletter', '/api/quickbooks',
 ];
 const globalJson = express.json({ limit: '1mb' });
 app.use((req, res, next) => {
@@ -487,6 +487,7 @@ app.use('/api/admin', express.json({ limit: '2mb' }), adminRoutes); // owner-onl
 app.use('/api/agent', express.json({ limit: '2mb' }), agentRoutes); // sales-agent portal (self-scoped)
 app.use('/api/jpw', express.json({ limit: '20mb' }), jpwRoutes);
 app.use('/api/gdrive', express.json(), gdriveRoutes);
+app.use('/api/quickbooks', express.json(), require('./routes/quickbooksRoutes'));
 app.use('/api/finances', express.json({ limit: '8mb' }), financeRoutes);
 // 40mb: a single receipt can be a ~25 MB file, which is ~34 MB as base64 JSON.
 // (The /batch zip route uses multipart via multer, so this limit doesn't gate it.)
