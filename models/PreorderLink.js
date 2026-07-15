@@ -19,7 +19,12 @@ const commitmentSchema = new mongoose.Schema({
 }, { _id: true });
 
 const preorderLinkSchema = new mongoose.Schema({
-  token:   { type: String, required: true, unique: true, index: true },
+  // Two doors per drop. `token` is the CUSTOMER commit page (fun, FOMO-gated).
+  // `clientToken` is the CLIENT/organizer view (professional: full progress even
+  // before MOQ + the customer link to share) — a separate secret so a customer
+  // can't append their way into the pre-MOQ numbers the FOMO rule hides.
+  token:       { type: String, required: true, unique: true, index: true },
+  clientToken: { type: String, default: '', index: true },
   // Ecosystem links — same identifiers the rest of the Studio rides on.
   companyKey:    { type: String, default: '', index: true },
   projectNumber: { type: String, default: '' },

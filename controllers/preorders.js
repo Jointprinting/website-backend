@@ -83,6 +83,7 @@ async function createPreorder(req, res) {
     const days = b.expiresDays === 0 || b.expiresDays === null ? 0 : Number(b.expiresDays) || DEFAULT_EXPIRES_DAYS;
     const link = await PreorderLink.create({
       token: crypto.randomBytes(12).toString('hex'),
+      clientToken: crypto.randomBytes(12).toString('hex'),
       companyKey, projectNumber, orderId,
       title, note: String(b.note || '').trim().slice(0, 600),
       items,
@@ -101,6 +102,13 @@ async function listPreorders(req, res) {
     if (req.query.orderId) cond.orderId = req.query.orderId;
     if (req.query.companyKey) cond.companyKey = String(req.query.companyKey);
     const links = await PreorderLink.find(cond).sort({ createdAt: -1 }).limit(200).lean();
+    // Lazily mint a clientToken for links created before the two-door split, so
+    // every drop the owner sees has a client link to send. Cheap, idempotent.
+    const missing = links.filter((l) => !l.clientToken);
+    await Promise.all(missing.map((l) => {
+      l.clientToken = crypto.randomBytes(12).toString('hex');
+      return PreorderLink.updateOne({ _id: l._id }, { $set: { clientToken: l.clientToken } });
+    }));
     res.json({
       preorders: links.map((l) => ({
         ...l,
@@ -216,8 +224,41 @@ async function commitPreorder(req, res) {
   }
 }
 
+// GET /api/preorder/client/:clientToken — the CLIENT/organizer view. Unlike the
+// customer page, the organizer sees FULL progress at all times (they're running
+// the drop, the FOMO hiding doesn't apply to them) plus the customer token to
+// share. Still read-only + token-gated — no owner auth, no commitment editing.
+async function getClientPreorder(req, res) {
+  try {
+    const clientToken = String(req.params.clientToken || '').trim();
+    if (!clientToken) return res.status(404).json({ message: 'This link is invalid.', reason: 'invalid' });
+    const link = await PreorderLink.findOne({ clientToken });
+    if (!link) return res.status(404).json({ message: 'This link is invalid or no longer available.', reason: 'invalid' });
+    const logo = link.companyKey
+      ? await ClientLogo.findOne({ companyKey: link.companyKey }).select('imageDataUrl').lean()
+      : null;
+    const t = tally(link.commitments);
+    res.json({
+      title: link.title,
+      note: link.note,
+      items: link.items.map((it) => ({ id: it.id, label: it.label, sizes: it.sizes })),
+      logo: logo ? logo.imageDataUrl : null,
+      open: link.isOpen(),
+      expiresAt: link.expiresAt,
+      moq: link.moq || 0,
+      customerToken: link.token,                 // the link the organizer shares with their people
+      // Full breakdown — the organizer sees everything, MOQ or not.
+      tally: { people: t.people, totalQty: t.totalQty, byItem: t.byItem },
+      moqReached: link.moq > 0 ? t.totalQty >= link.moq : false,
+    });
+  } catch (e) {
+    console.error('[preorder] client read failed:', e.message);
+    res.status(500).json({ message: 'Something went wrong on our end — please try again.' });
+  }
+}
+
 module.exports = {
   createPreorder, listPreorders, updatePreorder,
-  getPublicPreorder, commitPreorder,
+  getPublicPreorder, commitPreorder, getClientPreorder,
   _tally: tally, _cleanItems, _publicProgress: publicProgress,
 };
