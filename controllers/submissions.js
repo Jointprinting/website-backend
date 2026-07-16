@@ -5,7 +5,9 @@
 
 const ContactSubmission = require('../models/ContactSubmission');
 
-const ALLOWED_STATUSES = ['new', 'contacted', 'quoted', 'won', 'lost', 'spam'];
+// Anti-drift: the model owns the status vocabulary (incl. the per-brand
+// webworks/atom pipeline stages) — validate against IT, not a local copy.
+const ALLOWED_STATUSES = ContactSubmission.STATUSES;
 
 /**
  * GET /api/submissions

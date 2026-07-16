@@ -8,7 +8,25 @@
 
 const mongoose = require('mongoose');
 
-const STATUSES = ['new', 'contacted', 'quoted', 'won', 'lost', 'spam'];
+// Lead lifecycle — ONE shared enum (the union), with a per-source subset the
+// UI offers so each brand's inbox reads as its own pipeline:
+//   contact  (JP merch):  new → contacted → quoted → won / lost
+//   webworks (sites):     new → contacted → preview-built → preview-sent → live / churned / lost
+//   atom     (studio):    new → contacted → demo-booked → scoped → onboarding → live / churned / lost
+// 'spam' is shared. The frontend mirrors STATUSES_BY_SOURCE in
+// src/screens/studio/_submissions.js — keep them in sync.
+const STATUSES = [
+  'new', 'contacted', 'quoted', 'won', 'lost', 'spam',
+  // webworks pipeline
+  'preview-built', 'preview-sent', 'live', 'churned',
+  // atom pipeline ('live'/'churned' shared with webworks)
+  'demo-booked', 'scoped', 'onboarding',
+];
+const STATUSES_BY_SOURCE = {
+  contact:  ['new', 'contacted', 'quoted', 'won', 'lost', 'spam'],
+  webworks: ['new', 'contacted', 'preview-built', 'preview-sent', 'live', 'churned', 'lost', 'spam'],
+  atom:     ['new', 'contacted', 'demo-booked', 'scoped', 'onboarding', 'live', 'churned', 'lost', 'spam'],
+};
 
 const ContactSubmissionSchema = new mongoose.Schema({
   name:         { type: String, required: true, trim: true, maxlength: 200 },
@@ -34,6 +52,15 @@ const ContactSubmissionSchema = new mongoose.Schema({
     currentWebsite: { type: String, trim: true, maxlength: 300, default: '' },
     planInterest:   { type: String, trim: true, maxlength: 40,  default: '' },
     serviceArea:    { type: String, trim: true, maxlength: 160, default: '' },
+  },
+  // JP Atom-only lead details (empty otherwise). The /atom/contact form already
+  // asks these — structured here (like `webworks` above) so the inbox can show
+  // fields instead of a notes blob. `notes` still carries the flattened copy for
+  // the email + any surface that only reads notes.
+  atom: {
+    runsOn:        { type: String, trim: true, maxlength: 300, default: '' },  // what they run the shop on today
+    monthlyVolume: { type: String, trim: true, maxlength: 40,  default: '' },  // orders per month
+    interests:     { type: String, trim: true, maxlength: 300, default: '' },  // what it should handle first
   },
 
   selectedProducts: [{
@@ -75,3 +102,4 @@ ContactSubmissionSchema.pre('save', function (next) {
 
 module.exports = mongoose.model('ContactSubmission', ContactSubmissionSchema);
 module.exports.STATUSES = STATUSES;
+module.exports.STATUSES_BY_SOURCE = STATUSES_BY_SOURCE;
