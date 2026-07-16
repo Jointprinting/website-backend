@@ -9,6 +9,15 @@ const { appendClientLog } = require('../services/clientLog');
 const DEFAULT_TTL_DAYS = 7;
 const MAX_TTL_DAYS     = 365;
 
+// Client-facing quote validity (owner decision): a quote is good for
+// QUOTE_VALID_DAYS from when it went out to the client (pushed, else created), and
+// once the client PICKS their options a fresh QUOTE_VALID_DAYS window opens for them
+// to confirm the confirmation page — "an extra week to confirm." This drives the
+// countdown the client sees on the quote/approval page; it is informational and
+// never hard-blocks a returning client (the owner can re-push to reset the clock).
+const QUOTE_VALID_DAYS = 7;
+const addDays = (d, n) => (d ? new Date(new Date(d).getTime() + n * 86400000) : null);
+
 // Default order-tracking timeline. The client sees these (less any with
 // hidden=true) on the same approval link they used to approve. Admin can
 // rename labels, hide irrelevant steps, or add custom ones from the
@@ -444,6 +453,12 @@ const publicGetProject = async (req, res) => {
         confirmation:         published ? _safeConfirmation(order.confirmation) : { items: [], customLines: [] },
         orderDate:            draftHidden ? null : order.orderDate,
         optionsPickedAt:      pickedAtCurrent,
+        // Quote-validity countdown the client sees: the quote is valid for
+        // QUOTE_VALID_DAYS from when it went out (pushed, else created); once they
+        // pick, a fresh window opens to confirm. Absolute timestamps so the client
+        // page just diffs against "now" — no rule duplicated on the frontend.
+        quoteExpiresAt:       addDays(order.quotePushedAt || order.createdAt, QUOTE_VALID_DAYS),
+        confirmExpiresAt:     addDays(pickedAtCurrent, QUOTE_VALID_DAYS),
         paymentMethod:        order.paymentMethod || '',
         hasConfirmation:      published,
         approvalStatus:       currentStatus,
