@@ -46,30 +46,48 @@ const US_STATES = new Set([
 // Resolve a lookbook's ordered pages against the mockup library. Tiles carry
 // whatever the library holds (R2 https URLs after offload, else base64) —
 // the same ship-as-is approach the approval page uses for its mockup strip.
-// `withBack` is public-gallery-only: a legacy non-offloaded back is multi-MB
-// inline base64, and the ADMIN builder never renders backs — shipping them on
-// every debounced autosave PATCH would be pure waste (the library's own
-// summary endpoint strips them for exactly this reason).
-async function resolveTiles(lb, { withBack = false } = {}) {
+//
+// `views` adds the back composite (`data`) + every extra view (`extraViews`:
+// sleeve hits, extra designs, alternate angles) to each tile so a surface can
+// render the whole mockup, not just the front. `urlOnly` then keeps only the
+// R2-URL-backed images — a legacy non-offloaded back/view is multi-MB inline
+// base64, so the ADMIN editor (which PATCH-autosaves on a debounce) takes the
+// URL-only cut to stay light, while the public gallery takes them as-is (it
+// renders legacy inline images too). Front-only callers (the pricing endpoint)
+// omit both and pull nothing heavy.
+const _isUrl = (s) => typeof s === 'string' && /^https?:\/\//i.test(s);
+// Pure shaping of one resolved page (library doc `d` + the lookbook's page
+// entry `m`) into a client tile. Extracted so the view/urlOnly rules are
+// unit-testable — the urlOnly cut is a real invariant (the admin editor
+// autosaves on a debounce and must never carry a multi-MB inline-base64 back
+// or view). `d` null ⇒ the referenced mockup was deleted from the library.
+function shapeTile(m, d, { views = false, urlOnly = false } = {}) {
+  if (!d) return { remoteId: m.remoteId, missing: true, caption: m.caption || '' };
+  const tile = {
+    remoteId: m.remoteId,
+    libraryId: String(d._id),   // for the PDF export (generator resolves by _id)
+    name: d.name || '',
+    mockupNum: (d.pageState && d.pageState.mockupNum) ? String(d.pageState.mockupNum) : '',
+    caption: m.caption || '',
+    front: d.thumbnail || '',
+  };
+  if (views) {
+    const rawBack = d.data || '';
+    const rawExtra = Array.isArray(d.extraViews) ? d.extraViews.filter(Boolean) : [];
+    tile.back = urlOnly ? (_isUrl(rawBack) ? rawBack : '') : rawBack;
+    tile.extraViews = urlOnly ? rawExtra.filter(_isUrl) : rawExtra;
+  }
+  return tile;
+}
+
+async function resolveTiles(lb, opts = {}) {
   const ids = (lb.mockups || []).map((m) => m.remoteId).filter(Boolean);
   if (!ids.length) return [];
-  const fields = `remoteId name client thumbnail pageState.mockupNum${withBack ? ' data' : ''}`;
+  const fields = `remoteId name client thumbnail pageState.mockupNum${opts.views ? ' data extraViews' : ''}`;
   const docs = await StudioLibraryItem.find({ store: 'mockups', remoteId: { $in: ids } })
     .select(fields).lean();
   const byRid = new Map(docs.map((d) => [d.remoteId, d]));
-  return (lb.mockups || []).map((m) => {
-    const d = byRid.get(m.remoteId);
-    if (!d) return { remoteId: m.remoteId, missing: true, caption: m.caption || '' };
-    return {
-      remoteId: m.remoteId,
-      libraryId: String(d._id),   // for the PDF export (generator resolves by _id)
-      name: d.name || '',
-      mockupNum: (d.pageState && d.pageState.mockupNum) ? String(d.pageState.mockupNum) : '',
-      caption: m.caption || '',
-      front: d.thumbnail || '',
-      ...(withBack ? { back: d.data || '' } : {}),
-    };
-  });
+  return (lb.mockups || []).map((m) => shapeTile(m, byRid.get(m.remoteId), opts));
 }
 
 const unseenCount = (lb) => (lb.feedback || []).filter((f) => !f.seenAt).length;
@@ -142,7 +160,7 @@ async function getLookbook(req, res) {
   try {
     const lb = await Lookbook.findById(req.params.id).lean();
     if (!lb) return res.status(404).json({ message: 'Lookbook not found.' });
-    res.json({ lookbook: lb, tiles: await resolveTiles(lb), unseenFeedback: unseenCount(lb) });
+    res.json({ lookbook: lb, tiles: await resolveTiles(lb, { views: true, urlOnly: true }), unseenFeedback: unseenCount(lb) });
   } catch (err) {
     res.status(500).json({ message: 'Lookbook load failed.' });
   }
@@ -163,7 +181,7 @@ async function patchLookbook(req, res) {
     }
     const lb = await Lookbook.findByIdAndUpdate(req.params.id, { $set: set }, { new: true, runValidators: true }).lean();
     if (!lb) return res.status(404).json({ message: 'Lookbook not found.' });
-    res.json({ lookbook: lb, tiles: await resolveTiles(lb) });
+    res.json({ lookbook: lb, tiles: await resolveTiles(lb, { views: true, urlOnly: true }) });
   } catch (err) {
     res.status(500).json({ message: 'Lookbook update failed.' });
   }
@@ -236,7 +254,7 @@ async function publicGetLookbook(req, res) {
     }
 
     const logo = await ClientLogo.findOne({ companyKey: lb.companyKey }).select('imageDataUrl').lean();
-    const tiles = (await resolveTiles(lb, { withBack: true })).filter((t) => !t.missing);
+    const tiles = (await resolveTiles(lb, { views: true })).filter((t) => !t.missing);
     res.json({
       title: lb.title, subtitle: lb.subtitle,
       companyName: lb.companyName,
@@ -246,6 +264,7 @@ async function publicGetLookbook(req, res) {
       mockups: tiles.map((t) => ({
         remoteId: t.remoteId, name: t.name, mockupNum: t.mockupNum,
         caption: t.caption, front: t.front, back: t.back,
+        extraViews: t.extraViews || [],
       })),
       // The client sees the reactions so far (their own prior taps included);
       // internal ack state stays server-side.
@@ -494,4 +513,5 @@ module.exports = {
   publicGetLookbook, publicPostFeedback, publicRequestPricing, publicLookbookPdf,
   // exported for tests
   cleanPricingRequest,
+  shapeTile,
 };
