@@ -98,6 +98,7 @@ router.post('/:id/pos/from-confirmation',  poCtl.createPosFromConfirmation);
 router.put('/pos/:poId',                  poCtl.updatePo);
 router.delete('/pos/:poId',               poCtl.deletePo);
 router.post('/pos/:poId/pdf',             poCtl.poPdf);
+router.post('/pos/:poId/send',            poCtl.sendPo);   // email the PO (+ approved mockups) to a chosen printer contact
 router.post('/:id/mockups/assign',        assignMockupNumber);
 router.post('/:id/mockups/version',       versionMockupNumber);  // "Save as edit" — next version of a colour lane (#150A → #150A2)
 router.post('/:id/mockups/duplicate',     duplicateMockup);   // "Add a variation" — clone into the next letter

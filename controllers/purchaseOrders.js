@@ -13,6 +13,9 @@ const PurchaseOrder = require('../models/PurchaseOrder');
 const Vendor = require('../models/Vendor');
 const Order = require('../models/Order');
 const Transaction = require('../models/Transaction');
+const StudioLibraryItem = require('../models/StudioLibraryItem');
+const sendEmail = require('../utils/sendEmail');
+const { resolveImageBuffer } = require('../utils/pdfImage');
 const { nextNumber, bumpCounterTo, peekNumber } = require('../utils/sequence');
 const { normalizeOrderNumber } = require('./finances');
 const {
@@ -737,20 +740,19 @@ const poCostHistory = async (req, res) => {
 };
 
 // POST /api/orders/pos/:poId/pdf — server-rendered PDF in the house format.
-const poPdf = async (req, res) => {
-  try {
-    if (badId(req.params.poId)) return res.status(404).json({ message: 'PO not found' });
-    const po = await PurchaseOrder.findById(req.params.poId).lean();
-    if (!po) return res.status(404).json({ message: 'PO not found' });
-
+// Render a PO onto a PDFDocument and resolve its bytes as a Buffer (chunks
+// collected off the pdfkit stream). Extracted so BOTH the download route (poPdf)
+// and the email-send flow render the identical PDF. Pure — takes a lean PO doc,
+// touches no req/res.
+function renderPoPdfBuffer(po) {
+  return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'LETTER', margin: 54 });
+    const chunks = [];
+    doc.on('data', (c) => chunks.push(c));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
     const left = doc.page.margins.left;
     const pageW = doc.page.width - left - doc.page.margins.right;
-    const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'po';
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition',
-      `attachment; filename="${slug(po.vendorName)}-x-jp-po-${slug(po.poNumber)}.pdf"`);
-    doc.pipe(res);
 
     const INK = '#111111', MUTED = '#555555', GREEN = '#1a3d2b', LINE = '#dddddd';
 
@@ -891,8 +893,117 @@ const poPdf = async (req, res) => {
       .text(`Grand Total: ${money(po.grandTotal)}`, left, doc.y, { width: pageW, align: 'right' });
 
     doc.end();
+  });
+}
+
+// POST .../pos/:poId/pdf — stream the PO PDF as a download.
+const poPdf = async (req, res) => {
+  try {
+    if (badId(req.params.poId)) return res.status(404).json({ message: 'PO not found' });
+    const po = await PurchaseOrder.findById(req.params.poId).lean();
+    if (!po) return res.status(404).json({ message: 'PO not found' });
+    const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'po';
+    const buf = await renderPoPdfBuffer(po);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${slug(po.vendorName)}-x-jp-po-${slug(po.poNumber)}.pdf"`);
+    return res.send(buf);
   } catch (e) {
     if (!res.headersSent) res.status(500).json({ message: e.message });
+  }
+};
+
+const _esc = (s) => String(s || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// Gather a project's approved mockup images as email attachments — the exact
+// files the client signed off. Prefers the confirmation's explicit snapshots,
+// falls back to the referenced library mockups' front/back/extra views. Every
+// value (base64 or R2 URL) resolves to a Buffer via the shared resolver, so no
+// temp files. Capped so a big multi-design order can't send a 40-file email.
+async function gatherOrderMockupBuffers(order, cap = 12) {
+  if (!order) return [];
+  const out = [];
+  const seen = new Set();
+  const norm = (n) => String(n || '').replace(/^#/, '').replace(/^0+/, '').toUpperCase();
+  const add = async (val, name) => {
+    if (out.length >= cap || !val) return;
+    const key = String(val).slice(0, 160);
+    if (seen.has(key)) return;
+    seen.add(key);
+    try { const buf = await resolveImageBuffer(val); if (buf) out.push({ filename: name, content: buf }); }
+    catch (_) { /* one bad image never blocks the PO email */ }
+  };
+  const items = Array.isArray(order.confirmation && order.confirmation.items) ? order.confirmation.items : [];
+  let n = 1;
+  // 1) explicit approved snapshots / uploads on the confirmation items
+  for (const it of items) {
+    for (const s of (it && it.mockupSnapshots) || []) await add(s && s.dataUrl, `mockup-${n++}.png`);
+    if (it && it.customMockupDataUrl) await add(it.customMockupDataUrl, `mockup-${n++}.png`);
+  }
+  // 2) fall back to the library mockups the items reference by number
+  if (!out.length) {
+    const nums = new Set(items.map((it) => it && norm(it.mockupNum)).filter(Boolean));
+    if (nums.size) {
+      const libs = await StudioLibraryItem.find({ store: 'mockups' })
+        .select('thumbnail data extraViews pageState.mockupNum').lean();
+      for (const m of libs) {
+        if (!nums.has(norm(m.pageState && m.pageState.mockupNum))) continue;
+        await add(m.thumbnail, `mockup-${n++}.png`);
+        await add(m.data, `mockup-${n++}.png`);
+        for (const v of m.extraViews || []) await add(v, `mockup-${n++}.png`);
+      }
+    }
+  }
+  return out;
+}
+
+// POST /api/orders/pos/:poId/send — email the PO (+ optionally the order's
+// approved mockups) to a recipient the OWNER picks. Owner-triggered: the caller
+// supplies the exact `to` (chosen from the printer's contacts, or typed), so
+// nothing ever auto-sends to a guessed address. Reuses the app's SMTP helper.
+const sendPo = async (req, res) => {
+  try {
+    if (badId(req.params.poId)) return res.status(404).json({ message: 'PO not found' });
+    const po = await PurchaseOrder.findById(req.params.poId).lean();
+    if (!po) return res.status(404).json({ message: 'PO not found' });
+    const body = req.body || {};
+    const to = String(body.to || '').trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return res.status(400).json({ message: 'A valid recipient email is required.' });
+    const includeMockups = body.includeMockups !== false;
+
+    const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'po';
+    const pdfBuf = await renderPoPdfBuffer(po);
+    const attachments = [{ filename: `${slug(po.vendorName)}-jp-po-${slug(po.poNumber)}.pdf`, content: pdfBuf, contentType: 'application/pdf' }];
+
+    let mockupCount = 0;
+    if (includeMockups && po.orderId) {
+      const order = await Order.findById(po.orderId).select('confirmation projectNumber companyName').lean();
+      const mocks = await gatherOrderMockupBuffers(order);
+      mockupCount = mocks.length;
+      attachments.push(...mocks);
+    }
+
+    const poNum = po.poNumber || '';
+    const subject = String(body.subject || '').trim() || `Joint Printing PO ${poNum}${po.vendorName ? ` — ${po.vendorName}` : ''}`.trim();
+    const note = String(body.message || '').trim();
+    const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#111;line-height:1.5">`
+      + `<p>Hi${body.contactName ? ` ${_esc(body.contactName)}` : ''},</p>`
+      + `<p>Please find attached our purchase order${poNum ? ` <b>${_esc(poNum)}</b>` : ''}`
+      + `${mockupCount ? ` plus ${mockupCount} approved mockup${mockupCount === 1 ? '' : 's'}` : ''}.</p>`
+      + `${note ? `<p>${_esc(note).replace(/\n/g, '<br>')}</p>` : ''}`
+      + `<p>Thank you,<br>Joint Printing</p></div>`;
+
+    await sendEmail({
+      to,
+      from: process.env.EMAIL_FROM,
+      replyTo: process.env.EMAIL_TO || process.env.EMAIL_FROM,
+      subject,
+      html,
+      attachments,
+    });
+    res.json({ sent: true, to, mockupCount, attachmentCount: attachments.length });
+  } catch (e) {
+    console.error('[po send] failed:', e.message);
+    res.status(500).json({ message: `Could not send the PO: ${e.message}` });
   }
 };
 
@@ -1350,9 +1461,10 @@ const mergeVendors = async (req, res) => {
 
 module.exports = {
   listPos, createPo, createPosFromConfirmation, updatePo, deletePo, listVendors,
-  poCostHistory, poPdf, parseUnitCost, nextPoNumber, getVendor, updateVendor,
+  poCostHistory, poPdf, sendPo, parseUnitCost, nextPoNumber, getVendor, updateVendor,
   searchVendors, vendorDuplicates, mergeVendors,
 };
+module.exports.renderPoPdfBuffer = renderPoPdfBuffer;   // exported for tests
 // Exported for unit tests — pure helpers for the multi-location ship-split PO output.
 module.exports._itemShipSplit = _itemShipSplit;
 module.exports._shipNotes = _shipNotes;
