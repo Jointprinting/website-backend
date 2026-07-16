@@ -45,9 +45,9 @@ const confirmationPdf = async (req, res) => {
     const thumbByNorm = {};
     if (referenced.size > 0) {
       const libs = await StudioLibraryItem.find({ store: 'mockups' })
-        .select('name thumbnail data pageState.mockupNum').lean();
+        .select('name thumbnail data extraViews pageState.mockupNum').lean();
       libs.forEach((m) => {
-        const entry = (m.thumbnail || m.data) ? { front: m.thumbnail, back: m.data } : null;
+        const entry = (m.thumbnail || m.data) ? { front: m.thumbnail, back: m.data, extraViews: Array.isArray(m.extraViews) ? m.extraViews : [] } : null;
         if (!entry) return;
         const k = norm(m.pageState && m.pageState.mockupNum);
         if (k && referenced.has(k)) thumbByNorm[k] = entry;
@@ -223,8 +223,12 @@ const confirmationPdf = async (req, res) => {
       const lib = it.mockupNum ? thumbByNorm[norm(it.mockupNum)] : null;
       // The back composite only ships when the admin opted in (showBack) —
       // unconditionally embedding it put plain blank garment backs on client
-      // docs that the builder preview never showed.
-      const libSides = lib ? (it.showBack ? [lib.front, lib.back] : [lib.front]) : [];
+      // docs that the builder preview never showed. Extra views (sleeve, extra
+      // designs, alternate angles) always ride along, matching the on-screen
+      // builder doc + the client ApprovalView so all three surfaces agree.
+      const libSides = lib
+        ? [lib.front, it.showBack ? lib.back : null, ...(lib.extraViews || [])].filter(Boolean)
+        : [];
       const libBufs = (await Promise.all(libSides.map(v => resolveImageBuffer(v)))).filter(Boolean);
       const imgs   = snaps.length ? snaps : (legacy ? [legacy] : libBufs);
       if (imgs.length) {
