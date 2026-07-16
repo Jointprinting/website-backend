@@ -1,0 +1,221 @@
+{
+  "meta": {
+    "source": "Print Hybrid \u2014 Services & Pricing 2026",
+    "capturedOn": "2026-07-16",
+    "sourcePdf": "",
+    "currency": "USD"
+  },
+  "printer": {
+    "name": "Print Hybrid",
+    "state": "TX",
+    "location": "Lubbock, TX",
+    "capabilities": [
+      "digital_squeegee",
+      "screen_printing",
+      "dtf"
+    ],
+    "contacts": [
+      {
+        "name": "Sean Kirkpatrick",
+        "email": "sean@printhybrid.com",
+        "primary": true
+      },
+      {
+        "name": "Carcie",
+        "email": "art@printhybrid.com",
+        "role": "art"
+      }
+    ],
+    "contact": {
+      "phone": "806-500-9396",
+      "dropShipAddress": "405 E County Rd 7300, Lubbock, TX 79404",
+      "distributor": "S&S Activewear"
+    }
+  },
+  "screenPrinting": {
+    "model": "qty_x_colors",
+    "unit": "per_piece_per_location",
+    "setup": "included",
+    "setupNote": "Screen/setup fees are baked into the per-garment price (owner-confirmed).",
+    "darkAddsUnderbaseColor": true,
+    "colorColumns": [
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8"
+    ],
+    "tiers": [
+      {
+        "minQty": 48,
+        "label": "48-72",
+        "prices": [
+          4.0,
+          4.5,
+          5.1,
+          5.7,
+          7.0,
+          7.8,
+          12.0,
+          16.0
+        ]
+      },
+      {
+        "minQty": 72,
+        "label": "72-144",
+        "prices": [
+          2.0,
+          2.25,
+          2.55,
+          2.85,
+          3.5,
+          3.9,
+          6.0,
+          8.0
+        ]
+      },
+      {
+        "minQty": 144,
+        "label": "144-287",
+        "prices": [
+          1.65,
+          1.9,
+          2.05,
+          2.25,
+          2.5,
+          2.9,
+          3.25,
+          3.65
+        ]
+      },
+      {
+        "minQty": 288,
+        "label": "288-575",
+        "prices": [
+          1.1,
+          1.3,
+          1.45,
+          1.7,
+          2.0,
+          2.3,
+          2.75,
+          3.0
+        ]
+      },
+      {
+        "minQty": 576,
+        "label": "576-1151",
+        "prices": [
+          1.0,
+          1.1,
+          1.3,
+          1.5,
+          1.8,
+          2.1,
+          2.4,
+          2.8
+        ]
+      },
+      {
+        "minQty": 1152,
+        "label": "1152-2303",
+        "prices": [
+          0.95,
+          1.05,
+          1.15,
+          1.4,
+          1.65,
+          1.95,
+          2.25,
+          2.5
+        ]
+      },
+      {
+        "minQty": 2304,
+        "label": "2304+",
+        "prices": [
+          0.85,
+          0.95,
+          1.05,
+          1.3,
+          1.6,
+          1.85,
+          2.15,
+          2.45
+        ]
+      }
+    ]
+  },
+  "digitalSqueegee": {
+    "model": "qty_only",
+    "unit": "per_piece",
+    "fullColor": true,
+    "tiers": [
+      {
+        "minQty": 48,
+        "price": 8.0
+      },
+      {
+        "minQty": 72,
+        "price": 6.0
+      },
+      {
+        "minQty": 144,
+        "price": 4.0
+      },
+      {
+        "minQty": 288,
+        "price": 3.4
+      },
+      {
+        "minQty": 576,
+        "price": 2.85
+      },
+      {
+        "minQty": 864,
+        "price": 2.5
+      },
+      {
+        "minQty": 1152,
+        "price": 2.2
+      },
+      {
+        "minQty": 2304,
+        "price": 2.0
+      }
+    ]
+  },
+  "dtf": {
+    "model": "gang_sheet_flat",
+    "sheetSize": "22x12in",
+    "pricePerSheet": 6.5
+  },
+  "addOns": {
+    "oneTime": {
+      "colorChange": 20,
+      "blindBox": 3
+    },
+    "perGarment": {
+      "bleedBlocker": 0.25,
+      "specialtyInk": 0.35,
+      "sleeveLocation": 0.75,
+      "pocketLocation": 0.75,
+      "fleece": 0.35,
+      "folding": 0.2,
+      "printedNeckLabel": 0.5,
+      "unbagging": 0.1,
+      "heatPress": 2.0
+    }
+  },
+  "terms": {
+    "preProductionSample": 150,
+    "artFrom": 50,
+    "includes": "1 mockup + 1 revision",
+    "creditCardFee": 0.03,
+    "quoteValidWeeks": 2,
+    "overage": "3% per location or +2/size, whichever greater"
+  }
+}
