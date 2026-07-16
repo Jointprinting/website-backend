@@ -94,6 +94,18 @@ async function getByRemoteIds(req, res) {
   }
 }
 
+// Anti-clobber id resolver (pure, unit-tested). When a mockup save's remoteId
+// already holds a DIFFERENT mockup number, return a STABLE derived id
+// (`<id>::<num>`) so the save can't overwrite the original — and repeated saves
+// of the same duplicate converge on that one forked doc (idempotent). No
+// conflict (same number, or a number is missing) → the id is unchanged.
+function resolveMockupRemoteId(remoteId, incomingNum, existingNum) {
+  if (!incomingNum || !existingNum) return remoteId;   // nothing to compare against
+  if (incomingNum === existingNum) return remoteId;    // legit re-save of the same mockup
+  const suffix = `::${incomingNum}`;
+  return String(remoteId).endsWith(suffix) ? remoteId : `${remoteId}${suffix}`;
+}
+
 async function saveItem(req, res) {
   try {
     const { store } = req.params;
@@ -119,6 +131,28 @@ async function saveItem(req, res) {
         }
       } catch (e) {
         console.warn('[studioLibrary] R2 upload failed, storing inline:', e.message);
+      }
+    }
+
+    // BULLETPROOF anti-clobber (mockups): a save whose remoteId already holds a
+    // DIFFERENT mockup number means the client reused a source mockup's id for a
+    // new/duplicated file — seen when the studio duplicates client-side or an
+    // autosave fires as you navigate away. Writing it through would DESTROY the
+    // original, so we never do: route the save to a stable derived id
+    // (`<id>::<num>`) instead. The original survives untouched, and repeated
+    // saves of the same duplicate converge on the one forked doc (idempotent —
+    // no proliferation). Same number (or none) → the normal re-save upsert.
+    if (remoteId && store === 'mockups') {
+      const incomingNum = pageState && pageState.mockupNum ? String(pageState.mockupNum).trim() : '';
+      if (incomingNum) {
+        const existing = await StudioLibraryItem.findOne({ store, remoteId }).select('pageState.mockupNum').lean();
+        const existingNum = existing && existing.pageState && existing.pageState.mockupNum
+          ? String(existing.pageState.mockupNum).trim() : '';
+        const resolved = resolveMockupRemoteId(remoteId, incomingNum, existingNum);
+        if (resolved !== remoteId) {
+          console.warn(`[studioLibrary] remoteId ${remoteId} holds #${existingNum}; incoming save is #${incomingNum} — routing to ${resolved} so the original mockup survives.`);
+          remoteId = resolved;
+        }
       }
     }
 
@@ -197,4 +231,4 @@ async function deleteByRemoteId(req, res) {
   }
 }
 
-module.exports = { listItems, getByRemoteIds, saveItem, deleteItem, deleteByRemoteId, backfillRemoteIds };
+module.exports = { listItems, getByRemoteIds, saveItem, deleteItem, deleteByRemoteId, backfillRemoteIds, resolveMockupRemoteId };
