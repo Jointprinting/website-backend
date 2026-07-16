@@ -383,8 +383,14 @@ function buildUnifiedBoard({ clients, orders, withPlacedOrders, dealValueByKey, 
     leadSource:   c.leadSource || '',
     isCustomer:   placed.has(c.companyKey),
   });
+  let coldPool = 0; // engine-managed cold prospects hidden from the board (not warm yet)
   for (const c of clients || []) {
     const stage = c && c.stage;
+    // The engine's cold-outreach POOL is NOT the owner's board work — hide it from the
+    // pipeline (the SAME isEngineManagedCold gate the cadence cockpit + attention feed
+    // already use) so the board shows real leads, not thousands of never-contacted,
+    // scraped prospects. A genuine reply flips the lead 'warm' and it reappears here.
+    if (isEngineManagedCold(c) && BOARD_LEAD_STAGES.includes(stage)) { coldPool++; continue; }
     if (BOARD_LEAD_STAGES.includes(stage)) {
       // Suppress the lead card if the company already has a live order — it shows
       // as an order card instead (no double-count, no leftover lead).
@@ -448,7 +454,10 @@ function buildUnifiedBoard({ clients, orders, withPlacedOrders, dealValueByKey, 
   }
 
   const groups = ALL_BOARD_COLUMNS.map((c) => byCol[c]);
-  const summary = summarizeBoard(groups);
+  // coldPool = how many cold-outreach prospects the engine is working behind the
+  // scenes (hidden from the board until they reply). Surfaced as a quiet stat so the
+  // owner can see the pipeline is full without it burying the real leads.
+  const summary = { ...summarizeBoard(groups), coldPool };
   return { groups, summary, columns: { active: BOARD_COLUMNS, closed: BOARD_CLOSED_COLUMNS } };
 }
 
