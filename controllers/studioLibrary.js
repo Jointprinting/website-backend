@@ -38,7 +38,12 @@ async function listItems(req, res) {
     // `data` (the BACK composite, an R2 URL post-migration) rides along so
     // the confirmation builder can offer + preview the back side; without it
     // the "Show back" toggle could never appear.
-    if (summary) q.select('store name thumbnail data client savedAt remoteId pageState.mockupNum pageState.projectNumber');
+    // `extraViews` (pages 2+ front composites) are R2 URLs — tiny strings, not
+    // base64 — so they ride in the summary payload cheaply. Without them the
+    // Studio-side consumers (Confirmation, Quoter, Lookbook) can only ever show
+    // the front + back; the public Approval page already gets them via its own
+    // payload. Shipping them here lets every surface render every view.
+    if (summary) q.select('store name thumbnail data client savedAt remoteId extraViews pageState.mockupNum pageState.projectNumber');
     const items = await q.lean();
     if (summary) {
       // Keep the summary payload light: R2-hosted backs ship as URLs, but a
@@ -51,6 +56,13 @@ async function listItems(req, res) {
           delete it.data;
         } else if (it.data) {
           it.hasBack = true;
+        }
+        // Same rule for extra views: R2 URLs stay (tiny), but a legacy
+        // inline-base64 view (multi-MB, pre-R2) would blow up the summary —
+        // drop those, keeping only the URL-backed ones. Full-doc surfaces
+        // (PDF/approval) still render every view from the un-stripped document.
+        if (Array.isArray(it.extraViews)) {
+          it.extraViews = it.extraViews.filter(v => typeof v === 'string' && /^https?:\/\//i.test(v));
         }
       });
     }
