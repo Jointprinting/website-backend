@@ -24,6 +24,11 @@ const OutreachEnrollment = require('../models/OutreachEnrollment');
 const { deriveCompanyKey, PLACED_STATUSES } = require('../models/Order');
 const PurchaseOrder = require('../models/PurchaseOrder');
 const Transaction   = require('../models/Transaction');
+// Design assets that hang off a company: its logo (one per companyKey) and every
+// mockup made for it (StudioLibraryItem store='mockups'). Surfaced on the company
+// page's Design Library, deep-linked to the order each mockup belongs to.
+const ClientLogo        = require('../models/ClientLogo');
+const StudioLibraryItem = require('../models/StudioLibraryItem');
 // REUSE the finance definitions verbatim — the company money summary must match
 // /api/finances exactly (same revenue/COGS/profit/margin math, same order-number
 // normalization). Never re-derive finance numbers here.
@@ -1395,6 +1400,67 @@ async function companyFinance(orders) {
 }
 
 // GET /api/crm/:companyKey — one record (get-or-create stub) + its Orders.
+// Normalize a mockup number the SAME way the auto-linker does (strip #, leading
+// zeros, upper) so an order's "#000150A" and a mockup's "150a" line up. Pure.
+function normMockupNum(n) {
+  return String(n || '').replace(/^#/, '').replace(/^0+/, '').toUpperCase();
+}
+
+const escapeRegExp = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// What to pull for a company's design library: the distinct mockup numbers its
+// orders reference, and the distinct name candidates (companyName / clientName /
+// akas) for the client-name fallback match. Pure — the caller turns these into the
+// StudioLibraryItem query. Exported for tests.
+function designLibraryQuery(orders, client) {
+  const rawNums = [...new Set(
+    (orders || []).flatMap((o) => (o.mockupNumbers || [])).filter(Boolean),
+  )];
+  const nameSet = [...new Set(
+    [client && client.companyName, client && client.clientName, ...((client && client.akas) || [])]
+      .map((s) => String(s || '').trim()).filter(Boolean),
+  )];
+  return { rawNums, nameSet };
+}
+
+// Turn the raw docs into the client-facing { logos, mockups } payload: each mockup
+// deep-linked to the first order that references its number (normalized match),
+// de-duplicated by _id, front thumbnail only. Pure — no DB. Exported for tests.
+function assembleDesignLibrary({ orders, mockDocs, logoDoc }) {
+  const mockupToOrder = new Map();   // normalized mockupNum → { orderNumber, projectNumber }
+  (orders || []).forEach((o) => (o.mockupNumbers || []).forEach((n) => {
+    const k = normMockupNum(n);
+    if (k && !mockupToOrder.has(k)) {
+      mockupToOrder.set(k, { orderNumber: o.orderNumber || '', projectNumber: o.projectNumber || '' });
+    }
+  }));
+
+  const seen = new Set();
+  const mockups = [];
+  (mockDocs || []).forEach((m) => {
+    const id = String(m._id);
+    if (seen.has(id)) return;
+    seen.add(id);
+    const num  = (m.pageState && m.pageState.mockupNum) || '';
+    const link = mockupToOrder.get(normMockupNum(num)) || null;
+    mockups.push({
+      _id:           m._id,
+      name:          m.name || '',
+      mockupNum:     num,
+      thumbnail:     m.thumbnail || '',   // front composite (R2 URL or small base64)
+      savedAt:       m.savedAt || null,
+      orderNumber:   link ? link.orderNumber : '',
+      projectNumber: link ? link.projectNumber : '',
+    });
+  });
+
+  const logos = logoDoc
+    ? [{ _id: logoDoc._id, imageDataUrl: logoDoc.imageDataUrl || '', uploadedAt: logoDoc.uploadedAt || null }]
+    : [];
+
+  return { logos, mockups };
+}
+
 async function getOne(req, res) {
   try {
     const key = req.params.companyKey;
@@ -1436,7 +1502,7 @@ async function getOne(req, res) {
 
     const orders = await Order.find({ companyKey: key, archived: { $ne: true } })
       .sort({ orderDate: -1, createdAt: -1 })
-      .select('projectNumber orderNumber status paid totalValue cogs orderDate createdAt')
+      .select('projectNumber orderNumber status paid totalValue cogs orderDate createdAt mockupNumbers')
       .lean();
     // ALL live orders (incl. quotes) are returned to the UI list above; only the
     // isCustomer flag below keys off a real PLACED order. Archived orders are
@@ -1505,7 +1571,36 @@ async function getOne(req, res) {
       });
     }
 
-    res.json({ client: { ...client, isCustomer }, orders, pos, finance, isCustomer, outreach });
+    // ── Design library ───────────────────────────────────────────────────────────
+    // Every visual asset tied to this company — its logo(s) and every mockup made
+    // for it — surfaced on the company page and deep-linked back to the order each
+    // mockup lives on. Mockups are matched TWO ways so nothing is orphaned:
+    //   • by order linkage — a mockup whose number is referenced by one of this
+    //     company's orders (Order.mockupNumbers[]) belongs here AND carries that
+    //     order's number for a one-tap "open the order" jump.
+    //   • by client name — a mockup saved in the Studio under this company's name
+    //     or an aka but not yet attached to an order still shows (unlinked), so
+    //     work-in-progress art isn't invisible.
+    // The DB query (which mockups to pull) and the linking math live in the pure,
+    // unit-tested helpers below so the "how" stays testable without a DB.
+    const { rawNums, nameSet } = designLibraryQuery(orders, client);
+    const orClauses = [];
+    if (rawNums.length)  orClauses.push({ 'pageState.mockupNum': { $in: rawNums } });
+    if (nameSet.length)  orClauses.push({ client: { $in: nameSet.map((n) => new RegExp(`^${escapeRegExp(n)}$`, 'i')) } });
+
+    const mockDocs = orClauses.length
+      ? await StudioLibraryItem.find({ store: 'mockups', $or: orClauses })
+          .select('name client pageState.mockupNum thumbnail savedAt createdAt remoteId')
+          .sort({ savedAt: -1 })
+          .lean()
+      : [];
+    // One logo per company (archived rows already excluded by the model's live scope).
+    const logoDoc = await ClientLogo.findOne({ companyKey: key })
+      .select('imageDataUrl uploadedAt').lean();
+
+    const designLibrary = assembleDesignLibrary({ orders, mockDocs, logoDoc });
+
+    res.json({ client: { ...client, isCustomer }, orders, pos, finance, isCustomer, outreach, designLibrary });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -3009,6 +3104,8 @@ module.exports = {
   matchCandidates,
   migrateRetiredStages,
   // exported for tests / reuse
+  designLibraryQuery,
+  assembleDesignLibrary,
   promotableFrom,
   sanitizeContacts,
   rankMatchCandidates,
