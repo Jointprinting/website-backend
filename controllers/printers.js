@@ -17,12 +17,16 @@ async function listPrinters(req, res) {
   try {
     const shipTo = String(req.query.shipToState || '').trim().toUpperCase();
     const printers = await Printer.find({ active: true })
-      .select('key name state location capabilities catalogEffective notes').lean();
+      .select('key name state location capabilities catalogEffective notes contacts capturedOn pricingReviewedOn sourcePdfUrl').lean();
     res.json({
       printers: printers.map((p) => ({
         ...p,
         // Nexus eligibility only means something once a ship-to state is known.
+        // We surface it, never hard-block — same-state printers grey out with a
+        // reason on the client, they're never hidden.
         eligible: shipTo ? (String(p.state).toUpperCase() !== shipTo) : null,
+        // Yearly re-verify nudge: is this sheet more than a year past its capture?
+        reviewDue: Printer.pricingReviewDue(p),
       })),
       shipToState: shipTo || null,
     });
@@ -50,17 +54,26 @@ async function seedPrinters() {
     const p = raw.printer || {};
     const key = String(f.replace(/^printerCatalog-/, '').replace(/\.json$/, '')).toLowerCase();
     const { printer, meta, ...catalogSections } = raw;
+    // Never clobber owner edits: contacts + the pricing-review stamp are
+    // hand-editable in the app, so seed them ONLY on first insert ($setOnInsert),
+    // while pricing/state/catalog always refresh from the committed sheet ($set).
+    const contacts = Array.isArray(p.contacts) ? p.contacts : [];
     await Printer.updateOne(
       { key },
-      { $set: {
-        name: p.name || key,
-        state: p.state || '',
-        location: p.location || '',
-        contact: p.contact || null,
-        capabilities: Array.isArray(p.capabilities) ? p.capabilities : [],
-        catalog: catalogSections,
-        catalogEffective: (meta && (meta.revisedEffective || meta.effective)) || '',
-      } },
+      {
+        $set: {
+          name: p.name || key,
+          state: p.state || '',
+          location: p.location || '',
+          contact: p.contact || null,
+          capabilities: Array.isArray(p.capabilities) ? p.capabilities : [],
+          catalog: catalogSections,
+          catalogEffective: (meta && (meta.revisedEffective || meta.effective)) || '',
+          capturedOn: (meta && meta.capturedOn) || '',
+          sourcePdfUrl: (meta && meta.sourcePdf) || p.sourcePdfUrl || '',
+        },
+        $setOnInsert: { contacts },
+      },
       { upsert: true },
     );
     seeded += 1;
