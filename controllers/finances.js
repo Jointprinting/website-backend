@@ -491,11 +491,43 @@ const update = async (req, res) => {
 };
 const remove = async (req, res) => {
   try {
-    await Transaction.findByIdAndDelete(req.params.id);
-    // Tidy up: delete any auto Processing Fee that was linked to this payment, so a
-    // removed payment doesn't leave an orphan fee expense skewing the order's cost.
-    await Transaction.deleteMany({ feeForTxn: String(req.params.id), source: 'fee:auto' });
-    res.json({ ok: true });
+    // Soft-delete (house rule: money history is never destroyed). Archive the row
+    // instead of dropping it — it leaves every P&L/report read (the model's query
+    // guard excludes archived), so the owner sees it disappear exactly as before, but
+    // the record is preserved and restorable via POST /transactions/:id/restore.
+    const t = await Transaction.findByIdAndUpdate(
+      req.params.id,
+      { $set: { archived: true, archivedAt: new Date() } },
+      { new: true },
+    );
+    if (!t) return res.status(404).json({ message: 'Not found' });
+    // Archive (not delete) the auto Processing Fee linked to this payment, so a
+    // removed payment doesn't leave an orphan fee expense skewing the order's cost —
+    // and the fee comes back with its parent on restore.
+    await Transaction.updateMany(
+      { feeForTxn: String(req.params.id), source: 'fee:auto' },
+      { $set: { archived: true, archivedAt: new Date() } },
+    );
+    res.json({ ok: true, archived: true });
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+
+// POST /api/finances/transactions/:id/restore — undo a soft-delete. Un-archives the
+// row (and its linked auto Processing Fee) so it reappears in every report exactly
+// where it was. 404 if the id isn't an archived transaction (nothing to restore).
+const restore = async (req, res) => {
+  try {
+    const t = await Transaction.findOneAndUpdate(
+      { _id: req.params.id, archived: true },
+      { $set: { archived: false, archivedAt: null } },
+      { new: true },
+    );
+    if (!t) return res.status(404).json({ message: 'Not found or not archived' });
+    await Transaction.updateMany(
+      { feeForTxn: String(req.params.id), source: 'fee:auto' },
+      { $set: { archived: false, archivedAt: null } },
+    );
+    res.json({ ok: true, transaction: t });
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
@@ -1743,7 +1775,7 @@ const njSalesTaxFiled = async (req, res) => {
   }
 };
 
-module.exports = { importCsv, list, create, update, remove, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears, backfillTransactionLinks, migrateRenamedCategories, config, addCategory, removeCategory, njSalesTax, njSalesTaxFiled, njAnnualReport, njAnnualReportFiled };
+module.exports = { importCsv, list, create, update, remove, restore, summary, byOrder, byMonth, byClient, exportCsv, orderActuals, paymentGaps, missingReceipts, resyncYears, backfillTransactionLinks, migrateRenamedCategories, config, addCategory, removeCategory, njSalesTax, njSalesTaxFiled, njAnnualReport, njAnnualReportFiled };
 module.exports.normalizeCategoryName = normalizeCategoryName;
 module.exports.categoriesWithCustom = categoriesWithCustom;
 module.exports.enrichTransactionLinks = enrichTransactionLinks;

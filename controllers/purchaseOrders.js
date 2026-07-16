@@ -16,7 +16,7 @@ const Transaction = require('../models/Transaction');
 const { nextNumber, bumpCounterTo, peekNumber } = require('../utils/sequence');
 const { normalizeOrderNumber } = require('./finances');
 const {
-  vendorKey, lineKey, chosenQuoteLines, costLineFromQuoteLine, costLineFromConfItem, buildPoLines,
+  vendorKey, findPoNumberClash, lineKey, chosenQuoteLines, costLineFromQuoteLine, costLineFromConfItem, buildPoLines,
 } = require('../utils/poCost');
 const {
   vendorMatchKey, isRealVendorName, groupVendorDuplicates,
@@ -485,6 +485,18 @@ const updatePo = async (req, res) => {
     const numberChanged = String(po.poNumber || '') !== String(prev.poNumber || '');
     if (numberChanged && po.poNumber) await bumpCounterTo('po', po.poNumber, po.vendorName);
 
+    // Guard the per-vendor uniqueness the numbering relies on: a hand-typed number
+    // can duplicate one a LIVE PO for the same printer already uses (the counter bump
+    // only protects future AUTO assignments). Warn — non-blocking, like the zero-cost
+    // warning on create — since the owner may be deliberately mirroring a printer's
+    // real doc #, but never let the collision pass silently.
+    let warning;
+    if (numberChanged && po.poNumber) {
+      const livePos = await PurchaseOrder.find({ archived: { $ne: true } }).select('poNumber vendorName').lean();
+      const clash = findPoNumberClash({ _id: po._id, poNumber: po.poNumber, vendorName: po.vendorName }, livePos);
+      if (clash) warning = `PO ${po.poNumber} is already used for ${po.vendorName} — two POs now share that number.`;
+    }
+
     if (po.vendorName) {
       // Fill-blanks-only: profile fields (contact/address/ship) are edited on the
       // Vendor CARD and must NOT be clobbered with a PO's empty values — re-saving
@@ -503,7 +515,7 @@ const updatePo = async (req, res) => {
         { upsert: true },
       ).catch(() => { /* contact book is best-effort */ });
     }
-    res.json(po);
+    res.json(warning ? { ...po, warning } : po);
   } catch (e) {
     res.status(500).json({ message: e.message });
   }

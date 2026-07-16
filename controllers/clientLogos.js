@@ -40,10 +40,14 @@ const upsertLogo = async (req, res) => {
       catch (e) { console.warn('[clientLogos] R2 upload failed, storing inline:', e.message); }
     }
 
+    // withArchived so an existing archived logo for this company is REVIVED (the
+    // companyKey is unique across archived+live, so a plain upsert would otherwise
+    // fail to see the archived doc and collide on insert). Re-uploading clears the
+    // archived flag — a fresh logo is a live logo.
     const logo = await ClientLogo.findOneAndUpdate(
       { companyKey },
-      { $set: { companyKey, companyName, imageDataUrl: imageValue, uploadedAt: new Date() } },
-      { upsert: true, new: true, setDefaultsOnInsert: true },
+      { $set: { companyKey, companyName, imageDataUrl: imageValue, uploadedAt: new Date(), archived: false, archivedAt: null, archivedReason: '', mergedInto: '' } },
+      { upsert: true, new: true, setDefaultsOnInsert: true, withArchived: true },
     );
     res.json({ logo });
   } catch (e) {
@@ -52,10 +56,17 @@ const upsertLogo = async (req, res) => {
 };
 
 // DELETE /api/client-logos/:companyKey
+// Soft-delete (house rule): archive the logo, don't destroy it. It drops out of the
+// list + every client-facing lookup (all reads exclude archived) so the owner sees it
+// disappear as before, but re-uploading the same company revives the row.
 const deleteLogo = async (req, res) => {
   try {
-    const result = await ClientLogo.deleteOne({ companyKey: req.params.companyKey });
-    res.json({ deleted: result.deletedCount });
+    const logo = await ClientLogo.findOneAndUpdate(
+      { companyKey: req.params.companyKey },
+      { $set: { archived: true, archivedAt: new Date(), archivedReason: 'manual' } },
+      { new: true },
+    ).select('_id').lean();
+    res.json({ deleted: logo ? 1 : 0, archived: !!logo });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }

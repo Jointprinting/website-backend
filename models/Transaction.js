@@ -97,6 +97,14 @@ const TransactionSchema = new mongoose.Schema({
   // owner can always see what was combined and a revert has the originals on hand.
   // Empty unless this row is a merge survivor.
   mergedFrom:  { type: [mongoose.Schema.Types.Mixed], default: [] },
+  // Soft-delete (house rule: money history is never hard-deleted). Deleting a
+  // transaction sets archived:true instead of dropping the row — it leaves every
+  // money read (a query guard excludes archived on all find/aggregate; see below)
+  // so the owner sees it disappear exactly as before, but the record is preserved and
+  // restorable via POST /api/finances/transactions/:id/restore. Default false → every
+  // legacy/live row reads exactly as before.
+  archived:    { type: Boolean, default: false, index: true },
+  archivedAt:  { type: Date, default: null },
 }, { timestamps: true });
 
 // Keep `year` in sync with `date` so reports can filter cheaply.
@@ -119,6 +127,12 @@ TransactionSchema.pre('findOneAndUpdate', function syncYearOnUpdate(next) {
   }
   next();
 });
+
+// Soft-delete guard: every find/aggregate excludes archived rows unless the caller
+// explicitly constrains `archived` or passes { withArchived: true }. This is what
+// keeps a soft-deleted payment out of the P&L, per-order margin, exports, dedupe,
+// reconcile, receipt-matching, signals and CRM reads without hand-filtering each one.
+require('../utils/archiveScope').applyLiveScope(TransactionSchema);
 
 TransactionSchema.statics.CATEGORIES = CATEGORIES;
 TransactionSchema.statics.COGS_CATEGORIES = COGS_CATEGORIES;

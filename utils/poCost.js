@@ -33,6 +33,30 @@ const money = (v) =>
 // used to GROUP a PO is the same key used to NUMBER it and to SKIP it.
 const vendorKey = (s) => String(s == null ? '' : s).trim().replace(/\s+/g, ' ').toLowerCase();
 
+// Numeric prefix of a PO number ("#007" → 7, "22-1" → 22, "135" → 135). Matches
+// utils/sequence.js numOf so a hand-typed number is compared the exact way it is
+// assigned + counter-bumped.
+const poNumOf = (v) => parseInt(String(v == null ? '0' : v).replace(/^#/, '').split('-')[0], 10) || 0;
+
+// Does a candidate PO number collide with an EXISTING one for the SAME vendor?
+// Per-vendor uniqueness is the invariant numbering + Drive reconciliation rely on:
+// each printer has its own sequence, so two live POs for Heritage both numbered #005
+// make every "#005" reference ambiguous. The auto-counter bump stops FUTURE
+// auto-assignments from colliding; this catches a number the owner TYPED that a live
+// PO already uses. Pure (no DB): the caller passes the candidate and the live POs
+// (archived excluded upstream). Returns the clashing PO, or null. Self is skipped by
+// _id so re-saving a PO without changing its number never flags itself.
+function findPoNumberClash(candidate, existingPos) {
+  const want = poNumOf(candidate && candidate.poNumber);
+  const vk = vendorKey(candidate && candidate.vendorName);
+  if (!want || !vk) return null;
+  const selfId = candidate && candidate._id != null ? String(candidate._id) : null;
+  return (existingPos || []).find((p) => p
+    && String(p._id) !== selfId
+    && vendorKey(p.vendorName) === vk
+    && poNumOf(p.poNumber) === want) || null;
+}
+
 // Selection key for a confirmation item ↔ quote line match and for the
 // "+From quote" dedupe: style + color + print variant. Two lines that differ
 // only by print type/decoration are DISTINCT and must not collapse (H4).
@@ -164,6 +188,8 @@ function buildPoLines(costLines, opts) {
 
 module.exports = {
   vendorKey,
+  poNumOf,
+  findPoNumberClash,
   lineKey,
   chosenQuoteLines,
   costLineFromQuoteLine,
