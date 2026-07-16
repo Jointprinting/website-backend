@@ -57,6 +57,7 @@ router.get('/order-reconcile/status', orderReconcile.status);
 router.get('/transactions', ctl.list);
 router.post('/transactions', ctl.create);
 router.put('/transactions/:id', ctl.update);
-router.delete('/transactions/:id', ctl.remove);
+router.delete('/transactions/:id', ctl.remove);          // soft-delete (archive, restorable)
+router.post('/transactions/:id/restore', ctl.restore);   // undo a soft-delete
 
 module.exports = router;

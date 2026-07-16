@@ -1017,24 +1017,34 @@ const mergeCompany = async (req, res) => {
       { $set: { client: to } },
     );
 
-    // Consolidate logos: if 'from' has a logo and 'to' doesn't, move it; else
-    // drop the 'from' logo so it can't shadow the 'to' logo by companyKey.
+    // Consolidate logos: if 'from' has a logo and 'to' doesn't, move it; else the
+    // 'from' logo would shadow the 'to' logo by companyKey. Either way the losing
+    // 'from' logo is ARCHIVED, not destroyed (house rule) — the merge is recoverable,
+    // and re-creating the old company revives its logo.
     const fromKey = deriveCompanyKey(from, '');
     const toKey   = deriveCompanyKey(to, '');
     const ClientLogo = require('../models/ClientLogo');
     let logosMerged = 0;
     if (fromKey && fromKey !== toKey) {
       const [fromLogo, toLogo] = await Promise.all([
-        ClientLogo.findOne({ companyKey: fromKey }),
-        ClientLogo.findOne({ companyKey: toKey }),
+        ClientLogo.findOne({ companyKey: fromKey }),        // live only (guard)
+        ClientLogo.findOne({ companyKey: toKey }),          // live only (guard)
       ]);
       if (fromLogo && !toLogo) {
-        await ClientLogo.create({ companyKey: toKey, companyName: to,
-          imageDataUrl: fromLogo.imageDataUrl, uploadedAt: new Date() });
+        // Upsert (revive-safe): an archived logo may already sit at toKey — reuse it
+        // rather than colliding on the unique companyKey with a plain create().
+        await ClientLogo.findOneAndUpdate(
+          { companyKey: toKey },
+          { $set: { companyKey: toKey, companyName: to, imageDataUrl: fromLogo.imageDataUrl, uploadedAt: new Date(), archived: false, archivedAt: null, archivedReason: '', mergedInto: '' } },
+          { upsert: true, new: true, setDefaultsOnInsert: true, withArchived: true },
+        );
         logosMerged = 1;
       }
       if (fromLogo) {
-        await ClientLogo.deleteOne({ companyKey: fromKey });
+        await ClientLogo.updateOne(
+          { companyKey: fromKey },
+          { $set: { archived: true, archivedAt: new Date(), archivedReason: 'merged', mergedInto: toKey } },
+        );
       }
     }
 

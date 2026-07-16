@@ -17,7 +17,7 @@ const assert = require('node:assert/strict');
 
 const poCost = require('../../utils/poCost');
 const {
-  vendorKey, lineKey, chosenQuoteLines, costLineFromQuoteLine, costLineFromConfItem, buildPoLines,
+  vendorKey, poNumOf, findPoNumberClash, lineKey, chosenQuoteLines, costLineFromQuoteLine, costLineFromConfItem, buildPoLines,
 } = poCost;
 const {
   parseUnitCost, _seedFromOrder, _seedPoForGroup, _groupConfBySupplier, _quoteLineIndex,
@@ -33,6 +33,39 @@ test('vendorKey normalizes whitespace + case identically everywhere', () => {
   assert.equal(vendorKey(''), '');
   assert.equal(vendorKey(null), '');
   assert.equal(vendorKey(undefined), '');
+});
+
+// ── poNumOf: numeric prefix, matches sequence.numOf ──────────────────────────
+test('poNumOf reads the numeric prefix off any PO number shape', () => {
+  assert.equal(poNumOf('#007'), 7);
+  assert.equal(poNumOf('135'), 135);
+  assert.equal(poNumOf('22-1'), 22);
+  assert.equal(poNumOf(''), 0);
+  assert.equal(poNumOf(null), 0);
+});
+
+// ── findPoNumberClash: per-vendor PO # uniqueness guard ───────────────────────
+test('findPoNumberClash flags a hand-typed # a live PO for the SAME vendor uses', () => {
+  const pos = [
+    { _id: 'a', poNumber: '#005', vendorName: 'Heritage Screen Printing' },
+    { _id: 'b', poNumber: '#006', vendorName: 'Heritage Screen Printing' },
+    { _id: 'c', poNumber: '#005', vendorName: 'Different Printer' },
+  ];
+  // Editing a new PO for Heritage to #005 collides with 'a'.
+  const clash = findPoNumberClash({ _id: 'z', poNumber: '#005', vendorName: 'heritage  screen printing' }, pos);
+  assert.ok(clash && clash._id === 'a', 'same vendor (case/space-insensitive), same #');
+});
+
+test('findPoNumberClash ignores other vendors, self, and blanks', () => {
+  const pos = [{ _id: 'a', poNumber: '#005', vendorName: 'Heritage' }];
+  // Same # but a DIFFERENT vendor is fine — sequences are per-vendor.
+  assert.equal(findPoNumberClash({ _id: 'z', poNumber: '#005', vendorName: 'SanMar' }, pos), null);
+  // Re-saving PO 'a' at its own number never flags itself.
+  assert.equal(findPoNumberClash({ _id: 'a', poNumber: '#005', vendorName: 'Heritage' }, pos), null);
+  // No number or no vendor → nothing to guard.
+  assert.equal(findPoNumberClash({ _id: 'z', poNumber: '', vendorName: 'Heritage' }, pos), null);
+  assert.equal(findPoNumberClash({ _id: 'z', poNumber: '#005', vendorName: '' }, pos), null);
+  assert.equal(findPoNumberClash({ _id: 'z', poNumber: '#009', vendorName: 'Heritage' }, pos), null);
 });
 
 // ── lineKey: distinct print variants stay distinct (H4) ──────────────────────
