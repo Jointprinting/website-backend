@@ -98,3 +98,38 @@ test('replyAgeLabel renders hours then days, blank for future/garbage', () => {
   assert.equal(replyAgeLabel(new Date(now.getTime() + 3600000), now), ''); // future
   assert.equal(replyAgeLabel('garbage', now), '');
 });
+
+// ── Per-brand unhandled-inquiry groups ────────────────────────────────────────
+const { bucketInquiries, INQUIRY_STALE_DAYS } = require('../signals');
+test('bucketInquiries groups by brand, escalates a stale oldest lead to critical', () => {
+  const now = new Date('2026-07-16T18:00:00Z');
+  const h = (n) => new Date(now - n * 3600000);
+  const subs = [
+    { _id: '1', status: 'new', source: 'contact',  companyName: 'Acme',      createdAt: h(3) },
+    { _id: '2', status: 'new', source: 'webworks', companyName: 'Plumber',   createdAt: h(INQUIRY_STALE_DAYS * 24 + 5) }, // stale → critical
+    { _id: '3', status: 'new', source: 'webworks', companyName: 'Roofer',    createdAt: h(1) },
+    { _id: '4', status: 'contacted', source: 'atom', companyName: 'Handled', createdAt: h(90) },  // acted on → dropped
+    { _id: '5', status: 'new', source: undefined,  name: 'NoSource',         createdAt: h(2) },   // unknown source → contact
+  ];
+  const groups = bucketInquiries(subs, now);
+  assert.equal(groups.length, 3);                              // one group per brand, always
+  const byId = Object.fromEntries(groups.map((g) => [g.id, g]));
+
+  assert.equal(byId.inquiry_contact.count, 2);                 // Acme + NoSource fold to contact
+  assert.equal(byId.inquiry_contact.severity, 'warning');      // both fresh
+  assert.equal(byId.inquiry_contact.view, 'submissions');
+
+  assert.equal(byId.inquiry_webworks.count, 2);
+  assert.equal(byId.inquiry_webworks.severity, 'critical');    // oldest waited > stale threshold
+  assert.equal(byId.inquiry_webworks.items[0].name, 'Plumber'); // oldest first
+  assert.equal(byId.inquiry_webworks.view, 'jpwinquiries');
+  assert.equal(byId.inquiry_webworks.brand, 'JP Webworks');
+
+  assert.equal(byId.inquiry_atom.count, 0);                    // contacted lead doesn't nag
+});
+
+test('bucketInquiries empty groups vanish through toGroups (clean day → no rows)', () => {
+  const { groups, counts } = toGroups(bucketInquiries([], new Date()));
+  assert.deepStrictEqual(groups, { critical: [], warning: [], info: [] });
+  assert.strictEqual(counts.total, 0);
+});

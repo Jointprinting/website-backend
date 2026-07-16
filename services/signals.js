@@ -33,6 +33,16 @@ const FOLLOWUP_CLOSED_STAGES = ['won', 'lost', 'dormant'];
 const BIG_DEAL = 2000;
 // Cap the per-group item list; the group count still reflects the true total.
 const ITEM_CAP = 25;
+// An un-actioned (status:'new') inquiry older than this many days escalates its
+// brand's group to critical — a live inbound lead has been waiting too long.
+const INQUIRY_STALE_DAYS = 2;
+// ContactSubmission.source → the brand label + the Studio inbox view that opens
+// (and marks seen) ONLY that brand's pipe. Order = display order.
+const INQUIRY_BRANDS = [
+  { source: 'contact',  brand: 'Joint Printing', view: 'submissions' },
+  { source: 'webworks', brand: 'JP Webworks',    view: 'jpwinquiries' },
+  { source: 'atom',     brand: 'JP Atom',        view: 'atominquiries' },
+];
 
 // ── Pure helpers (unit-tested) ───────────────────────────────────────────────
 
@@ -85,6 +95,39 @@ function bucketOutreachReplies(replies = [], now = new Date()) {
     (HOT_CATEGORIES.has(r.category) ? hot : other).push(item);
   }
   return { hot, other };
+}
+
+// Bucket un-actioned inquiries (status:'new', bots excluded upstream) into one
+// per-brand group. PURE — takes lean submissions, returns the group list. The
+// severity is per BRAND: warning while every waiting lead is fresh, critical as
+// soon as its oldest has waited INQUIRY_STALE_DAYS+. "Unspoken-to" is status
+// 'new' (not seenByAdmin): opening the inbox clears the badge/banner, but the
+// signal keeps nudging until the owner actually acts (→ contacted/spam/…).
+function bucketInquiries(subs = [], now = new Date()) {
+  const bySource = new Map(INQUIRY_BRANDS.map((b) => [b.source, []]));
+  for (const s of subs) {
+    if (!s || s.status !== 'new') continue;
+    const key = bySource.has(s.source) ? s.source : 'contact';
+    bySource.get(key).push(s);
+  }
+  return INQUIRY_BRANDS.map(({ source, brand, view }) => {
+    const rows = bySource.get(source) || [];
+    rows.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt)); // oldest first
+    const oldest = rows[0];
+    const oldestDays = oldest ? (now.getTime() - new Date(oldest.createdAt).getTime()) / 86400000 : 0;
+    const items = rows.map((r) => ({
+      _id: String(r._id || ''),
+      name: (r.companyName || r.name || 'Lead'),
+      metric: replyAgeLabel(r.createdAt, now),
+    }));
+    return {
+      id: `inquiry_${source}`,
+      severity: oldestDays >= INQUIRY_STALE_DAYS ? 'critical' : 'warning',
+      kind: 'inquiry', brand, view,
+      label: `${rows.length} ${brand} inquir${rows.length === 1 ? 'y' : 'ies'} awaiting a reply`,
+      count: rows.length, items: cap(items),
+    };
+  });
 }
 
 // Bucket a flat list of signal groups into { critical, warning, info } in the
@@ -219,6 +262,18 @@ async function hubPulse(now = new Date()) {
   };
 }
 
+// Un-actioned inbound inquiries, one severity-ranked group per brand — the
+// owner's "banner when there's an inquiry I haven't spoken to" across all three
+// businesses. kind:'inquiry' + `view` → the hub row deep-links to that brand's
+// own inbox. Bots excluded here; the pure bucketing/severity logic is above.
+async function unhandledInquiries(now) {
+  const ContactSubmission = require('../models/ContactSubmission');
+  const subs = await ContactSubmission.find({ status: 'new', honeypot: { $ne: true } })
+    .select('name companyName source status createdAt')
+    .sort({ createdAt: 1 }).limit(300).lean();
+  return bucketInquiries(subs, now);
+}
+
 // Lookbook feedback the owner hasn't acknowledged — a client tapped 👍/👎 or
 // left a comment on a shared gallery. One item per lookbook; the count is the
 // unseen entries. Cleared by POST /api/lookbooks/:id/feedback/seen.
@@ -250,7 +305,7 @@ async function lookbookFeedback() {
 
 // buildSignals — compose all sources; a thrown source drops only its group.
 async function buildSignals({ now = new Date() } = {}) {
-  const sources = [ordersAging(now), followUps(now), outreachReplies(now), lookbookFeedback(now)];
+  const sources = [unhandledInquiries(now), ordersAging(now), followUps(now), outreachReplies(now), lookbookFeedback(now)];
   const [settled, pulse] = await Promise.all([
     Promise.allSettled(sources),
     hubPulse(now).catch(() => null), // pulse is garnish — never sinks the feed
@@ -270,6 +325,7 @@ module.exports = {
   classifyOrderAge,
   bucketFollowUps,
   bucketOutreachReplies,
+  bucketInquiries,
   replyAgeLabel,
   toGroups,
   // constants
@@ -277,4 +333,6 @@ module.exports = {
   AGE_POSSIBLY_LATE,
   BIG_DEAL,
   ITEM_CAP,
+  INQUIRY_STALE_DAYS,
+  INQUIRY_BRANDS,
 };

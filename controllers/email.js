@@ -189,6 +189,9 @@ exports.sendContactEmail = async (req, res) => {
       await transporter.sendMail({
         from: `"Joint Printing" <${fromAddress}>`,
         to: cleaned.email,
+        // Replies (with attached designs/logos/ideas — the template invites them)
+        // must land in the owner's inbox, not whatever EMAIL_FROM happens to be.
+        replyTo: toAddress,
         subject: `We got your request — Joint Printing`,
         text: customerAutoReplyText(cleaned, products),
         html: customerAutoReplyHtml(cleaned, products),
@@ -348,6 +351,9 @@ exports.sendWebworksLead = async (req, res) => {
       await transporter.sendMail({
         from: `"JP Webworks" <${fromAddress}>`,
         to: cleaned.email,
+        // Replies (logo, photos, sites they like — the template invites them)
+        // must land in the owner's inbox, not whatever EMAIL_FROM happens to be.
+        replyTo: toAddress,
         subject: `Thanks for reaching out — JP Webworks`,
         text: webworksAutoReplyText(cleaned),
         html: webworksAutoReplyHtml(cleaned),
@@ -434,6 +440,13 @@ exports.sendAtomLead = async (req, res) => {
       phone: cleaned.phone || '-',
       notes: composeAtomNotes(cleaned),
       source: 'atom',
+      // Structured copy of the form's real questions (like `webworks` on a JPW
+      // lead) so the Studio inbox shows fields, not just the notes blob.
+      atom: {
+        runsOn: cleaned.runsOn,
+        monthlyVolume: cleaned.monthlyVolume,
+        interests: cleaned.interests,
+      },
       ipAddress: req.ip,
       userAgent: (req.headers['user-agent'] || '').slice(0, 500),
       honeypot: honeypotTriggered,
@@ -481,13 +494,17 @@ exports.sendAtomLead = async (req, res) => {
       await transporter.sendMail({
         from: `"JP Atom" <${fromAddress}>`,
         to: cleaned.email,
+        // Replies (exports/screenshots — the template invites them) must land
+        // in the owner's inbox, not whatever EMAIL_FROM happens to be.
+        replyTo: toAddress,
         subject: 'Got it — JP Atom',
-        text: `Hey ${cleaned.name.split(' ')[0]},\n\nThanks for raising your hand for JP Atom. I'll reach out within one business day to set up a quick walkthrough with your shop's numbers in it.\n\nMeanwhile the live demo is always open: jointprinting.com/atom/demo\n\n— Nate\nJP Atom · built inside a working merch shop`,
+        text: `Hey ${cleaned.name.split(' ')[0]},\n\nThanks for raising your hand for JP Atom. I'll reach out within one business day to set up a quick walkthrough with your shop's numbers in it.\n\nHave exports or screenshots of what you run on today (spreadsheets, QuickBooks, whatever)? Just reply to this email with them attached — it lands directly with me and makes the walkthrough sharper.\n\nMeanwhile the live demo is always open: jointprinting.com/atom/demo\n\n— Nate\nJP Atom · built inside a working merch shop`,
         html: `
           <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;color:#1a1a1a;line-height:1.6">
             <h2 style="color:#7c3aed;margin-bottom:6px">Got it, ${escapeHtml(cleaned.name.split(' ')[0])} ⚛</h2>
             <p>Thanks for raising your hand for <strong>JP Atom</strong> for ${escapeHtml(cleaned.companyName)}.</p>
             <p>I'll reach out within one business day to set up a quick walkthrough — with your shop's numbers in it, not demo data.</p>
+            <p>Have exports or screenshots of what you run on today (spreadsheets, QuickBooks, whatever)? Just <strong>reply to this email</strong> with them attached — it lands directly with me and makes the walkthrough sharper.</p>
             <p>Meanwhile the live demo is always open:
               <br><a href="https://jointprinting.com/atom/demo" style="color:#7c3aed;font-weight:700">jointprinting.com/atom/demo</a></p>
             <p style="margin-top:24px">— Nate<br><span style="color:#666">JP Atom · built inside a working merch shop</span></p>
@@ -527,6 +544,7 @@ function webworksAutoReplyHtml(c) {
       <p>Thanks for reaching out about a website for <strong>${escapeHtml(c.companyName)}</strong>.</p>
       <p>I'll take a look and get back to you — usually within one business day — with a quick plan and a price. No pressure and nothing owed.</p>
       ${plan}
+      <p>Got a logo, photos, or a site whose look you like? Just <strong>reply to this email</strong> with them — it all lands directly with me and goes straight into your build.</p>
       <p style="margin-top:24px">Want to talk it through sooner? Grab a free 15-minute call:
         <br><a href="https://calendly.com/nate-jointprinting/30min" style="color:#0f8f5c;font-weight:700">calendly.com/nate-jointprinting/30min</a>
       </p>
@@ -544,6 +562,8 @@ function webworksAutoReplyText(c) {
     '',
     `Thanks for reaching out about a website for ${c.companyName}. I'll take a look and get back to you, usually within one business day, with a quick plan and a price. No pressure and nothing owed.`,
     plan,
+    'Got a logo, photos, or a site whose look you like? Just reply to this email with them — it all lands directly with me and goes straight into your build.',
+    '',
     'Want to talk sooner? Grab a free 15-minute call: https://calendly.com/nate-jointprinting/30min',
     '',
     '— Nate',
@@ -562,6 +582,7 @@ function customerAutoReplyHtml(c, products) {
       <p>Thanks for reaching out about merch for <strong>${escapeHtml(c.companyName)}</strong>.</p>
       <p>We just got your request and will get back to you with a mockup and quote — usually within 24 hours.</p>
       ${list}
+      <p>Have designs, logos, or more ideas? Just <strong>reply to this email</strong> with them attached — it lands directly with us and goes straight into your mockup.</p>
       <p style="margin-top:24px">In the meantime, you can also book a free 30-minute call:
         <br><a href="https://calendly.com/nate-jointprinting/30min" style="color:#1a3d2b;font-weight:700">calendly.com/nate-jointprinting/30min</a>
       </p>
@@ -581,6 +602,8 @@ function customerAutoReplyText(c, products) {
     '',
     `Thanks for reaching out about merch for ${c.companyName}. We just got your request and will get back to you with a mockup and quote, usually within 24 hours.`,
     list,
+    'Have designs, logos, or more ideas? Just reply to this email with them attached — it lands directly with us and goes straight into your mockup.',
+    '',
     'You can also book a free 30-minute call: https://calendly.com/nate-jointprinting/30min',
     '',
     '— Nate',
