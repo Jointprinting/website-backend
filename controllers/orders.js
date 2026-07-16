@@ -1104,6 +1104,33 @@ const duplicateOrder = async (req, res) => {
 };
 
 // POST /api/orders/from-submission/:submissionId — manual inquiry → project bridge.
+// The order body for "Start project from inquiry" — carries the brand source
+// (contact / webworks / atom) and summarizes the inquiry into the notes, so the
+// Order Tracker can show which brand + inquiry it came from without re-fetching.
+// PURE (no DB) — exported for tests. companyKey is derived by the Order pre-save.
+const _INQUIRY_SOURCES = ['contact', 'webworks', 'atom'];
+function buildOrderFromSubmission(sub, projectNumber) {
+  const s = sub || {};
+  const notes = [
+    s.notes && `Inquiry notes: ${s.notes}`,
+    s.quantity && `Quantity: ${s.quantity}`,
+    s.inHandDate && `In-hand by: ${s.inHandDate}`,
+    s.shipToState && `Ship to: ${s.shipToState}`,
+  ].filter(Boolean).join('\n');
+  return {
+    projectNumber,
+    companyName:         s.companyName || '',
+    clientName:          s.name || '',
+    status:              'quoted',
+    notes,
+    contactSubmissionId: s._id,
+    // Legacy/unknown source → 'contact' (the default JP merch inbox), matching the
+    // frontend's submissionSource normalization.
+    inquirySource:       _INQUIRY_SOURCES.includes(s.source) ? s.source : 'contact',
+    importedFrom:        'inquiry',
+  };
+}
+
 const createFromSubmission = async (req, res) => {
   try {
     const sub = await ContactSubmission.findById(req.params.submissionId);
@@ -1113,22 +1140,7 @@ const createFromSubmission = async (req, res) => {
       if (existing) return res.json({ order: existing, alreadyLinked: true });
     }
 
-    const notes = [
-      sub.notes && `Inquiry notes: ${sub.notes}`,
-      sub.quantity && `Quantity: ${sub.quantity}`,
-      sub.inHandDate && `In-hand by: ${sub.inHandDate}`,
-      sub.shipToState && `Ship to: ${sub.shipToState}`,
-    ].filter(Boolean).join('\n');
-
-    const order = await Order.create({
-      projectNumber:       await nextNumber('project'),
-      companyName:         sub.companyName || '',
-      clientName:          sub.name || '',
-      status:              'quoted',
-      notes,
-      contactSubmissionId: sub._id,
-      importedFrom:        'inquiry',
-    });
+    const order = await Order.create(buildOrderFromSubmission(sub, await nextNumber('project')));
 
     sub.status  = 'quoted';
     sub.orderId = order._id;
@@ -1805,6 +1817,6 @@ module.exports = {
   versionMockupNumber, duplicateMockup, createOrGetProjectForCompany, backfillConfirmationCogs, upsCheck,
   // exported for tests / reuse
   isPlacedStatus, bumpCustomerOnPlacement, pickLiveProjectForCompany, isLiveProject,
-  orderPlacedAt, etAgeDays, buildMockupVariation,
+  orderPlacedAt, etAgeDays, buildMockupVariation, buildOrderFromSubmission,
   ensureProjectForCompany, ensureDealForProject,
 };

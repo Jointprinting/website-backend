@@ -512,6 +512,11 @@ const OrderSchema = new mongoose.Schema({
   // the picker still wins — exclusion only blocks AUTO matching.
   excludedMockups: [{ type: String }],
   contactSubmissionId: { type: mongoose.Schema.Types.ObjectId, ref: 'ContactSubmission', default: null },
+  // Which brand's inquiry this order was started from, carried over from the
+  // originating ContactSubmission.source so the Order Tracker can show the brand
+  // (JP contact / Webworks / Atom) without re-fetching the submission. Mirrors
+  // ContactSubmission.source; '' when the order wasn't started from an inquiry.
+  inquirySource: { type: String, enum: ['', 'contact', 'webworks', 'atom'], default: '' },
   items: [{
     description: { type: String, default: '' },
     qty:         { type: Number, default: 0 },
