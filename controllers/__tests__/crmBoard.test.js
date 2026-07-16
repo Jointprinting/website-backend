@@ -374,3 +374,19 @@ test('BOARD_PROBABILITY exposes the per-column close-rates', () => {
   assert.equal(BOARD_PROBABILITY.delivered,  1);
   assert.equal(BOARD_PROBABILITY.cancelled,  0);
 });
+
+// ── cold-outreach pool is hidden from the board until a lead replies (warm) ───
+test('engine-managed cold prospects are hidden from the board and counted in coldPool', () => {
+  const clients = [
+    { companyKey: 'a', stage: 'lead',      companyName: 'Real Lead Co',  dealValue: 500 },                              // genuine lead → shows
+    { companyKey: 'b', stage: 'lead',      companyName: 'Cold Shop',     leadSource: 'Cold Outreach' },                 // cold pool → hidden
+    { companyKey: 'c', stage: 'contacted', companyName: 'Cold Tagged',   tags: ['dispensary'] },                        // cold pool → hidden
+    { companyKey: 'd', stage: 'lead',      companyName: 'Replied Shop',  leadSource: 'Cold Outreach', tags: ['warm'] }, // warm reply → shows
+    { companyKey: 'e', stage: 'lead',      companyName: 'Owner Called',  leadSource: 'Cold Outreach', log: [{ kind: 'call' }] }, // owner-touched → shows
+  ];
+  const { groups, summary } = buildUnifiedBoard({ clients, orders: [] });
+  const leadNames = groups.find((g) => g.stage === 'lead').clients.map((k) => k.name).sort();
+  assert.deepEqual(leadNames, ['Owner Called', 'Real Lead Co', 'Replied Shop']); // cold pool hidden; warm + owner-touched + genuine shown
+  assert.equal(groups.find((g) => g.stage === 'contacted').clients.length, 0);   // the cold 'contacted' prospect is hidden too
+  assert.equal(summary.coldPool, 2);                                             // the two cold prospects counted, not shown
+});
