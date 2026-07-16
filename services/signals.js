@@ -27,8 +27,9 @@ const AGE_RUNNING_LONG = 14;   // >= 2 weeks since placed
 const AGE_POSSIBLY_LATE = 21;  // >= 3 weeks since placed
 // Open order statuses that age (mirror ATTENTION_OPEN_STATUSES in orders.js).
 const ATTENTION_OPEN_STATUSES = ['placed', 'in_production', 'shipped'];
-// CRM stages excluded from follow-up alerts (mirror crm.js getToday CLOSED_STAGES).
-const FOLLOWUP_CLOSED_STAGES = ['won', 'lost', 'dormant'];
+// Follow-up alerts are NOT stage-gated — a scheduled follow-up (incl. a won
+// client's post-delivery QA touch) is deliberate work and always surfaces, matching
+// the CRM Today list. (nextFollowUp is never auto-set on a closed card.)
 // A follow-up on a deal at/above this value shows its dollar amount.
 const BIG_DEAL = 2000;
 // Cap the per-group item list; the group count still reflects the true total.
@@ -54,14 +55,16 @@ function classifyOrderAge(ageDays) {
   return null;
 }
 
-// Split active follow-ups into overdue (before today) vs dueToday, by ET calendar
-// day. `clients` are lean docs with { nextFollowUp, stage }. Closed stages excluded.
+// Split scheduled follow-ups into overdue (before today) vs dueToday, by ET
+// calendar day. `clients` are lean docs with { nextFollowUp }. NOT stage-gated: a
+// follow-up date is only ever set deliberately (never auto-set on a closed card),
+// so a won client's post-delivery QA touch counts here exactly as it shows on the
+// CRM Today list — a scheduled follow-up is never hidden by stage.
 function bucketFollowUps(clients = [], now = new Date()) {
   const overdue = [];
   const dueToday = [];
   for (const c of clients) {
     if (!c || c.nextFollowUp == null) continue;
-    if (FOLLOWUP_CLOSED_STAGES.includes(c.stage)) continue;
     const diff = dayDiffFromToday(c.nextFollowUp, now);
     if (diff == null) continue;
     if (diff < 0) overdue.push(c);
@@ -187,7 +190,6 @@ async function followUps(now) {
   const clients = await Client.find({
     archived: { $ne: true },
     nextFollowUp: { $ne: null },
-    stage: { $nin: FOLLOWUP_CLOSED_STAGES },
   }).select('companyKey companyName clientName dealValue nextFollowUp stage').lean();
   const { overdue, dueToday } = bucketFollowUps(clients, now);
   const toItem = (c) => ({
@@ -238,7 +240,7 @@ async function hubPulse(now = new Date()) {
 
   const [openOrders, fuClients, outreachActive, repliesWaiting, monthTxns] = await Promise.all([
     Order.countDocuments({ status: { $in: ATTENTION_OPEN_STATUSES }, archived: { $ne: true } }),
-    Client.find({ archived: { $ne: true }, nextFollowUp: { $ne: null }, stage: { $nin: FOLLOWUP_CLOSED_STAGES } })
+    Client.find({ archived: { $ne: true }, nextFollowUp: { $ne: null } })
       .select('nextFollowUp').lean(),
     OutreachEnrollment.countDocuments({ status: 'active' }),
     TriageReply.countDocuments({ status: 'new', category: { $in: [...ACTIONABLE_CATEGORIES] } }),

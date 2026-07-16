@@ -24,7 +24,7 @@ test('classifyOrderAge honors the 2-week / 3-week turnaround thresholds', () => 
   assert.strictEqual(classifyOrderAge(45), 'possibly_late');
 });
 
-test('bucketFollowUps splits overdue vs due-today by ET calendar day and drops closed/empty', () => {
+test('bucketFollowUps splits overdue vs due-today by ET calendar day; a scheduled follow-up is NEVER hidden by stage', () => {
   // now = 11am ET on 2026-07-02 (15:00Z is safely mid-morning Eastern)
   const now = new Date('2026-07-02T15:00:00Z');
   const clients = [
@@ -32,12 +32,15 @@ test('bucketFollowUps splits overdue vs due-today by ET calendar day and drops c
     { companyKey: 'b', stage: 'contacted', nextFollowUp: new Date('2026-07-01T00:00:00Z') }, // -1 → overdue
     { companyKey: 'c', stage: 'quoting',   nextFollowUp: new Date('2026-07-02T00:00:00Z') }, //  0 → due today
     { companyKey: 'd', stage: 'lead',      nextFollowUp: new Date('2026-07-06T00:00:00Z') }, // +4 → upcoming (neither)
-    { companyKey: 'e', stage: 'won',       nextFollowUp: new Date('2026-06-01T00:00:00Z') }, // closed → excluded
+    // The Happy Leaf case: a WON client with a deliberately-scheduled QA follow-up
+    // due today — it MUST surface (the bug was closed stages being dropped here).
+    { companyKey: 'qa', stage: 'won',      nextFollowUp: new Date('2026-07-02T00:00:00Z') }, //  0 → due today
+    { companyKey: 'e', stage: 'lost',      nextFollowUp: new Date('2026-06-01T00:00:00Z') }, // -31 → overdue (scheduled, shows)
     { companyKey: 'f', stage: 'lead',      nextFollowUp: null },                              // no date → excluded
   ];
   const { overdue, dueToday } = bucketFollowUps(clients, now);
-  assert.deepStrictEqual(overdue.map((c) => c.companyKey), ['a', 'b']); // most-overdue first (-2 before -1)
-  assert.deepStrictEqual(dueToday.map((c) => c.companyKey), ['c']);
+  assert.deepStrictEqual(overdue.map((c) => c.companyKey), ['e', 'a', 'b']); // most-overdue first (-31, -2, -1)
+  assert.deepStrictEqual(dueToday.map((c) => c.companyKey), ['c', 'qa']);    // won QA touch shows alongside the lead
 });
 
 test('bucketFollowUps orders overdue most-overdue-first', () => {

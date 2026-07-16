@@ -134,9 +134,16 @@ test('overdue_followup escalates to high severity on a big deal', () => {
   assert.match(overdue.message, /1 day overdue/);  // singular day
 });
 
-test('overdue_followup does NOT fire for a closed stage', () => {
+test('overdue_followup FIRES for a closed stage — a scheduled follow-up is never hidden', () => {
+  // The Happy Leaf case: a won client with a deliberately-scheduled post-delivery
+  // QA follow-up, now overdue. It MUST surface (the date was set on purpose;
+  // nextFollowUp is never auto-set on a closed card). Regression guard for the fix.
   const c = mkClient({ stage: 'won', nextFollowUp: daysAhead(-5), dealValue: 9000 });
-  assert.ok(!typesFor(c).includes('overdue_followup'));
+  assert.ok(typesFor(c).includes('overdue_followup'));
+  // But a won client earns NONE of the active-funnel nags (no_next_step/stale/hot_quiet).
+  const noSchedule = mkClient({ stage: 'won', nextFollowUp: null, dealValue: 9000, lastContact: daysAgo(90), updatedAt: daysAgo(90) });
+  const funnelNags = typesFor(noSchedule).filter((t) => t !== 'overdue_followup');
+  assert.deepEqual(funnelNags, []);
 });
 
 test('no_next_step fires when an active deal has no nextFollowUp', () => {

@@ -625,9 +625,12 @@ function classifyHeadsUp(c, nowMs, todayMs) {
   const nowDate = new Date(nowMs);
   const followDayDiff = c.nextFollowUp != null ? dayDiffFromToday(c.nextFollowUp, nowDate) : null;
 
-  // overdue_followup — active deal whose follow-up day is before today's ET day.
-  // (Always surfaces, even for a cold lead: the owner explicitly scheduled it.)
-  if (!closed && followDayDiff != null && followDayDiff < 0) {
+  // overdue_followup — any deal whose scheduled follow-up day is before today's ET
+  // day. Surfaces regardless of stage OR temperature: the owner set this date on
+  // purpose (a won client's post-delivery QA, a "circle back" on a lost lead), and
+  // nextFollowUp is never auto-set on closed cards — so an overdue one is always
+  // real work. (The funnel-health flags below stay active-deals-only via `closed`.)
+  if (followDayDiff != null && followDayDiff < 0) {
     const overdueDays = -followDayDiff;
     items.push({
       ...base,
@@ -927,9 +930,16 @@ async function listCrm(req, res) {
 }
 
 // GET /api/crm/today — the call engine.
-// Records with nextFollowUp <= end of today AND stage not in closed stages,
-// sorted overdue-first then soonest. Returns a compact row per record plus a
-// count summary { overdue, dueToday }.
+// Records with an explicit nextFollowUp <= end of today, sorted overdue-first
+// then soonest. Returns a compact row per record plus a count summary
+// { overdue, dueToday }.
+//
+// A SCHEDULED FOLLOW-UP IS NEVER HIDDEN BY STAGE. A follow-up date is only ever
+// set deliberately (nextFollowUp is never auto-cleared on a stage change, and the
+// cold-outreach engine leaves it null) — so a won client's post-delivery QA touch,
+// or a "circle back" on a lost lead, is real work the owner scheduled and must
+// appear here. Matches the Calendar (which already shows every stage); `snoozed`
+// is the intended "hide this for now" mechanism, not the stage.
 async function getToday(req, res) {
   try {
     // "Due by end of the owner's today" = whole-day follow-up whose calendar day
@@ -943,7 +953,6 @@ async function getToday(req, res) {
     const docs = await Client.find({
       ...NOT_ARCHIVED,
       nextFollowUp: { $ne: null, $lt: cutoff },
-      stage: { $nin: CLOSED_STAGES },
       // Snoozed cards stay out of the call list until their snooze passes, then
       // return automatically (matches null or a past instant).
       $or: [{ snoozedUntil: null }, { snoozedUntil: { $lte: new Date() } }],
@@ -1173,16 +1182,17 @@ async function getDashboard(req, res) {
       stageMap[stage].count += 1;
       stageMap[stage].value += val;
 
-      // Follow-up buckets — active (non-closed) deals only, matching /today.
-      // Classified by ET calendar day (dayDiffFromToday): <0 overdue, 0 due
-      // today, 1..7 within the rolling week — so the split agrees with the
-      // owner's clock, not the server's UTC day.
+      // Follow-up buckets — every scheduled follow-up, matching /today. Classified
+      // by ET calendar day (dayDiffFromToday): <0 overdue, 0 due today, 1..7 within
+      // the rolling week — so the split agrees with the owner's clock, not the
+      // server's UTC day. NOT stage-gated: a deliberately-scheduled follow-up (incl.
+      // a won client's QA touch) must count here exactly as it shows on /today.
       // A SNOOZED card is deliberately out until its snooze passes — the same gate
       // /today (getToday) and cadenceBucketFor use. Without this, snoozing a card
       // left it inflating the headline Overdue / Due-today counts, so the big
       // number contradicted the Today list + cockpit right below it.
       const snoozed = c.snoozedUntil && new Date(c.snoozedUntil).getTime() > now.getTime();
-      if (!CLOSED_STAGES.includes(c.stage) && c.nextFollowUp && !snoozed) {
+      if (c.nextFollowUp && !snoozed) {
         const diff = dayDiffFromToday(c.nextFollowUp, now);
         if (diff != null) {
           if (diff < 0) overdue += 1;
