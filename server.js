@@ -250,7 +250,7 @@ db.once('open', () => {
   // ONE-TIME per catalog drop: seed/refresh the printer network from the
   // repo's committed data/printerCatalog-*.json files (Heritage PA first).
   setTimeout(async () => {
-    const KEY = 'printerSeed-v2'; // v1: Heritage · v2: + Print Hybrid (TX), A+ Images (IN), Contract-DTG (PA)
+    const KEY = 'printerSeed-v3'; // v1: Heritage · v2: + Print Hybrid (TX), A+ Images (IN), Contract-DTG (PA) · v3: + Branded (NV)
     try {
       const migrations = mongoose.connection.db.collection('migrations');
       if (await migrations.findOne({ _id: KEY })) return;

@@ -33,7 +33,7 @@ test('pricingReviewDue: no capture date on record never nags (legacy printers)',
 
 // ── committed price-book catalogs are well-formed ───────────────────────────
 const DATA = path.join(__dirname, '..', '..', 'data');
-const NEW_CATALOGS = ['printhybrid', 'aplus', 'contractdtg'];
+const NEW_CATALOGS = ['printhybrid', 'aplus', 'contractdtg', 'branded'];
 
 for (const key of NEW_CATALOGS) {
   test(`catalog ${key}: parses with printer meta + capabilities + capture date`, () => {
