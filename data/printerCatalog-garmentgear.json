@@ -6,7 +6,7 @@
     "location": "Panama City, FL",
     "capabilities": ["screen", "dtg", "dtf"],
     "contacts": [
-      { "name": "", "email": "customerservice@garmentgear.com", "role": "Orders", "primary": true }
+      { "name": "", "email": "customsales@garmentgear.com", "role": "Orders", "primary": true }
     ],
     "contact": { "address": "1522 Degama Ave, Panama City, FL 32405", "phone": "850-215-2121" }
   },
