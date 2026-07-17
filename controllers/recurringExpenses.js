@@ -109,6 +109,10 @@ function nextDueDate(exp, today) {
 function expenseStatus(exp, today) {
   const now = new Date(today);
   const settled = new Set((exp.periods || []).map((p) => p.period)); // recorded OR skipped
+  // A period that was explicitly SKIPPED is settled (off the nag list) but NOT recorded
+  // — it booked no cost. Track the two separately so a skipped current period doesn't
+  // render as "Recorded ✓" with a bogus Undo (the income side already splits these).
+  const recorded = new Set((exp.periods || []).filter((p) => p.status === 'recorded').map((p) => p.period));
   const next = nextDueDate(exp, now);
   if (!exp.active || exp.archived) {
     return { state: 'inactive', awaiting: [], nextDue: next, currentPeriod: periodKey(now, exp.cadence) };
@@ -127,7 +131,8 @@ function expenseStatus(exp, today) {
     awaiting,               // oldest-first; the current month is the last element
     nextDue: next,
     currentPeriod,
-    recordedThisPeriod: settled.has(currentPeriod),
+    recordedThisPeriod: recorded.has(currentPeriod),
+    skippedThisPeriod: settled.has(currentPeriod) && !recorded.has(currentPeriod),
   };
 }
 
@@ -290,6 +295,13 @@ async function skip(req, res) {
     const status = expenseStatus(exp.toObject(), new Date());
     const period = (req.body && req.body.period)
       || (status.awaiting[0] && status.awaiting[0].period) || status.currentPeriod;
+    // If this period was previously RECORDED, skipping it must archive the booked
+    // ledger row too (same as unrecord) — otherwise the cost stays in the P&L as an
+    // orphan while the period reads "skipped, no cost".
+    const existing = (exp.periods || []).find((p) => p.period === period);
+    if (existing && existing.transactionId) {
+      await Transaction.findByIdAndUpdate(existing.transactionId, { $set: { archived: true, archivedAt: new Date() } });
+    }
     exp.periods = [
       ...(exp.periods || []).filter((p) => p.period !== period),
       { period, status: 'skipped', amount: null, recordedAt: new Date(), note: (req.body && req.body.note) || '' },

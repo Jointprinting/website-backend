@@ -64,11 +64,11 @@ async function seedPrinters(opts = {}) {
     // hand-editable in the app, so seed them ONLY on first insert ($setOnInsert),
     // while pricing/state/catalog always refresh from the committed sheet ($set).
     const contacts = Array.isArray(p.contacts) ? p.contacts : [];
+    const contact = p.contact || null;
     const set = {
       name: p.name || key,
       state: p.state || '',
       location: p.location || '',
-      contact: p.contact || null,
       capabilities: Array.isArray(p.capabilities) ? p.capabilities : [],
       catalog: catalogSections,
       catalogEffective: (meta && (meta.revisedEffective || meta.effective)) || '',
@@ -76,8 +76,12 @@ async function seedPrinters(opts = {}) {
       sourcePdfUrl: (meta && meta.sourcePdf) || p.sourcePdfUrl || '',
     };
     const update = { $set: set };
-    if (force.has(key)) set.contacts = contacts;       // one-time contact correction
-    else update.$setOnInsert = { contacts };
+    // Both the singular `contact` and the `contacts` array are hand-editable in the
+    // app, so seed them ONLY on first insert — a re-seed must never clobber an owner
+    // edit. (Before, `contact` sat in $set and every re-seed overwrote it.) `force`
+    // refreshes both for a one-time catalog contact correction.
+    if (force.has(key)) { set.contacts = contacts; set.contact = contact; }
+    else update.$setOnInsert = { contacts, contact };
     await Printer.updateOne({ key }, update, { upsert: true });
     seeded += 1;
   }
