@@ -18,6 +18,7 @@ const {
 } = require('../controllers/jpwLead');
 const {
   listSites, createSite, getSite, updateSite, deleteSite, generateCopy, getAiUsage, getPublicSite, getPublicSiteByDomain,
+  listEdits, addEdit, updateEdit, healthCheck,
 } = require('../controllers/jpwSites');
 
 // PUBLIC site reads — the ONLY unauthenticated routes here, so they must
@@ -39,6 +40,11 @@ router.get('/sites/:id',    getSite);
 router.put('/sites/:id',    updateSite);
 router.delete('/sites/:id', deleteSite);
 router.post('/sites/:id/generate', generateCopy); // AI: write the whole site from a brief
+// Ops: the edits queue (client change requests) + a lightweight live-site health probe.
+router.get('/sites/:id/edits',            listEdits);
+router.post('/sites/:id/edits',           addEdit);
+router.put('/sites/:id/edits/:editId',    updateEdit);
+router.post('/sites/:id/health-check',    healthCheck);
 router.get('/ai-usage', getAiUsage);              // AI-credit guardrail snapshot (budget/level)
 
 // Cold Call Tree state — backend-persisted edits + notes (formerly localStorage)

@@ -63,7 +63,17 @@ function sanitizeSiteUpdate(body = {}) {
     if (size > MAX_DATA_JSON) return { error: `data too large (${size} bytes; max ${MAX_DATA_JSON})` };
     set.data = body.data;
   }
+  // The ecosystem-spine link. Bare string; '' clears it. Same key the CRM uses.
+  if (body.companyKey != null) set.companyKey = String(body.companyKey).trim().slice(0, 120);
   return { set };
+}
+
+// Health status from a fetched HTTP status code. PURE + unit-tested.
+//   2xx/3xx → ok · anything else (or a fetch failure → null) → down.
+function healthFromHttpStatus(code) {
+  const n = Number(code);
+  if (Number.isFinite(n) && n >= 200 && n < 400) return 'ok';
+  return 'down';
 }
 
 // The public subset of a site — everything a rendered page needs, nothing the
@@ -82,11 +92,17 @@ function publicSiteView(site) {
 
 // ── Admin CRUD ────────────────────────────────────────────────────────────────
 
-// GET /api/jpw/sites — newest first (the Studio list).
+// GET /api/jpw/sites — newest first (the Studio list). Excludes soft-deleted.
+// Decorates each with `openEdits` so the ops list can badge outstanding work
+// without shipping every edit body in the list payload.
 async function listSites(req, res) {
   try {
-    const sites = await JpwSite.find({}).sort({ updatedAt: -1 }).lean();
-    res.json({ sites });
+    const sites = await JpwSite.find({ archived: { $ne: true } }).sort({ updatedAt: -1 }).lean();
+    const decorated = sites.map((s) => ({
+      ...s,
+      openEdits: (s.edits || []).filter((e) => e.status !== 'done').length,
+    }));
+    res.json({ sites: decorated });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -163,15 +179,101 @@ async function updateSite(req, res) {
   }
 }
 
-// DELETE /api/jpw/sites/:id
+// DELETE /api/jpw/sites/:id — soft-delete (archive), house rule. A hard delete
+// here used to orphan a Subscription.siteId and violate archive-not-delete.
 async function deleteSite(req, res) {
   try {
-    const gone = await JpwSite.findByIdAndDelete(req.params.id).lean();
-    if (!gone) return res.status(404).json({ message: 'site not found' });
+    const site = await JpwSite.findByIdAndUpdate(
+      req.params.id,
+      { $set: { archived: true, archivedAt: new Date() } },
+      { new: true },
+    ).lean();
+    if (!site) return res.status(404).json({ message: 'site not found' });
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ message: e.message });
   }
+}
+
+// ── Edits queue (client change requests) ─────────────────────────────────────
+
+// GET /api/jpw/sites/:id/edits — the site's change requests, newest first.
+async function listEdits(req, res) {
+  try {
+    const site = await JpwSite.findById(req.params.id).select('edits name').lean();
+    if (!site) return res.status(404).json({ message: 'site not found' });
+    const edits = (site.edits || []).slice().sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    res.json({ edits });
+  } catch (e) { res.status(400).json({ message: e.message }); }
+}
+
+// POST /api/jpw/sites/:id/edits { body, source? } — log a new change request.
+async function addEdit(req, res) {
+  try {
+    const body = String((req.body && req.body.body) || '').trim();
+    if (!body) return res.status(400).json({ message: 'edit text is required' });
+    const source = ['owner', 'client', 'ops'].includes(req.body && req.body.source) ? req.body.source : 'owner';
+    const site = await JpwSite.findByIdAndUpdate(
+      req.params.id,
+      { $push: { edits: { body: body.slice(0, 2000), source, status: 'open', createdAt: new Date() } } },
+      { new: true, runValidators: true },
+    ).lean();
+    if (!site) return res.status(404).json({ message: 'site not found' });
+    res.status(201).json({ site });
+  } catch (e) { res.status(400).json({ message: e.message }); }
+}
+
+// PUT /api/jpw/sites/:id/edits/:editId { status?, body? } — advance/close an edit.
+async function updateEdit(req, res) {
+  try {
+    const site = await JpwSite.findById(req.params.id);
+    if (!site) return res.status(404).json({ message: 'site not found' });
+    const edit = site.edits.id(req.params.editId);
+    if (!edit) return res.status(404).json({ message: 'edit not found' });
+    if (req.body && req.body.body != null) edit.body = String(req.body.body).trim().slice(0, 2000);
+    if (req.body && req.body.status != null) {
+      if (!JpwSite.EDIT_STATUSES.includes(req.body.status)) {
+        return res.status(400).json({ message: `status must be one of ${JpwSite.EDIT_STATUSES.join(', ')}` });
+      }
+      edit.status = req.body.status;
+      edit.doneAt = req.body.status === 'done' ? new Date() : null;
+    }
+    await site.save();
+    res.json({ site: site.toObject() });
+  } catch (e) { res.status(400).json({ message: e.message }); }
+}
+
+// POST /api/jpw/sites/:id/health-check — a lightweight up/down probe of the LIVE
+// client site (only meaningful once it's live with a connected domain). Fetches
+// the domain and records the result. Fully defensive: a fetch failure is recorded
+// as 'down', never a 500 — the check must never crash the ops tool.
+async function healthCheck(req, res) {
+  try {
+    const site = await JpwSite.findById(req.params.id);
+    if (!site) return res.status(404).json({ message: 'site not found' });
+    if (site.status !== 'live' || !site.domain) {
+      site.health = { status: 'unknown', lastCheckedAt: new Date(), httpStatus: null,
+        note: 'Health checks run once the site is live with a connected domain.' };
+      await site.save();
+      return res.json({ site: site.toObject() });
+    }
+    let httpStatus = null; let note = '';
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 10000);
+      const resp = await fetch(`https://${site.domain}`, { method: 'GET', redirect: 'follow', signal: ctrl.signal });
+      clearTimeout(t);
+      httpStatus = resp.status;
+    } catch (err) {
+      note = String((err && err.message) || 'request failed').slice(0, 200);
+    }
+    site.health = {
+      status: httpStatus == null ? 'down' : healthFromHttpStatus(httpStatus),
+      lastCheckedAt: new Date(), httpStatus, note,
+    };
+    await site.save();
+    res.json({ site: site.toObject() });
+  } catch (e) { res.status(400).json({ message: e.message }); }
 }
 
 // POST /api/jpw/sites/:id/generate { brief, tone? } — write the whole site's
@@ -279,6 +381,7 @@ async function getPublicSiteByDomain(req, res) {
 
 module.exports = {
   listSites, createSite, getSite, updateSite, deleteSite, generateCopy, getAiUsage, getPublicSite, getPublicSiteByDomain,
+  listEdits, addEdit, updateEdit, healthCheck,
   // pure helpers (unit-tested)
-  slugifySiteName, sanitizeSiteUpdate, publicSiteView, normalizeHost, SITE_STATUSES,
+  slugifySiteName, sanitizeSiteUpdate, publicSiteView, normalizeHost, healthFromHttpStatus, SITE_STATUSES,
 };
