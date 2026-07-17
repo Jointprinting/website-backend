@@ -33,7 +33,7 @@ test('pricingReviewDue: no capture date on record never nags (legacy printers)',
 
 // ── committed price-book catalogs are well-formed ───────────────────────────
 const DATA = path.join(__dirname, '..', '..', 'data');
-const NEW_CATALOGS = ['printhybrid', 'aplus', 'contractdtg', 'branded'];
+const NEW_CATALOGS = ['printhybrid', 'aplus', 'contractdtg', 'branded', 'garmentgear'];
 
 for (const key of NEW_CATALOGS) {
   test(`catalog ${key}: parses with printer meta + capabilities + capture date`, () => {
@@ -76,6 +76,25 @@ test('contract-DTG: DTG carries dark+white per size, DTF is size×qty', () => {
   assert.equal(cd.dtg.includesGarment, false);
   assert.deepEqual(cd.dtg.tiers[0].prices['4x4'], [6.6, 5.5]); // [dark, white]
   assert.equal(cd.dtf.grid['15x20'].length, cd.dtf.qtyCols.length);
+});
+
+test('Garment Gear: screen grid + DTG/DTF are qty×size, no embroidery', () => {
+  const gg = JSON.parse(fs.readFileSync(path.join(DATA, 'printerCatalog-garmentgear.json'), 'utf8'));
+  assert.equal(gg.printer.state, 'FL');
+  assert.ok(!gg.embroidery, 'Garment Gear does not embroider');
+  // screen: qty×colors with per-color screen fees, underbase prints free of screen setup
+  assert.equal(gg.screenPrinting.model, 'qty_x_colors');
+  assert.equal(gg.screenPrinting.underbaseFreeScreen, true);
+  assert.equal(gg.screenPrinting.tiers[0].prices[0], 3.05);       // 24-47, 1 color
+  assert.equal(gg.screenPrinting.tiers[0].prices[3], null);       // 24-47, 4 colors → routes to DTG/DTF
+  assert.equal(gg.screenPrinting.screenFees['3'], 75);           // $25 × 3 colors
+  // DTG + DTF: qty×size grids, each size row spans every qty tier
+  for (const m of ['dtg', 'dtf']) {
+    assert.equal(gg[m].model, 'qty_x_size');
+    for (const size of gg[m].sizes) assert.equal(gg[m].grid[size].length, gg[m].qtyTiers.length, `${m} ${size} spans all tiers`);
+  }
+  assert.equal(gg.dtg.grid['up to 12x14'][0], 10.25);           // DTG 12x14 @ 1-8
+  assert.equal(gg.dtf.grid['up to 5x5'][5], 2.95);              // DTF 5x5 @ 144-287
 });
 
 test('A+ DTF: full qty×sqin grid — complete, monotonic, exact spot cells', () => {

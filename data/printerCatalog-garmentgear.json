@@ -1,0 +1,95 @@
+{
+  "meta": { "source": "Garment Gear", "capturedOn": "2026-07-17", "sourcePdf": "", "currency": "USD" },
+  "printer": {
+    "name": "Garment Gear",
+    "state": "FL",
+    "location": "Panama City, FL",
+    "capabilities": ["screen", "dtg", "dtf"],
+    "contacts": [
+      { "name": "", "email": "customerservice@garmentgear.com", "role": "Orders", "primary": true }
+    ],
+    "contact": { "address": "1522 Degama Ave, Panama City, FL 32405", "phone": "850-215-2121" }
+  },
+  "screenPrinting": {
+    "model": "qty_x_colors",
+    "setup": "per_color",
+    "darkAddsUnderbaseColor": true,
+    "underbaseFreeScreen": true,
+    "colorColumns": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"],
+    "tiers": [
+      { "minQty": 24,   "label": "24-47",     "prices": [3.05, 3.65, 4.35, null, null, null, null, null, null, null, null, null] },
+      { "minQty": 48,   "label": "48-71",     "prices": [2.25, 2.70, 3.20, 4.00, null, null, null, null, null, null, null, null] },
+      { "minQty": 72,   "label": "72-143",    "prices": [1.75, 2.10, 2.50, 3.05, 3.25, 3.40, null, null, null, null, null, null] },
+      { "minQty": 144,  "label": "144-287",   "prices": [1.55, 1.90, 2.25, 2.75, 2.90, 3.05, 3.25, 3.45, null, null, null, null] },
+      { "minQty": 288,  "label": "288-575",   "prices": [1.35, 1.60, 1.90, 2.35, 2.50, 2.60, 2.80, 2.90, 3.05, 3.20, null, null] },
+      { "minQty": 576,  "label": "576-1151",  "prices": [1.15, 1.35, 1.60, 2.00, 2.10, 2.20, 2.35, 2.50, 2.60, 2.70, 2.85, null] },
+      { "minQty": 1152, "label": "1152-2300", "prices": [0.85, 1.00, 1.20, 1.50, 1.60, 1.65, 1.75, 1.85, 1.95, 2.05, 2.10, 2.20] },
+      { "minQty": 2301, "label": "2301+",     "prices": [0.75, 0.90, 1.10, 1.35, 1.40, 1.50, 1.60, 1.70, 1.75, 1.85, 1.90, 2.00] }
+    ],
+    "screenFees": { "1": 25, "2": 50, "3": 75, "4": 100, "5": 125, "6": 150, "7": 175, "8": 200, "9": 225, "10": 250, "11": 275, "12": 300 },
+    "screenFeeReorder": 12.5,
+    "sleevePocketAdd": 0.25,
+    "notes": [
+      "$25.00 per color/location new orders; $12.50 reorders.",
+      "Add 1 imprint color for underbase on colored garments (no screen setup charge on underbase).",
+      "Add $0.25 for sleeve or pocket locations.",
+      "Ink: $12.50 per PMS color match; $7.50 ink change per color/location.",
+      "Low quantity / high color counts route to DTG or DTF (blank cells)."
+    ]
+  },
+  "dtg": {
+    "model": "qty_x_size",
+    "label": "DTG",
+    "unit": "per_piece",
+    "sizes": ["up to 5x5", "up to 10x10", "up to 12x14"],
+    "qtyTiers": [
+      { "minQty": 1,   "label": "1-8" },
+      { "minQty": 9,   "label": "9-23" },
+      { "minQty": 24,  "label": "24-47" },
+      { "minQty": 48,  "label": "48-71" },
+      { "minQty": 72,  "label": "72-143" },
+      { "minQty": 144, "label": "144-287" },
+      { "minQty": 288, "label": "288-576" }
+    ],
+    "grid": {
+      "up to 5x5":   [6.55, 5.45, 4.75, 4.15, 3.70, 3.35, 3.00],
+      "up to 10x10": [8.55, 7.10, 6.20, 5.40, 4.85, 4.35, 3.95],
+      "up to 12x14": [10.25, 8.55, 7.45, 6.45, 5.80, 5.25, 4.70]
+    },
+    "personalizationAdd": 5.0,
+    "notes": [
+      "Personalization +$5.00 per location.",
+      "No PMS matching. No sleeve or pocket prints.",
+      "Best garments: Sanmar DT6000, Gildan 64000, Bella 3001c, Gildan SF000/SF500 fleece."
+    ]
+  },
+  "dtf": {
+    "model": "qty_x_size",
+    "label": "DTF",
+    "unit": "per_piece",
+    "sizes": ["up to 5x5", "up to 10x10", "up to 12x14"],
+    "qtyTiers": [
+      { "minQty": 1,   "label": "1-8" },
+      { "minQty": 9,   "label": "9-23" },
+      { "minQty": 24,  "label": "24-47" },
+      { "minQty": 48,  "label": "48-71" },
+      { "minQty": 72,  "label": "72-143" },
+      { "minQty": 144, "label": "144-287" }
+    ],
+    "grid": {
+      "up to 5x5":   [4.60, 4.20, 3.80, 3.60, 3.25, 2.95],
+      "up to 10x10": [9.90, 9.00, 8.20, 7.75, 7.00, 6.30],
+      "up to 12x14": [12.55, 11.40, 10.35, 9.85, 8.85, 7.95]
+    },
+    "notes": [
+      "Price includes transfer & application to your garment.",
+      "7-10 business days; 3-day express +$50 or 30%."
+    ]
+  },
+  "terms": {
+    "spoilage": "1-3% production spoilage per imprint location",
+    "cards": "Mastercard/Visa/AMEX + 3.5% service fee; Net 30 with approved credit",
+    "art": "$15.00 per 0.25 hour if needed",
+    "sheetDate": "2026"
+  }
+}
