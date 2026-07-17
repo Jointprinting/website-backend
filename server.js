@@ -265,9 +265,9 @@ db.once('open', () => {
   }, 9_500);
 
   // ONE-TIME: seed the owner's current recurring OPERATING subscriptions (Google
-  // Workspace, Render, ChatGPT, Claude, Planet Fitness, backup domain) so the
-  // Finances tracker starts populated. Idempotent ($setOnInsert), so his later
-  // edits to amounts/due days are never clobbered by a re-seed.
+  // Workspace, Render, ChatGPT, Claude, backup domain) so the Finances tracker
+  // starts populated. Idempotent ($setOnInsert), so his later edits to amounts/due
+  // days are never clobbered by a re-seed.
   setTimeout(async () => {
     const KEY = 'recurringExpenseSeed-v1';
     try {
@@ -280,6 +280,24 @@ db.once('open', () => {
       console.warn('[finances] recurring-expense seed failed (will retry next boot):', e.message);
     }
   }, 9_800);
+
+  // ONE-TIME cleanup: Planet Fitness isn't a business expense — archive it so it
+  // drops off the operating-subscriptions tracker (owner request). Also removed
+  // from the seed defaults above so it never comes back. Idempotent via its key.
+  setTimeout(async () => {
+    const KEY = 'recurringExpenseCleanup-planetfitness-v1';
+    try {
+      const migrations = mongoose.connection.db.collection('migrations');
+      if (await migrations.findOne({ _id: KEY })) return;
+      const r = await require('./models/RecurringExpense').updateMany(
+        { name: 'Planet Fitness' },
+        { $set: { archived: true, archivedAt: new Date(), archivedReason: 'not-business', active: false } });
+      await migrations.insertOne({ _id: KEY, at: new Date(), archived: r.modifiedCount });
+      console.log(`[finances] archived Planet Fitness (${r.modifiedCount}) — not a business expense`);
+    } catch (e) {
+      console.warn('[finances] Planet Fitness cleanup failed (will retry next boot):', e.message);
+    }
+  }, 10_200);
 
   setTimeout(async () => {
     // v3: owner's vendor decisions — CTRAY-HPS third tier starts at 250,
