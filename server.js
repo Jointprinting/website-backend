@@ -264,6 +264,23 @@ db.once('open', () => {
     }
   }, 9_500);
 
+  // ONE-TIME: seed the owner's current recurring OPERATING subscriptions (Google
+  // Workspace, Render, ChatGPT, Claude, Planet Fitness, backup domain) so the
+  // Finances tracker starts populated. Idempotent ($setOnInsert), so his later
+  // edits to amounts/due days are never clobbered by a re-seed.
+  setTimeout(async () => {
+    const KEY = 'recurringExpenseSeed-v1';
+    try {
+      const migrations = mongoose.connection.db.collection('migrations');
+      if (await migrations.findOne({ _id: KEY })) return;
+      const r = await require('./controllers/recurringExpenses').seedDefaults();
+      await migrations.insertOne({ _id: KEY, at: new Date(), seeded: r.seeded });
+      console.log(`[finances] recurring-expense stack seeded — ${r.seeded} subscription(s)`);
+    } catch (e) {
+      console.warn('[finances] recurring-expense seed failed (will retry next boot):', e.message);
+    }
+  }, 9_800);
+
   setTimeout(async () => {
     // v3: owner's vendor decisions — CTRAY-HPS third tier starts at 250,
     // booklet magnets quote $.15 (G) client-side.
@@ -494,6 +511,11 @@ app.use('/api/finances', express.json({ limit: '8mb' }), financeRoutes);
 // Recurring revenue (JP Webworks + JP Atom subscriptions) — the money-layer spine
 // the Finances view reads MRR/ARR + brand P&L from. Admin-only (router-scoped).
 app.use('/api/subscriptions', express.json(), require('./routes/subscriptionRoutes'));
+// Recurring OPERATING subscriptions the shop PAYS (the cost-side twin of the
+// revenue subscriptions above) — the Finances page tracks each one's due day and
+// reminds when a month's invoice hasn't been uploaded. 40mb so a scanned invoice
+// (base64) can ride along on /record, same reasoning as /receipts below.
+app.use('/api/recurring-expenses', express.json({ limit: '40mb' }), require('./routes/recurringExpenseRoutes'));
 // 40mb: a single receipt can be a ~25 MB file, which is ~34 MB as base64 JSON.
 // (The /batch zip route uses multipart via multer, so this limit doesn't gate it.)
 app.use('/api/receipts', express.json({ limit: '40mb' }), receiptRoutes);
