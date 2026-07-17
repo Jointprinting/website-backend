@@ -80,6 +80,12 @@ const TransactionSchema = new mongoose.Schema({
   feeForTxn:   { type: String, default: '' },
   year:        { type: Number, index: true },                // denormalized for fast filtering
   source:      { type: String, default: 'manual' },          // 'import' | 'order:auto' | 'manual' | 'budget' | 'fee:auto' | 'receipt' | 'merge'
+  // Which brand this money belongs to, for a per-brand P&L. Keyed by the same
+  // strings as Order.inquirySource (contact=Joint Printing, webworks, atom) — see
+  // utils/brands.js. '' = unattributed; the finance summary defaults those to the
+  // primary brand (Joint Printing) and auto-derives it from the linked order on
+  // create. Indexed for the per-brand rollup.
+  brand:       { type: String, default: '', index: true },
   // Finance-restart audit/revert handle. Every row INSERTED by a single run of the
   // owner-triggered "restart finances from my budgets" flow is stamped with that
   // run's batch id, so the whole restart is identifiable and reversible as a unit

@@ -853,3 +853,39 @@ test('parseLedgerCsv: a negative Refund row → income + credit (nets revenue do
   assert.equal(r.docs[0].amount, 120);       // stored positive
   assert.equal(r.docs[0].isCredit, true);    // negative ledger amount = credit
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-brand P&L split (brand-tagged ledger).
+const { brandPnlFromGroups } = require('../finances');
+
+test('brandPnlFromGroups: splits P&L by brand; unattributed → Joint Printing; equity excluded', () => {
+  const groups = [
+    { type: 'income',  category: 'Client Sales',       brand: '',         total: 1000 }, // → contact
+    { type: 'income',  category: 'Client Sales',       brand: 'webworks', total: 300 },
+    { type: 'income',  category: 'Client Sales',       brand: 'atom',     total: 500 },
+    { type: 'expense', category: 'Printer COGS',       brand: '',         total: 400 },  // → contact
+    { type: 'expense', category: 'Software',           brand: 'webworks', total: 50 },
+    { type: 'income',  category: 'Refund',             brand: '',         total: 100 },  // contra → -100 on contact
+    { type: 'income',  category: 'Owner Contribution', brand: '',         total: 5000 }, // equity, excluded
+    { type: 'expense', category: 'Owner Draw',         brand: '',         total: 2000 }, // equity, excluded
+  ];
+  const r = brandPnlFromGroups(groups);
+  const contact = r.find((b) => b.brand === 'contact');
+  const ww = r.find((b) => b.brand === 'webworks');
+  const atom = r.find((b) => b.brand === 'atom');
+  assert.equal(contact.income, 900);   // 1000 − 100 refund contra
+  assert.equal(contact.expense, 400);
+  assert.equal(contact.net, 500);
+  assert.equal(contact.label, 'Joint Printing');
+  assert.equal(ww.income, 300);
+  assert.equal(ww.expense, 50);
+  assert.equal(ww.net, 250);
+  assert.equal(ww.label, 'JP Webworks');
+  assert.equal(atom.net, 500);
+  assert.equal(r.length, 3);                       // owner equity created no phantom brand
+  assert.equal(r[r.length - 1].brand, 'webworks'); // sorted by net desc, webworks (250) last
+});
+
+test('brandPnlFromGroups: empty groups → []', () => {
+  assert.deepEqual(brandPnlFromGroups([]), []);
+});

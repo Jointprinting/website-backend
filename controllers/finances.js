@@ -10,6 +10,7 @@ const Order = require('../models/Order');
 const PurchaseOrder = require('../models/PurchaseOrder');
 const Vendor = require('../models/Vendor');
 const { resolveVendorFromList } = require('../utils/vendorMatch');
+const { brandLabel } = require('../utils/brands');
 const r2 = require('../services/r2');
 
 const num = (v) => Number(v) || 0;
@@ -49,6 +50,40 @@ function incomeContribution(category, signedTotal) {
   if (category === 'Owner Contribution') return 0;
   if (category === 'Refund') return -Math.abs(v) + 0;   // + 0 normalizes -0 to 0
   return v;
+}
+
+// Per-brand P&L from the summary's aggregate groups. `groups` are
+// { type, category, brand, total(signed) } rows. Applies the SAME rules as the
+// headline: refund contra on income, owner equity (Contribution/Draw) excluded (it
+// isn't brand revenue/cost), unattributed brand ('') folded into the primary brand
+// (contact = Joint Printing) since the shop is the default business. Pure + tested.
+function brandPnlFromGroups(groups) {
+  const acc = new Map();   // brand -> { income, expense }
+  const ensure = (b) => {
+    if (!acc.has(b)) acc.set(b, { income: 0, expense: 0 });
+    return acc.get(b);
+  };
+  for (const g of groups || []) {
+    if (!g) continue;
+    const cat = (g.category == null || g.category === '') ? 'Other' : String(g.category);
+    const brand = (g.brand && String(g.brand)) || 'contact';   // unattributed → primary brand
+    const amt = round2(g.total);
+    const bucket = ensure(brand);
+    if (g.type === 'income') {
+      if (cat === 'Owner Contribution') continue;              // equity, not brand revenue
+      bucket.income = round2(bucket.income + incomeContribution(cat, amt));
+    } else if (cat === 'Owner Draw') {
+      continue;                                                // equity out, not a brand cost
+    } else {
+      bucket.expense = round2(bucket.expense + amt);
+    }
+  }
+  return [...acc.entries()]
+    .map(([brand, v]) => ({
+      brand, label: brandLabel(brand) || brand,
+      income: round2(v.income), expense: round2(v.expense), net: round2(v.income - v.expense),
+    }))
+    .sort((a, b) => b.net - a.net);
 }
 
 // What ONE income row contributes to a SPECIFIC order's / client's revenue — the
@@ -407,9 +442,15 @@ async function enrichTransactionLinks(body, { isExpense }) {
       out.projectNumber = '';
     } else {
       const matches = await Order.find({ orderNumber: new RegExp(`^0*${key}$`) })
-        .select('projectNumber').lean();
+        .select('projectNumber inquirySource').lean();
       const projs = [...new Set(matches.map((o) => String(o.projectNumber || '')).filter(Boolean))];
       out.projectNumber = projs.length === 1 ? projs[0] : '';
+      // Brand follows the linked order's inquiry source (contact/webworks/atom),
+      // unless the owner set one explicitly. Only when a single order matched, so a
+      // brand is never guessed from an ambiguous number.
+      if ((out.brand === undefined || out.brand === '') && matches.length === 1 && matches[0].inquirySource) {
+        out.brand = matches[0].inquirySource;
+      }
       if (!projs.length && !matches.length) {
         // The typed number matches NO invoice. The owner often writes the
         // PROJECT # on a receipt (project #140 vs invoice #1049) — if the number
@@ -541,8 +582,15 @@ const summary = async (req, res) => {
     const yearMatch = yearDateMatch(req.query.year);
     const rows = await Transaction.aggregate([
       { $match: yearMatch },
-      { $group: { _id: { type: '$type', category: '$category' }, total: { $sum: SIGNED_AMOUNT }, count: { $sum: 1 } } },
+      { $group: { _id: { type: '$type', category: '$category', brand: '$brand' }, total: { $sum: SIGNED_AMOUNT }, count: { $sum: 1 } } },
     ]);
+    // Per-brand P&L (Joint Printing / Webworks / Atom) from the same groups. Pure
+    // helper so the split obeys the exact headline rules; unattributed folds into
+    // the primary brand. Additive — the existing category math below is unchanged
+    // (it accumulates into buckets, so extra brand-split rows still sum correctly).
+    const byBrand = brandPnlFromGroups(rows.map((r) => ({
+      type: r._id && r._id.type, category: r._id && r._id.category, brand: r._id && r._id.brand, total: r.total,
+    })));
     let income = 0, expense = 0, ownerContribution = 0, ownerDraw = 0;
     const expenseByCategory = {}, incomeByCategory = {};
     rows.forEach((r) => {
@@ -614,6 +662,7 @@ const summary = async (req, res) => {
       ownerDraw: round2(ownerDraw),
       takeHome, leftInBusiness,
       incomeByCategory, expenseByCategory, pctOfSpend,
+      byBrand,   // per-brand P&L split (Joint Printing / Webworks / Atom)
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
@@ -1797,6 +1846,7 @@ module.exports.orderInProgress = orderInProgress;
 module.exports.pct = pct;
 module.exports.signed = signed;
 module.exports.incomeContribution = incomeContribution;
+module.exports.brandPnlFromGroups = brandPnlFromGroups;
 module.exports.orderRevenueContribution = orderRevenueContribution;
 module.exports.processingFeeRate = processingFeeRate;
 module.exports.computeProcessingFee = computeProcessingFee;
