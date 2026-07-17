@@ -556,6 +556,13 @@ const OrderSchema = new mongoose.Schema({
     blankCost:    { type: Number, default: 0 },   // per unit
     printType:    { type: String, default: '' },  // e.g. "Screen Print", "DTG", "Embroidery"
     printDetails: { type: String, default: '' },  // e.g. "1 color front + 2 color back"
+    // The network printer that priced THIS design in the Quoter — INTERNAL, never
+    // client-facing. Carries onto the confirmation item's printerName so the PO
+    // generator auto-splits per-supplier POs: a job routing design A→Heritage and
+    // B→Anchor no longer collapses to one order-level printer. printerKey is the
+    // catalog key; printerName the display name.
+    printerKey:   { type: String, default: '' },
+    printerName:  { type: String, default: '' },
     printCost:    { type: Number, default: 0 },   // per unit
     setupCost:    { type: Number, default: 0 },   // full one-time setup for THIS option; spread across this line's qty
     shippingCost: { type: Number, default: 0 },   // full shipping for THIS option; spread across this line's qty
