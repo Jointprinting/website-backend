@@ -1719,6 +1719,11 @@ function buildMockupVariation(src, newNum, remoteId) {
     pageState: restamp(s.pageState),
     pages: Array.isArray(s.pages) ? s.pages.map(restamp) : s.pages || null,
     extraViews: Array.isArray(s.extraViews) ? [...s.extraViews] : [],
+    // Carry the extra-page BACKS too — the source doc's pages[] have their base64
+    // stripped, so extraBackViews is the ONLY carrier of page-2+ backs. Omitting it
+    // (as this did) silently drops every extra-page back on a variation, exactly the
+    // data loss the page-2-back fix eliminated. Index-aligned '' placeholders kept.
+    extraBackViews: Array.isArray(s.extraBackViews) ? [...s.extraBackViews] : [],
     savedAt: Date.now(),
     remoteId,
   };
