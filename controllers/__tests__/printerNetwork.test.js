@@ -161,3 +161,22 @@ test('A+ DTF: full qty×sqin grid — complete, monotonic, exact spot cells', ()
   assert.equal(dtf.gangSheetPerLinearFoot, 8);
   assert.equal(dtf.maxRecommendedSqin, 252);
 });
+
+test('A+ DTG: qty×size×shade — 6 size cats × 9 qty tiers, [dark, light] cells exact', () => {
+  const ap = JSON.parse(fs.readFileSync(path.join(DATA, 'printerCatalog-aplus.json'), 'utf8'));
+  assert.ok(ap.printer.capabilities.includes('dtg'), 'A+ now advertises DTG');
+  const d = ap.dtg;
+  assert.equal(d.model, 'qty_x_size_x_shade');
+  assert.equal(d.includesGarment, false);
+  assert.equal(d.sizes.length, 6);
+  assert.equal(d.tiers.length, 9);
+  // every tier covers every size, each a [dark, light] pair
+  for (const t of d.tiers) for (const s of d.sizes) {
+    assert.ok(Array.isArray(t.prices[s]) && t.prices[s].length === 2, `tier ${t.label} size ${s} is a [dark,light] pair`);
+  }
+  // exact spot cells off the 6/8/26 sheet: [dark = colored/color+white, light = white/black ink]
+  const at = (label, size) => d.tiers.find((t) => t.label === label).prices[size];
+  assert.deepEqual(at('1', 'up to 24 sqin'), [8.13, 6.50]);      // qty 1, cat 1
+  assert.deepEqual(at('101+', '252+ sqin (2XL+)'), [8.61, 6.34]); // qty 101+, cat 6
+  assert.deepEqual(at('13-24', '80-120 sqin'), [7.80, 5.69]);     // mid-grid check
+});
