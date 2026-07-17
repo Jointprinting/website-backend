@@ -16,6 +16,7 @@ const {
   slugifySiteName,
   sanitizeSiteUpdate,
   publicSiteView,
+  healthFromHttpStatus,
   SITE_STATUSES,
 } = require('../jpwSites');
 
@@ -74,6 +75,23 @@ test('publicSiteView exposes render fields only — no _id, domain, or timestamp
   assert.equal('_id' in view, false);
   assert.equal('domain' in view, false);
   assert.equal(publicSiteView(null), null);
+});
+
+// ── Spine link: companyKey is whitelisted; '' clears it ───────────────────────
+test('sanitizeSiteUpdate: companyKey joins the site to a CRM company', () => {
+  assert.equal(sanitizeSiteUpdate({ companyKey: '  earl-and-toms  ' }).set.companyKey, 'earl-and-toms');
+  assert.equal(sanitizeSiteUpdate({ companyKey: '' }).set.companyKey, ''); // clear the link
+});
+
+// ── Site-health derivation from an HTTP status code ───────────────────────────
+test('healthFromHttpStatus: 2xx/3xx ok, everything else down', () => {
+  assert.equal(healthFromHttpStatus(200), 'ok');
+  assert.equal(healthFromHttpStatus(301), 'ok');
+  assert.equal(healthFromHttpStatus(399), 'ok');
+  assert.equal(healthFromHttpStatus(404), 'down');
+  assert.equal(healthFromHttpStatus(500), 'down');
+  assert.equal(healthFromHttpStatus(null), 'down');  // fetch failed → no code
+  assert.equal(healthFromHttpStatus(NaN), 'down');
 });
 
 // ── Hostname routing for connected client domains ─────────────────────────────
