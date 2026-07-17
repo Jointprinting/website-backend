@@ -43,7 +43,7 @@ async function listItems(req, res) {
     // Studio-side consumers (Confirmation, Quoter, Lookbook) can only ever show
     // the front + back; the public Approval page already gets them via its own
     // payload. Shipping them here lets every surface render every view.
-    if (summary) q.select('store name thumbnail data client savedAt remoteId extraViews pageState.mockupNum pageState.projectNumber');
+    if (summary) q.select('store name thumbnail data client savedAt remoteId extraViews extraBackViews pageState.mockupNum pageState.projectNumber');
     const items = await q.lean();
     if (summary) {
       // Keep the summary payload light: R2-hosted backs ship as URLs, but a
@@ -63,6 +63,9 @@ async function listItems(req, res) {
         // (PDF/approval) still render every view from the un-stripped document.
         if (Array.isArray(it.extraViews)) {
           it.extraViews = it.extraViews.filter(v => typeof v === 'string' && /^https?:\/\//i.test(v));
+        }
+        if (Array.isArray(it.extraBackViews)) {
+          it.extraBackViews = it.extraBackViews.filter(v => typeof v === 'string' && /^https?:\/\//i.test(v));
         }
       });
     }
@@ -111,7 +114,7 @@ async function saveItem(req, res) {
     const { store } = req.params;
     if (!['blanks','logos','mockups'].includes(store))
       return res.status(400).json({ message: 'Invalid store.' });
-    let { name, data, thumbnail, client, pageState, pages, extraViews, savedAt, remoteId } = req.body;
+    let { name, data, thumbnail, client, pageState, pages, extraViews, extraBackViews, savedAt, remoteId } = req.body;
 
     // Offload base64 images to R2 (when configured) so the document stays small
     // and well under Mongo's 16MB ceiling. uploadDataUrl returns the value
@@ -128,6 +131,11 @@ async function saveItem(req, res) {
         // thumbnail — the doc stores URLs, the images live in R2.
         if (Array.isArray(extraViews) && extraViews.length) {
           extraViews = await Promise.all(extraViews.map((v) => r2.uploadDataUrl(v, `${store}/img`)));
+        }
+        // Extra-page BACKS offload exactly like the fronts, so page-2+ backs
+        // finally survive to the cloud instead of being dropped on sync.
+        if (Array.isArray(extraBackViews) && extraBackViews.length) {
+          extraBackViews = await Promise.all(extraBackViews.map((v) => r2.uploadDataUrl(v, `${store}/img`)));
         }
       } catch (e) {
         console.warn('[studioLibrary] R2 upload failed, storing inline:', e.message);
@@ -167,6 +175,9 @@ async function saveItem(req, res) {
         client: client || '', pageState: pageState || null,
         pages: pages || null,
         extraViews: Array.isArray(extraViews) ? extraViews.filter(Boolean) : [],
+        // Kept index-aligned to pages[1..] (NOT filtered): a front-only extra page
+        // has an '' placeholder here so a later page's back can't shift onto it.
+        extraBackViews: Array.isArray(extraBackViews) ? extraBackViews.map((v) => v || '') : [],
         savedAt: savedAt || Date.now(),
       };
       // Scope the match by STORE too, not remoteId alone. A client UUID that (very
@@ -191,6 +202,8 @@ async function saveItem(req, res) {
       client: client || '', pageState: pageState || null,
       pages: pages || null,
       extraViews: Array.isArray(extraViews) ? extraViews.filter(Boolean) : [],
+      // Index-aligned to pages[1..] (NOT filtered) — see the upsert branch above.
+      extraBackViews: Array.isArray(extraBackViews) ? extraBackViews.map((v) => v || '') : [],
       savedAt: savedAt || Date.now(),
       // Never store an empty remoteId — docs without one can't be deduped by
       // the studio's sync and get re-imported as new local rows on every load.

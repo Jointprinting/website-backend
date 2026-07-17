@@ -15,6 +15,12 @@ const StudioLibraryItemSchema = new mongoose.Schema({
   // Pages 2+'s front composites (shrunk, R2-offloaded like thumbnail/data) so
   // the approval/confirmation surfaces can show every view of the mockup.
   extraViews: { type: [String], default: [] },
+  // Pages 2+'s BACK composites — the parallel of extraViews for the back of each
+  // extra page. Previously these were never persisted (the sync trimmed every
+  // page's back and only extraViews/front survived to the cloud), so on any
+  // cross-device / post-wipe reload the back of page 2+ was permanently lost.
+  // Stored the same way (R2 URLs). Old docs simply have none → back-compat.
+  extraBackViews: { type: [String], default: [] },
   savedAt:    { type: Number, default: () => Date.now() },
   remoteId:   { type: String, default: '', index: true },           // client-generated UUID for dedup
 }, { timestamps: true });
