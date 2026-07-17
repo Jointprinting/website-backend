@@ -43,7 +43,11 @@ async function listItems(req, res) {
     // Studio-side consumers (Confirmation, Quoter, Lookbook) can only ever show
     // the front + back; the public Approval page already gets them via its own
     // payload. Shipping them here lets every surface render every view.
-    if (summary) q.select('store name thumbnail data client savedAt remoteId extraViews extraBackViews pageState.mockupNum pageState.projectNumber');
+    // Note: extraBackViews is deliberately NOT in the summary. It's index-aligned
+    // with '' placeholders (not URL-filtered like extraViews), so exposing it in the
+    // light payload would tempt a consumer to read misaligned data — the editor's
+    // rehydrate reads it from the FULL doc instead. Keep it full-doc-only.
+    if (summary) q.select('store name thumbnail data client savedAt remoteId extraViews pageState.mockupNum pageState.projectNumber');
     const items = await q.lean();
     if (summary) {
       // Keep the summary payload light: R2-hosted backs ship as URLs, but a
@@ -63,9 +67,6 @@ async function listItems(req, res) {
         // (PDF/approval) still render every view from the un-stripped document.
         if (Array.isArray(it.extraViews)) {
           it.extraViews = it.extraViews.filter(v => typeof v === 'string' && /^https?:\/\//i.test(v));
-        }
-        if (Array.isArray(it.extraBackViews)) {
-          it.extraBackViews = it.extraBackViews.filter(v => typeof v === 'string' && /^https?:\/\//i.test(v));
         }
       });
     }

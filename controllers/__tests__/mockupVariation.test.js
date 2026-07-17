@@ -18,6 +18,7 @@ const SRC = {
     { mockupNum: '#000148B', pdfName: '000148B.pdf', view: 'back' },
   ],
   extraViews: ['data:image/png;base64,view2'],
+  extraBackViews: ['data:image/png;base64,back2'],
   remoteId: 'orig-uuid',
 };
 
@@ -34,6 +35,9 @@ test('restamps the new mockup number everywhere the old one lives', () => {
   assert.equal(v.pageState.frontBlankBase64, 'data:x');
   assert.equal(v.thumbnail, SRC.thumbnail);
   assert.deepEqual(v.extraViews, SRC.extraViews);
+  // page-2+ BACKS must ride along too — omitting them silently drops the back of
+  // every extra page on a variation (the page-2-back data loss, regressed).
+  assert.deepEqual(v.extraBackViews, SRC.extraBackViews);
   assert.equal(v.client, SRC.client);
 });
 
@@ -50,5 +54,6 @@ test('single-page mockups (pages: null) and missing fields survive', () => {
   assert.equal(v.pageState.mockupNum, '#000001B');
   assert.equal(v.store, 'mockups');
   assert.equal(v.extraViews.length, 0);
+  assert.equal(v.extraBackViews.length, 0);
   assert.ok(v.savedAt > 0);
 });
