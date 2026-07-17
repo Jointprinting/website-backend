@@ -250,7 +250,7 @@ db.once('open', () => {
   // ONE-TIME per catalog drop: seed/refresh the printer network from the
   // repo's committed data/printerCatalog-*.json files (Heritage PA first).
   setTimeout(async () => {
-    const KEY = 'printerSeed-v6'; // v1: Heritage · v2: + Print Hybrid (TX), A+ Images (IN), Contract-DTG (PA) · v3: + Branded (NV) · v4: + Garment Gear (FL) · v5: + Blue Moon (OH), Garment Gear email fix · v6: refresh Garment Gear + Blue Moon contacts (email/name corrections propagate to already-seeded rows)
+    const KEY = 'printerSeed-v7'; // v1: Heritage · v2: + Print Hybrid (TX), A+ Images (IN), Contract-DTG (PA) · v3: + Branded (NV) · v4: + Garment Gear (FL) · v5: + Blue Moon (OH), Garment Gear email fix · v6: refresh Garment Gear + Blue Moon contacts · v7: A+ Images gains DTG (Direct-to-Garment, qty×size×shade) + capabilities normalized (screen/embroidery/dtg/dtf)
     try {
       const migrations = mongoose.connection.db.collection('migrations');
       if (await migrations.findOne({ _id: KEY })) return;
