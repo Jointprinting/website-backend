@@ -1,6 +1,6 @@
 {
   "meta": {
-    "source": "A+ Images Inc — Wholesale Price List",
+    "source": "A+ Images Inc \u2014 Wholesale Price List",
     "effective": "2026-06-08",
     "capturedOn": "2026-07-16",
     "sourcePdf": "",
@@ -1114,7 +1114,7 @@
   },
   "dtf": {
     "model": "qty_x_size_sqin",
-    "note": "Per-transfer price by design size (sq in) × quantity, from the A+ DTF grid (sheet 6/8/26). Apply fee added per print.",
+    "note": "Per-transfer price by design size (sq in) \u00d7 quantity, from the A+ DTF grid (sheet 6/8/26). Apply fee added per print.",
     "capturedOn": "2026-07-16",
     "qtyTiers": [
       "1-11",
@@ -1656,7 +1656,8 @@
     ],
     "shades": [
       "light",
-      "dark"
+      "dark",
+      "whiteInkOnly"
     ],
     "tiers": [
       {
@@ -1665,27 +1666,33 @@
         "prices": {
           "up to 24 sqin": [
             8.13,
-            6.5
+            6.5,
+            7.31
           ],
           "24-80 sqin": [
             10.08,
-            7.48
+            7.48,
+            8.78
           ],
           "80-120 sqin": [
             11.86,
-            8.45
+            8.45,
+            10.4
           ],
           "120-168 sqin": [
             13.65,
-            9.59
+            9.59,
+            11.86
           ],
           "168-252 sqin": [
             15.28,
-            10.73
+            10.73,
+            13.98
           ],
           "252+ sqin (2XL+)": [
             16.74,
-            12.19
+            12.19,
+            14.79
           ]
         }
       },
@@ -1695,27 +1702,33 @@
         "prices": {
           "up to 24 sqin": [
             6.18,
-            4.55
+            4.55,
+            5.36
           ],
           "24-80 sqin": [
             8.13,
-            5.53
+            5.53,
+            6.83
           ],
           "80-120 sqin": [
             9.91,
-            6.5
+            6.5,
+            8.45
           ],
           "120-168 sqin": [
             11.7,
-            7.64
+            7.64,
+            9.91
           ],
           "168-252 sqin": [
             13.33,
-            8.78
+            8.78,
+            11.38
           ],
           "252+ sqin (2XL+)": [
             15.44,
-            10.24
+            10.24,
+            12.84
           ]
         }
       },
@@ -1725,27 +1738,33 @@
         "prices": {
           "up to 24 sqin": [
             5.53,
-            4.23
+            4.23,
+            4.88
           ],
           "24-80 sqin": [
             7.15,
-            5.2
+            5.2,
+            6.18
           ],
           "80-120 sqin": [
             8.94,
-            6.01
+            6.01,
+            7.48
           ],
           "120-168 sqin": [
             10.56,
-            6.99
+            6.99,
+            8.61
           ],
           "168-252 sqin": [
             12.19,
-            8.13
+            8.13,
+            10.4
           ],
           "252+ sqin (2XL+)": [
             13.65,
-            9.59
+            9.59,
+            11.86
           ]
         }
       },
@@ -1755,27 +1774,33 @@
         "prices": {
           "up to 24 sqin": [
             5.2,
-            4.06
+            4.06,
+            4.71
           ],
           "24-80 sqin": [
             6.5,
-            4.88
+            4.88,
+            5.69
           ],
           "80-120 sqin": [
             7.8,
-            5.69
+            5.69,
+            6.99
           ],
           "120-168 sqin": [
             9.43,
-            6.66
+            6.66,
+            8.29
           ],
           "168-252 sqin": [
             11.05,
-            7.64
+            7.64,
+            9.59
           ],
           "252+ sqin (2XL+)": [
             12.51,
-            9.1
+            9.1,
+            11.05
           ]
         }
       },
@@ -1785,27 +1810,33 @@
         "prices": {
           "up to 24 sqin": [
             4.88,
-            3.74
+            3.74,
+            4.39
           ],
           "24-80 sqin": [
             6.01,
-            4.39
+            4.39,
+            5.53
           ],
           "80-120 sqin": [
             6.99,
-            5.2
+            5.2,
+            6.5
           ],
           "120-168 sqin": [
             8.45,
-            6.18
+            6.18,
+            7.8
           ],
           "168-252 sqin": [
             9.91,
-            6.99
+            6.99,
+            8.78
           ],
           "252+ sqin (2XL+)": [
             11.38,
-            8.45
+            8.45,
+            10.24
           ]
         }
       },
@@ -1815,27 +1846,33 @@
         "prices": {
           "up to 24 sqin": [
             4.39,
-            3.41
+            3.41,
+            3.9
           ],
           "24-80 sqin": [
             5.36,
-            4.23
+            4.23,
+            5.36
           ],
           "80-120 sqin": [
             6.5,
-            4.88
+            4.88,
+            6.01
           ],
           "120-168 sqin": [
             7.64,
-            5.69
+            5.69,
+            6.66
           ],
           "168-252 sqin": [
             8.78,
-            6.5
+            6.5,
+            7.8
           ],
           "252+ sqin (2XL+)": [
             10.73,
-            7.96
+            7.96,
+            9.26
           ]
         }
       },
@@ -1845,27 +1882,33 @@
         "prices": {
           "up to 24 sqin": [
             4.06,
-            3.25
+            3.25,
+            3.74
           ],
           "24-80 sqin": [
             5.2,
-            3.74
+            3.74,
+            4.88
           ],
           "80-120 sqin": [
             6.18,
-            4.39
+            4.39,
+            5.53
           ],
           "120-168 sqin": [
             7.15,
-            5.36
+            5.36,
+            6.18
           ],
           "168-252 sqin": [
             8.45,
-            6.01
+            6.01,
+            7.48
           ],
           "252+ sqin (2XL+)": [
             9.75,
-            7.48
+            7.48,
+            8.94
           ]
         }
       },
@@ -1875,27 +1918,33 @@
         "prices": {
           "up to 24 sqin": [
             3.9,
-            2.93
+            2.93,
+            3.58
           ],
           "24-80 sqin": [
             4.88,
-            3.41
+            3.41,
+            4.55
           ],
           "80-120 sqin": [
             5.85,
-            4.06
+            4.06,
+            5.2
           ],
           "120-168 sqin": [
             6.83,
-            4.71
+            4.71,
+            5.85
           ],
           "168-252 sqin": [
             7.8,
-            5.36
+            5.36,
+            6.83
           ],
           "252+ sqin (2XL+)": [
             9.26,
-            6.83
+            6.83,
+            8.29
           ]
         }
       },
@@ -1905,38 +1954,44 @@
         "prices": {
           "up to 24 sqin": [
             3.58,
-            2.6
+            2.6,
+            3.25
           ],
           "24-80 sqin": [
             4.55,
-            3.25
+            3.25,
+            3.9
           ],
           "80-120 sqin": [
             5.53,
-            3.74
+            3.74,
+            4.88
           ],
           "120-168 sqin": [
             6.34,
-            4.23
+            4.23,
+            5.53
           ],
           "168-252 sqin": [
             7.15,
-            4.88
+            4.88,
+            6.34
           ],
           "252+ sqin (2XL+)": [
             8.61,
-            6.34
+            6.34,
+            7.8
           ]
         }
       }
     ],
     "sizeKey": [
-      "Cat1 up to 24 sqin (~4x6) — chest/sleeve prints",
-      "Cat2 24-80 sqin (~8x10) — onesies/toddler",
-      "Cat3 80-120 sqin (~10x12) — youth/adult",
-      "Cat4 120-168 sqin (~12x14) — adult",
-      "Cat5 168-252 sqin (~14x18) — adult (16x20 press max)",
-      "Cat6 252+ sqin — 2XL+/oversize only"
+      "Cat1 up to 24 sqin (~4x6) \u2014 chest/sleeve prints",
+      "Cat2 24-80 sqin (~8x10) \u2014 onesies/toddler",
+      "Cat3 80-120 sqin (~10x12) \u2014 youth/adult",
+      "Cat4 120-168 sqin (~12x14) \u2014 adult",
+      "Cat5 168-252 sqin (~14x18) \u2014 adult (16x20 press max)",
+      "Cat6 252+ sqin \u2014 2XL+/oversize only"
     ],
     "surcharges": {
       "longSleevePalletPerPrint": 5.5,
@@ -1948,7 +2003,7 @@
     },
     "notes": [
       "Priced per print LOCATION; includes pretreatment. light = white shirts/color-only or black ink; dark = colored shirts (color + white ink).",
-      "A third lane exists on the sheet — WHITE INK ONLY designs — quoted separately (not modeled here).",
+      "A third lane exists on the sheet \u2014 WHITE INK ONLY designs \u2014 quoted separately (not modeled here).",
       "Epson surcharges/print: long-sleeve pallet +$5.50, short-sleeve +$3, wrap-around +$2, zip hoodie +$3; +$2.50/area extra pretreat on >6oz/yd; +$3/area precision placement."
     ]
   }

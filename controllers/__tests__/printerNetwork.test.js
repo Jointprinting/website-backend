@@ -162,7 +162,7 @@ test('A+ DTF: full qty×sqin grid — complete, monotonic, exact spot cells', ()
   assert.equal(dtf.maxRecommendedSqin, 252);
 });
 
-test('A+ DTG: qty×size×shade — 6 size cats × 9 qty tiers, [dark, light] cells exact', () => {
+test('A+ DTG: qty×size×shade — 6 size cats × 9 qty tiers, [dark, light, whiteInkOnly] cells exact', () => {
   const ap = JSON.parse(fs.readFileSync(path.join(DATA, 'printerCatalog-aplus.json'), 'utf8'));
   assert.ok(ap.printer.capabilities.includes('dtg'), 'A+ now advertises DTG');
   const d = ap.dtg;
@@ -170,13 +170,15 @@ test('A+ DTG: qty×size×shade — 6 size cats × 9 qty tiers, [dark, light] cel
   assert.equal(d.includesGarment, false);
   assert.equal(d.sizes.length, 6);
   assert.equal(d.tiers.length, 9);
-  // every tier covers every size, each a [dark, light] pair
+  assert.deepEqual(d.shades, ['light', 'dark', 'whiteInkOnly']); // three lanes now
+  // every tier covers every size, each a [dark, light, whiteInkOnly] triple
   for (const t of d.tiers) for (const s of d.sizes) {
-    assert.ok(Array.isArray(t.prices[s]) && t.prices[s].length === 2, `tier ${t.label} size ${s} is a [dark,light] pair`);
+    assert.ok(Array.isArray(t.prices[s]) && t.prices[s].length === 3, `tier ${t.label} size ${s} is a [dark,light,whiteInkOnly] triple`);
   }
-  // exact spot cells off the 6/8/26 sheet: [dark = colored/color+white, light = white/black ink]
+  // exact spot cells off the 6/8/26 sheet: [dark = colored (color+white), light = white/black ink, whiteInkOnly]
   const at = (label, size) => d.tiers.find((t) => t.label === label).prices[size];
-  assert.deepEqual(at('1', 'up to 24 sqin'), [8.13, 6.50]);      // qty 1, cat 1
-  assert.deepEqual(at('101+', '252+ sqin (2XL+)'), [8.61, 6.34]); // qty 101+, cat 6
-  assert.deepEqual(at('13-24', '80-120 sqin'), [7.80, 5.69]);     // mid-grid check
+  assert.deepEqual(at('1', 'up to 24 sqin'), [8.13, 6.50, 7.31]);       // qty 1, cat 1
+  assert.deepEqual(at('101+', '252+ sqin (2XL+)'), [8.61, 6.34, 7.80]); // qty 101+, cat 6
+  assert.deepEqual(at('13-24', '80-120 sqin'), [7.80, 5.69, 6.99]);     // mid-grid check
+  assert.deepEqual(at('25-36', '168-252 sqin'), [9.91, 6.99, 8.78]);    // white-ink lane spot check
 });
