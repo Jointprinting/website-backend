@@ -563,6 +563,16 @@ const OrderSchema = new mongoose.Schema({
     // catalog key; printerName the display name.
     printerKey:   { type: String, default: '' },
     printerName:  { type: String, default: '' },
+    // The structured print SPEC this design was priced from: the method, garment
+    // shade, and the per-AREA breakdown (colors for screen, size for DTG/DTF, a
+    // square-inch area + flat/non-flat placement for A+ DTF, stitches for
+    // embroidery). Shape: { method, shade, areas: [{ label, colors?, size?, sqin?,
+    // placement?, stitches? }] }. Lets a saved quote be RE-PRICED and margin-
+    // audited against the printer's live catalog instead of "compute once, forget"
+    // — the Quoter's structured memory. INTERNAL ONLY: never whitelisted into the
+    // client-facing safeQuoteLines (approval.js), so it can't leak cost/supplier.
+    // Absent on legacy lines — the builder just falls back to its defaults.
+    printSpec:    { type: mongoose.Schema.Types.Mixed, default: undefined },
     printCost:    { type: Number, default: 0 },   // per unit
     setupCost:    { type: Number, default: 0 },   // full one-time setup for THIS option; spread across this line's qty
     shippingCost: { type: Number, default: 0 },   // full shipping for THIS option; spread across this line's qty
