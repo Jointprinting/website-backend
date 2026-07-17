@@ -77,3 +77,47 @@ test('contract-DTG: DTG carries dark+white per size, DTF is size×qty', () => {
   assert.deepEqual(cd.dtg.tiers[0].prices['4x4'], [6.6, 5.5]); // [dark, white]
   assert.equal(cd.dtf.grid['15x20'].length, cd.dtf.qtyCols.length);
 });
+
+test('A+ DTF: full qty×sqin grid — complete, monotonic, exact spot cells', () => {
+  const ap = JSON.parse(fs.readFileSync(path.join(DATA, 'printerCatalog-aplus.json'), 'utf8'));
+  const dtf = ap.dtf;
+  assert.equal(dtf.model, 'qty_x_size_sqin');
+  assert.ok(!('_needsFullGrid' in dtf), 'the grid is finalized (no pending flag)');
+  const bands = dtf.sizeBandsSqin;
+  assert.equal(bands.length, 60, '60 five-sqin bands, 5..300');
+  assert.equal(bands[0], 5);
+  assert.equal(bands[bands.length - 1], 300);
+  assert.equal(dtf.qtyTiers.length, 7);
+
+  // every tier covers every band …
+  for (const t of dtf.qtyTiers) assert.equal(dtf.grid[t].length, bands.length, `tier ${t} spans all bands`);
+  // … price rises with size within a tier …
+  for (const t of dtf.qtyTiers) {
+    for (let i = 1; i < bands.length; i++) {
+      assert.ok(dtf.grid[t][i] >= dtf.grid[t][i - 1], `tier ${t} non-decreasing across bands`);
+    }
+  }
+  // … and falls (bulk discount) as qty grows within a band.
+  for (let i = 0; i < bands.length; i++) {
+    for (let j = 1; j < dtf.qtyTiers.length; j++) {
+      const hi = dtf.grid[dtf.qtyTiers[j - 1]][i];
+      const lo = dtf.grid[dtf.qtyTiers[j]][i];
+      assert.ok(lo <= hi, `band ${bands[i]} non-increasing across qty tiers`);
+    }
+  }
+
+  // exact cells verified against the sheet (page 3 of 9, 6/8/26)
+  const at = (tier, sqin) => dtf.grid[tier][bands.indexOf(sqin)];
+  assert.equal(at('1-11', 300), 17.85);
+  assert.equal(at('12-24', 20), 0.96);
+  assert.equal(at('25-49', 65), 3.13);
+  assert.equal(at('50-99', 135), 5.96);
+  assert.equal(at('150-249', 200), 6.91);
+  assert.equal(at('250+', 300), 8.93);
+
+  // apply fees + gang-sheet + recommended max carried through
+  assert.equal(dtf.applyToFlat, 2.5);
+  assert.equal(dtf.applyToNonFlat, 3.5);
+  assert.equal(dtf.gangSheetPerLinearFoot, 8);
+  assert.equal(dtf.maxRecommendedSqin, 252);
+});
