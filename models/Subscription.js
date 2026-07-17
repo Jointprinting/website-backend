@@ -14,6 +14,24 @@ const SUB_STATUSES = ['active', 'paused', 'canceled'];
 // How often the plan bills. MRR math normalizes annual → monthly.
 const CADENCES = ['monthly', 'annual'];
 
+// One billing period the owner has recorded — "this month's plan billed" (an income
+// Transaction booked, optionally with the invoice he sent the client attached) or
+// explicitly skipped (comped/paused that month). Keyed by `period` ('YYYY-MM'
+// monthly, 'YYYY' annual). The mirror of RecurringExpense's period log, income-side:
+// it turns expected MRR into actual recorded revenue and powers "record this month's
+// plans". The absence of an entry for the current period is what surfaces a plan as
+// still-to-record.
+const SubPeriodSchema = new mongoose.Schema({
+  period:        { type: String, required: true },
+  status:        { type: String, default: 'recorded' }, // 'recorded' | 'skipped'
+  amount:        { type: Number, default: null },
+  recordedAt:    { type: Date, default: Date.now },
+  receiptUrl:    { type: String, default: '' },          // the invoice sent to the client (R2)
+  transactionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Transaction', default: null },
+  note:          { type: String, default: '' },
+  _id: false,
+});
+
 const SubscriptionSchema = new mongoose.Schema({
   // ── Who it's for (ecosystem spine) ──
   companyKey:  { type: String, required: true, index: true },
@@ -42,6 +60,9 @@ const SubscriptionSchema = new mongoose.Schema({
   // never blocks reading the subscription.
   siteId: { type: mongoose.Schema.Types.ObjectId, ref: 'JpwSite', default: null },
   notes:  { type: String, default: '' },
+
+  // Per-period recording log — "record this month's plans" (see SubPeriodSchema).
+  periods: { type: [SubPeriodSchema], default: [] },
 
   // ── Soft-delete (house rule: nothing is hard-deleted) ──
   archived:       { type: Boolean, default: false, index: true },
