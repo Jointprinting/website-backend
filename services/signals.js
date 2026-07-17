@@ -32,6 +32,12 @@ const ATTENTION_OPEN_STATUSES = ['placed', 'in_production', 'shipped'];
 // the CRM Today list. (nextFollowUp is never auto-set on a closed card.)
 // A follow-up on a deal at/above this value shows its dollar amount.
 const BIG_DEAL = 2000;
+// Quote validity — MIRROR of controllers/approval.js QUOTE_VALID_DAYS (keep in sync):
+// a pushed quote is good for this many days. Surface it on the hub once it's within
+// QUOTE_EXPIRY_WARN_DAYS of lapsing (or already lapsed) and still unapproved — an
+// unanswered quote is money on the table to chase before the window closes.
+const QUOTE_VALID_DAYS = 7;
+const QUOTE_EXPIRY_WARN_DAYS = 2;
 // Cap the per-group item list; the group count still reflects the true total.
 const ITEM_CAP = 25;
 // An un-actioned (status:'new') inquiry older than this many days escalates its
@@ -153,6 +159,38 @@ function toGroups(signalGroups = []) {
 const cap = (arr) => arr.slice(0, ITEM_CAP);
 const nameOf = (o) => (o && (o.companyName || o.clientName)) ? String(o.companyName || o.clientName).trim() : '';
 
+// A pushed quote's remaining validity in whole days (ceil) from quotePushedAt +
+// QUOTE_VALID_DAYS. <= 0 means already lapsed. null when never pushed. Pure.
+function quoteDaysLeft(quotePushedAt, now = new Date()) {
+  if (!quotePushedAt) return null;
+  const expiresAt = new Date(quotePushedAt).getTime() + QUOTE_VALID_DAYS * 86400000;
+  if (Number.isNaN(expiresAt)) return null;
+  return Math.ceil((expiresAt - now.getTime()) / 86400000);
+}
+
+// Quotes OUT to the client and still unapproved (the caller passes only status:
+// 'quoted' orders with a quotePushedAt) that are within QUOTE_EXPIRY_WARN_DAYS of
+// lapsing — or already lapsed — the "nudge before it dies" list, most-lapsed/soonest
+// first. A quote with real runway left is NOT surfaced (no noise). Pure.
+function bucketQuotesAwaiting(orders = [], now = new Date()) {
+  const out = [];
+  for (const o of orders) {
+    if (!o || !o.quotePushedAt) continue;
+    const daysLeft = quoteDaysLeft(o.quotePushedAt, now);
+    if (daysLeft == null || daysLeft > QUOTE_EXPIRY_WARN_DAYS) continue; // still has runway
+    out.push({
+      _id: String(o._id || ''),
+      projectNumber: o.projectNumber || '',
+      orderNumber: o.orderNumber || '',
+      name: nameOf(o) || (o.projectNumber ? `#${o.projectNumber}` : 'Quote'),
+      metric: daysLeft < 0 ? `${-daysLeft}d ago` : daysLeft === 0 ? 'today' : `${daysLeft}d left`,
+      daysLeft,
+    });
+  }
+  out.sort((a, b) => a.daysLeft - b.daysLeft); // most-lapsed / soonest-to-lapse first
+  return out;
+}
+
 // ── Composition (hits the DB; each source isolated) ──────────────────────────
 
 async function ordersAging(now) {
@@ -204,6 +242,23 @@ async function followUps(now) {
     { id: 'followup_due_today', severity: 'info', kind: 'crm',
       label: `${dueToday.length} follow-up${dueToday.length === 1 ? '' : 's'} due today`,
       count: dueToday.length, items: cap(dueToday.map(toItem)) },
+  ];
+}
+
+// Quotes sent to the client and sitting unapproved as they near/pass their validity
+// window — the owner's "chase this before it lapses" nudge. status:'quoted' means
+// not-yet-approved (approving flips it to 'approved'); only quotes actually pushed to
+// the client are considered. kind:'order' → the hub row deep-links straight to the
+// order (reuses the existing order nav). Not in ATTENTION_OPEN_STATUSES, so it never
+// double-counts with the order-aging groups.
+async function quotesAwaiting(now) {
+  const quoted = await Order.find({ status: 'quoted', archived: { $ne: true }, quotePushedAt: { $ne: null } })
+    .select('projectNumber orderNumber companyName clientName quotePushedAt status').lean();
+  const items = bucketQuotesAwaiting(quoted, now);
+  return [
+    { id: 'quote_expiring', severity: 'warning', kind: 'order',
+      label: `${items.length} quote${items.length === 1 ? '' : 's'} awaiting approval · expiring`,
+      count: items.length, items: cap(items) },
   ];
 }
 
@@ -307,7 +362,7 @@ async function lookbookFeedback() {
 
 // buildSignals — compose all sources; a thrown source drops only its group.
 async function buildSignals({ now = new Date() } = {}) {
-  const sources = [unhandledInquiries(now), ordersAging(now), followUps(now), outreachReplies(now), lookbookFeedback(now)];
+  const sources = [unhandledInquiries(now), ordersAging(now), followUps(now), quotesAwaiting(now), outreachReplies(now), lookbookFeedback(now)];
   const [settled, pulse] = await Promise.all([
     Promise.allSettled(sources),
     hubPulse(now).catch(() => null), // pulse is garnish — never sinks the feed
@@ -328,6 +383,8 @@ module.exports = {
   bucketFollowUps,
   bucketOutreachReplies,
   bucketInquiries,
+  bucketQuotesAwaiting,
+  quoteDaysLeft,
   replyAgeLabel,
   toGroups,
   // constants
@@ -337,4 +394,6 @@ module.exports = {
   ITEM_CAP,
   INQUIRY_STALE_DAYS,
   INQUIRY_BRANDS,
+  QUOTE_VALID_DAYS,
+  QUOTE_EXPIRY_WARN_DAYS,
 };

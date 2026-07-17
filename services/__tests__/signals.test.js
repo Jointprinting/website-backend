@@ -136,3 +136,34 @@ test('bucketInquiries empty groups vanish through toGroups (clean day → no row
   assert.deepStrictEqual(groups, { critical: [], warning: [], info: [] });
   assert.strictEqual(counts.total, 0);
 });
+
+// ── Quotes awaiting approval / expiring ───────────────────────────────────────
+const { bucketQuotesAwaiting, quoteDaysLeft, QUOTE_VALID_DAYS, QUOTE_EXPIRY_WARN_DAYS } = require('../signals');
+test('quoteDaysLeft counts whole days from quotePushedAt + QUOTE_VALID_DAYS', () => {
+  const now = new Date('2026-07-17T15:00:00Z');
+  const pushed = (days) => new Date(now.getTime() - days * 86400000);
+  assert.equal(quoteDaysLeft(pushed(0), now), QUOTE_VALID_DAYS);      // just pushed → full window
+  assert.equal(quoteDaysLeft(pushed(QUOTE_VALID_DAYS), now), 0);      // exactly at the edge
+  assert.equal(quoteDaysLeft(pushed(QUOTE_VALID_DAYS + 3), now), -3); // lapsed 3 days ago
+  assert.equal(quoteDaysLeft(null, now), null);
+});
+
+test('bucketQuotesAwaiting surfaces only quotes near/past lapse, most-lapsed first', () => {
+  const now = new Date('2026-07-17T15:00:00Z');
+  const pushed = (days) => new Date(now.getTime() - days * 86400000);
+  const orders = [
+    { _id: 'fresh',   projectNumber: '10', companyName: 'Fresh Co',  quotePushedAt: pushed(1) },                    // 6d left → runway, excluded
+    { _id: 'soon',    projectNumber: '11', companyName: 'Soon Co',   quotePushedAt: pushed(QUOTE_VALID_DAYS - 1) }, // 1d left → surfaced
+    { _id: 'today',   projectNumber: '12', companyName: 'Edge Co',   quotePushedAt: pushed(QUOTE_VALID_DAYS) },     // 0d → surfaced
+    { _id: 'lapsed',  projectNumber: '13', companyName: 'Lapsed Co', quotePushedAt: pushed(QUOTE_VALID_DAYS + 4) }, // -4d → surfaced, leads
+    { _id: 'nopush',  projectNumber: '14', companyName: 'No Push',   quotePushedAt: null },                         // never pushed → excluded
+  ];
+  const items = bucketQuotesAwaiting(orders, now);
+  assert.deepStrictEqual(items.map((i) => i._id), ['lapsed', 'today', 'soon']); // by daysLeft asc: -4, 0, 1
+  assert.equal(items[0].metric, '4d ago');
+  assert.equal(items.find((i) => i._id === 'today').metric, 'today');
+  assert.ok(items.every((i) => i.projectNumber));   // deep-link fields carried
+  // Everything with real runway or no push is kept off the feed.
+  assert.equal(items.some((i) => i._id === 'fresh' || i._id === 'nopush'), false);
+  assert.ok(QUOTE_EXPIRY_WARN_DAYS >= 0);
+});
