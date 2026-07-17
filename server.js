@@ -250,11 +250,13 @@ db.once('open', () => {
   // ONE-TIME per catalog drop: seed/refresh the printer network from the
   // repo's committed data/printerCatalog-*.json files (Heritage PA first).
   setTimeout(async () => {
-    const KEY = 'printerSeed-v5'; // v1: Heritage · v2: + Print Hybrid (TX), A+ Images (IN), Contract-DTG (PA) · v3: + Branded (NV) · v4: + Garment Gear (FL) · v5: + Blue Moon (OH), Garment Gear email fix
+    const KEY = 'printerSeed-v6'; // v1: Heritage · v2: + Print Hybrid (TX), A+ Images (IN), Contract-DTG (PA) · v3: + Branded (NV) · v4: + Garment Gear (FL) · v5: + Blue Moon (OH), Garment Gear email fix · v6: refresh Garment Gear + Blue Moon contacts (email/name corrections propagate to already-seeded rows)
     try {
       const migrations = mongoose.connection.db.collection('migrations');
       if (await migrations.findOne({ _id: KEY })) return;
-      const r = await require('./controllers/printers').seedPrinters();
+      // Garment Gear (customsales@) + Blue Moon (Johanna/orders@) contacts were
+      // corrected after first seed; force-refresh just those two so the fix lands.
+      const r = await require('./controllers/printers').seedPrinters({ forceContactsFor: ['garmentgear', 'bluemoon'] });
       await migrations.insertOne({ _id: KEY, at: new Date(), seeded: r.seeded });
       console.log(`[printers] network seeded — ${r.seeded} printer(s) from data/printerCatalog-*.json`);
     } catch (e) {

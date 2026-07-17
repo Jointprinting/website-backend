@@ -45,7 +45,13 @@ async function getPrinter(req, res) {
 // Boot-time seed (server.js, flag-guarded per catalog drop): upsert each
 // data/printerCatalog-*.json into the registry. Same zero-friction path as
 // the promo catalog: new printer PDF → scraped JSON in data/ → next deploy.
-async function seedPrinters() {
+// `opts.forceContactsFor` — a set/array of printer keys whose contacts should be
+// REFRESHED from the committed catalog even on an existing row (normally contacts
+// are insert-only to preserve owner edits). Used once when a catalog's contact was
+// corrected after the printer had already been seeded (e.g. a fixed email), for
+// printers the owner hasn't hand-edited yet.
+async function seedPrinters(opts = {}) {
+  const force = new Set((opts.forceContactsFor || []).map((k) => String(k).toLowerCase()));
   const dir = path.join(__dirname, '..', 'data');
   const files = fs.readdirSync(dir).filter((f) => /^printerCatalog-.+\.json$/.test(f));
   let seeded = 0;
@@ -58,24 +64,21 @@ async function seedPrinters() {
     // hand-editable in the app, so seed them ONLY on first insert ($setOnInsert),
     // while pricing/state/catalog always refresh from the committed sheet ($set).
     const contacts = Array.isArray(p.contacts) ? p.contacts : [];
-    await Printer.updateOne(
-      { key },
-      {
-        $set: {
-          name: p.name || key,
-          state: p.state || '',
-          location: p.location || '',
-          contact: p.contact || null,
-          capabilities: Array.isArray(p.capabilities) ? p.capabilities : [],
-          catalog: catalogSections,
-          catalogEffective: (meta && (meta.revisedEffective || meta.effective)) || '',
-          capturedOn: (meta && meta.capturedOn) || '',
-          sourcePdfUrl: (meta && meta.sourcePdf) || p.sourcePdfUrl || '',
-        },
-        $setOnInsert: { contacts },
-      },
-      { upsert: true },
-    );
+    const set = {
+      name: p.name || key,
+      state: p.state || '',
+      location: p.location || '',
+      contact: p.contact || null,
+      capabilities: Array.isArray(p.capabilities) ? p.capabilities : [],
+      catalog: catalogSections,
+      catalogEffective: (meta && (meta.revisedEffective || meta.effective)) || '',
+      capturedOn: (meta && meta.capturedOn) || '',
+      sourcePdfUrl: (meta && meta.sourcePdf) || p.sourcePdfUrl || '',
+    };
+    const update = { $set: set };
+    if (force.has(key)) set.contacts = contacts;       // one-time contact correction
+    else update.$setOnInsert = { contacts };
+    await Printer.updateOne({ key }, update, { upsert: true });
     seeded += 1;
   }
   return { seeded };

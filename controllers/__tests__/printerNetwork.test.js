@@ -81,7 +81,7 @@ test('contract-DTG: DTG carries dark+white per size, DTF is size×qty', () => {
 test('Blue Moon: all four methods, correct models + spot cells + Garment Gear email fixed', () => {
   const bm = JSON.parse(fs.readFileSync(path.join(DATA, 'printerCatalog-bluemoon.json'), 'utf8'));
   assert.equal(bm.printer.state, 'OH');
-  assert.equal(bm.printer.contacts[0].email, 'emma@bluemoonscreenprint.com');
+  assert.equal(bm.printer.contacts[0].email, 'orders@bluemoonscreenprint.com');
   assert.equal(bm.screenPrinting.model, 'qty_x_colors');
   assert.equal(bm.screenPrinting.tiers.find((t) => t.minQty === 144).prices[9], 3.85); // 144-287, 10 colors
   assert.equal(bm.screenPrinting.screenFees['1'], 20);
