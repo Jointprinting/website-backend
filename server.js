@@ -489,6 +489,9 @@ app.use('/api/jpw', express.json({ limit: '20mb' }), jpwRoutes);
 app.use('/api/gdrive', express.json(), gdriveRoutes);
 app.use('/api/quickbooks', express.json(), require('./routes/quickbooksRoutes'));
 app.use('/api/finances', express.json({ limit: '8mb' }), financeRoutes);
+// Recurring revenue (JP Webworks + JP Atom subscriptions) — the money-layer spine
+// the Finances view reads MRR/ARR + brand P&L from. Admin-only (router-scoped).
+app.use('/api/subscriptions', express.json(), require('./routes/subscriptionRoutes'));
 // 40mb: a single receipt can be a ~25 MB file, which is ~34 MB as base64 JSON.
 // (The /batch zip route uses multipart via multer, so this limit doesn't gate it.)
 app.use('/api/receipts', express.json({ limit: '40mb' }), receiptRoutes);
