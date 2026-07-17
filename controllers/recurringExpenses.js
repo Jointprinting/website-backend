@@ -337,7 +337,6 @@ const DEFAULTS = [
   { name: 'Render',                        vendor: 'Render',           amount: 7,     dueDay: 1,  category: 'Software', startDate: '2026-07-01', order: 2 },
   { name: 'ChatGPT',                       vendor: 'OpenAI',           amount: 20,    dueDay: 19, category: 'Software', startDate: '2026-07-01', order: 3 },
   { name: 'Claude',                        vendor: 'Anthropic',        amount: 100,   dueDay: 21, category: 'Software', startDate: '2026-07-01', order: 4 },
-  { name: 'Planet Fitness',                vendor: 'Planet Fitness',   amount: 25,    dueDay: 15, category: 'Other',    startDate: '2026-07-01', order: 5 },
   { name: 'jointprintingshop.com domain (backup)', vendor: 'Domain registrar', amount: 8, dueDay: 20, category: 'Software', startDate: '2026-07-20', order: 6 },
 ];
 
