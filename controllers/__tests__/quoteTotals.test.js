@@ -124,6 +124,15 @@ test('an explicit unit-price override wins over the markup math', () => {
   assert.equal(t.cogs, 315, 'COGS is independent of the sale price');
 });
 
+// ── The structured print spec (4C) is memory, not money ──────────────────────
+test('printSpec on a line never moves the totals — it is structured memory only', () => {
+  const spec = { method: 'DTG', shade: 'dark', areas: [
+    { label: 'front', size: '12x16' }, { label: 'left-chest', size: '4x4' }] };
+  const withSpec = computeQuoteTotals([tee({ accepted: true, printSpec: spec, printerKey: 'contractdtg' })]);
+  const without  = computeQuoteTotals([tee({ accepted: true })]);
+  assert.deepEqual(withSpec, without, 'the spec/printer fields must not perturb totalValue or cogs');
+});
+
 // ── Legacy order-level setup/shipping (back-compat) ──────────────────────────
 test('legacy order-level setup/ship folds in only when no line carries its own', () => {
   const lines = [tee({ accepted: true, setupCost: 0, shippingCost: 0, markup: 1 })];
