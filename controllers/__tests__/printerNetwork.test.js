@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 
 const Printer = require('../../models/Printer');
+const { capabilitiesFromCatalog } = require('../../utils/printerCatalog');
 
 // ── yearly re-verify nudge ──────────────────────────────────────────────────
 test('pricingReviewDue: due once a full year has passed since capture', () => {
@@ -49,6 +50,18 @@ for (const key of NEW_CATALOGS) {
       if (section === 'meta' || section === 'printer' || section === 'addOns' || section === 'terms') continue;
       if (body && typeof body === 'object') assert.ok(body.model, `section ${section} declares a pricing model`);
     }
+  });
+}
+
+// 4D: capabilities derive from the real price sections, not a hand-typed list.
+for (const key of NEW_CATALOGS) {
+  test(`catalog ${key}: capabilitiesFromCatalog derives a non-empty set from the price sections`, () => {
+    const raw = JSON.parse(fs.readFileSync(path.join(DATA, `printerCatalog-${key}.json`), 'utf8'));
+    const { printer, meta, ...sections } = raw;
+    const derived = capabilitiesFromCatalog(sections);
+    assert.ok(derived.length, 'derives at least one capability from the sections');
+    // Every priced section maps to exactly one canonical capability; no dupes.
+    assert.equal(derived.length, new Set(derived).size, 'no duplicate capabilities');
   });
 }
 

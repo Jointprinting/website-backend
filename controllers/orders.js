@@ -1088,11 +1088,15 @@ const duplicateOrder = async (req, res) => {
       mockupNumbers:       Array.isArray(req.body && req.body.carryMockups) ? src.mockupNumbers : [],
       items:               (src.items || []).map(i => ({ description: i.description, qty: i.qty, unitPrice: i.unitPrice })),
       quoteLines:          (src.quoteLines || []).map(l => ({
-        qty: l.qty, styleCode: l.styleCode, description: l.description, color: l.color,
-        supplier: l.supplier, blankCost: l.blankCost,
+        // Carry the FULL recipe so a duplicate is faithful: the group keeps its
+        // design-grid structure, and the printer + structured spec (routing +
+        // how it was priced) ride along instead of being silently dropped.
+        group: l.group, qty: l.qty, styleCode: l.styleCode, description: l.description, color: l.color,
+        supplier: l.supplier, supplierUrl: l.supplierUrl, blankCost: l.blankCost,
         printType: l.printType, printDetails: l.printDetails, printCost: l.printCost,
+        printerKey: l.printerKey, printerName: l.printerName, printSpec: l.printSpec,
         setupCost: l.setupCost, shippingCost: l.shippingCost,
-        markup: l.markup, unitPrice: l.unitPrice, turnaroundWeeks: l.turnaroundWeeks,
+        markup: l.markup, noMarkup: l.noMarkup, unitPrice: l.unitPrice, turnaroundWeeks: l.turnaroundWeeks,
       })),
       orderDate:     null,
       shipDate:      null,
