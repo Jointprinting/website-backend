@@ -43,9 +43,10 @@ const FOLDER_NAME  = 'Joint Printing Backups';
 const SCOPE = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email';
 
 // Keep this many of the most recent backups in Drive; older ones are trashed
-// after each successful push so the folder doesn't grow without bound. ~12 weeks
-// at the weekly cadence — three months of history. Override with GDRIVE_KEEP.
-const KEEP_BACKUPS = Math.max(1, parseInt(process.env.GDRIVE_KEEP, 10) || 12);
+// after each successful push so the folder doesn't grow without bound. 7 at the
+// nightly cadence — a rolling week of daily copies, oldest overwritten. Override
+// with GDRIVE_KEEP.
+const KEEP_BACKUPS = Math.max(1, parseInt(process.env.GDRIVE_KEEP, 10) || 7);
 
 const isConfigured = () => !!(CLIENT_ID && CLIENT_SECRET && REDIRECT_URI);
 

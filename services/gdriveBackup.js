@@ -6,22 +6,23 @@ const cron = require('node-cron');
 const gdrive = require('../controllers/gdrive');
 const GoogleDriveAuth = require('../models/GoogleDriveAuth');
 
-// Cadence. WEEKLY by default (Sun 03:30 server time) — the owner's chosen
-// rhythm; the auto-push is a safety net, and a manual "Back up now" is always
-// one tap away before/after a trip. Override with GDRIVE_BACKUP_CRON (standard
-// 5-field cron) for a different rhythm (e.g. '30 3 * * *' for nightly).
-const BACKUP_CRON = process.env.GDRIVE_BACKUP_CRON || '30 3 * * 0';
+// Cadence. NIGHTLY by default (03:30 server time) — a fresh full copy every day,
+// with Drive retention keeping ~a week of rolling history and trashing the oldest
+// (see KEEP_BACKUPS in controllers/gdrive.js). A manual "Back up now" is always
+// one tap away too. Override with GDRIVE_BACKUP_CRON (standard 5-field cron) for a
+// different rhythm (e.g. '30 3 * * 0' for the old weekly rhythm).
+const BACKUP_CRON = process.env.GDRIVE_BACKUP_CRON || '30 3 * * *';
 // Human-readable mirror of BACKUP_CRON for the hub (gdrive status reads this so
 // the displayed schedule and the actual cron can never drift apart).
 const SCHEDULE_LABEL = process.env.GDRIVE_BACKUP_LABEL
-  || (BACKUP_CRON === '30 3 * * 0' ? 'Weekly · Sun 03:30 (server time)'
-    : BACKUP_CRON === '30 3 * * *' ? 'Nightly · 03:30 (server time)'
+  || (BACKUP_CRON === '30 3 * * *' ? 'Nightly · 03:30 (server time)'
+    : BACKUP_CRON === '30 3 * * 0' ? 'Weekly · Sun 03:30 (server time)'
     : `Custom · ${BACKUP_CRON}`);
 // Days without a successful push before the hub flags backups as "stale" (i.e.
-// probably silently stopped). Tuned to the WEEKLY cadence: 9 days = a full
-// weekly window plus ~2 days of grace, so one on-time weekly push never trips it
-// but a genuinely-stopped scheduler does. Env-overridable (drop to 2 for nightly).
-const STALE_DAYS = Math.max(1, parseInt(process.env.GDRIVE_BACKUP_STALE_DAYS, 10) || 9);
+// probably silently stopped). Tuned to the NIGHTLY cadence: 2 days = one on-time
+// nightly push plus a day of grace, so a healthy scheduler never trips it but a
+// genuinely-stopped one does within ~2 days. Env-overridable (raise to 9 for weekly).
+const STALE_DAYS = Math.max(1, parseInt(process.env.GDRIVE_BACKUP_STALE_DAYS, 10) || 2);
 
 // Single-process re-entrancy guard. A cron tick must not stack on top of a
 // still-running push (a slow upload, or a manual "Back up now" the owner just
