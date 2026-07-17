@@ -167,3 +167,21 @@ test('bucketQuotesAwaiting surfaces only quotes near/past lapse, most-lapsed fir
   assert.equal(items.some((i) => i._id === 'fresh' || i._id === 'nopush'), false);
   assert.ok(QUOTE_EXPIRY_WARN_DAYS >= 0);
 });
+
+// ── Webworks client-site edits waiting ────────────────────────────────────────
+const { bucketSiteEdits } = require('../signals');
+test('bucketSiteEdits totals open (non-done) edits, one item per site with a backlog', () => {
+  const sites = [
+    { _id: 's1', name: 'Cape May Brewing', companyKey: 'cape-may', edits: [
+      { status: 'open' }, { status: 'in_progress' }, { status: 'done' }] },   // 2 open
+    { _id: 's2', name: 'Shore Smoke', companyKey: 'shore', edits: [{ status: 'done' }] }, // all done → skipped
+    { _id: 's3', companyName: 'Main St Deli', edits: [{ status: 'open' }] },   // 1 open, name from companyName
+    { _id: 's4', name: 'No Edits', edits: [] },                                // none → skipped
+  ];
+  const { total, items } = bucketSiteEdits(sites);
+  assert.equal(total, 3);                                    // 2 + 1
+  assert.deepStrictEqual(items.map((i) => i._id), ['s1', 's3']);
+  assert.equal(items[0].metric, '2×');
+  assert.equal(items[1].name, 'Main St Deli');              // falls back to companyName
+  assert.deepStrictEqual(bucketSiteEdits([]), { total: 0, items: [] }); // clean day
+});

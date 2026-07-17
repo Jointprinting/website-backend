@@ -360,9 +360,44 @@ async function lookbookFeedback() {
   ];
 }
 
+// Open client-site change requests (edits not yet marked done) — the ongoing-care
+// work a JP Webworks subscription pays for. One item per site with a backlog; the
+// count is the total open edits. PURE (exported for tests).
+function bucketSiteEdits(sites = []) {
+  const items = [];
+  let total = 0;
+  for (const s of sites) {
+    const open = (s.edits || []).filter((e) => e && e.status !== 'done').length;
+    if (!open) continue;
+    total += open;
+    items.push({
+      _id: String(s._id || ''),
+      companyKey: s.companyKey || '',
+      name: s.name || s.companyName || 'Client site',
+      metric: `${open}×`,
+    });
+  }
+  return { total, items: cap(items) };
+}
+
+// JP Webworks client-site edits waiting on the owner. severity 'warning', brand
+// 'JP Webworks' so it rides the Webworks hub page. kind:'webworks' → the hub row
+// opens the Client Manager (SignalsPanel maps it to onPick('webworksops')).
+async function siteEditsWaiting() {
+  const JpwSite = require('../models/JpwSite');
+  const sites = await JpwSite.find({ archived: { $ne: true }, 'edits.status': { $in: ['open', 'in_progress'] } })
+    .select('name companyName companyKey edits').lean();
+  const { total, items } = bucketSiteEdits(sites);
+  return [
+    { id: 'webworks_edits', severity: 'warning', kind: 'webworks', brand: 'JP Webworks',
+      label: `${total} client site edit${total === 1 ? '' : 's'} to do`,
+      count: total, items },
+  ];
+}
+
 // buildSignals — compose all sources; a thrown source drops only its group.
 async function buildSignals({ now = new Date() } = {}) {
-  const sources = [unhandledInquiries(now), ordersAging(now), followUps(now), quotesAwaiting(now), outreachReplies(now), lookbookFeedback(now)];
+  const sources = [unhandledInquiries(now), ordersAging(now), followUps(now), quotesAwaiting(now), siteEditsWaiting(), outreachReplies(now), lookbookFeedback(now)];
   const [settled, pulse] = await Promise.all([
     Promise.allSettled(sources),
     hubPulse(now).catch(() => null), // pulse is garnish — never sinks the feed
@@ -385,6 +420,7 @@ module.exports = {
   bucketInquiries,
   bucketQuotesAwaiting,
   quoteDaysLeft,
+  bucketSiteEdits,
   replyAgeLabel,
   toGroups,
   // constants
