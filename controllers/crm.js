@@ -29,6 +29,9 @@ const Transaction   = require('../models/Transaction');
 // page's Design Library, deep-linked to the order each mockup belongs to.
 const ClientLogo        = require('../models/ClientLogo');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
+// Recurring plans (JP Webworks / JP Atom) this company is on — surfaced on the
+// company page so the CRM record shows the whole money relationship, not just orders.
+const Subscription = require('../models/Subscription');
 // REUSE the finance definitions verbatim — the company money summary must match
 // /api/finances exactly (same revenue/COGS/profit/margin math, same order-number
 // normalization). Never re-derive finance numbers here.
@@ -1600,7 +1603,16 @@ async function getOne(req, res) {
 
     const designLibrary = assembleDesignLibrary({ orders, mockDocs, logoDoc });
 
-    res.json({ client: { ...client, isCustomer }, orders, pos, finance, isCustomer, outreach, designLibrary });
+    // ── Subscriptions ────────────────────────────────────────────────────────────
+    // Any recurring plan this company is on (Webworks/Atom). Newest-active first so
+    // the card leads with what's live. Lean cards — the company page manages them
+    // through /api/subscriptions.
+    const subscriptions = await Subscription.find({ companyKey: key, archived: { $ne: true } })
+      .sort({ status: 1, updatedAt: -1 })
+      .select('brand plan amount cadence status startedAt nextBillDate siteId')
+      .lean();
+
+    res.json({ client: { ...client, isCustomer }, orders, pos, finance, isCustomer, outreach, designLibrary, subscriptions });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
