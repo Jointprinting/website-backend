@@ -74,6 +74,16 @@ test('skipping a period also clears its reminder (no cost booked)', () => {
   assert.equal(s.awaiting.length, 0);
 });
 
+test('a SKIPPED current period is settled but NOT recorded (no bogus "Recorded ✓ Undo")', () => {
+  const s = expenseStatus(sub({ dueDay: 15, periods: [{ period: '2026-07', status: 'skipped' }] }), TODAY);
+  assert.equal(s.recordedThisPeriod, false); // was wrongly true when it keyed off "settled"
+  assert.equal(s.skippedThisPeriod, true);
+  // A recorded current period is the opposite.
+  const rec = expenseStatus(sub({ dueDay: 15, periods: [{ period: '2026-07', status: 'recorded' }] }), TODAY);
+  assert.equal(rec.recordedThisPeriod, true);
+  assert.equal(rec.skippedThisPeriod, false);
+});
+
 test('a missed prior month AND the current month both nag, oldest first', () => {
   // started June 1, only July would… but start June → June + July due, none recorded
   const s = expenseStatus(sub({ dueDay: 1, startDate: new Date('2026-06-01T00:00:00Z') }), TODAY);

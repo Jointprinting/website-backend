@@ -8,7 +8,7 @@ const assert = require('node:assert/strict');
 
 const {
   monthlyAmount, summarizeMrr, nextBillFrom,
-  billingPeriodKey, recordStatusFor, dueThisPeriod,
+  billingPeriodKey, annualPeriodYear, recordStatusFor, dueThisPeriod,
 } = require('../subscriptions');
 const { BRAND_KEYS, SUBSCRIPTION_BRAND_KEYS, brandLabel, isBrand } = require('../../utils/brands');
 
@@ -106,6 +106,30 @@ test('dueThisPeriod: annual plan not yet recorded this year IS due', () => {
   const due = dueThisPeriod(subs, TODAY);
   assert.deepEqual(due.map((d) => d.id), ['x']);
   assert.equal(due[0].period, '2026');
+});
+
+test('annualPeriodYear keys off the start month/day, not Jan 1', () => {
+  // TODAY = 2026-07-17. A Nov-anniversary plan hasn't hit its 2026 charge yet, so the
+  // current recordable year is still 2025 (its last anniversary).
+  assert.equal(annualPeriodYear('2025-11-01', TODAY), 2025);
+  // Same plan after this year's anniversary → rolls to 2026.
+  assert.equal(annualPeriodYear('2025-11-01', new Date('2026-11-15T12:00:00Z')), 2026);
+  // A Jan-anniversary plan is already past its 2026 charge by July → 2026.
+  assert.equal(annualPeriodYear('2025-01-05', TODAY), 2026);
+  // Never before the plan began.
+  assert.equal(annualPeriodYear('2026-11-01', new Date('2026-07-17T12:00:00Z')), 2026);
+});
+
+test('dueThisPeriod: an annual plan BEFORE its anniversary this year is NOT due (keys off start month/day)', () => {
+  // Started last November, its 2025 charge recorded. As of July 17 2026 the 2026
+  // charge (due ~Nov 1) hasn't happened — the old calendar-year keying wrongly
+  // surfaced it as due from Jan 1.
+  const subs = [{ _id: 'z', status: 'active', brand: 'webworks', companyName: 'Zeta', amount: 1200, cadence: 'annual',
+    startedAt: '2025-11-01', periods: [{ period: '2025', status: 'recorded' }] }];
+  assert.deepEqual(dueThisPeriod(subs, TODAY), []);
+  // recordStatusFor agrees: current period is 2025 (settled), not 2026.
+  assert.equal(recordStatusFor(subs[0], TODAY).currentPeriod, '2025');
+  assert.equal(recordStatusFor(subs[0], TODAY).settled, true);
 });
 
 test('brand vocabulary: recurring subset is webworks + atom; labels resolve', () => {

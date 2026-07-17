@@ -15,6 +15,7 @@ const assert = require('node:assert/strict');
 const {
   slugifySiteName,
   sanitizeSiteUpdate,
+  sanitizeEditUpdate,
   publicSiteView,
   healthFromHttpStatus,
   SITE_STATUSES,
@@ -81,6 +82,24 @@ test('publicSiteView exposes render fields only — no _id, domain, or timestamp
 test('sanitizeSiteUpdate: companyKey joins the site to a CRM company', () => {
   assert.equal(sanitizeSiteUpdate({ companyKey: '  earl-and-toms  ' }).set.companyKey, 'earl-and-toms');
   assert.equal(sanitizeSiteUpdate({ companyKey: '' }).set.companyKey, ''); // clear the link
+});
+
+// ── Edit-update whitelist (the atomic edits.$[e] $set builder) ────────────────
+test('sanitizeEditUpdate builds positional $set keys and validates status', () => {
+  const done = sanitizeEditUpdate({ status: 'done' });
+  assert.equal(done.set['edits.$[e].status'], 'done');
+  assert.ok(done.set['edits.$[e].doneAt'] instanceof Date);          // done stamps a completion time
+  const prog = sanitizeEditUpdate({ status: 'in_progress', body: '  fix the hero copy  ' });
+  assert.equal(prog.set['edits.$[e].status'], 'in_progress');
+  assert.equal(prog.set['edits.$[e].doneAt'], null);                 // non-done clears it
+  assert.equal(prog.set['edits.$[e].body'], 'fix the hero copy');    // trimmed
+});
+
+test('sanitizeEditUpdate rejects a blank body and an unknown status', () => {
+  assert.match(sanitizeEditUpdate({ body: '   ' }).error, /edit text cannot be blank/);
+  assert.match(sanitizeEditUpdate({ status: 'archived' }).error, /status must be one of/);
+  // Empty body → empty set (the route turns that into a 400), never a silent no-op save.
+  assert.deepEqual(sanitizeEditUpdate({}).set, {});
 });
 
 // ── Site-health derivation from an HTTP status code ───────────────────────────

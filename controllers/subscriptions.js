@@ -70,13 +70,33 @@ function billingPeriodKey(date, cadence) {
     : `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}`;
 }
 
+const daysInUtcMonth = (y, m) => new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+
+// For an ANNUAL plan, the year whose anniversary (the plan's start month/day) has most
+// recently occurred as of `today`. Keys off the start date the way the expense
+// tracker's expectedDueDates does — NOT the bare calendar year — so a plan started in
+// November isn't treated as due-to-record from Jan 1; it surfaces on/after its
+// anniversary. Never returns a year before the plan began. Pure.
+function annualPeriodYear(startedAt, today) {
+  const now = new Date(today);
+  const start = startedAt ? new Date(startedAt) : now;
+  const y = now.getUTCFullYear();
+  const day = Math.min(start.getUTCDate(), daysInUtcMonth(y, start.getUTCMonth()));
+  const anniversary = Date.UTC(y, start.getUTCMonth(), day);
+  const year = now.getTime() >= anniversary ? y : y - 1;
+  return Math.max(year, start.getUTCFullYear());
+}
+
 // The current-period recording state of ONE subscription as of `today`. Pure.
-//   currentPeriod — the period key we'd record right now
+//   currentPeriod — the period key we'd record right now (annual keys off the
+//                   anniversary via annualPeriodYear, not the calendar year)
 //   recorded — an income row is already booked for it
 //   settled  — recorded OR explicitly skipped (so it's off the to-do list)
 function recordStatusFor(sub, today) {
   const cadence = sub.cadence === 'annual' ? 'annual' : 'monthly';
-  const currentPeriod = billingPeriodKey(today, cadence);
+  const currentPeriod = cadence === 'annual'
+    ? String(annualPeriodYear(sub.startedAt, today))
+    : billingPeriodKey(today, cadence);
   const entry = (sub.periods || []).find((p) => p.period === currentPeriod);
   return {
     currentPeriod,
@@ -267,6 +287,13 @@ async function skipPlan(req, res) {
     if (!sub) return res.status(404).json({ message: 'not found' });
     const rs = recordStatusFor(sub.toObject(), new Date());
     const period = (req.body && req.body.period) || rs.currentPeriod;
+    // If this period was previously RECORDED, skipping it must archive the booked
+    // income row too (same as unrecordPlan) — otherwise the revenue lingers in the
+    // P&L as an orphan while the period reads "skipped, nothing booked".
+    const existing = (sub.periods || []).find((p) => p.period === period);
+    if (existing && existing.transactionId) {
+      await Transaction.findByIdAndUpdate(existing.transactionId, { $set: { archived: true, archivedAt: new Date() } });
+    }
     sub.periods = [
       ...(sub.periods || []).filter((p) => p.period !== period),
       { period, status: 'skipped', amount: null, recordedAt: new Date(), note: (req.body && req.body.note) || '' },
@@ -324,6 +351,7 @@ module.exports = {
   summarizeMrr,
   nextBillFrom,
   billingPeriodKey,
+  annualPeriodYear,
   recordStatusFor,
   dueThisPeriod,
 };

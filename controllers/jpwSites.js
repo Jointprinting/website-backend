@@ -9,6 +9,7 @@
 // Admin routes are gated by requireAdmin in routes/jpwRoutes.js; getPublicSite
 // is registered ABOVE that gate (it must be reachable with no token).
 
+const mongoose = require('mongoose');
 const JpwSite = require('../models/JpwSite');
 const jpwCopywriter = require('../services/jpwCopywriter');
 const aiBudget = require('../services/aiBudget');
@@ -74,6 +75,27 @@ function healthFromHttpStatus(code) {
   const n = Number(code);
   if (Number.isFinite(n) && n >= 200 && n < 400) return 'ok';
   return 'down';
+}
+
+// Whitelist + validate an edit PATCH body → { set } (positional arrayFilter keys for
+// an atomic update) or { error }. An empty set with no error means "nothing to
+// update" (the route turns that into a 400). A blank body is rejected, not saved as
+// an empty change request. PURE + unit-tested.
+function sanitizeEditUpdate(body = {}) {
+  const set = {};
+  if (body.body != null) {
+    const text = String(body.body).trim();
+    if (!text) return { error: 'edit text cannot be blank' };
+    set['edits.$[e].body'] = text.slice(0, 2000);
+  }
+  if (body.status != null) {
+    if (!JpwSite.EDIT_STATUSES.includes(body.status)) {
+      return { error: `status must be one of ${JpwSite.EDIT_STATUSES.join(', ')}` };
+    }
+    set['edits.$[e].status'] = body.status;
+    set['edits.$[e].doneAt'] = body.status === 'done' ? new Date() : null;
+  }
+  return { set };
 }
 
 // The public subset of a site — everything a rendered page needs, nothing the
@@ -152,10 +174,11 @@ async function createSite(req, res) {
   }
 }
 
-// GET /api/jpw/sites/:id
+// GET /api/jpw/sites/:id — excludes soft-deleted (a stale deep link to an archived
+// site 404s rather than re-opening it in the ops tool).
 async function getSite(req, res) {
   try {
-    const site = await JpwSite.findById(req.params.id).lean();
+    const site = await JpwSite.findOne({ _id: req.params.id, archived: { $ne: true } }).lean();
     if (!site) return res.status(404).json({ message: 'site not found' });
     res.json({ site });
   } catch (e) {
@@ -171,7 +194,10 @@ async function updateSite(req, res) {
     const { set, error } = sanitizeSiteUpdate(req.body || {});
     if (error) return res.status(400).json({ message: error });
     if (!Object.keys(set).length) return res.status(400).json({ message: 'nothing to update' });
-    const site = await JpwSite.findByIdAndUpdate(req.params.id, { $set: set }, { new: true, runValidators: true }).lean();
+    const site = await JpwSite.findOneAndUpdate(
+      { _id: req.params.id, archived: { $ne: true } },
+      { $set: set }, { new: true, runValidators: true },
+    ).lean();
     if (!site) return res.status(404).json({ message: 'site not found' });
     res.json({ site });
   } catch (e) {
@@ -200,7 +226,7 @@ async function deleteSite(req, res) {
 // GET /api/jpw/sites/:id/edits — the site's change requests, newest first.
 async function listEdits(req, res) {
   try {
-    const site = await JpwSite.findById(req.params.id).select('edits name').lean();
+    const site = await JpwSite.findOne({ _id: req.params.id, archived: { $ne: true } }).select('edits name').lean();
     if (!site) return res.status(404).json({ message: 'site not found' });
     const edits = (site.edits || []).slice().sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     res.json({ edits });
@@ -213,8 +239,8 @@ async function addEdit(req, res) {
     const body = String((req.body && req.body.body) || '').trim();
     if (!body) return res.status(400).json({ message: 'edit text is required' });
     const source = ['owner', 'client', 'ops'].includes(req.body && req.body.source) ? req.body.source : 'owner';
-    const site = await JpwSite.findByIdAndUpdate(
-      req.params.id,
+    const site = await JpwSite.findOneAndUpdate(
+      { _id: req.params.id, archived: { $ne: true } },
       { $push: { edits: { body: body.slice(0, 2000), source, status: 'open', createdAt: new Date() } } },
       { new: true, runValidators: true },
     ).lean();
@@ -224,22 +250,30 @@ async function addEdit(req, res) {
 }
 
 // PUT /api/jpw/sites/:id/edits/:editId { status?, body? } — advance/close an edit.
+// ATOMIC positional update (arrayFilters): the old load→mutate subdoc→save() path
+// re-saved the whole doc and threw a Mongoose VersionError when two edits on the same
+// site raced. A single $set targeting edits.$[e] can't collide on a stale version.
+// A non-ObjectId editId 404s (it can't match an edit) rather than CastError-ing to 400.
 async function updateEdit(req, res) {
   try {
-    const site = await JpwSite.findById(req.params.id);
-    if (!site) return res.status(404).json({ message: 'site not found' });
-    const edit = site.edits.id(req.params.editId);
-    if (!edit) return res.status(404).json({ message: 'edit not found' });
-    if (req.body && req.body.body != null) edit.body = String(req.body.body).trim().slice(0, 2000);
-    if (req.body && req.body.status != null) {
-      if (!JpwSite.EDIT_STATUSES.includes(req.body.status)) {
-        return res.status(400).json({ message: `status must be one of ${JpwSite.EDIT_STATUSES.join(', ')}` });
-      }
-      edit.status = req.body.status;
-      edit.doneAt = req.body.status === 'done' ? new Date() : null;
+    const { id, editId } = req.params;
+    if (!mongoose.isValidObjectId(editId)) return res.status(404).json({ message: 'edit not found' });
+    const { set, error } = sanitizeEditUpdate(req.body || {});
+    if (error) return res.status(400).json({ message: error });
+    if (!Object.keys(set).length) return res.status(400).json({ message: 'nothing to update' });
+    const editOid = new mongoose.Types.ObjectId(editId);
+    const site = await JpwSite.findOneAndUpdate(
+      { _id: id, archived: { $ne: true }, 'edits._id': editOid },
+      { $set: set },
+      { new: true, runValidators: true, arrayFilters: [{ 'e._id': editOid }] },
+    ).lean();
+    if (!site) {
+      // Nothing matched: distinguish a missing/archived site from a missing edit so
+      // the ops tool shows the right message (both are 404s, as before).
+      const exists = await JpwSite.exists({ _id: id, archived: { $ne: true } });
+      return res.status(404).json({ message: exists ? 'edit not found' : 'site not found' });
     }
-    await site.save();
-    res.json({ site: site.toObject() });
+    res.json({ site });
   } catch (e) { res.status(400).json({ message: e.message }); }
 }
 
@@ -249,7 +283,7 @@ async function updateEdit(req, res) {
 // as 'down', never a 500 — the check must never crash the ops tool.
 async function healthCheck(req, res) {
   try {
-    const site = await JpwSite.findById(req.params.id);
+    const site = await JpwSite.findOne({ _id: req.params.id, archived: { $ne: true } });
     if (!site) return res.status(404).json({ message: 'site not found' });
     if (site.status !== 'live' || !site.domain) {
       site.health = { status: 'unknown', lastCheckedAt: new Date(), httpStatus: null,
@@ -258,14 +292,19 @@ async function healthCheck(req, res) {
       return res.json({ site: site.toObject() });
     }
     let httpStatus = null; let note = '';
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 10000);
     try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 10000);
       const resp = await fetch(`https://${site.domain}`, { method: 'GET', redirect: 'follow', signal: ctrl.signal });
-      clearTimeout(t);
       httpStatus = resp.status;
+      // Drain/close the body so the socket is released promptly (we only need the code).
+      try { await resp.body?.cancel(); } catch { /* already closed — ignore */ }
     } catch (err) {
       note = String((err && err.message) || 'request failed').slice(0, 200);
+    } finally {
+      // Always clear the abort timer — on a fetch rejection the old code skipped this,
+      // leaving a 10s timer pending that fired abort() on a settled controller.
+      clearTimeout(t);
     }
     site.health = {
       status: httpStatus == null ? 'down' : healthFromHttpStatus(httpStatus),
@@ -344,7 +383,10 @@ async function getAiUsage(_req, res) {
 async function getPublicSite(req, res) {
   try {
     const slug = String(req.params.slug || '').toLowerCase().trim();
-    const site = await JpwSite.findOne({ slug, status: { $in: ['preview', 'live'] } }).lean();
+    // archived:{$ne:true} — a soft-deleted site keeps status:'live' but must STOP
+    // serving publicly (deleteSite became a soft-delete; without this a "deleted"
+    // client site still resolved on its preview/live URL).
+    const site = await JpwSite.findOne({ slug, status: { $in: ['preview', 'live'] }, archived: { $ne: true } }).lean();
     if (!site) return res.status(404).json({ message: 'not found' });
     res.json({ site: publicSiteView(site) });
   } catch (e) {
@@ -370,8 +412,9 @@ async function getPublicSiteByDomain(req, res) {
   try {
     const host = normalizeHost(req.params.host);
     if (!host) return res.status(404).json({ message: 'not found' });
-    // The stored domain may or may not carry "www." — match both forms.
-    const site = await JpwSite.findOne({ domain: { $in: [host, `www.${host}`] }, status: 'live' }).lean();
+    // The stored domain may or may not carry "www." — match both forms. archived:
+    // {$ne:true} so a soft-deleted live site stops resolving on its connected domain.
+    const site = await JpwSite.findOne({ domain: { $in: [host, `www.${host}`] }, status: 'live', archived: { $ne: true } }).lean();
     if (!site) return res.status(404).json({ message: 'not found' });
     res.json({ site: publicSiteView(site) });
   } catch (e) {
@@ -383,5 +426,5 @@ module.exports = {
   listSites, createSite, getSite, updateSite, deleteSite, generateCopy, getAiUsage, getPublicSite, getPublicSiteByDomain,
   listEdits, addEdit, updateEdit, healthCheck,
   // pure helpers (unit-tested)
-  slugifySiteName, sanitizeSiteUpdate, publicSiteView, normalizeHost, healthFromHttpStatus, SITE_STATUSES,
+  slugifySiteName, sanitizeSiteUpdate, sanitizeEditUpdate, publicSiteView, normalizeHost, healthFromHttpStatus, SITE_STATUSES,
 };
