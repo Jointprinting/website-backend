@@ -28,10 +28,25 @@ const printerSchema = new mongoose.Schema({
   // from the sheet. The structured, PO-addressable people live in `contacts`.
   contact:  { type: mongoose.Schema.Types.Mixed, default: null },
   contacts: { type: [printerContactSchema], default: [] },
-  capabilities: { type: [String], default: [] },          // 'screen_printing' | 'embroidery' | 'dtg' | 'dtf' | 'digital_squeegee'
-  // The scraped price catalog (data/printerCatalog-<key>.json). Shape varies
-  // per printer; treat as reference data, never write from the app.
+  // DERIVED from the catalog's priced sections (see utils/printerCatalog
+  // capabilitiesFromCatalog) on every catalog write — one source of truth, not a
+  // hand-typed list that can drift. Canonical: 'screen_printing' | 'embroidery' |
+  // 'dtg' | 'dtf' | 'digital_squeegee' | 'digitally_printed_media' | 'personalization'.
+  capabilities: { type: [String], default: [] },
+  // The price catalog (data/printerCatalog-<key>.json is the INITIAL import; the
+  // in-Studio Printer Catalog editor writes it after that). Shape varies per
+  // printer — Mixed — so the write path validates the `model` tag per section
+  // (utils/printerCatalog) rather than a fixed schema. The boot seed is
+  // insert-only ($setOnInsert) so an app edit is never clobbered by a re-deploy.
   catalog: { type: mongoose.Schema.Types.Mixed, default: null },
+  // Sections the owner soft-archived (archive-not-delete): moved OUT of `catalog`
+  // so the Quoter never prices them, kept here recoverable. { <sectionKey>: <section> }.
+  catalogArchive: { type: mongoose.Schema.Types.Mixed, default: undefined },
+  // Audit: who last edited this printer in the app, and when. catalogLog is a
+  // capped who/what/when trail of price-book edits (newest last).
+  editedAt: { type: Date, default: null },
+  editedBy: { type: String, default: '' },
+  catalogLog: { type: [{ at: Date, by: String, section: String, action: String, _id: false }], default: [] },
   catalogEffective: { type: String, default: '' },        // e.g. '2025-01-01' (the sheet's own effective date)
   // When THIS pricing was captured into the system (YYYY-MM-DD). Drives the
   // yearly "re-verify with the printer's contact" review nudge — a price sheet
