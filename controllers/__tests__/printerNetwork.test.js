@@ -33,7 +33,7 @@ test('pricingReviewDue: no capture date on record never nags (legacy printers)',
 
 // ── committed price-book catalogs are well-formed ───────────────────────────
 const DATA = path.join(__dirname, '..', '..', 'data');
-const NEW_CATALOGS = ['printhybrid', 'aplus', 'contractdtg', 'branded', 'garmentgear'];
+const NEW_CATALOGS = ['printhybrid', 'aplus', 'contractdtg', 'branded', 'garmentgear', 'bluemoon'];
 
 for (const key of NEW_CATALOGS) {
   test(`catalog ${key}: parses with printer meta + capabilities + capture date`, () => {
@@ -76,6 +76,27 @@ test('contract-DTG: DTG carries dark+white per size, DTF is size×qty', () => {
   assert.equal(cd.dtg.includesGarment, false);
   assert.deepEqual(cd.dtg.tiers[0].prices['4x4'], [6.6, 5.5]); // [dark, white]
   assert.equal(cd.dtf.grid['15x20'].length, cd.dtf.qtyCols.length);
+});
+
+test('Blue Moon: all four methods, correct models + spot cells + Garment Gear email fixed', () => {
+  const bm = JSON.parse(fs.readFileSync(path.join(DATA, 'printerCatalog-bluemoon.json'), 'utf8'));
+  assert.equal(bm.printer.state, 'OH');
+  assert.equal(bm.printer.contacts[0].email, 'emma@bluemoonscreenprint.com');
+  assert.equal(bm.screenPrinting.model, 'qty_x_colors');
+  assert.equal(bm.screenPrinting.tiers.find((t) => t.minQty === 144).prices[9], 3.85); // 144-287, 10 colors
+  assert.equal(bm.screenPrinting.screenFees['1'], 20);
+  assert.equal(bm.embroidery.model, 'qty_x_stitches');
+  assert.equal(bm.embroidery.stitchBands.length, 5);
+  assert.equal(bm.embroidery.grid['24-47'][2], 6.60);       // 24-47 @ 6k-10k band
+  assert.equal(bm.embroidery.fees.digitizingUpTo15k, 40);
+  assert.equal(bm.dtg.model, 'qty_x_size');
+  assert.equal(bm.dtg.grid['Left Chest'][0], 6.00);
+  assert.equal(bm.dtf.model, 'gang_sheet_flat');
+  assert.equal(bm.dtf.pricePerSheet, 10.00);
+
+  // Garment Gear contact email correction (customsales@, not customerservice@)
+  const gg = JSON.parse(fs.readFileSync(path.join(DATA, 'printerCatalog-garmentgear.json'), 'utf8'));
+  assert.equal(gg.printer.contacts[0].email, 'customsales@garmentgear.com');
 });
 
 test('Garment Gear: screen grid + DTG/DTF are qty×size, no embroidery', () => {
