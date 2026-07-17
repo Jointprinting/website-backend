@@ -1,39 +1,259 @@
 {
-  "meta": { "source": "Blue Moon Promo Decorators (Blue Moon Screenprinting)", "capturedOn": "2026-07-17", "sourcePdf": "", "currency": "USD" },
+  "meta": {
+    "source": "Blue Moon Promo Decorators (Blue Moon Screenprinting)",
+    "capturedOn": "2026-07-17",
+    "sourcePdf": "",
+    "currency": "USD"
+  },
   "printer": {
     "name": "Blue Moon Promo Decorators",
     "aka": "Blue Moon Screenprinting",
     "state": "OH",
     "location": "Willoughby, OH",
-    "capabilities": ["screen", "embroidery", "dtg", "dtf"],
-    "contacts": [
-      { "name": "Emma Kropp", "email": "emma@bluemoonscreenprint.com", "role": "Orders", "primary": true }
+    "capabilities": [
+      "screen",
+      "embroidery",
+      "dtg",
+      "dtf"
     ],
-    "contact": { "address": "38845 Mentor Avenue Rear Building, Willoughby, OH 44094", "phone": "440-942-6055" }
+    "contacts": [
+      {
+        "name": "Johanna",
+        "email": "orders@bluemoonscreenprint.com",
+        "role": "Orders",
+        "primary": true
+      }
+    ],
+    "contact": {
+      "address": "38845 Mentor Avenue Rear Building, Willoughby, OH 44094",
+      "phone": "440-942-6055"
+    }
   },
   "screenPrinting": {
     "model": "qty_x_colors",
     "setup": "per_color",
     "darkAddsUnderbaseColor": true,
     "underbaseFreeScreen": true,
-    "colorColumns": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
-    "tiers": [
-      { "minQty": 12,   "label": "12-23",     "prices": [2.25, 3.45, null, null, null, null, null, null, null, null] },
-      { "minQty": 24,   "label": "24-47",     "prices": [2.05, 2.35, 3.00, 4.85, null, null, null, null, null, null] },
-      { "minQty": 48,   "label": "48-71",     "prices": [1.75, 2.15, 2.50, 2.80, 3.80, 4.65, null, null, null, null] },
-      { "minQty": 72,   "label": "72-95",     "prices": [1.50, 1.95, 2.25, 2.60, 2.95, 3.35, 4.65, null, null, null] },
-      { "minQty": 96,   "label": "96-143",    "prices": [1.45, 1.75, 2.05, 2.40, 2.75, 3.00, 3.15, null, null, null] },
-      { "minQty": 144,  "label": "144-287",   "prices": [1.20, 1.50, 1.75, 1.95, 2.20, 2.35, 2.65, 3.15, 3.50, 3.85] },
-      { "minQty": 288,  "label": "288-499",   "prices": [1.00, 1.35, 1.50, 1.70, 2.00, 2.20, 2.30, 2.65, 3.25, 3.60] },
-      { "minQty": 500,  "label": "500-999",   "prices": [0.90, 1.10, 1.35, 1.45, 1.60, 1.85, 1.90, 2.30, 3.15, 3.25] },
-      { "minQty": 1000, "label": "1000-2999", "prices": [0.85, 0.90, 1.10, 1.35, 1.50, 1.65, 1.80, 1.90, 2.95, 3.00] },
-      { "minQty": 3000, "label": "3000-4999", "prices": [0.80, 0.85, 1.00, 1.25, 1.35, 1.45, 1.60, 1.75, 2.75, 2.85] },
-      { "minQty": 5000, "label": "5000-7499", "prices": [0.75, 0.80, 0.90, 1.00, 1.15, 1.25, 1.35, 1.50, 2.65, 2.75] },
-      { "minQty": 7500, "label": "7500-10000","prices": [0.70, 0.75, 0.85, 0.90, 1.00, 1.10, 1.15, 1.35, 2.55, 2.65] }
+    "colorColumns": [
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "10"
     ],
-    "screenFees": { "1": 20, "2": 40, "3": 60, "4": 80, "5": 100, "6": 120, "7": 140, "8": 160, "9": 180, "10": 200 },
+    "tiers": [
+      {
+        "minQty": 12,
+        "label": "12-23",
+        "prices": [
+          2.25,
+          3.45,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "minQty": 24,
+        "label": "24-47",
+        "prices": [
+          2.05,
+          2.35,
+          3.0,
+          4.85,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "minQty": 48,
+        "label": "48-71",
+        "prices": [
+          1.75,
+          2.15,
+          2.5,
+          2.8,
+          3.8,
+          4.65,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "minQty": 72,
+        "label": "72-95",
+        "prices": [
+          1.5,
+          1.95,
+          2.25,
+          2.6,
+          2.95,
+          3.35,
+          4.65,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "minQty": 96,
+        "label": "96-143",
+        "prices": [
+          1.45,
+          1.75,
+          2.05,
+          2.4,
+          2.75,
+          3.0,
+          3.15,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "minQty": 144,
+        "label": "144-287",
+        "prices": [
+          1.2,
+          1.5,
+          1.75,
+          1.95,
+          2.2,
+          2.35,
+          2.65,
+          3.15,
+          3.5,
+          3.85
+        ]
+      },
+      {
+        "minQty": 288,
+        "label": "288-499",
+        "prices": [
+          1.0,
+          1.35,
+          1.5,
+          1.7,
+          2.0,
+          2.2,
+          2.3,
+          2.65,
+          3.25,
+          3.6
+        ]
+      },
+      {
+        "minQty": 500,
+        "label": "500-999",
+        "prices": [
+          0.9,
+          1.1,
+          1.35,
+          1.45,
+          1.6,
+          1.85,
+          1.9,
+          2.3,
+          3.15,
+          3.25
+        ]
+      },
+      {
+        "minQty": 1000,
+        "label": "1000-2999",
+        "prices": [
+          0.85,
+          0.9,
+          1.1,
+          1.35,
+          1.5,
+          1.65,
+          1.8,
+          1.9,
+          2.95,
+          3.0
+        ]
+      },
+      {
+        "minQty": 3000,
+        "label": "3000-4999",
+        "prices": [
+          0.8,
+          0.85,
+          1.0,
+          1.25,
+          1.35,
+          1.45,
+          1.6,
+          1.75,
+          2.75,
+          2.85
+        ]
+      },
+      {
+        "minQty": 5000,
+        "label": "5000-7499",
+        "prices": [
+          0.75,
+          0.8,
+          0.9,
+          1.0,
+          1.15,
+          1.25,
+          1.35,
+          1.5,
+          2.65,
+          2.75
+        ]
+      },
+      {
+        "minQty": 7500,
+        "label": "7500-10000",
+        "prices": [
+          0.7,
+          0.75,
+          0.85,
+          0.9,
+          1.0,
+          1.1,
+          1.15,
+          1.35,
+          2.55,
+          2.65
+        ]
+      }
+    ],
+    "screenFees": {
+      "1": 20,
+      "2": 40,
+      "3": 60,
+      "4": 80,
+      "5": 100,
+      "6": 120,
+      "7": 140,
+      "8": 160,
+      "9": 180,
+      "10": 200
+    },
     "screenFeeReorder": 15,
-    "flashLightOnDark": 0.20,
+    "flashLightOnDark": 0.2,
     "notes": [
       "Setup / screen $20.00 per color; repeat setup $15.00. Spoilage 0.5% per color.",
       "Dark garments needing a white underbase: add one color + the $0.20 flash fee.",
@@ -44,32 +264,131 @@
   },
   "embroidery": {
     "model": "qty_x_stitches",
-    "stitchBands": ["3000", "6000", "10000", "12500", "15000"],
+    "stitchBands": [
+      "3000",
+      "6000",
+      "10000",
+      "12500",
+      "15000"
+    ],
     "qtyTiers": [
-      { "minQty": 1,    "label": "1-5" },
-      { "minQty": 6,    "label": "6-11" },
-      { "minQty": 12,   "label": "12-23" },
-      { "minQty": 24,   "label": "24-47" },
-      { "minQty": 48,   "label": "48-71" },
-      { "minQty": 72,   "label": "72-143" },
-      { "minQty": 144,  "label": "144-287" },
-      { "minQty": 288,  "label": "288-499" },
-      { "minQty": 500,  "label": "500-999" },
-      { "minQty": 1000, "label": "1000-1499" }
+      {
+        "minQty": 1,
+        "label": "1-5"
+      },
+      {
+        "minQty": 6,
+        "label": "6-11"
+      },
+      {
+        "minQty": 12,
+        "label": "12-23"
+      },
+      {
+        "minQty": 24,
+        "label": "24-47"
+      },
+      {
+        "minQty": 48,
+        "label": "48-71"
+      },
+      {
+        "minQty": 72,
+        "label": "72-143"
+      },
+      {
+        "minQty": 144,
+        "label": "144-287"
+      },
+      {
+        "minQty": 288,
+        "label": "288-499"
+      },
+      {
+        "minQty": 500,
+        "label": "500-999"
+      },
+      {
+        "minQty": 1000,
+        "label": "1000-1499"
+      }
     ],
     "grid": {
-      "1-5":       [9.00, 11.00, 13.00, 14.00, 15.00],
-      "6-11":      [8.00, 10.00, 12.00, 13.00, 14.00],
-      "12-23":     [7.70, 8.80, 11.00, 12.00, 13.00],
-      "24-47":     [4.75, 5.20, 6.60, 7.60, 8.60],
-      "48-71":     [4.25, 4.50, 5.50, 6.50, 7.50],
-      "72-143":    [4.00, 4.25, 4.40, 5.40, 6.40],
-      "144-287":   [3.50, 4.00, 4.00, 5.00, 6.00],
-      "288-499":   [3.25, 3.50, 3.70, 4.70, 5.70],
-      "500-999":   [3.15, 3.30, 3.55, 4.55, 5.55],
-      "1000-1499": [3.10, 3.25, 3.40, 4.40, 5.40]
+      "1-5": [
+        9.0,
+        11.0,
+        13.0,
+        14.0,
+        15.0
+      ],
+      "6-11": [
+        8.0,
+        10.0,
+        12.0,
+        13.0,
+        14.0
+      ],
+      "12-23": [
+        7.7,
+        8.8,
+        11.0,
+        12.0,
+        13.0
+      ],
+      "24-47": [
+        4.75,
+        5.2,
+        6.6,
+        7.6,
+        8.6
+      ],
+      "48-71": [
+        4.25,
+        4.5,
+        5.5,
+        6.5,
+        7.5
+      ],
+      "72-143": [
+        4.0,
+        4.25,
+        4.4,
+        5.4,
+        6.4
+      ],
+      "144-287": [
+        3.5,
+        4.0,
+        4.0,
+        5.0,
+        6.0
+      ],
+      "288-499": [
+        3.25,
+        3.5,
+        3.7,
+        4.7,
+        5.7
+      ],
+      "500-999": [
+        3.15,
+        3.3,
+        3.55,
+        4.55,
+        5.55
+      ],
+      "1000-1499": [
+        3.1,
+        3.25,
+        3.4,
+        4.4,
+        5.4
+      ]
     },
-    "fees": { "digitizingUpTo15k": 40, "digitizingPer1kOver15k": 0 },
+    "fees": {
+      "digitizingUpTo15k": 40,
+      "digitizingPer1kOver15k": 0
+    },
     "notes": [
       "Piece price by qty tier × stitch band; digitizing (incl. sewout image) $40 up to 15k stitches.",
       "Over 15k stitches: +$2.00 per 1,000 stitches. 1,500+ pieces = quote.",
@@ -80,12 +399,27 @@
     "model": "qty_x_size",
     "label": "DTG",
     "unit": "per_piece",
-    "sizes": ["Left Chest", "Full Front/Back", "Program"],
-    "qtyTiers": [ { "minQty": 1, "label": "any qty" } ],
+    "sizes": [
+      "Left Chest",
+      "Full Front/Back",
+      "Program"
+    ],
+    "qtyTiers": [
+      {
+        "minQty": 1,
+        "label": "any qty"
+      }
+    ],
     "grid": {
-      "Left Chest":      [6.00],
-      "Full Front/Back": [8.00],
-      "Program":         [7.00]
+      "Left Chest": [
+        6.0
+      ],
+      "Full Front/Back": [
+        8.0
+      ],
+      "Program": [
+        7.0
+      ]
     },
     "minimum": 30,
     "notes": [
@@ -96,8 +430,8 @@
   "dtf": {
     "model": "gang_sheet_flat",
     "sheetSize": "16x20in",
-    "pricePerSheet": 10.00,
-    "heatPressPerLocation": 2.50,
+    "pricePerSheet": 10.0,
+    "heatPressPerLocation": 2.5,
     "minimum": 30,
     "notes": [
       "$10.00 per 16x20 gang sheet — different images can gang on one sheet.",
