@@ -8,6 +8,13 @@ const StudioLibraryItemSchema = new mongoose.Schema({
   data:       { type: String, default: '' },    // base64 for blanks/logos
   thumbnail:  { type: String, default: '' },    // base64 preview thumbnail
   client:     { type: String, default: '' },
+  // Canonical company key — the SAME derivation Order.companyKey uses
+  // (utils/companyKey.deriveCompanyKey). The unifying join for the "visuals of
+  // the job" area: a lookbook's picker, the CRM design library, and any
+  // client-scoped mockup view all filter on THIS instead of the old fuzzy
+  // client-name / mockup-number guessing. Derived on save from `client`;
+  // backfilled on existing docs from the order that references the mockup #.
+  companyKey: { type: String, default: '', index: true },
   pageState:  { type: mongoose.Schema.Types.Mixed, default: null }, // full page state for mockups
   // MULTI-PAGE mockups: every page (view) of the one mockup file, trimmed like
   // pageState (base64 layers stripped client-side before sync). null = single.
@@ -26,5 +33,8 @@ const StudioLibraryItemSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 StudioLibraryItemSchema.index({ store: 1, savedAt: -1 });
+// Client-scoped mockup lookups (lookbook picker, CRM design library) filter by
+// store + companyKey, newest first — one index serves all three surfaces.
+StudioLibraryItemSchema.index({ store: 1, companyKey: 1, savedAt: -1 });
 
 module.exports = mongoose.model('StudioLibraryItem', StudioLibraryItemSchema);
