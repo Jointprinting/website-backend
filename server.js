@@ -370,6 +370,14 @@ db.once('open', () => {
       .catch((e) => console.warn('[studioLibrary] remoteId backfill failed:', e.message));
   }, 4_000);
 
+  // Idempotent: stamp companyKey on legacy mockups (from the order that
+  // references each number, else the client name) so the lookbook picker + CRM
+  // design library can filter one client's mockups on a single canonical key.
+  setTimeout(() => {
+    require('./controllers/studioLibrary').backfillCompanyKeys()
+      .catch((e) => console.warn('[studioLibrary] companyKey backfill failed:', e.message));
+  }, 8_500);
+
   // Re-pick-up any receipts left mid-read (pending/processing) so a restart or a
   // cleared rate-limit window resumes scanning without losing anything. No-op
   // when ANTHROPIC_API_KEY isn't set (receipts just wait for manual entry).

@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
 const r2 = require('../services/r2');
+const { deriveCompanyKey, normMockupNum } = require('../utils/companyKey');
 
 // Best-effort: free the R2 objects an item owned. Only called on delete —
 // update-replacement cleanup lives in saveItem.
@@ -34,7 +35,14 @@ async function listItems(req, res) {
     // the order page loads fast even with hundreds of mockups; the studio's own
     // sync still pulls the full documents for offline editing.
     const summary = req.query.summary === '1' || req.query.summary === 'true';
-    const q = StudioLibraryItem.find({ store }).sort({ savedAt: -1 });
+    // Client-scoped mockups (?companyKey): the lookbook picker and CRM design
+    // library ask for just one client's mockups — spanning every project — via
+    // the canonical companyKey. Filters the same summary payload, so no new
+    // shape. Only meaningful for the mockups store; ignored for blanks/logos.
+    const filter = { store };
+    const companyKey = String(req.query.companyKey || '').trim();
+    if (companyKey && store === 'mockups') filter.companyKey = companyKey;
+    const q = StudioLibraryItem.find(filter).sort({ savedAt: -1 });
     // `data` (the BACK composite, an R2 URL post-migration) rides along so
     // the confirmation builder can offer + preview the back side; without it
     // the "Show back" toggle could never appear.
@@ -117,6 +125,14 @@ async function saveItem(req, res) {
       return res.status(400).json({ message: 'Invalid store.' });
     let { name, data, thumbnail, client, pageState, pages, extraViews, extraBackViews, savedAt, remoteId } = req.body;
 
+    // Stamp the canonical companyKey so this mockup joins the client cleanly
+    // (lookbook picker / CRM design library). Prefer an explicit key from the
+    // client, else derive it from the mockup's `client` name the same way an
+    // Order does. Only mockups carry it; blanks/logos stay unkeyed.
+    const companyKey = store === 'mockups'
+      ? (String(req.body.companyKey || '').trim() || deriveCompanyKey(client))
+      : '';
+
     // Offload base64 images to R2 (when configured) so the document stays small
     // and well under Mongo's 16MB ceiling. uploadDataUrl returns the value
     // unchanged if it's already a URL or not base64, so this is safe to call
@@ -173,7 +189,7 @@ async function saveItem(req, res) {
     if (remoteId) {
       const fields = {
         store, name, data: data || '', thumbnail: thumbnail || '',
-        client: client || '', pageState: pageState || null,
+        client: client || '', companyKey, pageState: pageState || null,
         pages: pages || null,
         extraViews: Array.isArray(extraViews) ? extraViews.filter(Boolean) : [],
         // Kept index-aligned to pages[1..] (NOT filtered): a front-only extra page
@@ -200,7 +216,7 @@ async function saveItem(req, res) {
     }
     const item = await StudioLibraryItem.create({
       store, name, data: data || '', thumbnail: thumbnail || '',
-      client: client || '', pageState: pageState || null,
+      client: client || '', companyKey, pageState: pageState || null,
       pages: pages || null,
       extraViews: Array.isArray(extraViews) ? extraViews.filter(Boolean) : [],
       // Index-aligned to pages[1..] (NOT filtered) — see the upsert branch above.
@@ -221,6 +237,53 @@ async function saveItem(req, res) {
       code: err.code || err.name || undefined,
     });
   }
+}
+
+// Which companyKey a mockup belongs to (pure, unit-tested). Prefer the order
+// that references its number — that carries the authoritative Order.companyKey;
+// fall back to deriving from the mockup's free-text `client` name. `orderMap` is
+// a Map of normMockupNum → companyKey.
+function resolveCompanyKeyFor(mockup, orderMap) {
+  const num = mockup && mockup.pageState && mockup.pageState.mockupNum;
+  const byOrder = num && orderMap ? orderMap.get(normMockupNum(num)) : '';
+  if (byOrder) return byOrder;
+  return deriveCompanyKey(mockup && mockup.client);
+}
+
+// One-time backfill (idempotent, runs at boot from server.js): stamp companyKey
+// on every mockup that lacks one — from the order referencing its number when
+// possible (authoritative), else derived from its client name. Only touches docs
+// with an empty key, so it's safe to run every boot and re-run is a no-op once
+// keyed. New/edited mockups get keyed on save, so this only ever catches legacy.
+async function backfillCompanyKeys() {
+  const missing = await StudioLibraryItem.find({
+    store: 'mockups',
+    $or: [{ companyKey: '' }, { companyKey: null }, { companyKey: { $exists: false } }],
+  }).select('client pageState.mockupNum').lean();
+  if (!missing.length) return 0;
+
+  const Order = require('../models/Order');
+  const orders = await Order.find({ mockupNumbers: { $exists: true, $ne: [] } })
+    .select('companyKey mockupNumbers').lean();
+  const orderMap = new Map();
+  for (const o of orders) {
+    if (!o.companyKey) continue;
+    for (const n of (o.mockupNumbers || [])) {
+      const k = normMockupNum(n);
+      if (k && !orderMap.has(k)) orderMap.set(k, o.companyKey);
+    }
+  }
+
+  const ops = [];
+  for (const m of missing) {
+    const key = resolveCompanyKeyFor(m, orderMap);
+    if (key) ops.push({ updateOne: { filter: { _id: m._id }, update: { $set: { companyKey: key } } } });
+  }
+  if (!ops.length) return 0;
+  const r = await StudioLibraryItem.bulkWrite(ops, { ordered: false });
+  const n = r.modifiedCount || 0;
+  if (n) console.log(`[studioLibrary] backfilled companyKey on ${n} mockup(s).`);
+  return n;
 }
 
 async function deleteItem(req, res) {
@@ -245,4 +308,8 @@ async function deleteByRemoteId(req, res) {
   }
 }
 
-module.exports = { listItems, getByRemoteIds, saveItem, deleteItem, deleteByRemoteId, backfillRemoteIds, resolveMockupRemoteId };
+module.exports = {
+  listItems, getByRemoteIds, saveItem, deleteItem, deleteByRemoteId,
+  backfillRemoteIds, resolveMockupRemoteId,
+  backfillCompanyKeys, resolveCompanyKeyFor,
+};
