@@ -41,6 +41,15 @@ const VendorSchema = new mongoose.Schema({
   leadTimeDays:  { type: Number, default: 0 },     // typical turnaround in business days (0 = unset)
   qualityRating: { type: Number, default: 0 },     // owner score 1–5 (0 = unrated)
 
+  // The JOIN to this printer's PRICE BOOK in the Printer catalog (models/Printer,
+  // keyed by slug `key`). A real printer is ONE shop but lives in TWO records: this
+  // Vendor doc (its money — POs, spend, receipts, keyed by name) and a Printer doc
+  // (its price book, read by the Quoter, keyed by `key`). This key ties the two so
+  // the vendor card can show + edit the price book in place instead of a parallel
+  // "Printer Catalog" tab. '' = not linked yet (owner links it from the card; a
+  // freshly-scanned catalog printer with no POs may have no vendor record yet).
+  printerKey: { type: String, default: '', index: true },
+
   // Typical mode for this vendor. Defaults TRUE because Joint Printing supplies
   // the blanks ~99% of the time — so an unset/new vendor seeds POs with blanks
   // provided (blank cost excluded from the supplier PO). The PO seeders read this

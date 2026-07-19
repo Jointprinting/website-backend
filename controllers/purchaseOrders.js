@@ -1283,7 +1283,9 @@ async function _repointVendorName(oldName, newName, vendorId = null) {
 // run. Never lowers an already-issued sequence below what's been used.
 const VENDOR_PATCHABLE = ['name', 'contactName', 'email', 'phone', 'address', 'shipMethod', 'accountNumber', 'notes', 'blanksProvided',
   // Printer-network / geo-routing foundation (owner-filled; nothing routes off them yet).
-  'city', 'state', 'zip', 'capabilities', 'leadTimeDays', 'qualityRating'];
+  'city', 'state', 'zip', 'capabilities', 'leadTimeDays', 'qualityRating',
+  // The join to this printer's price book in the Printer catalog (link/unlink from the card).
+  'printerKey'];
 const updateVendor = async (req, res) => {
   try {
     if (badId(req.params.id)) return res.status(404).json({ message: 'Vendor not found' });
