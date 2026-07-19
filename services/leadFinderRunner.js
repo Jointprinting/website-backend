@@ -184,7 +184,13 @@ async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich, v
   // entirely — now nothing found is lost: the email-able subset still ALSO imports
   // as cold-email leads below, while the rest become map pins reachable by call/
   // visit. Same shared upsert the human Field-Map scan uses (dedupes cross-source).
-  const roster = await upsertOsmCandidates(disc.candidates).catch(() => ({ added: 0, attached: 0 }));
+  // CANNABIS VERTICALS ONLY: the Dispensary collection IS the Field Map — a
+  // brewery or smoke-vape sweep must not write breweries/bodegas onto it as
+  // dispensary pins (they still import as cold-email leads in their own pool).
+  const cannabisVertical = vertical.id === 'dispensary' || vertical.id === 'medical' || vertical.id === 'field-map';
+  const roster = cannabisVertical
+    ? await upsertOsmCandidates(disc.candidates).catch(() => ({ added: 0, attached: 0 }))
+    : { added: 0, attached: 0 };
 
   // Reuse the CRM importer's exact merge policy (fill-blanks, dedupe, no downgrade).
   const mapped = buildMappedRows({ rows });

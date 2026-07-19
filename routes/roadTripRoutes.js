@@ -16,12 +16,12 @@ const {
 } = require('../controllers/roadTripLead');
 
 const {
-  listDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, scanOsm, corridor,
+  listDispensaries, findDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, scanOsm, corridor,
 } = require('../controllers/dispensary');
 
 const {
   getCurrent, addStop, removeStop, patchStop, optimize, patchRun, completeRun,
-  catalogQueue, sendCatalog,
+  catalogQueue, sendCatalog, listRunHistory, getRunHistory,
 } = require('../controllers/fieldRun');
 
 const { requireAdmin } = require('../middleware/auth');
@@ -31,6 +31,7 @@ router.use(requireAdmin);
 
 // ── Nationwide dispensary database ──────────────────────────────────────────
 router.get   ('/dispensaries',              listDispensaries);
+router.get   ('/dispensaries/find',         findDispensaries); // name/city typeahead
 router.get   ('/dispensaries/coverage',     coverage);
 router.post  ('/dispensaries/scan-osm',     scanOsm);   // free OSM viewport sweep
 router.post  ('/dispensaries/corridor',     corridor);  // route-band scan for the day planner
@@ -41,8 +42,10 @@ router.post  ('/dispensaries/sweep',        sweep);
 router.post  ('/dispensaries/rechain',      rechain);
 router.post  ('/dispensaries/:id/hide',     hide);
 
-// ── Today's Run ──────────────────────────────────────────────────────────────
+// ── Today's Run + the mission log (archived days) ────────────────────────────
 router.get   ('/run',               getCurrent);
+router.get   ('/run/history',       listRunHistory);
+router.get   ('/run/history/:id',   getRunHistory);
 router.patch ('/run',               patchRun);
 router.post  ('/run/stops',         addStop);
 router.delete('/run/stops/:stopId', removeStop);

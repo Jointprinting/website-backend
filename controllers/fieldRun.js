@@ -13,7 +13,7 @@
 const FieldRun = require('../models/FieldRun');
 const Dispensary = require('../models/Dispensary');
 const Client = require('../models/Client');
-const { optimizeStopOrder } = require('../services/routeOptimize');
+const { optimizeStopOrder, pathMiles } = require('../services/routeOptimize');
 const { matchKey } = require('../services/dispensaryIngest');
 
 function todayLabel() { return new Date().toISOString().slice(0, 10); }
@@ -54,6 +54,73 @@ async function getCurrent(_req, res) {
   try {
     const run = await FieldRun.findOne({ active: true }).sort({ createdAt: -1 }).lean();
     res.json({ run: run || null });
+  } catch (err) {
+    res.status(500).json({ message: 'Run lookup failed.' });
+  }
+}
+
+// ── Run history ("mission log") ──────────────────────────────────────────────
+// Archived runs have always been KEPT (completeRun just flips active:false) but
+// were unreachable — no endpoint listed them. These two power the map's day
+// history: revisit what was driven, who was pitched, and how each lead panned
+// out afterward.
+
+// One archived run → its scoreboard line. Pure (exported for tests).
+function summarizeRun(run) {
+  const stops = (run.stops || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+  const visited = stops.filter((s) => s.status === 'visited');
+  const start = run.startLat != null && run.startLng != null
+    ? { lat: run.startLat, lng: run.startLng }
+    : (stops[0] ? { lat: stops[0].lat, lng: stops[0].lng } : null);
+  const miles = start && stops.length
+    ? Math.round(pathMiles(start, stops.map((s) => ({ lat: s.lat, lng: s.lng }))) * 10) / 10
+    : 0;
+  return {
+    _id: run._id,
+    label: run.label || '',
+    date: run.createdAt || null,
+    endedAt: run.endedAt || null,
+    stops: stops.length,
+    visited: visited.length,
+    pitched: stops.filter((s) => s.outcome === 'pitched').length,
+    contacts: stops.filter((s) => s.contactEmail).length,
+    catalogsQueued: stops.filter((s) => s.catalogQueued).length,
+    catalogsSent: stops.filter((s) => s.catalogSentAt).length,
+    miles,
+  };
+}
+
+// GET /api/roadtrip/run/history — newest-first scoreboard of past days.
+async function listRunHistory(req, res) {
+  try {
+    const limit = Math.min(120, parseInt(req.query.limit, 10) || 60);
+    const runs = await FieldRun.find({ active: false })
+      .sort({ createdAt: -1 }).limit(limit).lean();
+    res.json({ runs: runs.map(summarizeRun) });
+  } catch (err) {
+    res.status(500).json({ message: 'Run history lookup failed.' });
+  }
+}
+
+// GET /api/roadtrip/run/history/:id — one past day in full, with each stop's
+// CURRENT CRM stage joined live (the payoff view: "that Tuesday produced two
+// quoting deals"), not the stale snapshot taken when the stop was added.
+async function getRunHistory(req, res) {
+  try {
+    const run = await FieldRun.findById(req.params.id).lean();
+    if (!run) return res.status(404).json({ message: 'Run not found.' });
+    const keys = [...new Set((run.stops || []).map((s) => s.companyKey).filter(Boolean))];
+    const clients = keys.length
+      ? await Client.find({ companyKey: { $in: keys } }).select('companyKey stage nextFollowUp').lean()
+      : [];
+    const byKey = new Map(clients.map((c) => [c.companyKey, c]));
+    const stops = (run.stops || [])
+      .slice().sort((a, b) => (a.order || 0) - (b.order || 0))
+      .map((s) => {
+        const c = s.companyKey ? byKey.get(s.companyKey) : null;
+        return { ...s, crm: c ? { companyKey: c.companyKey, stage: c.stage, nextFollowUp: c.nextFollowUp || null } : null };
+      });
+    res.json({ run: { ...run, stops }, summary: summarizeRun(run) });
   } catch (err) {
     res.status(500).json({ message: 'Run lookup failed.' });
   }
@@ -221,23 +288,28 @@ async function patchStop(req, res) {
 // touch on the CRM card and books the ~2-day "did you see it?" check-in call.
 async function catalogQueue(_req, res) {
   try {
-    const since = new Date(Date.now() - 3 * 86400000);
+    // A week's window (was 3 days / 6 runs — a promised catalog silently
+    // vanished from the queue unsent after a long weekend).
+    const since = new Date(Date.now() - 7 * 86400000);
     const runs = await FieldRun.find({ updatedAt: { $gte: since } })
-      .select('stops active updatedAt').sort({ createdAt: -1 }).limit(6).lean();
-    const rows = [];
-    const seen = new Set();
+      .select('stops active updatedAt').sort({ createdAt: -1 }).limit(14).lean();
+    const byKey = new Map();
     for (const run of runs) {
       for (const s of run.stops || []) {
         if (!s.catalogQueued || s.catalogSentAt) continue;
         const k = s.companyKey || String(s._id);
-        if (seen.has(k)) continue;
-        seen.add(k);
-        rows.push({
+        const row = {
           runId: run._id, stopId: s._id, name: s.name, companyKey: s.companyKey || '',
           email: s.contactEmail || '', visitedAt: s.visitedAt,
-        });
+        };
+        const prior = byKey.get(k);
+        // Per company keep ONE row, preferring the one that can actually send
+        // (has an email) — the old first-wins dedupe could hide the emailed
+        // visit behind an earlier email-less one.
+        if (!prior || (!prior.email && row.email)) byKey.set(k, row);
       }
     }
+    const rows = [...byKey.values()];
     res.json({ rows, count: rows.length });
   } catch (err) {
     res.status(500).json({ message: 'Could not load the catalog queue.' });
@@ -362,5 +434,7 @@ async function completeRun(_req, res) {
 
 module.exports = {
   getCurrent, addStop, removeStop, patchStop, optimize, patchRun, completeRun,
-  catalogQueue, sendCatalog,
+  catalogQueue, sendCatalog, listRunHistory, getRunHistory,
+  // pure — unit-tested
+  summarizeRun,
 };

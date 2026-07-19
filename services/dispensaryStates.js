@@ -1,8 +1,11 @@
 // services/dispensaryStates.js
 //
-// Registry of US adult-use (recreational) cannabis retail markets — the single
-// source of truth for which states the Field Map treats as "pitchable" and
-// where each state's authoritative dispensary roster lives.
+// Registry of US cannabis retail markets — the single source of truth for
+// which states the Field Map treats as "pitchable" and where each state's
+// authoritative dispensary roster lives. BOTH market kinds carry rosters:
+// adult-use (REC_STATES) and medical-only (MED_STATES) — the owner pitches
+// med dispensaries too (the map's MED clicker), so a med-only state like PA
+// gets the same license-roll ingestion as NJ instead of rendering empty.
 //
 // The frontend keeps a commented mirror of REC_STATE_CODES / MEDICAL_ONLY in
 // src/screens/studio/_roadTrip.js — update both together.
@@ -73,13 +76,40 @@ const REC_STATES = {
   WA: { name: 'Washington',    approxRetail: 470,  roster: { kind: 'cannlytics', url: cannlyticsUrl('wa'), homepage: 'https://lcb.wa.gov/records/frequently-requested-lists' } },
 };
 
-// Medical-only / no-retail states the map renders dimmed with a "no rec
-// retail" note so a drive is never wasted. VA/DC: possession legal but no
-// adult-use stores (VA retail expected ~mid-2027).
-const MEDICAL_ONLY = ['AL', 'AR', 'FL', 'HI', 'KY', 'LA', 'MS', 'NH', 'ND', 'OK', 'PA', 'SD', 'UT', 'WV'];
+// ── Medical-only states with OPERATING retail (rosters wired like rec) ───────
+// These are real licensed dispensary markets — the MED segment on the map.
+// Rosters ride the same cannlytics aggregate the rec states use; a state whose
+// CSV is missing simply reports sourceErrors and stays OSM-fed (the medical
+// tag-net in scan-osm) until a roster lands. approxRetail is the coverage
+// panel's sanity number, not a hard bound — FL/PA license one COMPANY per row
+// with multiple storefronts, so those land intentionally low.
+const MED_STATES = {
+  AL: { name: 'Alabama',       approxRetail: 5,    roster: { kind: 'cannlytics', url: cannlyticsUrl('al'), homepage: 'https://amcc.alabama.gov/' } },
+  AR: { name: 'Arkansas',      approxRetail: 38,   roster: { kind: 'cannlytics', url: cannlyticsUrl('ar'), homepage: 'https://www.healthy.arkansas.gov/programs-services/topics/medical-marijuana' } },
+  FL: { name: 'Florida',       approxRetail: 650,  roster: { kind: 'cannlytics', url: cannlyticsUrl('fl'), homepage: 'https://knowthefactsmmj.com/mmtc/' } },
+  HI: { name: 'Hawaii',        approxRetail: 35,   roster: { kind: 'cannlytics', url: cannlyticsUrl('hi'), homepage: 'https://health.hawaii.gov/medicalcannabis/' } },
+  KY: { name: 'Kentucky',      approxRetail: 60,   roster: { kind: 'cannlytics', url: cannlyticsUrl('ky'), homepage: 'https://kymedcan.ky.gov/' } },
+  LA: { name: 'Louisiana',     approxRetail: 30,   roster: { kind: 'cannlytics', url: cannlyticsUrl('la'), homepage: 'https://www.lsbap.com/' } },
+  MS: { name: 'Mississippi',   approxRetail: 190,  roster: { kind: 'cannlytics', url: cannlyticsUrl('ms'), homepage: 'https://www.mmcp.ms.gov/' } },
+  ND: { name: 'North Dakota',  approxRetail: 8,    roster: { kind: 'cannlytics', url: cannlyticsUrl('nd'), homepage: 'https://www.hhs.nd.gov/mm' } },
+  NH: { name: 'New Hampshire', approxRetail: 7,    roster: { kind: 'cannlytics', url: cannlyticsUrl('nh'), homepage: 'https://www.dhhs.nh.gov/programs-services/health-care/therapeutic-cannabis-program' } },
+  OK: { name: 'Oklahoma',      approxRetail: 2000, roster: { kind: 'cannlytics', url: cannlyticsUrl('ok'), homepage: 'https://oklahoma.gov/omma.html' } },
+  PA: { name: 'Pennsylvania',  approxRetail: 190,  roster: { kind: 'cannlytics', url: cannlyticsUrl('pa'), homepage: 'https://www.pa.gov/agencies/health/programs/medical-marijuana.html' } },
+  SD: { name: 'South Dakota',  approxRetail: 80,   roster: { kind: 'cannlytics', url: cannlyticsUrl('sd'), homepage: 'https://medcannabis.sd.gov/' } },
+  UT: { name: 'Utah',          approxRetail: 15,   roster: { kind: 'cannlytics', url: cannlyticsUrl('ut'), homepage: 'https://medicalcannabis.utah.gov/' } },
+  WV: { name: 'West Virginia', approxRetail: 50,   roster: { kind: 'cannlytics', url: cannlyticsUrl('wv'), homepage: 'https://omc.wv.gov/' } },
+};
+
+// Codes-only view kept for every existing consumer (coverage rollup, segment
+// derivation, frontend mirror). Derived from MED_STATES so the two can't drift.
+const MEDICAL_ONLY = Object.keys(MED_STATES);
+// Possession legal but no stores to pitch (VA retail expected ~mid-2027).
 const NO_RETAIL_YET = ['VA', 'DC'];
 
 const REC_STATE_CODES = Object.keys(REC_STATES);
+
+// Every state the ingest can roster-load, rec and med alike.
+const ROSTER_STATES = { ...REC_STATES, ...MED_STATES };
 
 // ── Market segment ────────────────────────────────────────────────────────────
 // Every retail pin belongs to one of the owner's three pitch segments:
@@ -96,21 +126,29 @@ const REC_STATE_CODES = Object.keys(REC_STATES);
 //   rec state                        → 'rec'
 //   medical-only state, roster/google/manual → 'med'   (license-backed or
 //            found via a "dispensary" text sweep — a real med dispensary)
-//   medical-only state, osm          → 'hemp'  (the cannabis tag-net there
-//            overwhelmingly catches CBD/hemp storefronts, not licensees)
+//   medical-only state, osm          → 'med' when the find carried a medical/
+//            trusted-cannabis TAG (opts.medical — a mapper-tagged shop in a
+//            med state IS a licensed med dispensary), else 'hemp' (name-net
+//            finds there are overwhelmingly CBD/hemp storefronts)
 //   any other / unknown state        → 'hemp' when the state is a real code
 //            (a cannabis-tagged shop where no marijuana retail is legal IS a
 //            hemp shop), '' when the state is unparsed ('US'/'').
 // '' (unknown) is deliberately never filtered out by segment reads.
 // MIRROR: src/screens/studio/_roadTrip.js documents the segment vocabulary for
 // the Field Map's clickers — keep the labels in sync.
-function deriveSegment(state, source) {
+function deriveSegment(state, source, opts = {}) {
   const st = String(state || '').toUpperCase();
   if (!st || st === 'US' || st.length !== 2) return '';
   if (REC_STATES[st]) return 'rec';
-  if (MEDICAL_ONLY.includes(st)) return source === 'osm' ? 'hemp' : 'med';
+  if (MEDICAL_ONLY.includes(st)) {
+    if (source !== 'osm') return 'med';
+    return opts.medical ? 'med' : 'hemp';
+  }
   return 'hemp';
 }
 const SEGMENTS = ['rec', 'med', 'hemp'];
 
-module.exports = { REC_STATES, REC_STATE_CODES, MEDICAL_ONLY, NO_RETAIL_YET, deriveSegment, SEGMENTS };
+module.exports = {
+  REC_STATES, REC_STATE_CODES, MED_STATES, ROSTER_STATES,
+  MEDICAL_ONLY, NO_RETAIL_YET, deriveSegment, SEGMENTS,
+};
