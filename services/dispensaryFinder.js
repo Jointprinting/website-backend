@@ -191,18 +191,10 @@ const OVERPASS_NAME_RE = 'dispensar|cannabis|marijuana|weed|budtender|420|kush|g
 // services/leadVerticals.js). The DEFAULT (no vertical, or the dispensary
 // vertical) keeps the original cannabis net verbatim, so the live dispensary
 // sweep and every existing test are byte-for-byte unchanged.
-function buildOverpassQuery(bbox, vertical) {
-  const b = bbox.join(',');
-  if (vertical && vertical.id !== 'dispensary' && typeof vertical.overpassSelectors === 'function') {
-    return `[out:json][timeout:${OVERPASS_QUERY_TIMEOUT_S}];
-(
-${vertical.overpassSelectors(b)}
-);
-out center tags;`;
-  }
-  return `[out:json][timeout:${OVERPASS_QUERY_TIMEOUT_S}];
-(
-  node["shop"="cannabis"](${b});
+// The default (dispensary) selector block for one area string `b` — extracted
+// so multi-area queries (corridor fill) can repeat it per chunk. Pure.
+function dispensarySelectors(b) {
+  return `  node["shop"="cannabis"](${b});
   way["shop"="cannabis"](${b});
   node["office"="cannabis"](${b});
   way["office"="cannabis"](${b});
@@ -210,7 +202,33 @@ out center tags;`;
   node["cannabis:recreational"](${b});
   way["cannabis:recreational"](${b});
   node["name"~"${OVERPASS_NAME_RE}",i](${b});
-  way["name"~"${OVERPASS_NAME_RE}",i](${b});
+  way["name"~"${OVERPASS_NAME_RE}",i](${b});`;
+}
+
+function selectorsFor(b, vertical) {
+  if (vertical && vertical.id !== 'dispensary' && typeof vertical.overpassSelectors === 'function') {
+    return vertical.overpassSelectors(b);
+  }
+  return dispensarySelectors(b);
+}
+
+function buildOverpassQuery(bbox, vertical) {
+  const b = bbox.join(',');
+  return `[out:json][timeout:${OVERPASS_QUERY_TIMEOUT_S}];
+(
+${selectorsFor(b, vertical)}
+);
+out center tags;`;
+}
+
+// One query unioning the SAME selector net over several bboxes — the corridor
+// fill's shape (a route chopped into chunk bboxes = one round trip for the
+// whole drive instead of one per chunk). Pure.
+function buildOverpassQueryMulti(bboxes, vertical) {
+  const blocks = bboxes.map((bb) => selectorsFor(bb.join(','), vertical)).join('\n');
+  return `[out:json][timeout:${OVERPASS_QUERY_TIMEOUT_S}];
+(
+${blocks}
 );
 out center tags;`;
 }
@@ -261,9 +279,12 @@ const CANNABIS_NAME = /dispensar|cannabis|marijuana|\bweed\b|budtender|\b420\b|\
 
 // Carries a cannabis token but ISN'T a rec dispensary we'd cold-email — MEDICAL
 // dispensaries/pharmacies, vets, the smoke/vape/head-shop crowd, hydroponic/grow
-// suppliers, and lawn-and-garden "weed" shops (Weed Man, garden centers, feed &
-// nursery). These are the junk the widened name-net would otherwise drag in.
-const NON_CANNABIS_NAME = /pharmac|veterinar|hospit|\bmedical\b|\bmed(ical)? ?(marijuana|cannabis)|\bclinic\b|optical|dental|smoke ?shop|vape|head ?shop|\bglass\b|hydroponic|\bgrow\b|tobacc|\bpet\b|garden ?cent|\bnurser|landscap|\blawn\b|florist|\bfeed\b|weed ?man/i;
+// suppliers, lawn-and-garden "weed" shops (Weed Man, garden centers, feed &
+// nursery), and the kratom/kava/CBD-only storefronts that love calling
+// themselves a "dispensary" (the corridor's kratom-shop bug: "X Kratom
+// Dispensary" matched the name-net and nothing here said no). These are the
+// junk the widened name-net would otherwise drag in.
+const NON_CANNABIS_NAME = /pharmac|veterinar|hospit|\bmedical\b|\bmed(ical)? ?(marijuana|cannabis)|\bclinic\b|optical|dental|smoke ?shop|vape|head ?shop|\bglass\b|hydroponic|\bgrow\b|tobacc|\bpet\b|garden ?cent|\bnurser|landscap|\blawn\b|florist|\bfeed\b|weed ?man|kratom|\bkava\b|\bcbd\s*(only|store|shop|outlet|american shaman)\b/i;
 
 // Is this element a GOOD recreational dispensary lead? Closed / medical-only are
 // always out. A trusted rec cannabis TAG → yes (any name). Otherwise a name-net
@@ -383,6 +404,15 @@ function parseOverpassElements(json, vertical) {
       osmId: el.type && el.id != null ? `${el.type}/${el.id}` : '',
       brand: String(tags.brand || '').trim(),
       chain: chainGate(tags, name), // big chain / MSO → skipped at import
+      // Segment hints for the roster upsert (services/dispensaryStates
+      // deriveSegment): medical-only tagging, and whether a TRUSTED cannabis
+      // tag (vs a name-net-only hit) backed the find — in a med-only state a
+      // mapper-tagged shop is a licensed med dispensary, a name-only hit is
+      // usually a hemp storefront.
+      medical: isMedicalOnly(tags),
+      taggedCannabis: tags.shop === 'cannabis' || tags.shop === 'weed'
+        || tags.office === 'cannabis'
+        || !!tags['cannabis:recreational'] || !!tags['cannabis:medical'],
     });
   }
   // Second pass: flag regional chains whose brand simply repeats a lot in the batch.
@@ -503,6 +533,38 @@ async function fetchDispensariesForBbox(bbox, { timeoutMs = OVERPASS_TIMEOUT_MS,
   return markChains(out);
 }
 
+// Discover across SEVERAL bboxes in one Overpass round trip — the corridor
+// fill (a route chopped into chunk bboxes). Best-effort by design: no quadrant
+// recovery; the caller treats a throw as "no live fill this time" and serves
+// DB rows. Endpoint fallback still applies.
+async function fetchDispensariesForBboxes(bboxes, { timeoutMs = OVERPASS_TIMEOUT_MS, vertical } = {}) {
+  const list = (bboxes || []).filter((b) => Array.isArray(b) && b.length === 4);
+  if (!list.length) return [];
+  const query = buildOverpassQueryMulti(list, vertical);
+  let lastErr = null;
+  for (const endpoint of OVERPASS_ENDPOINTS) {
+    try {
+      const res = await axios.post(endpoint, `data=${encodeURIComponent(query)}`, {
+        timeout: timeoutMs,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': POLITE_UA },
+        validateStatus: () => true,
+        maxContentLength: 25 * 1024 * 1024,
+      });
+      if (res.status === 200 && res.data) {
+        if (isOverpassTimeoutRemark(res.data)) {
+          lastErr = new Error(`Overpass ${endpoint} → 200 with timeout remark: ${String(res.data.remark).slice(0, 120)}`);
+          continue;
+        }
+        return parseOverpassElements(res.data, vertical);
+      }
+      lastErr = new Error(`Overpass ${endpoint} → HTTP ${res.status}`);
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error('All Overpass endpoints failed');
+}
+
 // Discover leads in a named REGION (network). Thin wrapper over the bbox fetch.
 // `vertical` (optional) retargets discovery to another business type; default is
 // dispensaries. Returns { region, label, candidates }.
@@ -522,10 +584,13 @@ module.exports = {
   isRegion,
   fetchDispensaries,
   fetchDispensariesForBbox,
+  fetchDispensariesForBboxes,
   // pure — unit-tested
   splitBbox,
   isOverpassTimeoutRemark,
   buildOverpassQuery,
+  buildOverpassQueryMulti,
+  dispensarySelectors,
   osmLatLng,
   osmAddress,
   normalizeWebsite,

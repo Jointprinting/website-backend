@@ -11,11 +11,12 @@ const Dispensary = require('../models/Dispensary');
 const Client = require('../models/Client');
 const DispensaryDenylist = require('../models/DispensaryDenylist');
 const OsmScanTile = require('../models/OsmScanTile');
-const { REC_STATES, MEDICAL_ONLY, NO_RETAIL_YET, deriveSegment, SEGMENTS } = require('../services/dispensaryStates');
+const { ROSTER_STATES, MEDICAL_ONLY, NO_RETAIL_YET, deriveSegment, SEGMENTS } = require('../services/dispensaryStates');
 const { ingestState, rechainState, geocodeMissing, deriveCompanyKey, matchKey, upsertOsmCandidates } = require('../services/dispensaryIngest');
 const { enrichBatch } = require('../services/dispensaryEnrich');
 const { detectKnownChain } = require('../services/dispensaryChains');
-const { fetchDispensariesForBbox } = require('../services/dispensaryFinder');
+const { fetchDispensariesForBbox, fetchDispensariesForBboxes } = require('../services/dispensaryFinder');
+const { fieldMap: FIELD_MAP_VERTICAL } = require('../services/leadVerticals');
 
 function parseBbox(q) {
   const minLat = parseFloat(q.minLat), maxLat = parseFloat(q.maxLat);
@@ -38,6 +39,38 @@ function tileKeyFor(lat, lng, tileDeg = OSM_TILE_DEG) {
   return `${snap(lat).toFixed(2)}_${snap(lng).toFixed(2)}`;
 }
 
+// EVERY grid tile a bbox touches (not just its center's). The old center-only
+// key was the silent-coverage bug: a scan of an up-to-2° viewport recorded ONE
+// 0.5° tile, so panning inside a "scanned" tile skipped virgin fringe ground
+// for 30 days. Bookkeeping is now per-tile over the whole box. Pure.
+function tilesForBbox(bbox, tileDeg = OSM_TILE_DEG) {
+  const snap = (v) => Math.floor(v / tileDeg) * tileDeg;
+  const out = [];
+  // Epsilon keeps a bbox edge sitting exactly on a grid line from claiming the
+  // next (untouched) tile row/column.
+  const eps = 1e-9;
+  for (let lat = snap(bbox.minLat); lat < bbox.maxLat - eps; lat += tileDeg) {
+    for (let lng = snap(bbox.minLng); lng < bbox.maxLng - eps; lng += tileDeg) {
+      out.push({
+        key: `${lat.toFixed(2)}_${lng.toFixed(2)}`,
+        minLat: lat, minLng: lng,
+        maxLat: lat + tileDeg, maxLng: lng + tileDeg,
+      });
+    }
+  }
+  return out;
+}
+
+// The single bbox covering a set of tiles (their union extent). Pure.
+function tilesExtent(tiles) {
+  return {
+    minLat: Math.min(...tiles.map((t) => t.minLat)),
+    maxLat: Math.max(...tiles.map((t) => t.maxLat)),
+    minLng: Math.min(...tiles.map((t) => t.minLng)),
+    maxLng: Math.max(...tiles.map((t) => t.maxLng)),
+  };
+}
+
 // Is the viewport too wide to sweep? (A whole-region bbox would pull thousands
 // of elements and hammer Overpass — we only scan once the user is zoomed in.)
 function bboxTooLarge(bbox, maxSpan = OSM_MAX_SPAN_DEG) {
@@ -54,10 +87,12 @@ function stateFromAddress(addr) {
 }
 
 // ── GET /api/roadtrip/dispensaries?minLat&maxLat&minLng&maxLng[&segments=..] ─
-// Returns every active, visible INDEPENDENT dispensary in the viewport plus
-// its CRM stage (if the company exists in the CRM). Chains are excluded at
-// the source — the owner doesn't pitch them, so they never render (owner
-// decision; chain detection itself stays, the dedupe machinery uses it).
+// Returns every active, visible dispensary in the viewport plus its CRM stage
+// (if the company exists in the CRM). Chains (MSOs) are excluded by DEFAULT —
+// the owner mostly pitches independents — but `chains=true` includes them (the
+// map's CHAINS clicker): in MSO-dominated markets (PA med) hiding them hides
+// most of the map, so nothing is ever silently missing — the response always
+// carries `chainCount` for the "+N chains" hint even when they're excluded.
 // `segments` is a CSV of rec|med|hemp (default: all three); rows whose
 // segment can't be derived ('' — unparsed state) are never filtered out.
 // Capped defensively — a whole-US zoom is served, just thinned to the cap.
@@ -65,12 +100,14 @@ async function listDispensaries(req, res) {
   try {
     const bbox = parseBbox(req.query);
     if (!bbox) return res.status(400).json({ message: 'minLat/maxLat/minLng/maxLng are required.' });
-    const filter = {
+    const includeChains = req.query.chains === 'true';
+    const geoFilter = {
       active: true, hidden: false,
-      isChain: { $ne: true },
       lat: { $gte: bbox.minLat, $lte: bbox.maxLat },
       lng: { $gte: bbox.minLng, $lte: bbox.maxLng },
     };
+    const filter = { ...geoFilter };
+    if (!includeChains) filter.isChain = { $ne: true };
     if (req.query.verifiedOnly === 'true') filter.verified = true;
 
     // Segment filter — DB-side for stamped rows (so a narrow selection in a
@@ -91,6 +128,10 @@ async function listDispensaries(req, res) {
     const cap = 4000;
     let docs = await Dispensary.find(filter).limit(cap).lean();
     const capped = docs.length >= cap;
+
+    // Always tell the map how many chain stores sit in this viewport, so the
+    // CHAINS clicker can show "+N" instead of hiding an MSO market silently.
+    const chainCount = await Dispensary.countDocuments({ ...geoFilter, isChain: true });
 
     for (const d of docs) d.segment = d.segment || deriveSegment(d.state, d.source);
     if (narrowed) {
@@ -137,15 +178,55 @@ async function listDispensaries(req, res) {
         verified: d.verified, source: d.source,
         enriched: !!d.enrichedAt,
         lastVisitedAt: d.lastVisitedAt,
+        isChain: !!d.isChain, chainName: d.chainName || '',
         companyKey: d.companyKey,
         crm: crmClient ? { companyKey: crmClient.companyKey, stage: crmClient.stage } : null,
       };
     });
 
-    res.json({ count: results.length, capped, results });
+    res.json({ count: results.length, capped, chainCount, results });
   } catch (err) {
     console.error('[dispensary] list error:', err.message);
     res.status(500).json({ message: 'Dispensary lookup failed.' });
+  }
+}
+
+// ── GET /api/roadtrip/dispensaries/find?q= ───────────────────────────────────
+// Name/city search over the dispensary DB — the search box's missing half.
+// The NAVIGATE box only ever geocoded ("philadelphia" flew the camera and
+// nothing searched dispensaries); this lets a typed name/city hit actual
+// stores. Case-insensitive substring, verified/roster rows first, capped small
+// for typeahead.
+async function findDispensaries(req, res) {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) return res.json({ results: [] });
+    const esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const rx = new RegExp(esc, 'i');
+    const docs = await Dispensary.find({
+      active: true, hidden: false,
+      lat: { $ne: null }, lng: { $ne: null },
+      $or: [{ name: rx }, { city: rx }],
+    })
+      .sort({ verified: -1, name: 1 })
+      .limit(30)
+      .lean();
+    // Independents first within the small result page, chains still findable.
+    docs.sort((a, b) => (a.isChain === b.isChain ? 0 : a.isChain ? 1 : -1));
+    const results = docs.slice(0, 8).map((d) => ({
+      _id: d._id,
+      name: d.name,
+      address: [d.address, d.city].filter(Boolean).join(', ') + (d.zip ? ` ${d.zip}` : ''),
+      state: d.state,
+      lat: d.lat, lng: d.lng,
+      segment: d.segment || deriveSegment(d.state, d.source),
+      verified: d.verified,
+      isChain: !!d.isChain,
+    }));
+    res.json({ results });
+  } catch (err) {
+    console.error('[dispensary] find error:', err.message);
+    res.status(500).json({ message: 'Dispensary search failed.' });
   }
 }
 
@@ -160,6 +241,37 @@ async function listDispensaries(req, res) {
 
 const CORRIDOR_MAX_POINTS = 600;   // decimated polyline the frontend sends
 const CORRIDOR_MAX_MI = 12;        // widest allowed half-width
+const CORRIDOR_CHUNKS = 8;         // route pieces for the one-shot live fill
+const CORRIDOR_FILL_TIMEOUT_MS = 20_000; // interactive budget for the fill
+
+// Chop the route into ~equal chunks and pad each chunk's bbox by the corridor
+// half-width (+1mi slack) — the multi-bbox Overpass fill queries all of them
+// in ONE round trip, so a 300-mile drive through never-scanned country gets
+// live discovery without per-tile latency. Pure (exported for tests).
+function corridorChunks(points, bufferMi, chunks = CORRIDOR_CHUNKS) {
+  if (!Array.isArray(points) || points.length < 2) return [];
+  const per = Math.max(2, Math.ceil(points.length / chunks));
+  const midLat = points.reduce((s, p) => s + p.lat, 0) / points.length;
+  const latPad = (bufferMi + 1) / 69;
+  const lngPad = (bufferMi + 1) / (69 * Math.max(0.2, Math.cos((midLat * Math.PI) / 180)));
+  const out = [];
+  for (let i = 0; i < points.length - 1; i += per) {
+    // Overlap by one point so a store sitting exactly on a chunk seam is
+    // inside at least one box.
+    const slice = points.slice(i, Math.min(points.length, i + per + 1));
+    if (slice.length < 2) continue;
+    const lats = slice.map((p) => p.lat);
+    const lngs = slice.map((p) => p.lng);
+    // Overpass bbox order: [south, west, north, east].
+    out.push([
+      Math.min(...lats) - latPad,
+      Math.min(...lngs) - lngPad,
+      Math.max(...lats) + latPad,
+      Math.max(...lngs) + lngPad,
+    ]);
+  }
+  return out;
+}
 
 // Prune docs to within bufferMi of the polyline, stamping each survivor with
 // its perpendicular distance and its progress (0..1) along the drive. Local
@@ -209,6 +321,31 @@ async function corridor(req, res) {
       .slice(0, CORRIDOR_MAX_POINTS);
     if (points.length < 2) return res.status(400).json({ message: 'points (the route polyline) are required.' });
     const bufferMi = Math.max(1, Math.min(CORRIDOR_MAX_MI, parseFloat(body.bufferMi) || 3));
+    const includeChains = body.chains === true || body.chains === 'true';
+
+    // LIVE FILL: the old corridor read only the DB, so a drive through
+    // never-scanned country returned near-nothing (the Voorhees → Clarion
+    // 7-stop bug). Unless the caller opts out (fill:false), sweep the whole
+    // route band in ONE multi-bbox Overpass query (free, keyless) and upsert
+    // the finds before pruning. Best-effort: a slow/down Overpass just means
+    // DB-only results, flagged so the UI can say so.
+    let fill = { attempted: false, found: 0, added: 0, failed: false };
+    if (body.fill !== false) {
+      fill.attempted = true;
+      try {
+        const chunks = corridorChunks(points, bufferMi);
+        const candidates = await fetchDispensariesForBboxes(chunks, {
+          vertical: FIELD_MAP_VERTICAL,
+          timeoutMs: CORRIDOR_FILL_TIMEOUT_MS,
+        });
+        const { added } = await upsertOsmCandidates(candidates);
+        fill.found = candidates.length;
+        fill.added = added;
+      } catch (e) {
+        fill.failed = true;
+        console.warn('[dispensary] corridor fill unavailable:', e.message);
+      }
+    }
 
     // Whole-route bbox, padded by the corridor half-width (deg ≈ mi/69; lng
     // scaled by cos(midLat)) — one indexed range query, then the real prune.
@@ -217,15 +354,24 @@ async function corridor(req, res) {
     const lngPad = bufferMi / (69 * Math.max(0.2, Math.cos((midLat * Math.PI) / 180)));
     const filter = {
       active: true, hidden: false,
-      isChain: { $ne: true },
       lat: { $gte: Math.min(...points.map((p) => p.lat)) - latPad, $lte: Math.max(...points.map((p) => p.lat)) + latPad },
       lng: { $gte: Math.min(...points.map((p) => p.lng)) - lngPad, $lte: Math.max(...points.map((p) => p.lng)) + lngPad },
     };
+    if (!includeChains) filter.isChain = { $ne: true };
     const cap = 4000;
     const docs = await Dispensary.find(filter).limit(cap).lean();
     for (const d of docs) d.segment = d.segment || deriveSegment(d.state, d.source);
 
-    const pruned = corridorPrune(points, docs, bufferMi);
+    // Honor the map's audience clickers (rec/med/hemp) — the corridor used to
+    // ignore them, which is how hemp/kratom-net junk rode along on every plan.
+    const wanted = String(body.segments || '')
+      .split(',').map((s) => s.trim()).filter((s) => SEGMENTS.includes(s));
+    const narrowed = wanted.length > 0 && wanted.length < SEGMENTS.length;
+    const audienceDocs = narrowed
+      ? docs.filter((d) => !d.segment || wanted.includes(d.segment))
+      : docs;
+
+    const pruned = corridorPrune(points, audienceDocs, bufferMi);
 
     // Same CRM join the viewport list uses, so corridor rows carry the stage.
     const companyKeys = [...new Set(pruned.map(({ doc: d }) => d.companyKey).filter(Boolean))];
@@ -254,13 +400,14 @@ async function corridor(req, res) {
         segment: d.segment,
         verified: d.verified,
         lastVisitedAt: d.lastVisitedAt,
+        isChain: !!d.isChain, chainName: d.chainName || '',
         companyKey: d.companyKey,
         crm: crmClient ? { companyKey: crmClient.companyKey, stage: crmClient.stage } : null,
         distanceMi, progress,
       };
     });
 
-    res.json({ count: results.length, capped: docs.length >= cap, bufferMi, results });
+    res.json({ count: results.length, capped: docs.length >= cap, bufferMi, fill, results });
   } catch (err) {
     console.error('[dispensary] corridor error:', err.message);
     res.status(500).json({ message: 'Corridor scan failed.' });
@@ -288,11 +435,15 @@ async function coverage(_req, res) {
       },
     ]);
     const byState = new Map(agg.map((a) => [a._id, a]));
-    const states = Object.entries(REC_STATES).map(([code, cfg]) => {
+    // Rec AND med roster states — the coverage view is "everywhere pitchable",
+    // not just the adult-use map (PA's absence here is how its emptiness went
+    // unnoticed for months).
+    const states = Object.entries(ROSTER_STATES).map(([code, cfg]) => {
       const a = byState.get(code);
       return {
         code,
         name: cfg.name,
+        market: MEDICAL_ONLY.includes(code) ? 'med' : 'rec',
         approxRetail: cfg.approxRetail,
         rosterKind: cfg.roster.kind,
         rosterHomepage: cfg.roster.homepage || '',
@@ -473,33 +624,43 @@ async function scanOsm(req, res) {
     if (!bbox) return res.status(400).json({ message: 'minLat/maxLat/minLng/maxLng are required.' });
     if (bboxTooLarge(bbox)) return res.json({ skipped: 'too-wide', added: 0, attached: 0 });
 
-    const centerLat = (bbox.minLat + bbox.maxLat) / 2;
-    const centerLng = (bbox.minLng + bbox.maxLng) / 2;
-    const tileKey = tileKeyFor(centerLat, centerLng);
-
-    // Tile throttle — recently swept → serve from the DB, don't re-hit Overpass.
-    const prior = await OsmScanTile.findOne({ tileKey }).lean();
-    if (prior && (Date.now() - new Date(prior.scannedAt).getTime()) < OSM_TILE_TTL_MS) {
-      return res.json({ cached: true, added: 0, attached: 0, tileKey });
+    // Per-tile throttle over EVERY tile the viewport touches (the old
+    // center-tile-only key silently skipped virgin fringe ground for 30 days).
+    const tiles = tilesForBbox(bbox);
+    const cutoff = new Date(Date.now() - OSM_TILE_TTL_MS);
+    const fresh = await OsmScanTile.find({
+      tileKey: { $in: tiles.map((t) => t.key) },
+      scannedAt: { $gte: cutoff },
+    }).select('tileKey').lean();
+    const freshKeys = new Set(fresh.map((t) => t.tileKey));
+    const stale = tiles.filter((t) => !freshKeys.has(t.key));
+    if (!stale.length) {
+      return res.json({ cached: true, added: 0, attached: 0, tiles: { total: tiles.length, scanned: 0 } });
     }
 
-    // Overpass bbox order is [south, west, north, east].
+    // One Overpass query over the stale tiles' union extent (≤ the snapped
+    // viewport, so still bounded), with the combined rec+medical net — a med-
+    // only state's licensed dispensaries are pitchable and belong on the map.
+    const extent = tilesExtent(stale);
     const candidates = await fetchDispensariesForBbox(
-      [bbox.minLat, bbox.minLng, bbox.maxLat, bbox.maxLng],
-      { timeoutMs: OSM_SCAN_TIMEOUT_MS },
+      [extent.minLat, extent.minLng, extent.maxLat, extent.maxLng],
+      { timeoutMs: OSM_SCAN_TIMEOUT_MS, vertical: FIELD_MAP_VERTICAL },
     );
 
     // Persist every find via the shared roster upsert (same helper the always-on
     // finder now uses, so a scan and an auto-sweep write pins identically).
     const { added, attached } = await upsertOsmCandidates(candidates);
 
-    await OsmScanTile.updateOne(
-      { tileKey },
-      { $set: { tileKey, scannedAt: new Date(), found: candidates.length, imported: added } },
-      { upsert: true },
-    );
+    const now = new Date();
+    await OsmScanTile.bulkWrite(stale.map((t) => ({
+      updateOne: {
+        filter: { tileKey: t.key },
+        update: { $set: { tileKey: t.key, scannedAt: now, found: candidates.length, imported: added } },
+        upsert: true,
+      },
+    })), { ordered: false });
 
-    res.json({ added, attached, found: candidates.length, tileKey });
+    res.json({ added, attached, found: candidates.length, tiles: { total: tiles.length, scanned: stale.length } });
   } catch (err) {
     console.error('[dispensary] scanOsm error:', err.message);
     // Soft failure: the map already shows its DB pins. A flaky Overpass endpoint
@@ -509,7 +670,7 @@ async function scanOsm(req, res) {
 }
 
 module.exports = {
-  listDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, scanOsm, corridor,
+  listDispensaries, findDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, scanOsm, corridor,
   // pure — unit-tested
-  tileKeyFor, bboxTooLarge, stateFromAddress, corridorPrune,
+  tileKeyFor, tilesForBbox, tilesExtent, bboxTooLarge, stateFromAddress, corridorPrune, corridorChunks,
 };

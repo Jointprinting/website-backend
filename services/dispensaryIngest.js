@@ -21,7 +21,7 @@
 
 const axios = require('axios');
 const Dispensary = require('../models/Dispensary');
-const { REC_STATES, deriveSegment } = require('./dispensaryStates');
+const { ROSTER_STATES, MED_STATES, deriveSegment } = require('./dispensaryStates');
 const { assignChains, detectKnownChain } = require('./dispensaryChains');
 
 // Same normalizations the CRM uses — keep byte-for-byte in sync with
@@ -116,24 +116,31 @@ function sniffHeaders(headers) {
 
 // ── Row filtering + normalization ────────────────────────────────────────────
 
-// A roster row must look like an ADULT-USE RETAIL location. States vary:
+// A roster row must look like a RETAIL location for its market. States vary:
 // some rosters are retail-only (CT), some carry every license class (NY).
 // If a type column exists we require retail-ish, and exclude clearly
-// non-retail classes; medical-only types are excluded unless dual-use.
+// non-retail classes. Market rules differ:
+//   • adult-use states: medical-only license types are excluded unless
+//     dual-use (a rec pitch wants rec shelves);
+//   • medical-only states (MED_STATES): the medical dispensary/treatment-
+//     center/pharmacy types ARE the market — they must pass, not be filtered
+//     (this exclusion was exactly why PA could never roster-load).
 const RETAILISH = /retail|dispensar|store(front)?|microbusiness|hybrid/i;
+const MED_RETAILISH = /retail|dispensar|store(front)?|pharmacy|treatment[\s-]*center|mmtc/i;
 const NON_RETAIL = /cultivat|grow|process|manufactur|transport|distribut|lab(oratory)?|testing|delivery[\s-]*only|wholesal|nursery|event|consumption|research/i;
 const MEDICAL_ONLY_TYPE = /^med(ical)?[\s-]*(marijuana|cannabis)?[\s-]*(dispensary|treatment|only)?$/i;
 const DEAD_STATUS = /inactive|expired|revoked|surrender|cancel|denied|withdraw|closed|terminated/i;
 
-function rowPasses(row, map, typeFilter) {
+function rowPasses(row, map, typeFilter, { medicalMarket = false } = {}) {
   const type = map.licenseType ? String(row[map.licenseType] || '') : '';
   const status = map.licenseStatus ? String(row[map.licenseStatus] || '') : '';
   if (status && DEAD_STATUS.test(status)) return false;
   if (typeFilter) return typeFilter.test(type);
   if (type) {
-    if (NON_RETAIL.test(type) && !RETAILISH.test(type)) return false;
-    if (MEDICAL_ONLY_TYPE.test(type.trim())) return false;
-    if (!RETAILISH.test(type)) return false;
+    const retailish = medicalMarket ? MED_RETAILISH : RETAILISH;
+    if (NON_RETAIL.test(type) && !retailish.test(type)) return false;
+    if (!medicalMarket && MEDICAL_ONLY_TYPE.test(type.trim())) return false;
+    if (!retailish.test(type)) return false;
   }
   return true;
 }
@@ -178,8 +185,8 @@ function normalizeRow(row, map, state, sourceUrl) {
 // ── Fetching ─────────────────────────────────────────────────────────────────
 
 async function fetchRoster(state, { sourceUrlOverride } = {}) {
-  const cfg = REC_STATES[state];
-  if (!cfg) throw Object.assign(new Error(`Unknown rec state "${state}".`), { statusCode: 400 });
+  const cfg = ROSTER_STATES[state];
+  if (!cfg) throw Object.assign(new Error(`No roster source configured for "${state}".`), { statusCode: 400 });
   const attempts = [];
   if (sourceUrlOverride) {
     attempts.push({ kind: /\.json/.test(sourceUrlOverride) ? 'socrata' : 'csv', url: sourceUrlOverride });
@@ -268,7 +275,8 @@ async function rechainState(state) {
 async function ingestState(state, opts = {}) {
   const startedAt = new Date();
   const { rows, sourceUrl, sourceKind, errors } = await fetchRoster(state, opts);
-  const cfg = REC_STATES[state];
+  const cfg = ROSTER_STATES[state];
+  const medicalMarket = !!MED_STATES[state];
 
   const headers = Object.keys(rows[0] || {});
   const map = sniffHeaders(headers);
@@ -277,7 +285,7 @@ async function ingestState(state, opts = {}) {
   const normalized = [];
   let filtered = 0;
   for (const row of rows) {
-    if (!rowPasses(row, map, typeFilter)) { filtered++; continue; }
+    if (!rowPasses(row, map, typeFilter, { medicalMarket })) { filtered++; continue; }
     const n = normalizeRow(row, map, state, sourceUrl);
     if (n) normalized.push(n);
   }
@@ -398,9 +406,10 @@ async function upsertOsmCandidates(candidates) {
           lat: c.lat, lng: c.lng,
           phone: c.phone || '', website: c.website || '',
           source: 'osm', verified: false, active: true,
-          // A cannabis-tagged shop in a no-retail state IS a hemp/"bodega THC"
-          // shop — the map's segment clickers key off this.
-          segment: deriveSegment(st, 'osm'),
+          // Segment: in a med-only state a medically-tagged or trusted-tag
+          // find is a licensed MED dispensary; a name-net-only find (and any
+          // find in a no-retail state) is a hemp/"bodega THC" shop.
+          segment: deriveSegment(st, 'osm', { medical: !!c.medical || !!c.taggedCannabis }),
           isChain: !!chainName || !!c.chain,
           chainName,
           companyKey: deriveCompanyKey(c.name),

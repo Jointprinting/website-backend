@@ -151,6 +151,12 @@ db.once('open', () => {
   // only reads its progress.
   require('./services/leadFinderScheduler').startLeadFinderScheduler();
 
+  // Field Map roster autopilot: every 6h (offset from the lead engine), load
+  // ONE state license roster in need — never-loaded states (the medical
+  // markets, e.g. PA) first, then stale refreshes. Free (state open data /
+  // community CSVs + Mapbox geocoding); ROSTER_AUTOPILOT=off disables.
+  require('./services/rosterAutopilot').startRosterAutopilot();
+
   // Instagram numbers for the Content tab: every 12h, pull followers +
   // per-post engagement via the Meta Graph API and append stat snapshots.
   // A cheap no-op until the owner connects the account in the tab.

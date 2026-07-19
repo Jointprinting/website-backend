@@ -26,6 +26,7 @@ const {
   isBigChain: dispensaryIsBigChain,
   isClosedPoi,
   isMedicalOnly,
+  dispensarySelectors,
   FINDER_VERSION: DISPENSARY_FINDER_VERSION,
 } = require('./dispensaryFinder');
 
@@ -245,6 +246,32 @@ const medical = {
   isBigChain: dispensaryIsBigChain,
 };
 
+// ── FIELD MAP (rec + medical in one net) ─────────────────────────────────────
+// The Field Map's viewport scan and corridor fill want EVERY pitchable
+// dispensary — rec AND med — in one Overpass round trip. This pseudo-vertical
+// unions the rec selectors with the explicit cannabis:medical net and accepts
+// an element that passes EITHER gate. It exists for map discovery only: it is
+// deliberately NOT in the campaign registry below (an outreach campaign must
+// pick rec or medical so its pool and copy stay coherent).
+function fieldMapOverpassSelectors(b) {
+  return [
+    dispensarySelectors(b),
+    `  node["cannabis:medical"](${b});`,
+    `  way["cannabis:medical"](${b});`,
+  ].join('\n');
+}
+const fieldMap = {
+  id: 'field-map',
+  label: 'Field Map (rec + medical)',
+  short: 'dispensaries (rec + med)',
+  tag: 'dispensary',
+  finderVersion: DISPENSARY_FINDER_VERSION,
+  overpassSelectors: fieldMapOverpassSelectors,
+  isQualityLead: (tags = {}, name = '') =>
+    dispensaryIsQualityLead(tags, name) || medicalIsQualityLead(tags, name),
+  isBigChain: dispensaryIsBigChain,
+};
+
 // ── Registry ─────────────────────────────────────────────────────────────────
 const VERTICALS = { dispensary, brewery, 'smoke-vape': smokeVape, medical };
 const VERTICAL_IDS = Object.keys(VERTICALS);
@@ -324,6 +351,7 @@ function verticalOptions() {
 module.exports = {
   VERTICALS,
   VERTICAL_IDS,
+  fieldMap,
   DEFAULT_VERTICAL_ID,
   NON_DEFAULT_VERTICAL_IDS,
   NON_DEFAULT_VERTICAL_TAGS,
