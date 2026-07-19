@@ -322,7 +322,15 @@ test('extractEmails pulls mailto links ahead of body text, deduped', () => {
 });
 
 // ── Email ranking ────────────────────────────────────────────────────────────
-test('pickBestEmail prefers role inboxes, then the site’s own domain', () => {
+test('pickBestEmail prefers a named person on the shop’s own domain, role inbox as fallback', () => {
+  // A named person ON the shop's domain beats a role inbox on the same domain —
+  // the change that aligns the enricher with send-time pickEmail.
+  assert.equal(
+    pickBestEmail(['info@greenleaf.com', 'jane@greenleaf.com'], 'greenleaf.com'),
+    'jane@greenleaf.com',
+  );
+  // On-domain still beats off-domain: a role inbox on the shop's domain beats a
+  // personal gmail (an off-domain personal address isn't a better outreach target).
   assert.equal(
     pickBestEmail(['owner.personal@gmail.com', 'info@greenleaf.com'], 'greenleaf.com'),
     'info@greenleaf.com',
@@ -332,8 +340,10 @@ test('pickBestEmail prefers role inboxes, then the site’s own domain', () => {
     pickBestEmail(['someguy@gmail.com', 'jane@greenleaf.com'], 'greenleaf.com'),
     'jane@greenleaf.com',
   );
-  // Role order: info beats sales.
+  // Among role inboxes, info beats sales (role priority preserved as the fallback order).
   assert.equal(pickBestEmail(['sales@x.com', 'info@x.com'], 'x.com'), 'info@x.com');
+  // A lone role inbox is still returned — a shop that only publishes info@ isn't dropped.
+  assert.equal(pickBestEmail(['info@greenleaf.com'], 'greenleaf.com'), 'info@greenleaf.com');
   assert.equal(pickBestEmail([], 'x.com'), '');
 });
 

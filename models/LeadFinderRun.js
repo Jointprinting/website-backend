@@ -21,6 +21,10 @@ const LeadFinderRunSchema = new mongoose.Schema({
   created:  { type: Number, default: 0 },   // new CRM leads (all have an email — mail merge)
   updated:  { type: Number, default: 0 },   // existing CRM records touched
   skipped:  { type: Number, default: 0 },   // no email / suppressed / no company / import error
+  // Field-Map roster pins captured from this sweep (EVERY OSM find, including the
+  // emailless ones that used to be discarded) — new pins + back-filled matches.
+  rosterAdded:    { type: Number, default: 0 },
+  rosterAttached: { type: Number, default: 0 },
   // The finder logic version that produced this run. The engine re-sweeps states
   // stamped below the current dispensaryFinder.FINDER_VERSION so improvements
   // propagate automatically. Undefined on legacy rows → read as 0 (stale).

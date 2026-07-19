@@ -18,6 +18,7 @@ const { getVertical, verticalPoolFilter, verticalRunMatch, frontierStateKey, oth
 const LeadFinderState = require('../models/LeadFinderState');
 const { cityFromAddress } = require('./outreachEngine');
 const { enrichWebsite } = require('./emailEnricher');
+const { upsertOsmCandidates } = require('./dispensaryIngest');
 const { verifyDomainsMx, partitionDeliverable, emailDomain } = require('./emailVerify');
 const LeadFinderRun = require('../models/LeadFinderRun');
 const Client = require('../models/Client');
@@ -178,6 +179,13 @@ async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich, v
     };
   }
 
+  // Capture EVERY find (email or not, chain or not) onto the Field-Map roster for
+  // phone/visit outreach. The finder used to DISCARD emailless real dispensaries
+  // entirely — now nothing found is lost: the email-able subset still ALSO imports
+  // as cold-email leads below, while the rest become map pins reachable by call/
+  // visit. Same shared upsert the human Field-Map scan uses (dedupes cross-source).
+  const roster = await upsertOsmCandidates(disc.candidates).catch(() => ({ added: 0, attached: 0 }));
+
   // Reuse the CRM importer's exact merge policy (fill-blanks, dedupe, no downgrade).
   const mapped = buildMappedRows({ rows });
 
@@ -261,6 +269,9 @@ async function runFinder({ region = DEFAULT_REGION, dryRun = false, maxEnrich, v
     region: regionId, vertical: vertical.id, label: disc.label,
     found: disc.found, withEmail: disc.withEmail, enriched: disc.enriched,
     verified: disc.verified, skippedChains, created, updated, skipped,
+    // Field-Map roster pins captured from this sweep (every find, incl. the
+    // emailless ones that used to be discarded) — new pins + back-filled matches.
+    rosterAdded: roster.added, rosterAttached: roster.attached,
     finderVersion: vertical.finderVersion,
   };
   await LeadFinderRun.create({ ...result, dryRun: false }).catch(() => {});
