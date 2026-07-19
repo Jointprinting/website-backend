@@ -119,19 +119,25 @@ function extractEmails(html) {
   return ordered;
 }
 
-// Rank extracted emails and return the single best (''). Role inboxes first,
-// then same-domain-as-site, then first seen. Pure.
+// Rank extracted emails and return the single best (''). Prefer a NAMED person on
+// the shop's own domain — the best cold-outreach target, and what send-time
+// pickEmail also prefers (they used to disagree: the enricher returned info@ and
+// send-time then had no named address to choose). Then a role inbox on-domain,
+// then off-domain. A lone role inbox is still returned, so a shop that only
+// publishes info@ is never dropped. Pure.
 function pickBestEmail(emails, siteHost = '') {
   const list = (emails || []).filter(Boolean);
   if (!list.length) return '';
   const host = String(siteHost || '').toLowerCase().replace(/^www\./, '');
   const score = (e) => {
     const [local, domain] = e.split('@');
-    let s = 0;
+    const onDomain = !!host && !!domain && (domain === host || domain.endsWith(`.${host}`));
     const roleIdx = ROLE_PRIORITY.indexOf(local);
-    if (roleIdx >= 0) s += (ROLE_PRIORITY.length - roleIdx) * 10; // role match, higher = better
-    if (host && domain === host) s += 5;                          // on the shop's own domain
-    if (host && domain.endsWith(`.${host}`)) s += 3;
+    const isRole = roleIdx >= 0;
+    let s = 0;
+    if (onDomain) s += 100;                             // on the shop's own domain — strongly preferred
+    if (!isRole) s += 40;                               // a named person beats a role inbox…
+    else s += (ROLE_PRIORITY.length - roleIdx);         // …but a role inbox stays a ranked fallback
     return s;
   };
   return [...list].sort((a, b) => score(b) - score(a))[0];

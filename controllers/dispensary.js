@@ -12,7 +12,7 @@ const Client = require('../models/Client');
 const DispensaryDenylist = require('../models/DispensaryDenylist');
 const OsmScanTile = require('../models/OsmScanTile');
 const { REC_STATES, MEDICAL_ONLY, NO_RETAIL_YET, deriveSegment, SEGMENTS } = require('../services/dispensaryStates');
-const { ingestState, rechainState, geocodeMissing, deriveCompanyKey, matchKey } = require('../services/dispensaryIngest');
+const { ingestState, rechainState, geocodeMissing, deriveCompanyKey, matchKey, upsertOsmCandidates } = require('../services/dispensaryIngest');
 const { enrichBatch } = require('../services/dispensaryEnrich');
 const { detectKnownChain } = require('../services/dispensaryChains');
 const { fetchDispensariesForBbox } = require('../services/dispensaryFinder');
@@ -489,52 +489,9 @@ async function scanOsm(req, res) {
       { timeoutMs: OSM_SCAN_TIMEOUT_MS },
     );
 
-    let added = 0, attached = 0;
-    for (const c of candidates) {
-      if (c.lat == null || c.lng == null) continue; // no coords → can't pin it
-      const mk = matchKey(c.name);
-      // Cross-source dedup: a known store (roster/google/earlier osm) at ~this
-      // spot with the same match key is the SAME storefront. Fill any missing
-      // phone/website from OSM (free enrichment) instead of a duplicate pin.
-      const near = await Dispensary.findOne({
-        matchKey: mk,
-        lat: { $gte: c.lat - OSM_MATCH_PAD, $lte: c.lat + OSM_MATCH_PAD },
-        lng: { $gte: c.lng - OSM_MATCH_PAD, $lte: c.lng + OSM_MATCH_PAD },
-      });
-      if (near) {
-        let changed = false;
-        if (!near.phone && c.phone) { near.phone = c.phone; changed = true; }
-        if (!near.website && c.website) { near.website = c.website; changed = true; }
-        if (changed) { await near.save(); attached++; }
-        continue;
-      }
-      const dedupeKey = c.osmId ? `osm:${c.osmId}` : `osm:${mk}|${c.lat.toFixed(4)},${c.lng.toFixed(4)}`;
-      const chainName = detectKnownChain(c.name) || '';
-      const st = stateFromAddress(c.address);
-      await Dispensary.updateOne(
-        { dedupeKey },
-        {
-          $set: {
-            state: st,
-            name: c.name,
-            address: c.address,
-            lat: c.lat, lng: c.lng,
-            phone: c.phone || '', website: c.website || '',
-            source: 'osm', verified: false, active: true,
-            // A cannabis-tagged shop in a no-marijuana-retail state IS a
-            // hemp/"bodega THC" shop — the segment clickers key off this.
-            segment: deriveSegment(st, 'osm'),
-            isChain: !!chainName || !!c.chain,
-            chainName,
-            companyKey: deriveCompanyKey(c.name),
-            matchKey: mk,
-          },
-          $setOnInsert: { hidden: false },  // never un-hide a store the owner rejected
-        },
-        { upsert: true },
-      );
-      added++;
-    }
+    // Persist every find via the shared roster upsert (same helper the always-on
+    // finder now uses, so a scan and an auto-sweep write pins identically).
+    const { added, attached } = await upsertOsmCandidates(candidates);
 
     await OsmScanTile.updateOne(
       { tileKey },

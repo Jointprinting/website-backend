@@ -22,7 +22,7 @@
 const axios = require('axios');
 const Dispensary = require('../models/Dispensary');
 const { REC_STATES, deriveSegment } = require('./dispensaryStates');
-const { assignChains } = require('./dispensaryChains');
+const { assignChains, detectKnownChain } = require('./dispensaryChains');
 
 // Same normalizations the CRM uses — keep byte-for-byte in sync with
 // utils/fieldTrackerImport.js (deriveCompanyKey / matchKey).
@@ -342,10 +342,84 @@ async function ingestState(state, opts = {}) {
   };
 }
 
+// ── Shared OSM candidate → Dispensary roster upsert ──────────────────────────
+// The ONE write path that turns raw OSM finds into roster pins, used by BOTH the
+// human Field-Map scan (controllers/dispensary.scanOsm) AND the always-on cold-
+// email finder (services/leadFinderRunner). Before this was shared, the finder
+// discovered real dispensaries and — for any without a scrapeable email — threw
+// them away; now every find is captured for phone/visit outreach on the Field
+// Map instead of being lost. Cross-source dedup: an existing store at ~this spot
+// with the same match key is the SAME storefront (fill missing phone/website
+// from OSM rather than duplicate). Chains are persisted FLAGGED, not dropped —
+// the roster surfaces already hide them, so nothing found is ever lost.
+const OSM_MATCH_PAD = 0.02;      // ~2km — same-storefront cross-source match radius
+
+// Best-effort USPS state from a freeform address tail; 'US' when unparsed (an
+// accepted sentinel — `state` is required but a pin with an unknown state still
+// renders and just can't be segment-derived).
+function stateFromAddress(addr) {
+  const m = String(addr || '').match(/\b([A-Z]{2})\b(?:\s+\d{5}(?:-\d{4})?)?\s*$/);
+  return (m && m[1]) || 'US';
+}
+
+async function upsertOsmCandidates(candidates) {
+  let added = 0, attached = 0;
+  for (const c of (candidates || [])) {
+    if (!c || c.lat == null || c.lng == null) continue; // no coords → can't pin it
+    const mk = matchKey(c.name);
+    // A known store (roster/google/earlier osm) at ~this spot with the same match
+    // key is the SAME storefront — fill any missing phone/website from OSM (free
+    // enrichment) instead of minting a duplicate pin.
+    // eslint-disable-next-line no-await-in-loop
+    const near = await Dispensary.findOne({
+      matchKey: mk,
+      lat: { $gte: c.lat - OSM_MATCH_PAD, $lte: c.lat + OSM_MATCH_PAD },
+      lng: { $gte: c.lng - OSM_MATCH_PAD, $lte: c.lng + OSM_MATCH_PAD },
+    });
+    if (near) {
+      let changed = false;
+      if (!near.phone && c.phone) { near.phone = c.phone; changed = true; }
+      if (!near.website && c.website) { near.website = c.website; changed = true; }
+      // eslint-disable-next-line no-await-in-loop
+      if (changed) { await near.save(); attached++; }
+      continue;
+    }
+    const dedupeKey = c.osmId ? `osm:${c.osmId}` : `osm:${mk}|${c.lat.toFixed(4)},${c.lng.toFixed(4)}`;
+    const chainName = detectKnownChain(c.name) || '';
+    const st = stateFromAddress(c.address);
+    // eslint-disable-next-line no-await-in-loop
+    await Dispensary.updateOne(
+      { dedupeKey },
+      {
+        $set: {
+          state: st,
+          name: c.name,
+          address: c.address,
+          lat: c.lat, lng: c.lng,
+          phone: c.phone || '', website: c.website || '',
+          source: 'osm', verified: false, active: true,
+          // A cannabis-tagged shop in a no-retail state IS a hemp/"bodega THC"
+          // shop — the map's segment clickers key off this.
+          segment: deriveSegment(st, 'osm'),
+          isChain: !!chainName || !!c.chain,
+          chainName,
+          companyKey: deriveCompanyKey(c.name),
+          matchKey: mk,
+        },
+        $setOnInsert: { hidden: false },  // never un-hide a store the owner rejected
+      },
+      { upsert: true },
+    );
+    added++;
+  }
+  return { added, attached };
+}
+
 module.exports = {
   ingestState,
   rechainState,
   geocodeMissing,
+  upsertOsmCandidates,
   // exported for tests:
-  parseCsv, sniffHeaders, normalizeRow, rowPasses, deriveCompanyKey, matchKey,
+  parseCsv, sniffHeaders, normalizeRow, rowPasses, deriveCompanyKey, matchKey, stateFromAddress,
 };
