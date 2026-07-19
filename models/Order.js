@@ -434,6 +434,13 @@ const OrderSchema = new mongoose.Schema({
       // quote line the client picked) — shown on the confirmation they sign.
       turnaroundWeeks:     { type: Number, default: 0 },
       printerName:         { type: String, default: '' },    // who's actually printing this item
+      // The catalog key + structured print spec of the printer this item was
+      // quoted on, carried from the quote line so the PO seeded from this item
+      // rides on a STABLE id (not a fuzzy name) and Finances can reconcile
+      // quoted-vs-actual cost per printer. Internal only — stripped from the
+      // client-facing confirmation by approval._safeConfirmation.
+      printerKey:          { type: String, default: '' },
+      printSpec:           { type: mongoose.Schema.Types.Mixed, default: undefined },
       unitCost:            { type: Number, default: 0 },     // internal cost/unit carried from the quote — drives the order's COGS, never shown to the client
       sizes: [{
         label:     { type: String, default: '' },  // 'XS', 'S', ..., 'OS', or any custom

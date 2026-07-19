@@ -572,14 +572,15 @@ function _actorLine(by, email, order) {
 }
 
 // Client-safe confirmation: the public payload must never carry internal
-// margin data — items[].unitCost is the per-unit COST and printerName names
-// the supplier. Everything the approval page renders stays.
+// margin data — items[].unitCost is the per-unit COST, printerName names the
+// supplier, and printerKey / printSpec are the internal routing + priced recipe.
+// Strip them all; everything the approval page renders stays.
 function _safeConfirmation(conf) {
   if (!conf) return conf;
   const out = { ...conf };
   if (Array.isArray(out.items)) {
     out.items = out.items.map(it => {
-      const { unitCost, printerName, ...rest } = (it && it.toObject ? it.toObject() : it) || {};
+      const { unitCost, printerName, printerKey, printSpec, ...rest } = (it && it.toObject ? it.toObject() : it) || {};
       return rest;
     });
   }
@@ -1206,7 +1207,7 @@ module.exports = {
   _confPublished, _hasConfContent,
   DEFAULT_TRACKING_STEPS,
   // Exported for unit tests (pure helpers).
-  _pickedAtForCycle, _currentApprovalStatus,
+  _pickedAtForCycle, _currentApprovalStatus, _safeConfirmation,
   _esc,  // notification-email escaping, reused by lookbooks
   expireLegacyApprovalTokens,
   backfillConfirmationPublished,

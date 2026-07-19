@@ -340,6 +340,9 @@ const createPosFromConfirmation = async (req, res) => {
       }
       const { zeroCostCount, allocMismatchCount, ...seedFields } = seeded;
       const vendorAddress = vendor ? vendor.address : '';
+      // The printer this PO is for, on a stable key: the linked vendor's
+      // printerKey wins (authoritative), else the key the items were quoted on.
+      const groupPrinterKey = (g.items.find((it) => it && it.printerKey) || {}).printerKey || '';
       const po = await PurchaseOrder.create({
         orderId: order._id,
         // Per-vendor number, floored by the owner-set start (vendor.nextPoStart)
@@ -347,6 +350,7 @@ const createPosFromConfirmation = async (req, res) => {
         poNumber: `#${(await nextNumber('po', vendorName, vendor && vendor.nextPoStart)).padStart(3, '0')}`,
         date,
         vendorName,
+        printerKey: (vendor && vendor.printerKey) || groupPrinterKey || '',
         contactName: vendor ? vendor.contactName : '',
         vendorAddress,
         // Default the printer receiving block to the vendor's own address (where
@@ -433,6 +437,7 @@ const createPo = async (req, res) => {
       poNumber: `#${(await nextNumber('po', vendorName, vendor && vendor.nextPoStart)).padStart(3, '0')}`,
       date,
       vendorName,
+      printerKey: (vendor && vendor.printerKey) || '',
       contactName: vendor ? vendor.contactName : '',
       vendorAddress,
       // Printer receiving block defaults to the vendor address (where the blanks

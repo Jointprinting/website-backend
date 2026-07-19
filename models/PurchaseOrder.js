@@ -43,6 +43,12 @@ const PurchaseOrderSchema = new mongoose.Schema({
   },
   shipMethod: { type: String, default: '' },          // "UPS Acct # JR2257"
 
+  // The catalog key of the printer this PO is issued to (from the linked Vendor,
+  // or carried from the confirmation item it was seeded from). A STABLE join to
+  // the Printer price book the job was quoted on — lets Finances reconcile the
+  // PO's real cost against the quote, per printer, without fuzzy name-matching.
+  printerKey: { type: String, default: '', index: true },
+
   // Hard / in-hands due date the printer must hit (most POs carry one).
   dueDate:       { type: Date,    default: null },
   // Prints a "proof required before production run" line when true.
