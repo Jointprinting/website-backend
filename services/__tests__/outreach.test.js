@@ -499,3 +499,33 @@ test('breaker: no sends → not tripped, zero rates', () => {
   assert.equal(r.tripped, false);
   assert.equal(r.bounceRate, 0);
 });
+
+test('breaker: 8 unsubs on 100 sends (8%) DOES trip — list/pitch off-target', () => {
+  const r = evaluateDeliverability({ sent7d: 100, bounced7d: 0, complaints7d: 0, unsub7d: 8 });
+  assert.equal(r.tripped, true);
+  assert.match(r.reason, /unsubscribe rate/);
+  assert.ok(r.unsubRate > 0.04);
+});
+
+test('breaker: 4 unsubs on 100 sends does NOT trip — unsub count under the floor', () => {
+  const r = evaluateDeliverability({ sent7d: 100, bounced7d: 0, complaints7d: 0, unsub7d: 4 });
+  assert.equal(r.tripped, false);
+});
+
+test('breaker: 5 unsubs on 200 sends (2.5%) does NOT trip — under the rate', () => {
+  const r = evaluateDeliverability({ sent7d: 200, bounced7d: 0, complaints7d: 0, unsub7d: 5 });
+  assert.equal(r.tripped, false);
+});
+
+test('breaker: bounce reason wins the tie when bounce AND unsub both trip', () => {
+  const r = evaluateDeliverability({ sent7d: 100, bounced7d: 8, complaints7d: 0, unsub7d: 8 });
+  assert.equal(r.tripped, true);
+  assert.match(r.reason, /bounce rate/);
+});
+
+test('breaker: an all-zero unsub field is harmless (back-compat with 3-arg callers)', () => {
+  const r = evaluateDeliverability({ sent7d: 400, bounced7d: 6, complaints7d: 0 });
+  assert.equal(r.tripped, false);
+  assert.equal(r.unsub7d, 0);
+  assert.equal(r.unsubRate, 0);
+});
