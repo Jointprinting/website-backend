@@ -514,23 +514,36 @@ const MAX_COMPLAINT_RATE = parseFloat(process.env.OUTREACH_MAX_COMPLAINT_RATE ||
 // breaker also requires a real COUNT of bad events, not just a rate, before it trips.
 const BREAKER_MIN_BOUNCES = parseInt(process.env.OUTREACH_BREAKER_MIN_BOUNCES || '6', 10);
 const BREAKER_MIN_COMPLAINTS = parseInt(process.env.OUTREACH_BREAKER_MIN_COMPLAINTS || '2', 10);
+// Unsubscribe breaker: a high opt-out rate means the LIST or the PITCH is
+// off-target — keep firing and you train mailbox providers that this sender is
+// unwanted (hurting inbox placement) while burning through good prospects. So a
+// sustained unsub spike auto-pauses too, same shape as bounce/complaint (rate
+// over threshold AND a real count). 4% default — well above a healthy &lt;1-2%,
+// below the ~6% "the list is wrong" signal. Recovers as the window ages out.
+const MAX_UNSUB_RATE = parseFloat(process.env.OUTREACH_MAX_UNSUB_RATE || '0.04');            // 4%
+const BREAKER_MIN_UNSUBS = parseInt(process.env.OUTREACH_BREAKER_MIN_UNSUBS || '5', 10);
 
 // Pure breaker evaluation (unit-tested). Trips ONLY when the sample is real AND the
 // bad-event COUNT clears its floor AND the rate is over threshold — so a couple of
 // dead addresses in a small test batch can't pause (and then strand) the whole engine.
-function evaluateDeliverability({ sent7d = 0, bounced7d = 0, complaints7d = 0 } = {}) {
+function evaluateDeliverability({ sent7d = 0, bounced7d = 0, complaints7d = 0, unsub7d = 0 } = {}) {
   const bounceRate = sent7d > 0 ? bounced7d / sent7d : 0;
   const complaintRate = sent7d > 0 ? complaints7d / sent7d : 0;
+  const unsubRate = sent7d > 0 ? unsub7d / sent7d : 0;
   const enoughData = sent7d >= BREAKER_MIN_SAMPLE;
   const bounceTrips = enoughData && bounceRate > MAX_BOUNCE_RATE && bounced7d >= BREAKER_MIN_BOUNCES;
   const complaintTrips = enoughData && complaintRate > MAX_COMPLAINT_RATE && complaints7d >= BREAKER_MIN_COMPLAINTS;
-  const tripped = bounceTrips || complaintTrips;
+  const unsubTrips = enoughData && unsubRate > MAX_UNSUB_RATE && unsub7d >= BREAKER_MIN_UNSUBS;
+  const tripped = bounceTrips || complaintTrips || unsubTrips;
+  // Bounce/complaint hurt reputation hardest, so report them first on a tie.
   const reason = !tripped ? ''
     : bounceTrips
       ? `${(bounceRate * 100).toFixed(1)}% bounce rate (7d) is over ${(MAX_BOUNCE_RATE * 100).toFixed(0)}% — paused to protect your sender reputation. The list is auto-cleaning; sending resumes on its own.`
-      : `${(complaintRate * 100).toFixed(2)}% complaint rate (7d) is over ${(MAX_COMPLAINT_RATE * 100).toFixed(2)}% — paused to protect your sender reputation. Resumes on its own.`;
-  return { sent7d, bounced7d, complaints7d, bounceRate, complaintRate, tripped, reason,
-    maxBounceRate: MAX_BOUNCE_RATE, maxComplaintRate: MAX_COMPLAINT_RATE };
+      : complaintTrips
+        ? `${(complaintRate * 100).toFixed(2)}% complaint rate (7d) is over ${(MAX_COMPLAINT_RATE * 100).toFixed(2)}% — paused to protect your sender reputation. Resumes on its own.`
+        : `${(unsubRate * 100).toFixed(1)}% unsubscribe rate (7d) is over ${(MAX_UNSUB_RATE * 100).toFixed(0)}% — paused: the list or the pitch is off-target. Tighten the targeting/copy; sending resumes as the window clears.`;
+  return { sent7d, bounced7d, complaints7d, unsub7d, bounceRate, complaintRate, unsubRate, tripped, reason,
+    maxBounceRate: MAX_BOUNCE_RATE, maxComplaintRate: MAX_COMPLAINT_RATE, maxUnsubRate: MAX_UNSUB_RATE };
 }
 
 let _dstatsCache = { at: 0, val: null };
@@ -540,7 +553,7 @@ async function deliverabilityStats(now = new Date(), { force = false } = {}) {
   const nowMs = now.getTime();
   if (!force && _dstatsCache.val && (nowMs - _dstatsCache.at) < DSTATS_TTL) return _dstatsCache.val;
   const since = new Date(nowMs - 7 * 86400000);
-  const [sent7d, bounced7d, complaints7d] = await Promise.all([
+  const [sent7d, bounced7d, complaints7d, unsub7d] = await Promise.all([
     countSentSince(since),
     // Count only AUTHORITATIVE hard bounces (provider webhook + Gmail NDR). The
     // inline SMTP path also writes reason:'hard-bounce' but with source:'smtp-bounce'
@@ -550,11 +563,14 @@ async function deliverabilityStats(now = new Date(), { force = false } = {}) {
     // the moment the "requeue dropped" recovery tool clears those rows.
     Suppression.countDocuments({ reason: 'hard-bounce', source: { $in: ['bounce-webhook', 'gmail-ndr'] }, createdAt: { $gte: since } }).catch(() => 0),
     Suppression.countDocuments({ reason: 'complaint', createdAt: { $gte: since } }).catch(() => 0),
+    // Opt-outs in the same trailing window — an OutreachEnrollment flips to
+    // 'unsubscribed' with a stamp when a recipient opts out (link or reply).
+    OutreachEnrollment.countDocuments({ status: 'unsubscribed', unsubscribedAt: { $gte: since } }).catch(() => 0),
   ]);
   // Reassure, don't command: the list self-cleans (every bounce auto-suppresses,
   // dead cold prospects auto-archive daily) and sending auto-resumes as the bad
   // batch ages out of the trailing 7-day window — no manual step needed.
-  const val = evaluateDeliverability({ sent7d, bounced7d, complaints7d });
+  const val = evaluateDeliverability({ sent7d, bounced7d, complaints7d, unsub7d });
   _dstatsCache = { at: nowMs, val };
   return val;
 }
