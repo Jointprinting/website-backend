@@ -15,6 +15,7 @@ const OutreachState = require('../models/OutreachState');
 const Client = require('../models/Client');
 const {
   classifyReply,
+  finalizeCategory,
   classifyBounceNdr,
   matchReply,
   parseOooResume,
@@ -77,7 +78,6 @@ async function ingestOne(raw = {}) {
   // auto/bulk signals (Auto-Submitted / Precedence / X-Auto* / List-*), which are
   // far more reliable than subject/body wording for catching auto-responders.
   const cls = classifyReply({ subject, snippet, fromEmail, fromName, headers: raw.headers || null });
-  const { category } = cls;
   if (cls.self) return { skip: 'self' }; // our own outbound mail is never a reply
 
   // Candidate matches (loaded here; matchReply itself is pure/testable). Beyond
@@ -116,6 +116,13 @@ async function ingestOne(raw = {}) {
     clients,
     messageIds,
   });
+
+  // Post-match final say: unmatched + no buying signal + promotional shape is
+  // machine mail (the Google Workspace "free trial is ending" class), never a
+  // lead. Matched replies and anything with real intent pass through untouched.
+  const fin = finalizeCategory({ category: cls.category, matched: match.matched, subject, snippet });
+  const category = fin.category;
+  if (fin.downgraded) { cls.category = category; cls.ignore = true; }
 
   const source = VALID_SOURCES.includes(raw.source) ? raw.source : 'manual';
   const receivedAt = raw.receivedAt ? new Date(raw.receivedAt) : new Date();
@@ -285,10 +292,15 @@ async function ingestNdrBounce(reply) {
 const HUMANISH_CATEGORIES = ['hot_lead', 'needs_response', 'asked_pricing', 'asked_mockups', 'follow_up_later', 'wrong_person'];
 async function retriageStoredReplies() {
   const rows = await TriageReply.find({ category: { $in: HUMANISH_CATEGORIES } })
-    .select('subject snippet fromEmail fromName enrollmentId companyKey').lean();
+    .select('subject snippet fromEmail fromName enrollmentId companyKey matched').lean();
   let demoted = 0;
   for (const r of rows) {
-    const cls = classifyReply({ subject: r.subject, snippet: r.snippet, fromEmail: r.fromEmail, fromName: r.fromName });
+    let cls = classifyReply({ subject: r.subject, snippet: r.snippet, fromEmail: r.fromEmail, fromName: r.fromName });
+    // Same post-match gate the live ingest applies: an unmatched, no-intent,
+    // promo-shaped row (a vendor billing reminder synced before this fix) is
+    // machine mail — demote it too.
+    const fin = finalizeCategory({ category: cls.category, matched: !!r.matched, subject: r.subject, snippet: r.snippet });
+    if (fin.downgraded) cls = { ...cls, category: fin.category };
     if (cls.category === IGNORE_CATEGORY || cls.category === 'auto_reply_ooo') {
       await TriageReply.updateOne(
         { _id: r._id },
@@ -482,6 +494,10 @@ async function runGmailSync({ maxMessages = 50, windowDays = 7 } = {}) {
     'From', 'Subject', 'Message-Id', 'In-Reply-To', 'References', 'Date',
     'Auto-Submitted', 'Precedence', 'X-Autoreply', 'X-Autorespond', 'X-Autoresponse',
     'X-Auto-Response-Suppress', 'List-Id', 'List-Unsubscribe-Post',
+    // Bulk/marketing fingerprints (vendor billing reminders, newsletters, ESP
+    // blasts) — headerSaysAuto treats any of these as "not a 1:1 human reply".
+    'List-Unsubscribe', 'Feedback-Id', 'X-Feedback-Id',
+    'X-SG-EID', 'X-Mailgun-Sid', 'X-SES-Outgoing', 'X-Mandrill-User',
   ].map((h) => `metadataHeaders=${h}`).join('&');
   for (const id of ids) {
     const msg = await gmailApi(`messages/${id}?format=metadata&${HEADERS}`, token).catch(() => null);
