@@ -549,3 +549,53 @@ test('finalizeCategory: only unmatched, no-intent, promo-shaped mail downgrades'
   assert.equal(human.category, 'needs_response');
   assert.equal(human.downgraded, false);
 });
+
+// ── Gmail terminal NDRs + changed-email auto-replies (inbox report, Jul 20) ─────
+// Two live gaps: (a) Gmail's FINAL "Message not delivered" notice carries no
+// explicit hard token in its snippet, classified neither-hard-nor-soft, and the
+// enrollment kept touching the dead mailbox; (b) an auto-reply announcing a new
+// address was about to be swallowed as machine mail when it actually hands us
+// the right contact.
+
+test('classifyBounceNdr: Gmail terminal "Message not delivered" is a HARD bounce', () => {
+  const r = classifyBounceNdr({
+    fromEmail: 'mailer-daemon@googlemail.com',
+    subject: 'Message not delivered',
+    snippet: "There was a problem delivering your message to info@cathlametcannabis.com. See the technical details below.",
+  }, ['jointprintingshop.com']);
+  assert.equal(r.isBounce, true);
+  assert.equal(r.hard, true);
+  assert.deepEqual(r.emails, ['info@cathlametcannabis.com']);
+});
+
+test('classifyBounceNdr: Gmail "will retry" notices stay SOFT (never suppress)', () => {
+  const r = classifyBounceNdr({
+    fromEmail: 'mailer-daemon@googlemail.com',
+    subject: 'Delivery incomplete',
+    snippet: "There was a temporary problem delivering your message to info@cathlametcannabis.com. Gmail will retry for 44 more hours. You'll be notified if the delivery fails permanently.",
+  }, []);
+  assert.equal(r.isBounce, true);
+  assert.equal(r.hard, false);
+  assert.equal(r.soft, true);
+});
+
+test('classifyReply: a changed-email auto-reply surfaces as wrong_person, not noise', () => {
+  // The Kush 21 case — an autoresponder, but it names the right mailbox.
+  const r = classifyReply({
+    fromEmail: 'oldbox@kush21.com',
+    subject: "Attn: WE'VE CHANGED EMAILS. Re: Custom Merch/Apparel for Kush Liquor & Wine",
+    snippet: 'Hi there! Thank you for reaching out to the Kush 21 team. We have changed emails — please direct all future inquiries to orders@kush21.com.',
+    headers: { 'auto-submitted': 'auto-replied' },   // machine headers must NOT swallow it
+  });
+  assert.equal(r.category, 'wrong_person');
+  assert.equal(r.ignore, false);
+});
+
+test('classifyReply: changed-email plus an opt-out still honors the opt-out', () => {
+  const r = classifyReply({
+    fromEmail: 'oldbox@shop.com',
+    subject: 'We have changed emails',
+    snippet: 'This inbox is closing. Also please unsubscribe us from these messages.',
+  });
+  assert.equal(r.category, 'unsubscribe');
+});

@@ -152,6 +152,11 @@ function headerSaysAuto(headers) {
   return false;
 }
 
+// A machine or human note that the mailbox MOVED — "we've changed emails",
+// "please direct inquiries to …". Actionable (it names the right contact), so
+// it must outrank the auto-ack/header ignore gates.
+const CHANGED_EMAIL = /\b(we(?:'ve| have) (?:changed|updated|switched) (?:our )?e-?mail|(?:our )?e-?mail (?:address )?has (?:changed|moved)|new e-?mail address is|this (?:address|inbox|mailbox) is no longer (?:in use|active|used)|please (?:direct|send) (?:all )?(?:future )?(?:e-?mails?|correspondence|inquiries|messages) to)\b/i;
+
 // Content signals. Order below encodes precedence.
 const RE_UNSUB = /\b(unsubscribe|remove me|take me off|stop (?:emailing|contacting|sending)|opt[ -]?out|do not (?:contact|email)|quit emailing)\b/i;
 const RE_NOT_INTERESTED = /\b(not interested|no,? thank|no thanks|we'?re all set|already (?:have|use|using|work with|got)|not (?:at this time|right now|looking|a fit|for us)|no need|please stop|not needed)\b/i;
@@ -184,6 +189,13 @@ function classifyReply({ subject = '', snippet = '', fromEmail = '', fromName = 
   // (snooze, don't ignore). Checked BEFORE the generic auto-ack so a true OOO
   // resumes the sequence instead of being dropped.
   if (OOO_SUBJECT.test(subj) || OOO_BODY.test(body)) return { category: 'auto_reply_ooo', ignore: false, self: false, ooo: true };
+  // An auto-reply that announces a NEW ADDRESS ("Attn: WE'VE CHANGED EMAILS…")
+  // is not noise — it hands us the right mailbox. Surface it as wrong_person
+  // (actionable: "get the right contact") BEFORE the machine-mail gates below
+  // would swallow it, unless it also asks to stop (then the opt-out wins).
+  if (CHANGED_EMAIL.test(hay) && !RE_UNSUB.test(hay)) {
+    return { category: 'wrong_person', ignore: false, self: false };
+  }
   // Generic auto-responder / bulk / list mail — flagged by RFC headers
   // (Auto-Submitted / Precedence / X-Auto*) or by the message's own auto-ack
   // wording ("Auto response: …", "thank you for contacting …", "this mailbox is
@@ -282,7 +294,17 @@ function parseOooResume(text, now = new Date()) {
 const NDR_FROM = /(mailer-daemon|postmaster)/i;
 const NDR_SUBJECT = /(delivery (?:status notification|has failed|failure)|undeliverable|returned mail|mail delivery (?:failed|subsystem)|failure notice|message not delivered|delivery incomplete)/i;
 const NDR_HARD = /(address (?:not found|unknown|rejected)|user (?:unknown|not found)|no such (?:user|recipient|address)|does(?:n'?t| not) exist|mailbox (?:unavailable|not found|does not exist)|recipient (?:not found|rejected)|address rejected|account .{0,40}disabled|550[- ]?5\.1\.1|\b5\.1\.[0-9]\b|permanent(?:ly)? (?:fail|error|reject))/i;
-const NDR_SOFT = /(mailbox (?:is )?full|over quota|quota exceeded|try again later|temporar(?:y|ily)|deferred|greylist|\b4\.\d\.\d\b|rate limit|server busy)/i;
+// Gmail's TERMINAL failure template. After exhausting its retries ("Delivery
+// incomplete… will retry for N more hours", which are SOFT — they carry
+// "temporary"), Gmail sends "Message not delivered — There was a problem
+// delivering your message to X". That final notice often carries NO explicit
+// hard token in the visible snippet (the SMTP code sits in the collapsed
+// technical details), so it used to classify as neither hard nor soft — a
+// NO-OP — and the enrollment kept firing touches into the dead mailbox. The
+// retries being over IS the permanent signal: final template + no transient
+// marker → hard.
+const NDR_FINAL = /(message not delivered|there was a problem delivering your message|your message (?:wasn'?t|was not|couldn'?t be|could not be) delivered)/i;
+const NDR_SOFT = /(mailbox (?:is )?full|over quota|quota exceeded|try again later|temporar(?:y|ily)|deferred|greylist|\b4\.\d\.\d\b|rate limit|server busy|will retry|being retried)/i;
 const NDR_JUNK_LOCAL = /(mailer-daemon|postmaster|no-?reply|do-?not-?reply|abuse|bounce)/i;
 
 function classifyBounceNdr({ subject = '', snippet = '', fromEmail = '' } = {}, ourDomains = []) {
@@ -292,9 +314,10 @@ function classifyBounceNdr({ subject = '', snippet = '', fromEmail = '' } = {}, 
   const isBounce = NDR_FROM.test(from) || NDR_SUBJECT.test(subj);
   if (!isBounce) return { isBounce: false, hard: false, emails: [] };
   const hay = `${subj}\n${body}`;
-  // Hard only when a permanent signal is present AND no transient one — when in
+  // Hard when a permanent signal is present — an explicit rejection token OR
+  // Gmail's terminal "not delivered" template — AND no transient one; when in
   // doubt, do nothing (the conservative default for anything that kills a lead).
-  const hard = NDR_HARD.test(hay) && !NDR_SOFT.test(hay);
+  const hard = (NDR_HARD.test(hay) || NDR_FINAL.test(hay)) && !NDR_SOFT.test(hay);
   // Soft = a transient failure notice ("temporary problem… will retry",
   // mailbox full, deferred). Never kills a lead by itself, but the drip must
   // STOP stacking more mail onto a struggling mailbox — the controller defers
