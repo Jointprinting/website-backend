@@ -186,9 +186,16 @@ function campaignHealth(campaign = {}, stats = {}, now = new Date()) {
   // a high rate at real volume, past what hygiene can save — still demands
   // the owner pause it (action).
   const bounceRate = st.sent > 0 ? st.bounced / st.sent : 0;
+  // Already auto-quarantined (services/outreachEngine.js runListQuarantine):
+  // report what the machine DID, not a chore — new first-touches are stopped,
+  // follow-ups to proven-deliverable leads continue, auto-enroll skips it.
+  if (campaign.firstTouchQuarantinedAt) {
+    return { level: 'warn', label: 'List quarantined',
+      hint: `${campaign.quarantineReason || 'This list kept bouncing after auto-cleaning'} — the engine stopped NEW first-touches automatically (follow-ups to alive leads continue; auto-enroll skips this campaign). Rebuild from a fresher source, then resume first-touches on this card.` };
+  }
   if (st.sent >= 30 && bounceRate >= 0.12) {
     return { level: 'action', label: `${Math.round(bounceRate * 100)}% bouncing`,
-      hint: `${st.bounced} of ${st.sent} sent bounced or complained even after auto-cleaning — this list source is bad and it's torching the sender's reputation. Pause the campaign and rebuild from a fresher source.` };
+      hint: `${st.bounced} of ${st.sent} sent bounced or complained even after auto-cleaning — this list source is bad. The engine quarantines new first-touches automatically after its next hygiene pass; you can also pause the campaign now.` };
   }
   if (st.sent >= 10 && bounceRate >= 0.05) {
     // Mention the roster re-verify only when hygiene actually ran recently —
@@ -468,6 +475,13 @@ async function updateCampaign(req, res) {
       set.abWinnerAt = null;
     }
     if ('vertical' in body && isVertical(body.vertical)) set.vertical = body.vertical;
+    // "Resume first-touches" after a list quarantine (or re-quarantine by hand).
+    // Clearing the stamp lets the engine's next tick draw first-touches again;
+    // if the list is still rotten the quarantine simply re-trips.
+    if ('firstTouchQuarantined' in body) {
+      set.firstTouchQuarantinedAt = body.firstTouchQuarantined ? new Date() : null;
+      if (!body.firstTouchQuarantined) set.quarantineReason = '';
+    }
     if ('status' in body) {
       if (!OutreachCampaign.CAMPAIGN_STATUSES.includes(body.status)) {
         return res.status(400).json({ message: `invalid status "${body.status}"` });
@@ -966,6 +980,9 @@ function interleaveByCity(rows = [], cityOf = (r) => r && r.city) {
 // the owner couldn't. Used by the auto-enroll cron and the "fill now" toggle.
 // Returns { enrolled }.
 async function autoFillCampaign(campaign, { limit } = {}) {
+  // A quarantined list gets no fresh leads — pouring the reserve into a pool
+  // whose first-touches are stopped would just strand them behind the gate.
+  if (campaign.firstTouchQuarantinedAt) return { enrolled: 0, skipped: 'quarantined' };
   // Capacity-matched: with no explicit limit (the auto-enroll cron), only enroll
   // enough to top the ACTIVE pool up to ~a week of sending — never balloon it.
   // An explicit limit (a manual burst) bypasses the cap.
@@ -980,7 +997,7 @@ async function autoFillCampaign(campaign, { limit } = {}) {
   // dispensary is the catch-all, so its pool is unchanged).
   const clients = await Client.find({ ...NOT_ARCHIVED, doNotEmail: { $ne: true },
     stage: { $in: ['lead', 'contacted'] }, lastContact: null, ...verticalPoolFilter(campaign.vertical) })
-    .select('companyKey companyName clientName email phone address area stage leadSource contacts lastContact')
+    .select('companyKey companyName clientName email phone address area stage leadSource contacts lastContact createdAt')
     .limit(1500).lean();
   if (!clients.length) return { enrolled: 0 };
 
@@ -994,13 +1011,17 @@ async function autoFillCampaign(campaign, { limit } = {}) {
   const usedEmails = new Set(allEnrollments.map((e) => String(e.toEmail || '').toLowerCase()).filter(Boolean));
   const suppressed = await suppressedSet(clients.map((c) => pickEmail(c)));
 
-  // Best-scored leads first — then SPREAD across cities (round-robin) so one
-  // heavily-mapped town can't monopolize a day's sends; within each city it's
-  // still best-score-first. Same city parser the merge templates use
-  // ({{city}}), so the spread agrees with what the emails themselves say.
+  // Best-scored leads first, FRESHEST-FOUND breaking ties — a lead discovered
+  // last week is far likelier to carry a live address than one scraped months
+  // ago (stale scraped addresses are exactly what bounces) — then SPREAD
+  // across cities (round-robin) so one heavily-mapped town can't monopolize a
+  // day's sends; within each city it's still best-score-first. Same city
+  // parser the merge templates use ({{city}}), so the spread agrees with what
+  // the emails themselves say.
+  const foundAt = (c) => { const t = new Date(c.createdAt || 0).getTime(); return Number.isFinite(t) ? t : 0; };
   const scored = clients
     .map((c) => ({ c, sc: scoreLead(c).score, city: cityFromAddress(c.address || c.area) }))
-    .sort((a, b) => b.sc - a.sc);
+    .sort((a, b) => (b.sc - a.sc) || (foundAt(b.c) - foundAt(a.c)));
   const spread = interleaveByCity(scored, (r) => r.city);
   const eligible = [];
   for (const { c } of spread) {

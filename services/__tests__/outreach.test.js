@@ -529,3 +529,24 @@ test('breaker: an all-zero unsub field is harmless (back-compat with 3-arg calle
   assert.equal(r.unsub7d, 0);
   assert.equal(r.unsubRate, 0);
 });
+
+// ── List quarantine (the engine acting on its own "bad list" verdict) ─────────
+
+const { shouldQuarantineList } = require('../outreachEngine');
+
+test('shouldQuarantineList: the reported 14-of-98 list trips once hygiene has run', () => {
+  const signal = { sent: 98, bounced: 14 };
+  assert.equal(shouldQuarantineList(signal, { lastHygieneAt: new Date() }), true);
+  // Hygiene must have had its chance first — no stamp, no quarantine.
+  assert.equal(shouldQuarantineList(signal, { lastHygieneAt: null }), false);
+  assert.equal(shouldQuarantineList(signal, {}), false);
+});
+
+test('shouldQuarantineList: needs a real sample, a real count, and an action-level rate', () => {
+  const at = { lastHygieneAt: new Date() };
+  assert.equal(shouldQuarantineList({ sent: 20, bounced: 10 }, at), false);  // sample too small
+  assert.equal(shouldQuarantineList({ sent: 100, bounced: 4 }, at), false);  // too few bounces
+  assert.equal(shouldQuarantineList({ sent: 100, bounced: 8 }, at), false);  // 8% — below action level
+  assert.equal(shouldQuarantineList({ sent: 100, bounced: 12 }, at), true);  // 12% at volume
+  assert.equal(shouldQuarantineList({}, at), false);
+});
