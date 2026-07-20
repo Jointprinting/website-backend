@@ -66,6 +66,30 @@ const isValidStatus = (s) => STATUSES.includes(s);
 
 // Senders that are machine mail, never a human reply.
 const AUTO_FROM = /(mailer-daemon|postmaster|no-?reply|do-?not-?reply|notification|newsletter|@(?:bounce|mailer|email\.|em\.))/i;
+
+// SaaS / big-tech / platform sender domains — the services WE use, not shops we
+// pitch. Mail FROM these is product/billing/security noise by definition (the
+// bug: "workspace@google.com — [Reminder] Your Google Workspace free trial is
+// ending" classified as needs_response and sat in the worklist as a lead). No
+// dispensary buyer writes from @google.com or @stripe.com, so a domain-suffix
+// match here is safe to hard-ignore. Suffix match honors the dot boundary
+// (mail.google.com hits, notagoogle.com does not).
+const VENDOR_NOISE_DOMAINS = [
+  'google.com', 'youtube.com', 'microsoft.com', 'apple.com', 'intuit.com',
+  'stripe.com', 'paypal.com', 'squareup.com', 'shopify.com', 'godaddy.com',
+  'squarespace.com', 'wix.com', 'mailchimp.com', 'hubspot.com', 'salesforce.com',
+  'adobe.com', 'dropbox.com', 'zoom.us', 'slack.com', 'atlassian.com',
+  'github.com', 'vercel.com', 'render.com', 'cloudflare.com', 'namecheap.com',
+  'docusign.com', 'canva.com', 'calendly.com', 'notion.so', 'anthropic.com',
+  'openai.com', 'mongodb.com', 'twilio.com', 'sendpulse.com', 'sendgrid.net',
+  'facebookmail.com', 'instagram.com', 'linkedin.com', 'tiktok.com',
+  'amazon.com', 'ups.com', 'fedex.com', 'usps.com', 'dhl.com',
+];
+function isVendorNoiseSender(fromEmail) {
+  const dom = domainOf(fromEmail);
+  if (!dom) return false;
+  return VENDOR_NOISE_DOMAINS.some((d) => dom === d || dom.endsWith(`.${d}`));
+}
 // Hard delivery failures + calendar/receipt noise → ignore entirely.
 const BOUNCE_SUBJECT = /(delivery (?:status notification|has failed|failure)|undeliverable|returned mail|mail delivery (?:failed|subsystem)|failure notice|read receipt|accepted:|declined:|canceled:)/i;
 // Out-of-office / vacation auto-responders — a REAL mailbox that's temporarily
@@ -118,6 +142,13 @@ function headerSaysAuto(headers) {
   if (get('x-auto-response-suppress')) return true;                    // Exchange/Outlook auto
   if (get('x-autoreply-from') || get('x-mail-autoreply') || get('x-vacation')) return true;
   if (get('list-id') || get('list-unsubscribe-post')) return true;     // mailing-list / bulk, not a person
+  // Bulk/marketing fingerprints a genuine 1:1 human reply never carries:
+  // List-Unsubscribe (any form — every transactional/marketing sender sets it,
+  // e.g. the Google Workspace billing reminders), Feedback-ID (Gmail's bulk-
+  // sender loop), and the big ESPs' injection headers.
+  if (get('list-unsubscribe')) return true;
+  if (get('feedback-id') || get('x-feedback-id')) return true;
+  if (get('x-sg-eid') || get('x-mailgun-sid') || get('x-ses-outgoing') || get('x-mandrill-user')) return true;
   return false;
 }
 
@@ -144,8 +175,11 @@ function classifyReply({ subject = '', snippet = '', fromEmail = '', fromName = 
   // Our own outbound mail is never a reply to triage.
   if (isSelf(from) || isSelf(fromName)) return { category: 'bounce_auto_ignore', ignore: true, self: true };
 
-  // Hard machine mail (bounces, receipts, calendar) → ignore.
-  if (AUTO_FROM.test(from) || BOUNCE_SUBJECT.test(subj)) return { category: 'bounce_auto_ignore', ignore: true, self: false };
+  // Hard machine mail (bounces, receipts, calendar) and platform/vendor senders
+  // (Google/Stripe/UPS/… product-billing-security noise) → ignore.
+  if (AUTO_FROM.test(from) || BOUNCE_SUBJECT.test(subj) || isVendorNoiseSender(from)) {
+    return { category: 'bounce_auto_ignore', ignore: true, self: false };
+  }
   // Out-of-office auto-reply (a real person temporarily away) → its own category
   // (snooze, don't ignore). Checked BEFORE the generic auto-ack so a true OOO
   // resumes the sequence instead of being dropped.
@@ -175,6 +209,42 @@ function classifyReply({ subject = '', snippet = '', fromEmail = '', fromName = 
     return { category: 'bounce_auto_ignore', ignore: true, self: false, auto: true };
   }
   return { category: 'needs_response', ignore: false, self: false };
+}
+
+// ── Promotional / transactional shape (the unmatched-mail gate) ───────────────
+// Wording that marks product/marketing/billing mail rather than a person
+// answering us: trials, subscriptions, invoices, security alerts, webinars,
+// percent-off blasts, "view in browser" chrome. NEVER applied to a matched
+// reply or to one that already showed explicit intent (asked_pricing etc.) —
+// it only downgrades the fallback needs_response on mail from a sender we
+// never emailed, where "reply to keep it moving" is meaningless.
+const PROMO_SHAPE = new RegExp([
+  /\bfree trial\b|\btrial (?:is )?(?:ending|expir\w+|over)\b/.source,
+  /\byour (?:subscription|invoice|receipt|statement|billing|payment|plan|order (?:has )?shipped|account)\b/.source,
+  /\bpayment (?:due|failed|received|method)\b|\bbilling (?:period|statement|reminder)\b/.source,
+  /\brenewal (?:notice|reminder)\b|\bprice (?:change|increase)\b|\bupgrade (?:now|today|your)\b/.source,
+  /\bverify your (?:e-?mail|account)\b|\bsecurity alert\b|\bnew sign[- ]?in\b|\bpassword (?:reset|expir\w+)\b/.source,
+  /\bwelcome to\b|\bgetting started with\b|\bwebinar\b|\bproduct updates?\b|\brelease notes\b/.source,
+  /\b\d{1,2}% off\b|\bsale ends\b|\blimited[- ]time\b|\blast chance\b|\bcoupon\b|\bpromo code\b/.source,
+  /\bview (?:this email )?in (?:your )?browser\b|\bmanage (?:your )?(?:preferences|notifications)\b/.source,
+  /\bterms of service\b|\bprivacy policy\b|\[reminder\]/.source,
+].join('|'), 'i');
+
+function looksPromotional({ subject = '', snippet = '' } = {}) {
+  return PROMO_SHAPE.test(`${subject}\n${snippet}`);
+}
+
+// Final say on a classified reply once the MATCH is known. classifyReply runs
+// before matching (it has no DB); this pure post-pass closes the remaining gap:
+// a sender we never emailed, no buying signal, promotional/transactional shape
+// → machine mail, not a lead. Everything matched — and every unmatched message
+// with real intent or a plain human question — passes through untouched, so a
+// genuine cold inquiry ("do you print hoodies?") still reaches the worklist.
+function finalizeCategory({ category, matched, subject = '', snippet = '' } = {}) {
+  if (category === 'needs_response' && !matched && looksPromotional({ subject, snippet })) {
+    return { category: 'bounce_auto_ignore', ignore: true, downgraded: true };
+  }
+  return { category, ignore: category === 'bounce_auto_ignore', downgraded: false };
 }
 
 // Parse an out-of-office "back on <date>" into a resume Date. Best-effort: an
@@ -405,6 +475,10 @@ module.exports = {
   isValidStatus,
   classifyReply,
   headerSaysAuto,
+  isVendorNoiseSender,
+  VENDOR_NOISE_DOMAINS,
+  looksPromotional,
+  finalizeCategory,
   classifyBounceNdr,
   parseOooResume,
   parseFromHeader,

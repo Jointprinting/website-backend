@@ -464,3 +464,88 @@ test('classifyBounceNdr: hard failures stay hard (not soft)', () => {
   assert.equal(r.hard, true);
   assert.equal(r.soft, false);
 });
+
+// ── Vendor / bulk notification mail (the Google Workspace reminder bug) ─────────
+// A platform's product/billing mail classified needs_response and sat in the
+// worklist as a "lead". Three independent nets now catch this class: the vendor
+// sender domain, the bulk-mail headers, and (for unknown senders) the unmatched
+// + promo-shape downgrade.
+
+const {
+  isVendorNoiseSender,
+  headerSaysAuto,
+  looksPromotional,
+  finalizeCategory,
+} = require('../../services/replyTriage');
+
+test('vendor senders classify as machine mail — the exact reported case', () => {
+  const r = classifyReply({
+    fromEmail: 'workspace@google.com',
+    subject: '[Reminder] Your Google Workspace free trial is ending',
+    snippet: 'Put your subscription to work. Your paid subscription starts tomorrow. The billing period for your paid subscription to Google Workspace begins tomorrow.',
+  });
+  assert.equal(r.category, 'bounce_auto_ignore');
+  assert.equal(r.ignore, true);
+});
+
+test('isVendorNoiseSender: platform domains + subdomains hit, lookalikes and shops do not', () => {
+  assert.equal(isVendorNoiseSender('workspace@google.com'), true);
+  assert.equal(isVendorNoiseSender('billing@mail.stripe.com'), true);
+  assert.equal(isVendorNoiseSender('notifications@github.com'), true);
+  assert.equal(isVendorNoiseSender('someone@notagoogle.com'), false);   // dot boundary
+  assert.equal(isVendorNoiseSender('buyer@greenleafdispensary.com'), false);
+  assert.equal(isVendorNoiseSender(''), false);
+});
+
+test('bulk-mail headers mark machine mail: List-Unsubscribe / Feedback-ID / ESPs', () => {
+  assert.equal(headerSaysAuto({ 'list-unsubscribe': '<https://x.example/unsub>' }), true);
+  assert.equal(headerSaysAuto({ 'feedback-id': 'abc:xyz:promo' }), true);
+  assert.equal(headerSaysAuto({ 'x-sg-eid': 'sg123' }), true);
+  // A plain 1:1 human reply's headers carry none of these.
+  assert.equal(headerSaysAuto({ 'message-id': '<a@b>', from: 'Sam <sam@shop.com>' }), false);
+  const r = classifyReply({
+    fromEmail: 'promo@somebrand.com',
+    subject: 'Big summer blowout',
+    snippet: 'Everything must go',
+    headers: { 'list-unsubscribe': '<mailto:unsub@somebrand.com>' },
+  });
+  assert.equal(r.category, 'bounce_auto_ignore');
+});
+
+test('looksPromotional: trials/billing/security/blast chrome yes, human asks no', () => {
+  assert.equal(looksPromotional({ subject: 'Your invoice for July' }), true);
+  assert.equal(looksPromotional({ subject: 'Security alert: new sign-in on Chrome' }), true);
+  assert.equal(looksPromotional({ subject: 'Webinar: scale your shop', snippet: 'view in browser' }), true);
+  assert.equal(looksPromotional({ subject: '20% off ends tonight' }), true);
+  assert.equal(looksPromotional({ subject: 'Re: shirts for our budtenders' }), false);
+  assert.equal(looksPromotional({ subject: 'quick question', snippet: 'do you print hoodies too?' }), false);
+});
+
+test('finalizeCategory: only unmatched, no-intent, promo-shaped mail downgrades', () => {
+  // The gap-closer: unknown sender + promo shape + bland category → ignored.
+  const down = finalizeCategory({
+    category: 'needs_response', matched: false,
+    subject: '[Reminder] Your free trial is ending', snippet: 'Your paid subscription starts tomorrow.',
+  });
+  assert.equal(down.category, 'bounce_auto_ignore');
+  assert.equal(down.downgraded, true);
+  // A MATCHED reply is never downgraded, promo words or not.
+  const matched = finalizeCategory({
+    category: 'needs_response', matched: true,
+    subject: '[Reminder] Your free trial is ending', snippet: 'lol got this too — anyway send that quote over',
+  });
+  assert.equal(matched.category, 'needs_response');
+  // Explicit intent survives even unmatched (a cold buyer asking for pricing).
+  const intent = finalizeCategory({
+    category: 'asked_pricing', matched: false,
+    subject: 'wholesale pricing?', snippet: 'limited time — we need 200 shirts, what would that cost',
+  });
+  assert.equal(intent.category, 'asked_pricing');
+  // An unmatched genuine question with no promo shape stays actionable.
+  const human = finalizeCategory({
+    category: 'needs_response', matched: false,
+    subject: 'question', snippet: 'hey do you guys make hats?',
+  });
+  assert.equal(human.category, 'needs_response');
+  assert.equal(human.downgraded, false);
+});
