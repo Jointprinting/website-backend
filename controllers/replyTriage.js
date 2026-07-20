@@ -320,6 +320,29 @@ async function retriageStoredReplies() {
   return demoted;
 }
 
+// Healer #2 — resweep stored NDRs under the terminal-template rules. NDR rows
+// synced BEFORE the "Message not delivered = hard" fix were classified
+// neither-hard-nor-soft (a no-op) and are dedup-guarded against re-sync, so
+// their dead enrollments stayed active. Re-run the bounce logic over recent
+// stored bounce rows, HARD verdicts only — the hard path is fully idempotent
+// (suppress upsert, guarded status flips, doNotEmail set), while re-running
+// the soft path would double-count strike counters. Returns rows acted on.
+async function resweepStoredNdrs({ windowDays = 45 } = {}) {
+  const since = new Date(Date.now() - windowDays * 86400000);
+  const rows = await TriageReply.find({ category: IGNORE_CATEGORY, receivedAt: { $gte: since } })
+    .select('subject snippet fromEmail').lean();
+  const ours = ourSendingDomains();
+  let acted = 0;
+  for (const r of rows) {
+    const ndr = classifyBounceNdr(r, ours);
+    if (!ndr.isBounce || !ndr.hard || !ndr.emails.length) continue;
+    await ingestNdrBounce(r).catch((e) => console.warn('[triage] NDR resweep row failed:', e.message));
+    acted += 1;
+  }
+  if (acted) console.log(`[triage] NDR resweep: re-processed ${acted} stored terminal bounce(s)`);
+  return acted;
+}
+
 // GET /api/triage/replies?category=&status=&matched=&includeIgnored=
 // Bounces/auto-replies are hidden by default (they're noise) unless explicitly
 // asked for via ?category=bounce_auto_ignore or ?includeIgnored=true.
@@ -637,4 +660,5 @@ async function getWorklist(_req, res) {
 module.exports = {
   listReplies, addReplies, updateStatus, syncGmail, getSyncStatus, getWorklist,
   ingestOne, applyStatusSideEffects, runGmailSync, startGmailIngest, retriageStoredReplies,
+  resweepStoredNdrs,
 };

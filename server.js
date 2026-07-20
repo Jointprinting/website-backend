@@ -230,12 +230,18 @@ db.once('open', () => {
   // hub banner (e.g. an "Auto response: …"). Idempotent + safe, but flag-guarded so
   // it runs once per classifier version; bump the -vN when the classifier changes.
   setTimeout(async () => {
-    const KEY = 'retriageAutoAcks-v3'; // v3: high-precision auto-ack combo (ack + defer-to-later) — heals the Origins Cannabis false warm
+    // v4: vendor-noise senders + bulk headers + promo-shape gate (the Google
+    // Workspace "free trial" row) + changed-email → wrong_person, AND the NDR
+    // resweep — terminal "Message not delivered" notices synced before the
+    // hard-bounce fix get their dead addresses suppressed retroactively.
+    const KEY = 'retriageAutoAcks-v4';
     try {
       const migrations = mongoose.connection.db.collection('migrations');
       if (await migrations.findOne({ _id: KEY })) return;
-      const n = await require('./controllers/replyTriage').retriageStoredReplies();
-      await migrations.insertOne({ _id: KEY, at: new Date(), demoted: n });
+      const triage = require('./controllers/replyTriage');
+      const n = await triage.retriageStoredReplies();
+      const b = await triage.resweepStoredNdrs();
+      await migrations.insertOne({ _id: KEY, at: new Date(), demoted: n, bouncesResweeped: b });
     } catch (e) {
       console.warn('[triage] re-triage healer failed (will retry next boot):', e.message);
     }
