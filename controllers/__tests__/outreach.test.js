@@ -223,7 +223,7 @@ test('campaignHealth: only a genuinely bad list (≥12% of ≥30 sent) is still 
   const h = campaignHealth({ status: 'active' }, { enrolled: 40, active: 10, sent: 30, replied: 1, bounced: 4 });
   assert.equal(h.level, 'action');
   assert.match(h.label, /bouncing/);
-  assert.match(h.hint, /Pause the campaign/);
+  assert.match(h.hint, /quarantines new first-touches automatically/);
 });
 
 test('campaignHealth: moderate bounces → warn that reports the automation, not a chore', () => {
@@ -483,4 +483,16 @@ test('buildNextActions: no "cold leads waiting" nudge when auto-enroll is on (no
   const noAuto = buildNextActions({ ...base, autoEnrollOn: false });
   assert.ok(noAuto.some(a => /cold leads waiting/i.test(a.text)),
     'auto-enroll explicitly off → the manual-enroll nudge still fires');
+});
+
+// ── campaignHealth: the quarantined banner reports what the machine DID ───────
+test('campaignHealth: a quarantined campaign reports the auto-action, not a chore', () => {
+  const h = campaignHealth(
+    { status: 'active', firstTouchQuarantinedAt: new Date(), quarantineReason: '14 of 98 sent bounced or complained even after auto-cleaning' },
+    { enrolled: 120, active: 5, sent: 98, bounced: 14, replied: 0, completed: 0, unsubscribed: 0, noEmail: 0, cleaned: 0 },
+  );
+  assert.equal(h.level, 'warn');
+  assert.equal(h.label, 'List quarantined');
+  assert.match(h.hint, /stopped NEW first-touches automatically/);
+  assert.match(h.hint, /14 of 98/);
 });

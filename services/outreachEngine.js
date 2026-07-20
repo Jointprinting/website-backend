@@ -654,6 +654,62 @@ function looksLikeDnsOutage(badCount, checkedCount) {
   return bad >= 5 && bad * 2 > checked;
 }
 
+// ── List quarantine (the engine acting on its own "bad list" verdict) ────────
+// campaignHealth's action banner ("this list source is bad — pause the
+// campaign") used to be advice the owner had to act on while the engine kept
+// burning the daily budget on the rotten pool. Now the engine does it: a
+// campaign still bouncing at action-level rates even AFTER roster hygiene had
+// its chance stops getting NEW first-touches. Follow-ups continue — a lead
+// that already received a step proved deliverable — and auto-enroll skips the
+// campaign so the reserve isn't poured into it. Thresholds mirror the
+// campaignHealth action banner so the map and the territory agree.
+const QUARANTINE_MIN_SENT = 30;
+const QUARANTINE_MIN_BOUNCED = 5;
+const QUARANTINE_RATE = 0.12;
+
+// Should this campaign's first-touches be quarantined? Requires a real sample
+// at an action-level rate AND that hygiene already ran (lastHygieneAt set) —
+// the list got its self-clean chance and is still rotten. PURE + unit-tested.
+function shouldQuarantineList(signal = {}, { lastHygieneAt = null } = {}) {
+  const sent = Number((signal || {}).sent) || 0;
+  const bounced = Number((signal || {}).bounced) || 0;
+  if (!lastHygieneAt) return false;
+  if (sent < QUARANTINE_MIN_SENT) return false;
+  if (bounced < QUARANTINE_MIN_BOUNCED) return false;
+  return bounced / sent >= QUARANTINE_RATE;
+}
+
+// Evaluate + stamp quarantine across the tick's active campaigns. Returns the
+// set of campaign ids whose first-touches are quarantined (pre-existing +
+// newly tripped) so the claim loop can gate on it without a re-read. Guarded
+// writes; NEVER throws (bonus pass, must not break sending).
+async function runListQuarantine(campaigns = [], now = new Date()) {
+  const quarantined = new Set(
+    (campaigns || []).filter((c) => c && c.firstTouchQuarantinedAt).map((c) => String(c._id)),
+  );
+  for (const campaign of campaigns || []) {
+    if (!campaign || quarantined.has(String(campaign._id))) continue;
+    try {
+      const rows = await OutreachEnrollment.find({ campaignId: campaign._id })
+        .select('status stopReason sends.at').lean();
+      const signal = campaignBounceSignal(rows);
+      if (!shouldQuarantineList(signal, { lastHygieneAt: campaign.lastHygieneAt })) continue;
+      const reason = `${signal.bounced} of ${signal.sent} sent bounced or complained even after auto-cleaning`;
+      const r = await OutreachCampaign.updateOne(
+        { _id: campaign._id, firstTouchQuarantinedAt: null },
+        { $set: { firstTouchQuarantinedAt: now, quarantineReason: reason } },
+      ).catch(() => ({ modifiedCount: 0 }));
+      if (r.modifiedCount) {
+        quarantined.add(String(campaign._id));
+        console.log(`[outreach] list quarantine: "${campaign.name}" — ${reason}; new first-touches stopped, follow-ups continue`);
+      }
+    } catch (e) {
+      console.warn(`[outreach] quarantine check failed for campaign ${campaign && campaign._id}:`, e.message);
+    }
+  }
+  return quarantined;
+}
+
 // Run the hygiene pass across the given ACTIVE campaigns (the tick's already-
 // loaded list). For each campaign whose bounce signal trips: atomically claim
 // the 24h stamp (so a racing tick or second worker can't double-run it),
@@ -1238,6 +1294,14 @@ async function runOutreachTick(now = new Date(), opts = {}) {
     const byId = new Map(campaigns.map((c) => [String(c._id), c]));
     const campaignIds = campaigns.map((c) => c._id);
 
+    // List quarantine, evaluated BEFORE claiming sends: a campaign that kept
+    // bouncing after hygiene loses its NEW first-touches this very tick.
+    // Follow-ups (stepIndex > 0) still draw from every active campaign.
+    const quarantinedIds = await runListQuarantine(campaigns, now);
+    const firstTouchCampaignIds = campaigns
+      .filter((c) => !quarantinedIds.has(String(c._id)))
+      .map((c) => c._id);
+
     const state = await OutreachState.findOne({ key: 'engine' }).lean();
 
     // Sender POOL: total daily capacity = sum of each inbox's (warm-up-ramped)
@@ -1299,8 +1363,12 @@ async function runOutreachTick(now = new Date(), opts = {}) {
       // a backlog of stale first touches). Oldest-due first within each pass.
       let enr = null;
       for (const pri of SEND_PRIORITY_FILTERS) {
+        // First touches (stepIndex 0) only draw from non-quarantined campaigns;
+        // follow-ups continue everywhere (those leads proved deliverable).
+        const ids = pri.stepIndex === 0 ? firstTouchCampaignIds : campaignIds;
+        if (!ids.length) continue;
         enr = await OutreachEnrollment.findOneAndUpdate(
-          { status: 'active', campaignId: { $in: campaignIds }, nextSendAt: { $lte: now }, ...pri },
+          { status: 'active', campaignId: { $in: ids }, nextSendAt: { $lte: now }, ...pri },
           { $set: { nextSendAt: new Date(now.getTime() + LEASE_MS) } },
           { sort: { nextSendAt: 1 }, new: true },
         );
@@ -1423,6 +1491,8 @@ module.exports = {
   // Auto roster hygiene (bounce-spike re-verify): the async pass + its pure,
   // unit-tested decision core.
   runRosterHygiene,
+  shouldQuarantineList,
+  runListQuarantine,
   campaignBounceSignal,
   shouldRunHygiene,
   pickInvalidEnrollments,

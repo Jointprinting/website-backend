@@ -53,6 +53,16 @@ const OutreachCampaignSchema = new mongoose.Schema({
   // most once per campaign per 24h, and lets campaignHealth say "re-verified
   // the waiting roster" only when that actually just happened.
   lastHygieneAt: { type: Date, default: null },
+  // LIST QUARANTINE — the engine acting on its own "this list source is bad"
+  // verdict instead of printing advice: when a campaign keeps bouncing hard
+  // even AFTER roster hygiene ran (see shouldQuarantineList in
+  // services/outreachEngine.js), NEW first-touches stop automatically — the
+  // daily budget stops burning on a rotten pool. Follow-ups to leads that
+  // already received mail (proven-deliverable) continue, and auto-enroll skips
+  // a quarantined campaign so the reserve isn't poured into it. Cleared from
+  // the campaign editor ("resume first touches") once the list is rebuilt.
+  firstTouchQuarantinedAt: { type: Date, default: null },
+  quarantineReason:        { type: String, default: '' },
 }, { timestamps: true });
 
 OutreachCampaignSchema.statics.CAMPAIGN_STATUSES = CAMPAIGN_STATUSES;
