@@ -124,3 +124,20 @@ test('stateForViewportCenter: overlapping region boxes pick the smallest contain
 test('stateForViewportCenter: open ocean resolves to nothing', () => {
   assert.equal(stateForViewportCenter({ minLat: 30, maxLat: 31, minLng: -60, maxLng: -59 }), '');
 });
+
+// ── OSM statewide fallback (no dispos fall through the cracks) ───────────────
+
+const { needsOsmFallback } = require('../../services/rosterAutopilot');
+
+test('needsOsmFallback: failed or thin rosters sweep; healthy ones do not', () => {
+  assert.equal(needsOsmFallback({ failed: true }), true);
+  assert.equal(needsOsmFallback({ lowCoverage: true }), true);
+  assert.equal(needsOsmFallback({ failed: false, lowCoverage: false }), false);
+  assert.equal(needsOsmFallback({}), false);
+});
+
+test('needsOsmFallback: one sweep per state per day', () => {
+  const now = Date.now();
+  assert.equal(needsOsmFallback({ failed: true, lastSweptAt: now - 2 * 3600 * 1000, now }), false);
+  assert.equal(needsOsmFallback({ failed: true, lastSweptAt: now - 25 * 3600 * 1000, now }), true);
+});

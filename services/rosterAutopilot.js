@@ -28,12 +28,14 @@
 const cron = require('node-cron');
 const Dispensary = require('../models/Dispensary');
 const { ROSTER_STATES } = require('./dispensaryStates');
-const { ingestState } = require('./dispensaryIngest');
-const { NATIONAL_ROLLOUT } = require('./dispensaryFinder');
+const { ingestState, upsertOsmCandidates } = require('./dispensaryIngest');
+const { NATIONAL_ROLLOUT, REGIONS, fetchDispensariesForBbox } = require('./dispensaryFinder');
+const { fieldMap: FIELD_MAP_VERTICAL } = require('./leadVerticals');
 
 const REFRESH_MS = 45 * 24 * 3600 * 1000;   // roster considered stale after 45 days
 const FAIL_COOLDOWN_MS = 6 * 3600 * 1000;   // don't re-hit a broken source for 6h
 const MAX_PER_TICK = 3;                      // states loaded per background tick
+const SWEEP_COOLDOWN_MS = 24 * 3600 * 1000;  // one statewide OSM fallback sweep per state per day
 
 // Roster states in drive-priority order: rollout order first (region ids are
 // lowercase state codes), then any roster state the rollout misses. States
@@ -72,9 +74,44 @@ function pickRosterStates({ order, counts, freshest, skip = new Set(), now = Dat
 // restart just retries, and ingest itself is idempotent.
 const _inflight = new Set();
 const _failedAt = new Map();
+const _sweptAt = new Map();
+
+// Should a statewide OSM fallback sweep run? After a FAILED roster ingest
+// (source down/moved — the map would otherwise stay empty with no feedback)
+// or a LOW-COVERAGE one (the CSV landed far under the market's real size),
+// and at most once per state per day. This is the "no dispos fall through
+// the cracks" guarantee: pins come from OSM even when a community CSV is
+// broken. PURE (exported for tests).
+function needsOsmFallback({ failed = false, lowCoverage = false, lastSweptAt = null, now = Date.now(), cooldownMs = SWEEP_COOLDOWN_MS } = {}) {
+  if (!failed && !lowCoverage) return false;
+  if (lastSweptAt && now - new Date(lastSweptAt).getTime() < cooldownMs) return false;
+  return true;
+}
+
+// Statewide OSM sweep of one state (rec + medical net) into the Dispensary
+// roster — the fallback when the license-roll source can't carry the state.
+// Uses the same region bbox + quadrant-splitting fetch the lead finder has
+// proven statewide. Never throws.
+async function sweepStateOsm(state, { reason = 'fallback' } = {}) {
+  const st = String(state || '').toUpperCase();
+  const region = REGIONS[st.toLowerCase()];
+  if (!region) return null;
+  _sweptAt.set(st, Date.now()); // stamp up front — even a failed sweep cools down
+  try {
+    const candidates = await fetchDispensariesForBbox(region.bbox, { vertical: FIELD_MAP_VERTICAL });
+    const { added, attached } = await upsertOsmCandidates(candidates);
+    console.log(`[rosterAutopilot] ${st} statewide OSM sweep (${reason}): ${candidates.length} found, +${added} new, ${attached} enriched`);
+    return { found: candidates.length, added, attached };
+  } catch (err) {
+    console.warn(`[rosterAutopilot] ${st} OSM sweep failed:`, err.message);
+    return null;
+  }
+}
 
 // Load one state's roster if it's loadable and not on cooldown/in flight.
 // Safe to fire-and-forget (never throws). Returns the ingest report or null.
+// A failed or far-undersized roster automatically falls back to a statewide
+// OSM sweep so the state still fills.
 async function ensureStateRoster(state, { reason = 'on-demand' } = {}) {
   const st = String(state || '').toUpperCase();
   const cfg = ROSTER_STATES[st];
@@ -90,10 +127,16 @@ async function ensureStateRoster(state, { reason = 'on-demand' } = {}) {
       `[rosterAutopilot] ${st} (${reason}): +${report.created} new, ${report.updated} refreshed, `
       + `${report.deactivated} lapsed, ${report.totalActive} active (${report.sourceKind})`
     );
+    if (needsOsmFallback({ lowCoverage: !!report.lowCoverage, lastSweptAt: _sweptAt.get(st) })) {
+      await sweepStateOsm(st, { reason: 'low-coverage' });
+    }
     return report;
   } catch (err) {
     _failedAt.set(st, Date.now());
     console.warn(`[rosterAutopilot] ${st} ingest failed (cooling down 6h):`, err.message);
+    if (needsOsmFallback({ failed: true, lastSweptAt: _sweptAt.get(st) })) {
+      await sweepStateOsm(st, { reason: 'roster-failed' });
+    }
     return null;
   } finally {
     _inflight.delete(st);
@@ -147,8 +190,10 @@ module.exports = {
   startRosterAutopilot,
   tick,
   ensureStateRoster,
+  sweepStateOsm,
   // pure — unit-tested
   rosterPriorityOrder,
   pickRosterStates,
+  needsOsmFallback,
   REFRESH_MS,
 };
