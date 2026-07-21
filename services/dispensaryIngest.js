@@ -20,6 +20,7 @@
 // (services/dispensaryEnrich.js) later refines coords + adds contact fields.
 
 const axios = require('axios');
+const { StringDecoder } = require('string_decoder');
 const Dispensary = require('../models/Dispensary');
 const { ROSTER_STATES, MED_STATES, deriveSegment } = require('./dispensaryStates');
 const { assignChains, detectKnownChain } = require('./dispensaryChains');
@@ -73,6 +74,46 @@ function parseCsv(text) {
     headers.forEach((h, i) => { if (h) o[h] = r[i] !== undefined ? r[i] : ''; });
     return o;
   });
+}
+
+/** Incremental flavor of parseCsv: feed text chunks with push(), each completed
+ *  row (array of fields) fires onRow. The whole-country aggregate is ~100MB —
+ *  parseCsv on that materializes every US license as objects and OOM-kills a
+ *  small dyno, so the aggregate path streams through this instead. An escaped
+ *  quote ("") or closing quote split across a chunk boundary is carried via
+ *  pendingQuote. */
+function csvStreamParser(onRow) {
+  let field = '', row = [], inQuotes = false, pendingQuote = false;
+  const endField = () => { row.push(field); field = ''; };
+  const endRow = () => { endField(); onRow(row); row = []; };
+  return {
+    push(chunk) {
+      const s = String(chunk);
+      let i = 0;
+      if (pendingQuote && s.length) {
+        pendingQuote = false;
+        if (s[0] === '"') { field += '"'; i = 1; }   // "" pair straddled the boundary
+        else inQuotes = false;                        // it was the closing quote
+      }
+      for (; i < s.length; i++) {
+        const c = s[i];
+        if (inQuotes) {
+          if (c === '"') {
+            if (i + 1 >= s.length) pendingQuote = true;      // decide on next chunk
+            else if (s[i + 1] === '"') { field += '"'; i++; }
+            else inQuotes = false;
+          } else field += c;
+        } else if (c === '"') inQuotes = true;
+        else if (c === ',') endField();
+        else if (c === '\n') endRow();
+        else if (c !== '\r') field += c;
+      }
+    },
+    flush() {
+      if (pendingQuote) { pendingQuote = false; inQuotes = false; }  // trailing " closes
+      if (field !== '' || row.length) endRow();
+    },
+  };
 }
 
 // ── Header sniffing ──────────────────────────────────────────────────────────
@@ -211,6 +252,84 @@ function rosterAttempts(cfg, state, sourceUrlOverride = null) {
   return attempts;
 }
 
+// The aggregate CSV carries every state's licenses. Streaming it and keeping
+// only the target state's rows bounds peak memory to one chunk + one row +
+// that state's rows (a few hundred), instead of the whole country — buffering
+// it whole is what OOM-crashed the API host (Render exit 134). A file whose
+// header has no recognizable state column is refused outright: without it we
+// can't filter, and importing the whole country under one state is worse than
+// importing nothing (same stance as rowMatchesState).
+const AGGREGATE_MAX_BYTES = 120 * 1024 * 1024;
+const AGGREGATE_MAX_ROWS = 25_000;   // a whole state's licenses is ~1–2k; this is "schema went sideways"
+
+function collectAggregateRowsForState(stream, state, stateName, { maxBytes = AGGREGATE_MAX_BYTES, maxRows = AGGREGATE_MAX_ROWS, idleMs = 60_000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const stateU = String(state).toUpperCase();
+    const nameU = String(stateName || '').toUpperCase();
+    const decoder = new StringDecoder('utf8');
+    let bytes = 0, headers = null, stateIdx = -1, done = false, idleTimer = null;
+    const kept = [];
+    const finish = (err, val) => {
+      if (done) return;
+      done = true;
+      clearTimeout(idleTimer);
+      try { if (typeof stream.destroy === 'function') stream.destroy(); } catch { /* already closed */ }
+      if (err) reject(err); else resolve(val);
+    };
+    // A stalled body must not hang this promise: downloads are serialized
+    // process-wide, so a wedged stream here would block every future
+    // aggregate fetch until reboot.
+    const armIdle = () => {
+      if (!idleMs) return;
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => finish(new Error(`aggregate stream stalled (no data for ${idleMs}ms)`)), idleMs);
+    };
+    armIdle();
+    const parser = csvStreamParser((row) => {
+      if (done) return;
+      if (!headers) {
+        headers = row.map((h) => String(h || '').trim());
+        const map = sniffHeaders(headers);
+        stateIdx = map.state ? headers.indexOf(map.state) : -1;
+        if (stateIdx < 0) finish(new Error('aggregate has no state column — refusing to import unfiltered'));
+        return;
+      }
+      const v = String(row[stateIdx] || '').trim().toUpperCase();
+      if (v !== stateU && (!nameU || v !== nameU)) return;
+      const o = {};
+      headers.forEach((h, i) => { if (h) o[h] = row[i] !== undefined ? row[i] : ''; });
+      kept.push(o);
+      if (kept.length > maxRows) finish(new Error(`aggregate matched >${maxRows} rows for ${state} — refusing`));
+    });
+    stream.on('data', (chunk) => {
+      if (done) return;
+      armIdle();
+      bytes += chunk.length;
+      if (bytes > maxBytes) return finish(new Error(`aggregate exceeded ${Math.round(maxBytes / 1e6)}MB`));
+      try { parser.push(decoder.write(chunk)); } catch (e) { finish(e); }
+    });
+    stream.on('end', () => {
+      if (done) return;
+      try { parser.push(decoder.end()); parser.flush(); } catch (e) { return finish(e); }
+      finish(null, kept);
+    });
+    stream.on('error', (e) => finish(e));
+  });
+}
+
+// One aggregate download at a time, process-wide: the autopilot loads up to 3
+// states per tick and viewport/corridor seeding can fire concurrently — two
+// parallel ~100MB streams is how you meet the OOM killer twice.
+let aggregateChain = Promise.resolve();
+function fetchAggregateRowsForState(state, stateName, url) {
+  const run = () => axios
+    .get(url, { timeout: 120_000, responseType: 'stream' })
+    .then((res) => collectAggregateRowsForState(res.data, state, stateName));
+  const p = aggregateChain.then(run, run);
+  aggregateChain = p.catch(() => {});
+  return p;
+}
+
 async function fetchRoster(state, { sourceUrlOverride } = {}) {
   const cfg = ROSTER_STATES[state];
   if (!cfg) throw Object.assign(new Error(`No roster source configured for "${state}".`), { statusCode: 400 });
@@ -218,14 +337,17 @@ async function fetchRoster(state, { sourceUrlOverride } = {}) {
   const errors = [];
   for (const att of attempts) {
     try {
-      const { data } = await axios.get(att.url, {
-        timeout: att.kind === 'cannlytics-all' ? 120_000 : 60_000,
-        responseType: att.kind === 'socrata' ? 'json' : 'text',
-        maxContentLength: (att.kind === 'cannlytics-all' ? 120 : 50) * 1024 * 1024,
-      });
-      const rows = att.kind === 'socrata'
-        ? (Array.isArray(data) ? data : [])
-        : parseCsv(data);
+      let rows;
+      if (att.kind === 'cannlytics-all') {
+        rows = await fetchAggregateRowsForState(state, cfg.name, att.url);
+      } else {
+        const { data } = await axios.get(att.url, {
+          timeout: 60_000,
+          responseType: att.kind === 'socrata' ? 'json' : 'text',
+          maxContentLength: 50 * 1024 * 1024,
+        });
+        rows = att.kind === 'socrata' ? (Array.isArray(data) ? data : []) : parseCsv(data);
+      }
       if (rows.length) return { rows, sourceUrl: att.url, sourceKind: att.kind, errors };
       errors.push(`${att.kind}: 0 rows from ${att.url}`);
     } catch (err) {
@@ -463,5 +585,5 @@ module.exports = {
   upsertOsmCandidates,
   // exported for tests:
   parseCsv, sniffHeaders, normalizeRow, rowPasses, deriveCompanyKey, matchKey, stateFromAddress,
-  rosterAttempts, rowMatchesState,
+  rosterAttempts, rowMatchesState, csvStreamParser, collectAggregateRowsForState,
 };
