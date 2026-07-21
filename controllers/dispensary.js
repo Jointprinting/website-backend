@@ -15,8 +15,9 @@ const { ROSTER_STATES, MEDICAL_ONLY, NO_RETAIL_YET, deriveSegment, SEGMENTS } = 
 const { ingestState, rechainState, geocodeMissing, deriveCompanyKey, matchKey, upsertOsmCandidates } = require('../services/dispensaryIngest');
 const { enrichBatch } = require('../services/dispensaryEnrich');
 const { detectKnownChain } = require('../services/dispensaryChains');
-const { fetchDispensariesForBbox, fetchDispensariesForBboxes } = require('../services/dispensaryFinder');
+const { fetchDispensariesForBbox, fetchDispensariesForBboxes, REGIONS } = require('../services/dispensaryFinder');
 const { fieldMap: FIELD_MAP_VERTICAL } = require('../services/leadVerticals');
+const { ensureStateRoster } = require('../services/rosterAutopilot');
 
 function parseBbox(q) {
   const minLat = parseFloat(q.minLat), maxLat = parseFloat(q.maxLat);
@@ -69,6 +70,27 @@ function tilesExtent(tiles) {
     minLng: Math.min(...tiles.map((t) => t.minLng)),
     maxLng: Math.max(...tiles.map((t) => t.maxLng)),
   };
+}
+
+// Which STATE is the viewport looking at? Resolved from the lead finder's
+// per-state region bboxes: the SMALLEST region box containing the viewport
+// center wins (boxes bleed over borders by design; the smallest container is
+// the state actually under the cursor in practice). '' when nothing contains
+// the point (ocean, Canada). Drives the on-demand roster seeding — hovering
+// Cleveland with zero OH roster rows kicks the OH license ingest right then.
+// Pure (exported for tests).
+function stateForViewportCenter(bbox, regions = REGIONS) {
+  const lat = (bbox.minLat + bbox.maxLat) / 2;
+  const lng = (bbox.minLng + bbox.maxLng) / 2;
+  let best = '';
+  let bestArea = Infinity;
+  for (const [id, region] of Object.entries(regions || {})) {
+    const [s, w, n, e] = region.bbox || [];
+    if (!(lat >= s && lat <= n && lng >= w && lng <= e)) continue;
+    const area = (n - s) * (e - w);
+    if (area < bestArea) { bestArea = area; best = id.toUpperCase(); }
+  }
+  return best;
 }
 
 // Is the viewport too wide to sweep? (A whole-region bbox would pull thousands
@@ -323,6 +345,27 @@ async function corridor(req, res) {
     const bufferMi = Math.max(1, Math.min(CORRIDOR_MAX_MI, parseFloat(body.bufferMi) || 3));
     const includeChains = body.chains === true || body.chains === 'true';
 
+    // ROSTER SEEDING ALONG THE ROUTE: a cross-country plan (Voorhees → CO)
+    // crosses states whose license rosters may have never loaded — kick the
+    // ingest for each unseeded roster state the route touches, so re-scanning
+    // in a couple of minutes shows the licensed stores too. Sampled sparsely;
+    // ensureStateRoster's own guards make repeats free.
+    const seedingStates = [];
+    try {
+      const step = Math.max(1, Math.floor(points.length / 30));
+      const routeStates = [...new Set(points.filter((_, i) => i % step === 0)
+        .map((p) => stateForViewportCenter({ minLat: p.lat, maxLat: p.lat, minLng: p.lng, maxLng: p.lng }))
+        .filter(Boolean))];
+      for (const st of routeStates) {
+        // eslint-disable-next-line no-await-in-loop
+        const rows = await Dispensary.countDocuments({ state: st, source: 'roster' }).catch(() => 1);
+        if (rows === 0) {
+          ensureStateRoster(st, { reason: 'corridor' }); // deliberately not awaited
+          seedingStates.push(st);
+        }
+      }
+    } catch { /* seeding is a bonus — never fail the scan over it */ }
+
     // LIVE FILL: the old corridor read only the DB, so a drive through
     // never-scanned country returned near-nothing (the Voorhees → Clarion
     // 7-stop bug). Unless the caller opts out (fill:false), sweep the whole
@@ -407,7 +450,7 @@ async function corridor(req, res) {
       };
     });
 
-    res.json({ count: results.length, capped: docs.length >= cap, bufferMi, fill, results });
+    res.json({ count: results.length, capped: docs.length >= cap, bufferMi, fill, seedingStates, results });
   } catch (err) {
     console.error('[dispensary] corridor error:', err.message);
     res.status(500).json({ message: 'Corridor scan failed.' });
@@ -624,6 +667,22 @@ async function scanOsm(req, res) {
     if (!bbox) return res.status(400).json({ message: 'minLat/maxLat/minLng/maxLng are required.' });
     if (bboxTooLarge(bbox)) return res.json({ skipped: 'too-wide', added: 0, attached: 0 });
 
+    // ON-DEMAND ROSTER SEEDING: if the state under the viewport has NO license
+    // roster loaded (Cleveland with zero OH rows), kick its ingest right now in
+    // the background — the owner is literally looking at the hole. The response
+    // carries `seeding` so the map can say so and refresh in a minute. The
+    // autopilot's own guards (in-flight, failure cooldown, roster-less states)
+    // make the fire-and-forget safe to repeat on every pan.
+    let seeding = null;
+    const viewState = stateForViewportCenter(bbox);
+    if (viewState) {
+      const rosterRows = await Dispensary.countDocuments({ state: viewState, source: 'roster' }).catch(() => 1);
+      if (rosterRows === 0) {
+        ensureStateRoster(viewState, { reason: 'viewport' }); // deliberately not awaited
+        seeding = viewState;
+      }
+    }
+
     // Per-tile throttle over EVERY tile the viewport touches (the old
     // center-tile-only key silently skipped virgin fringe ground for 30 days).
     const tiles = tilesForBbox(bbox);
@@ -635,7 +694,7 @@ async function scanOsm(req, res) {
     const freshKeys = new Set(fresh.map((t) => t.tileKey));
     const stale = tiles.filter((t) => !freshKeys.has(t.key));
     if (!stale.length) {
-      return res.json({ cached: true, added: 0, attached: 0, tiles: { total: tiles.length, scanned: 0 } });
+      return res.json({ cached: true, added: 0, attached: 0, seeding, tiles: { total: tiles.length, scanned: 0 } });
     }
 
     // One Overpass query over the stale tiles' union extent (≤ the snapped
@@ -660,7 +719,7 @@ async function scanOsm(req, res) {
       },
     })), { ordered: false });
 
-    res.json({ added, attached, found: candidates.length, tiles: { total: tiles.length, scanned: stale.length } });
+    res.json({ added, attached, found: candidates.length, seeding, tiles: { total: tiles.length, scanned: stale.length } });
   } catch (err) {
     console.error('[dispensary] scanOsm error:', err.message);
     // Soft failure: the map already shows its DB pins. A flaky Overpass endpoint
@@ -673,4 +732,5 @@ module.exports = {
   listDispensaries, findDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, scanOsm, corridor,
   // pure — unit-tested
   tileKeyFor, tilesForBbox, tilesExtent, bboxTooLarge, stateFromAddress, corridorPrune, corridorChunks,
+  stateForViewportCenter,
 };
