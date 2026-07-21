@@ -136,3 +136,39 @@ test('medical-market rows pass the gate that used to refuse them', () => {
   // And the rec-market behavior is unchanged: medical-only types stay out.
   assert.equal(rowPasses(mk('Medical Dispensary'), PA_MAP, null), false);
 });
+
+// ── Exhaustive-search layers: roster fallback chain + Google gap-fill gates ───
+
+const { rosterAttempts, rowMatchesState } = require('../../services/dispensaryIngest');
+const { shouldGapFill } = require('../dispensary');
+const { ROSTER_STATES } = require('../../services/dispensaryStates');
+
+test('rosterAttempts: every loadable state ends at the all-states aggregate', () => {
+  const oh = rosterAttempts(ROSTER_STATES.OH, 'OH');
+  assert.equal(oh[0].kind, 'cannlytics');                    // per-state first
+  assert.equal(oh[oh.length - 1].kind, 'cannlytics-all');    // aggregate last
+  const ny = rosterAttempts(ROSTER_STATES.NY, 'NY');
+  assert.deepEqual(ny.map((a) => a.kind), ['socrata', 'cannlytics', 'cannlytics-all']);
+  // An explicit override is trusted alone.
+  assert.equal(rosterAttempts(ROSTER_STATES.OH, 'OH', 'https://x.example/r.csv').length, 1);
+});
+
+test('rowMatchesState: code or full name, and no state column means no match', () => {
+  const map = { state: 'premise_state' };
+  assert.equal(rowMatchesState({ premise_state: 'OH' }, map, 'OH', 'Ohio'), true);
+  assert.equal(rowMatchesState({ premise_state: 'ohio' }, map, 'OH', 'Ohio'), true);
+  assert.equal(rowMatchesState({ premise_state: 'MI' }, map, 'OH', 'Ohio'), false);
+  assert.equal(rowMatchesState({ premise_state: '' }, map, 'OH', 'Ohio'), false);
+  assert.equal(rowMatchesState({ premise_state: 'OH' }, {}, 'OH', 'Ohio'), false);
+});
+
+test('shouldGapFill: fires only for a thin metro view with budget + key + stale tile', () => {
+  const ok = { span: 0.4, dbCount: 3, keySet: true, disabled: false, dailyUsed: 2, cap: 15, tileFresh: false };
+  assert.equal(shouldGapFill(ok), true);
+  assert.equal(shouldGapFill({ ...ok, disabled: true }), false);       // kill switch
+  assert.equal(shouldGapFill({ ...ok, keySet: false }), false);        // no key, no spend
+  assert.equal(shouldGapFill({ ...ok, span: 1.5 }), false);            // zoomed out
+  assert.equal(shouldGapFill({ ...ok, dbCount: 40 }), false);          // already dense
+  assert.equal(shouldGapFill({ ...ok, dailyUsed: 15 }), false);        // daily cap
+  assert.equal(shouldGapFill({ ...ok, tileFresh: true }), false);      // monthly per tile
+});

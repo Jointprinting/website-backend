@@ -545,9 +545,73 @@ async function geocode(req, res) {
   }
 }
 
+// Apply one Google text-scan's results to the Dispensary DB: dedupe by
+// placeId, attach details to a matching roster row instead of duplicating it,
+// insert the rest as source:'google', verified:false — the "unverified" pins.
+// Shared by the manual POST /sweep and the automatic viewport gap-fill.
+async function applyGoogleScan(found) {
+  const placeIds = found.map((p) => p.externalId).filter(Boolean);
+  const existing = await Dispensary.find(
+    { $or: [{ placeId: { $in: placeIds } }] },
+    { placeId: 1 }
+  ).lean();
+  const knownPlaceIds = new Set(existing.map((d) => d.placeId));
+
+  // Name+proximity match against roster rows that just aren't enriched yet,
+  // so a sweep doesn't duplicate a licensed store under a Google identity.
+  const pad = 0.02; // ~2km — pins for the same storefront geocode this close
+  let added = 0, matched = 0, attached = 0;
+  for (const p of found) {
+    if (!p.externalId) continue;
+    if (knownPlaceIds.has(p.externalId)) { matched++; continue; }
+    const near = await Dispensary.findOne({
+      active: true,
+      matchKey: matchKey(p.name),
+      lat: { $gte: p.lat - pad, $lte: p.lat + pad },
+      lng: { $gte: p.lng - pad, $lte: p.lng + pad },
+    });
+    if (near) {
+      // Same store, roster identity — attach the Google details.
+      near.placeId = near.placeId || p.externalId;
+      near.phone = near.phone || p.phone;
+      near.website = near.website || p.website;
+      near.googleMapsUri = near.googleMapsUri || p.extras?.googleMapsUri || '';
+      near.rating = near.rating ?? p.rating;
+      near.enrichedAt = near.enrichedAt || new Date();
+      await near.save();
+      attached++;
+      continue;
+    }
+    const stateGuess = (String(p.address).match(/,\s*([A-Z]{2})\s+\d{5}/) || [])[1] || '';
+    await Dispensary.updateOne(
+      { dedupeKey: `${stateGuess || 'US'}|place:${p.externalId}` },
+      {
+        $set: {
+          state: stateGuess || 'US',
+          name: p.name,
+          address: p.address,
+          lat: p.lat, lng: p.lng,
+          phone: p.phone, website: p.website,
+          placeId: p.externalId,
+          googleMapsUri: p.extras?.googleMapsUri || '',
+          rating: p.rating, ratingCount: p.extras?.ratingCount ?? null,
+          source: 'google', verified: false, active: true,
+          segment: deriveSegment(stateGuess, 'google'),
+          isChain: !!detectKnownChain(p.name), chainName: detectKnownChain(p.name) || '',
+          companyKey: deriveCompanyKey(p.name),
+          matchKey: matchKey(p.name),
+          enrichedAt: new Date(),
+        },
+      },
+      { upsert: true }
+    );
+    added++;
+  }
+  return { scanned: found.length, added, matchedExisting: matched, attachedToRoster: attached };
+}
+
 // ── POST /api/roadtrip/dispensaries/sweep {lat,lng,radius} ───────────────────
-// Live Google sweep around a point, diffed against the DB. New finds insert
-// as source:'google', verified:false — the "unverified" pins. This is how a
+// Live Google sweep around a point, diffed against the DB. This is how a
 // brand-new store (or a state with no roster adapter) gets onto the map.
 async function sweep(req, res) {
   try {
@@ -557,68 +621,86 @@ async function sweep(req, res) {
 
     const { runDispensaryTextScan } = require('./placeSearch');
     const found = await runDispensaryTextScan({ lat, lng, radius });
-
-    const placeIds = found.map((p) => p.externalId).filter(Boolean);
-    const existing = await Dispensary.find(
-      { $or: [{ placeId: { $in: placeIds } }] },
-      { placeId: 1 }
-    ).lean();
-    const knownPlaceIds = new Set(existing.map((d) => d.placeId));
-
-    // Name+proximity match against roster rows that just aren't enriched yet,
-    // so a sweep doesn't duplicate a licensed store under a Google identity.
-    const pad = 0.02; // ~2km — pins for the same storefront geocode this close
-    let added = 0, matched = 0, attached = 0;
-    for (const p of found) {
-      if (!p.externalId) continue;
-      if (knownPlaceIds.has(p.externalId)) { matched++; continue; }
-      const near = await Dispensary.findOne({
-        active: true,
-        matchKey: matchKey(p.name),
-        lat: { $gte: p.lat - pad, $lte: p.lat + pad },
-        lng: { $gte: p.lng - pad, $lte: p.lng + pad },
-      });
-      if (near) {
-        // Same store, roster identity — attach the Google details.
-        near.placeId = near.placeId || p.externalId;
-        near.phone = near.phone || p.phone;
-        near.website = near.website || p.website;
-        near.googleMapsUri = near.googleMapsUri || p.extras?.googleMapsUri || '';
-        near.rating = near.rating ?? p.rating;
-        near.enrichedAt = near.enrichedAt || new Date();
-        await near.save();
-        attached++;
-        continue;
-      }
-      const stateGuess = (String(p.address).match(/,\s*([A-Z]{2})\s+\d{5}/) || [])[1] || '';
-      await Dispensary.updateOne(
-        { dedupeKey: `${stateGuess || 'US'}|place:${p.externalId}` },
-        {
-          $set: {
-            state: stateGuess || 'US',
-            name: p.name,
-            address: p.address,
-            lat: p.lat, lng: p.lng,
-            phone: p.phone, website: p.website,
-            placeId: p.externalId,
-            googleMapsUri: p.extras?.googleMapsUri || '',
-            rating: p.rating, ratingCount: p.extras?.ratingCount ?? null,
-            source: 'google', verified: false, active: true,
-            segment: deriveSegment(stateGuess, 'google'),
-            isChain: !!detectKnownChain(p.name), chainName: detectKnownChain(p.name) || '',
-            companyKey: deriveCompanyKey(p.name),
-            matchKey: matchKey(p.name),
-            enrichedAt: new Date(),
-          },
-        },
-        { upsert: true }
-      );
-      added++;
-    }
-    res.json({ scanned: found.length, added, matchedExisting: matched, attachedToRoster: attached });
+    res.json(await applyGoogleScan(found));
   } catch (err) {
     console.error('[dispensary] sweep error:', err.response?.data || err.message);
     res.status(err.statusCode || 500).json({ message: err.message || 'Sweep failed.' });
+  }
+}
+
+// ── Automatic Google gap-fill (the "exhaustive where I'm working" layer) ─────
+// Free sources first, always: rosters give the licensed truth, OSM gives the
+// community map. But when the owner is zoomed into a metro and the DB is STILL
+// thin, that ground gets one budget-capped Google Places sweep — the engine
+// that "never missed one" — so the area being worked today is exhaustive.
+// Bounded three ways: needs GOOGLE_PLACES_KEY (already provisioned, JPW-
+// budget-capped), a hard daily sweep cap (default 15 → well inside the free
+// tier), and a 30-day per-tile ledger (an area is gap-filled once a month,
+// not per pan). FIELD_GAP_FILL=off kills it entirely.
+const GAP_FILL_DAILY_CAP = parseInt(process.env.FIELD_GAP_FILL_DAILY_CAP || '15', 10);
+const GAP_FILL_THIN = 12;        // fewer visible stores than this in a metro view = thin
+const GAP_FILL_MAX_SPAN = 0.7;   // only at metro zoom — never a whole-region box
+const GAP_FILL_RADIUS_M = 16093; // 10mi around the viewport center
+
+// Should the gap-fill fire for this viewport? PURE (exported for tests).
+function shouldGapFill({ span = 99, dbCount = 99, keySet = false, disabled = false, dailyUsed = 0, cap = GAP_FILL_DAILY_CAP, tileFresh = false } = {}) {
+  if (disabled || !keySet) return false;
+  if (span > GAP_FILL_MAX_SPAN) return false;
+  if (dbCount >= GAP_FILL_THIN) return false;
+  if (dailyUsed >= cap) return false;
+  if (tileFresh) return false;
+  return true;
+}
+
+// One gap-fill pass for a thin metro viewport. Never throws; returns the
+// applyGoogleScan report or null when gated off.
+async function maybeGoogleGapFill(bbox) {
+  try {
+    const span = Math.max(bbox.maxLat - bbox.minLat, bbox.maxLng - bbox.minLng);
+    const disabled = String(process.env.FIELD_GAP_FILL || '').toLowerCase() === 'off';
+    const keySet = !!process.env.GOOGLE_PLACES_KEY;
+    if (disabled || !keySet || span > GAP_FILL_MAX_SPAN) return null;
+
+    const dbCount = await Dispensary.countDocuments({
+      active: true, hidden: false,
+      lat: { $gte: bbox.minLat, $lte: bbox.maxLat },
+      lng: { $gte: bbox.minLng, $lte: bbox.maxLng },
+    });
+
+    const centerLat = (bbox.minLat + bbox.maxLat) / 2;
+    const centerLng = (bbox.minLng + bbox.maxLng) / 2;
+    // Tile ledger rides the OSM scan-tile collection under a g: prefix — same
+    // 0.5° grid, same 30-day TTL, zero new models.
+    const gTileKey = `g:${tileKeyFor(centerLat, centerLng)}`;
+    const priorTile = await OsmScanTile.findOne({ tileKey: gTileKey }).lean();
+    const tileFresh = !!(priorTile && (Date.now() - new Date(priorTile.scannedAt).getTime()) < OSM_TILE_TTL_MS);
+
+    // Daily cap ledger: one row per UTC day, atomically incremented.
+    const dayKey = `gday:${new Date().toISOString().slice(0, 10)}`;
+    const dayRow = await OsmScanTile.findOne({ tileKey: dayKey }).lean();
+    const dailyUsed = (dayRow && dayRow.found) || 0;
+
+    if (!shouldGapFill({ span, dbCount, keySet, disabled, dailyUsed, tileFresh })) return null;
+
+    await OsmScanTile.updateOne(
+      { tileKey: dayKey },
+      { $set: { scannedAt: new Date() }, $inc: { found: 1 } },
+      { upsert: true },
+    );
+    await OsmScanTile.updateOne(
+      { tileKey: gTileKey },
+      { $set: { tileKey: gTileKey, scannedAt: new Date() } },
+      { upsert: true },
+    );
+
+    const { runDispensaryTextScan } = require('./placeSearch');
+    const found = await runDispensaryTextScan({ lat: centerLat, lng: centerLng, radius: GAP_FILL_RADIUS_M });
+    const report = await applyGoogleScan(found);
+    console.log(`[dispensary] gap-fill @${centerLat.toFixed(2)},${centerLng.toFixed(2)}: ${report.scanned} scanned, +${report.added} new, ${report.attachedToRoster} attached (${dailyUsed + 1}/${GAP_FILL_DAILY_CAP} today)`);
+    return report;
+  } catch (err) {
+    console.warn('[dispensary] gap-fill failed:', err.response?.data?.error?.message || err.message);
+    return null;
   }
 }
 
@@ -724,7 +806,14 @@ async function scanOsm(req, res) {
       },
     })), { ordered: false });
 
-    res.json({ added, attached, found: candidates.length, seeding, coverage, tiles: { total: tiles.length, scanned: stale.length } });
+    // Last layer: if this metro STILL looks thin after roster + OSM, one
+    // budget-capped Google gap-fill makes the ground being worked exhaustive.
+    const gapFill = await maybeGoogleGapFill(bbox);
+
+    res.json({
+      added, attached, found: candidates.length, seeding, coverage, gapFill,
+      tiles: { total: tiles.length, scanned: stale.length },
+    });
   } catch (err) {
     console.error('[dispensary] scanOsm error:', err.message);
     // Soft failure: the map already shows its DB pins. A flaky Overpass endpoint
@@ -737,5 +826,5 @@ module.exports = {
   listDispensaries, findDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, scanOsm, corridor,
   // pure — unit-tested
   tileKeyFor, tilesForBbox, tilesExtent, bboxTooLarge, stateFromAddress, corridorPrune, corridorChunks,
-  stateForViewportCenter,
+  stateForViewportCenter, shouldGapFill,
 };
