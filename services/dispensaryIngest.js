@@ -84,6 +84,7 @@ function parseCsv(text) {
 const norm = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
 
 const FIELD_RULES = {
+  state:         [/premise_state|^state$|state_?code|license_state/],
   name:          [/dba|doing_business_as/, /trade_name/, /business_name/, /^(business_legal_)?name$/, /retailer/, /establishment/, /entity_name/, /license_holder/, /^premise_name/, /name/],
   licensee:      [/legal_name/, /licensee/, /license_holder/, /owner/, /entity_name/, /parent/],
   licenseNumber: [/license_(no|number|num)/, /^license$/, /credential/, /^lic_/, /permit/, /license/],
@@ -184,26 +185,44 @@ function normalizeRow(row, map, state, sourceUrl) {
 
 // ── Fetching ─────────────────────────────────────────────────────────────────
 
+// The ordered source attempts for one state's roster. Every state ends with
+// the cannlytics ALL-STATES aggregate — one file that carries every licensed
+// state — so a moved/missing per-state CSV (the Ohio failure) degrades to
+// "same data, bigger download" instead of an empty state. Pure (exported for
+// tests).
+function rosterAttempts(cfg, state, sourceUrlOverride = null) {
+  if (sourceUrlOverride) {
+    return [{ kind: /\.json/.test(sourceUrlOverride) ? 'socrata' : 'csv', url: sourceUrlOverride }];
+  }
+  const attempts = [];
+  if (cfg.roster.kind !== 'google') attempts.push({ kind: cfg.roster.kind, url: cfg.roster.url });
+  // Cannlytics per-state fallback for states whose primary is something else.
+  if (cfg.roster.kind === 'socrata' || cfg.roster.kind === 'csv') {
+    attempts.push({
+      kind: 'cannlytics',
+      url: `https://huggingface.co/datasets/cannlytics/cannabis_licenses/resolve/main/data/${state.toLowerCase()}/licenses-${state.toLowerCase()}-latest.csv`,
+    });
+  }
+  // Aggregate-of-last-resort (rows filtered to the state at ingest time).
+  attempts.push({
+    kind: 'cannlytics-all',
+    url: 'https://huggingface.co/datasets/cannlytics/cannabis_licenses/resolve/main/data/all/licenses-all-latest.csv',
+  });
+  return attempts;
+}
+
 async function fetchRoster(state, { sourceUrlOverride } = {}) {
   const cfg = ROSTER_STATES[state];
   if (!cfg) throw Object.assign(new Error(`No roster source configured for "${state}".`), { statusCode: 400 });
-  const attempts = [];
-  if (sourceUrlOverride) {
-    attempts.push({ kind: /\.json/.test(sourceUrlOverride) ? 'socrata' : 'csv', url: sourceUrlOverride });
-  } else {
-    if (cfg.roster.kind !== 'google') attempts.push({ kind: cfg.roster.kind, url: cfg.roster.url });
-    // Cannlytics fallback for states whose primary is something else.
-    if (cfg.roster.kind === 'socrata' || cfg.roster.kind === 'csv') {
-      attempts.push({
-        kind: 'cannlytics',
-        url: `https://huggingface.co/datasets/cannlytics/cannabis_licenses/resolve/main/data/${state.toLowerCase()}/licenses-${state.toLowerCase()}-latest.csv`,
-      });
-    }
-  }
+  const attempts = rosterAttempts(cfg, state, sourceUrlOverride);
   const errors = [];
   for (const att of attempts) {
     try {
-      const { data } = await axios.get(att.url, { timeout: 60_000, responseType: att.kind === 'socrata' ? 'json' : 'text', maxContentLength: 50 * 1024 * 1024 });
+      const { data } = await axios.get(att.url, {
+        timeout: att.kind === 'cannlytics-all' ? 120_000 : 60_000,
+        responseType: att.kind === 'socrata' ? 'json' : 'text',
+        maxContentLength: (att.kind === 'cannlytics-all' ? 120 : 50) * 1024 * 1024,
+      });
       const rows = att.kind === 'socrata'
         ? (Array.isArray(data) ? data : [])
         : parseCsv(data);
@@ -217,6 +236,17 @@ async function fetchRoster(state, { sourceUrlOverride } = {}) {
   e.statusCode = 502;
   e.attempts = errors;
   throw e;
+}
+
+// Does an all-states aggregate row belong to `state`? Matched on the sniffed
+// state column against the 2-letter code or the state's full name; a row with
+// NO state column never matches (better to import nothing than the whole
+// country under one state). Pure (exported for tests).
+function rowMatchesState(row, map, state, stateName = '') {
+  if (!map.state) return false;
+  const v = String(row[map.state] || '').trim().toUpperCase();
+  if (!v) return false;
+  return v === String(state).toUpperCase() || v === String(stateName).toUpperCase();
 }
 
 // ── Mapbox geocoding for rows missing coordinates ────────────────────────────
@@ -285,6 +315,8 @@ async function ingestState(state, opts = {}) {
   const normalized = [];
   let filtered = 0;
   for (const row of rows) {
+    // The all-states aggregate carries every state's licenses — keep only ours.
+    if (sourceKind === 'cannlytics-all' && !rowMatchesState(row, map, state, cfg.name)) { filtered++; continue; }
     if (!rowPasses(row, map, typeFilter, { medicalMarket })) { filtered++; continue; }
     const n = normalizeRow(row, map, state, sourceUrl);
     if (n) normalized.push(n);
@@ -431,4 +463,5 @@ module.exports = {
   upsertOsmCandidates,
   // exported for tests:
   parseCsv, sniffHeaders, normalizeRow, rowPasses, deriveCompanyKey, matchKey, stateFromAddress,
+  rosterAttempts, rowMatchesState,
 };
