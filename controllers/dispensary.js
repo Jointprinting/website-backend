@@ -667,17 +667,22 @@ async function scanOsm(req, res) {
     if (!bbox) return res.status(400).json({ message: 'minLat/maxLat/minLng/maxLng are required.' });
     if (bboxTooLarge(bbox)) return res.json({ skipped: 'too-wide', added: 0, attached: 0 });
 
-    // ON-DEMAND ROSTER SEEDING: if the state under the viewport has NO license
-    // roster loaded (Cleveland with zero OH rows), kick its ingest right now in
-    // the background — the owner is literally looking at the hole. The response
-    // carries `seeding` so the map can say so and refresh in a minute. The
-    // autopilot's own guards (in-flight, failure cooldown, roster-less states)
-    // make the fire-and-forget safe to repeat on every pan.
+    // ON-DEMAND ROSTER SEEDING + live coverage readout: if the state under the
+    // viewport has NO license roster loaded (Cleveland with zero OH rows), kick
+    // its ingest right now in the background — the owner is literally looking
+    // at the hole. `seeding` is only claimed for states the ingest can actually
+    // load (a no-market state like IN must not promise a roster that will never
+    // come); `coverage` always reports what the viewport's state holds so the
+    // map can show working-vs-broken instead of leaving it to vibes.
     let seeding = null;
+    let coverage = null;
     const viewState = stateForViewportCenter(bbox);
     if (viewState) {
-      const rosterRows = await Dispensary.countDocuments({ state: viewState, source: 'roster' }).catch(() => 1);
-      if (rosterRows === 0) {
+      const rosterRows = await Dispensary.countDocuments({ state: viewState, source: 'roster', active: true }).catch(() => 0);
+      const cfg = ROSTER_STATES[viewState];
+      const loadable = !!(cfg && cfg.roster && cfg.roster.kind !== 'google');
+      coverage = { state: viewState, rosterRows, rosterState: loadable };
+      if (rosterRows === 0 && loadable) {
         ensureStateRoster(viewState, { reason: 'viewport' }); // deliberately not awaited
         seeding = viewState;
       }
@@ -694,7 +699,7 @@ async function scanOsm(req, res) {
     const freshKeys = new Set(fresh.map((t) => t.tileKey));
     const stale = tiles.filter((t) => !freshKeys.has(t.key));
     if (!stale.length) {
-      return res.json({ cached: true, added: 0, attached: 0, seeding, tiles: { total: tiles.length, scanned: 0 } });
+      return res.json({ cached: true, added: 0, attached: 0, seeding, coverage, tiles: { total: tiles.length, scanned: 0 } });
     }
 
     // One Overpass query over the stale tiles' union extent (≤ the snapped
@@ -719,7 +724,7 @@ async function scanOsm(req, res) {
       },
     })), { ordered: false });
 
-    res.json({ added, attached, found: candidates.length, seeding, tiles: { total: tiles.length, scanned: stale.length } });
+    res.json({ added, attached, found: candidates.length, seeding, coverage, tiles: { total: tiles.length, scanned: stale.length } });
   } catch (err) {
     console.error('[dispensary] scanOsm error:', err.message);
     // Soft failure: the map already shows its DB pins. A flaky Overpass endpoint
