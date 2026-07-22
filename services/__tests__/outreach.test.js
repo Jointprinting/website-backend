@@ -29,6 +29,8 @@ const {
   transientBackoffMs,
   jitteredFollowUpAt,
   variableBatch,
+  windowMinutesLeft,
+  tickBudget,
   outreachMessageId,
   SEND_PRIORITY_FILTERS,
 } = require('../outreachEngine');
@@ -129,6 +131,45 @@ test('per-inbox ramp: a NEW inbox added to an old pool starts at 10/day, not ful
   assert.equal(rampCap(senderRampDays(anchors, 'gw1', now), 40), 40);
   // …the new inbox is unanchored → callers treat null as day 0 → week-one pace.
   assert.equal(rampCap(senderRampDays(anchors, 'gw2', now) ?? 0, 40), 10);
+});
+
+// ── Ramp counts ET calendar days, so a cap step never lands mid-window ───────
+// A first send at 4:05pm ET used to keep the NEXT week's cap held back until
+// 4:05pm on the boundary day (24h-block counting) — most of that day ran at the
+// old cap and the engine couldn't finish the new one before 5pm. Calendar-day
+// counting steps the cap up at the day's open instead.
+test('senderRampDays counts ET calendar days, not elapsed 24h blocks', () => {
+  const anchors = { primary: new Date('2026-07-08T20:05:00Z') }; // Wed 7/8, 4:05pm EDT
+  const morning = new Date('2026-07-22T13:30:00Z');              // Wed 7/22, 9:30am EDT
+  // 24h blocks would say 13 (week 2 → cap 20) until 4:05pm; ET days say 14
+  // (week 3 → cap 40) from the 9am open.
+  assert.equal(senderRampDays(anchors, 'primary', morning), 14);
+  assert.equal(rampCap(senderRampDays(anchors, 'primary', morning), 40), 40);
+  // …and the count doesn't move later that same day.
+  assert.equal(senderRampDays(anchors, 'primary', new Date('2026-07-22T20:55:00Z')), 14);
+});
+
+// ── Catch-up pacing (tickBudget / windowMinutesLeft) ─────────────────────────
+test('windowMinutesLeft: minutes to 5pm ET inside the window, 0 outside', () => {
+  assert.equal(windowMinutesLeft(new Date('2026-07-22T13:00:00Z')), 480); // Wed 9:00a EDT
+  assert.equal(windowMinutesLeft(new Date('2026-07-22T20:45:00Z')), 15);  // Wed 4:45p EDT
+  assert.equal(windowMinutesLeft(new Date('2026-07-22T22:40:00Z')), 0);   // Wed 6:40p — closed
+  assert.equal(windowMinutesLeft(new Date('2026-07-25T15:00:00Z')), 0);   // Saturday
+});
+
+test('tickBudget: on-pace days keep the plain batch; behind days catch up, bounded', () => {
+  // Morning, full cap ahead: needed (40 over 32 ticks) is tiny → plain batch.
+  assert.equal(tickBudget(40, 5, 480), 5);
+  // End of day with almost nothing left: budget is just the remainder.
+  assert.equal(tickBudget(3, 5, 15), 3);
+  // Behind at 4pm (20 left, 4 ticks): batch grows to remaining/ticks-left.
+  assert.equal(tickBudget(20, 4, 60), 5);
+  // Way behind on the last tick: capped at CATCHUP_MAX_PER_TICK (12), not 40.
+  assert.equal(tickBudget(40, 5, 15), 12);
+  // Explicit ceiling below the batch never shrinks a normal batch.
+  assert.equal(tickBudget(40, 7, 15, 5), 7);
+  // Nothing remaining → no budget.
+  assert.equal(tickBudget(0, 5, 480), 0);
 });
 
 // ── Send window (business timezone, DST-proof) ───────────────────────────────

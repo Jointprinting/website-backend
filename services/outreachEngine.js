@@ -13,9 +13,12 @@
 //     (OutreachState.firstSendAt): 10/day week one, then DOUBLING weekly
 //     (10 → 20 → 40 → …) until it holds at OUTREACH_DAILY_CAP (default 50 — a
 //     reputation-safe ceiling for ONE inbox). A fresh sending identity builds
-//     reputation instead of tripping spam filters. Sends are also paced with
-//     per-send jitter + a per-domain cap so the day's volume never lands as one
-//     robotic burst.
+//     reputation instead of tripping spam filters. Ramp weeks count ET CALENDAR
+//     days, so a cap step-up lands at the open of a business day — never partway
+//     through the send window. Sends are paced with per-send jitter + a
+//     per-domain cap so the day's volume never lands as one robotic burst; if a
+//     mid-day hold leaves the day behind its cap, later ticks catch up (bounded
+//     by OUTREACH_CATCHUP_MAX_PER_TICK) so the day still closes at cap.
 //   • HARD REQUIREMENT: OUTREACH_EMAIL_FROM must be set. The engine never
 //     falls back to the main EMAIL_FROM transactional identity — cold volume
 //     must not ride (or risk) the owner's real domain.
@@ -47,7 +50,7 @@ const { verifyDomainsMx, emailDomain } = require('./emailVerify');
 const { applySpintax, hashStr } = require('./outreachContent');
 const { getSenders } = require('./senderPool');
 const { getAuthStatus, recommendedRecords } = require('../utils/dnsAuth');
-const { BUSINESS_TZ, etStartOfToday, etToday } = require('../utils/time');
+const { BUSINESS_TZ, etStartOfToday, etToday, etDaysSince } = require('../utils/time');
 
 // Hold cold sends when the sender domain is missing SPF/DMARC (the Gmail/Yahoo
 // bulk-sender essentials) — the same "don't send blind" stance as the
@@ -101,6 +104,11 @@ const SEND_PRIORITY_FILTERS = [{ stepIndex: { $gt: 0 } }, { stepIndex: 0 }];
 // Inter-send pacing jitter (cron path only) — breaks the "all at :00:00" burst.
 const PACE_MIN_MS = 5000;
 const PACE_MAX_MS = 20000;
+// Catch-up pacing ceiling: when the day fell behind its cap (a transient SMTP
+// outage, a deploy restart, an auth/breaker hold that cleared), the per-tick
+// budget grows so the day still finishes at cap — but never past this, so a
+// catch-up is a slightly bigger trickle, not one robotic blast.
+const CATCHUP_MAX_PER_TICK = parseInt(process.env.OUTREACH_CATCHUP_MAX_PER_TICK || '12', 10);
 // CAN-SPAM requires a valid physical postal address on every commercial send.
 // We read it from OUTREACH_POSTAL_ADDRESS on the HOST rather than hard-coding it —
 // the address is the owner's and doesn't belong in the repo, and this way it can
@@ -160,12 +168,15 @@ const senderKey = (label) => String(label || '').replace(/[.$]/g, '_') || 'prima
 //   • else null — meaning "never sent": the caller seeds a pre-pool inbox from
 //     the global anchor (it was sending before per-inbox anchors existed), and a
 //     genuinely new inbox starts at day 0 (10/day) like any fresh address.
+// Counted in ET CALENDAR days (etDaysSince), not elapsed 24h blocks — so a
+// weekly cap step-up takes effect at the start of a business day, never partway
+// through the send window (which used to leave ramp-boundary days short of the
+// new cap: most of the day at the old cap, too little window left to catch up).
 function senderRampDays(senderMap, label, now = new Date()) {
   const at = senderMap && senderMap[senderKey(label)];
   if (!at) return null;
-  const t = new Date(at).getTime();
-  if (!Number.isFinite(t)) return null;
-  return Math.max(0, Math.floor((now - t) / 86400000));
+  const days = etDaysSince(at, now);
+  return days == null ? null : Math.max(0, days);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
@@ -198,6 +209,36 @@ function variableBatch(base = BATCH_PER_TICK, rand = 0.5) {
   const b = Math.max(1, Math.round(base));
   const delta = Math.floor(rand * 4) - 1; // -1..+2
   return Math.max(1, b + delta);
+}
+
+// Minutes of send window left after `now` (to 17:00 ET); 0 outside the window.
+// Feeds tickBudget so the engine knows how many 15-min ticks remain today.
+function windowMinutesLeft(now = new Date()) {
+  if (!isWithinSendWindow(now)) return 0;
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: BUSINESS_TZ, hour: 'numeric', minute: 'numeric', hourCycle: 'h23',
+  });
+  const parts = {};
+  for (const p of fmt.formatToParts(now)) parts[p.type] = p.value;
+  const mins = parseInt(parts.hour, 10) * 60 + parseInt(parts.minute, 10);
+  return Math.max(0, 17 * 60 - mins);
+}
+
+// The tick's send budget, with CATCH-UP: normally the small varied batch, but
+// when the remaining daily cap outpaces the ticks left in today's window (the
+// engine was held mid-day and is now behind), the batch grows to
+// remaining ÷ ticks-left so the day still ends at cap instead of leaving sends
+// on the table — bounded by `maxPerTick` (CATCHUP_MAX_PER_TICK) so it stays a
+// trickle. On a normal on-pace day this returns exactly the old min(remaining,
+// batch). PURE (all inputs injected) + unit-tested.
+function tickBudget(totalRemaining, batch, minutesLeft, maxPerTick = CATCHUP_MAX_PER_TICK) {
+  const remaining = Math.max(0, Math.floor(Number(totalRemaining) || 0));
+  if (!remaining) return 0;
+  const b = Math.max(1, Math.floor(Number(batch) || 1));
+  const ticksLeft = Math.max(1, Math.ceil((Number(minutesLeft) || 0) / 15));
+  const needed = Math.ceil(remaining / ticksLeft);
+  const cap = Math.max(b, Math.max(1, Math.floor(maxPerTick) || 1)); // never below the normal batch
+  return Math.min(remaining, Math.min(cap, Math.max(b, needed)));
 }
 
 // Send window: Mon–Fri, 9:00–16:59 in the business timezone. Emails that land
@@ -838,7 +879,7 @@ async function senderWarmupDays(senders, state, now = new Date()) {
       const labels = i === 0 ? [s.label, ''] : [s.label];
       const sentBefore = await OutreachEnrollment.exists({ 'sends.sender': { $in: labels } }).catch(() => null);
       if (sentBefore) {
-        days = Math.max(0, Math.floor((now - globalFirst) / 86400000));
+        days = Math.max(0, etDaysSince(globalFirst, now) ?? 0);
         await OutreachState.updateOne(
           { key: 'engine', [`senderFirstSendAt.${senderKey(s.label)}`]: { $exists: false } },
           { $set: { [`senderFirstSendAt.${senderKey(s.label)}`]: globalFirst } },
@@ -854,7 +895,8 @@ async function senderWarmupDays(senders, state, now = new Date()) {
 async function engineStatus(now = new Date()) {
   const state = await OutreachState.findOne({ key: 'engine' }).lean();
   const firstSendAt = state && state.firstSendAt ? state.firstSendAt : null;
-  const daysSince = firstSendAt ? Math.floor((now - new Date(firstSendAt)) / 86400000) : null;
+  // ET calendar days, matching the tick's ramp math — never a mid-day week flip.
+  const daysSince = firstSendAt ? Math.max(0, etDaysSince(firstSendAt, now) ?? 0) : null;
   const days = daysSince == null ? 0 : daysSince;
   const sentToday = await getSentToday(now);
 
@@ -1324,7 +1366,10 @@ async function runOutreachTick(now = new Date(), opts = {}) {
     const sentToday = await getSentToday(now);
     const totalRemaining = [...remaining.values()].reduce((a, b) => a + b, 0);
     const batch = variableBatch(BATCH_PER_TICK, Math.random()); // vary the burst size
-    const budget = Math.min(totalRemaining, batch);
+    // Catch-up-aware budget: if a mid-day hold left the day behind its cap, later
+    // ticks send a little more (never past CATCHUP_MAX_PER_TICK) so the day still
+    // closes at cap; on-pace days behave exactly like the plain batch.
+    const budget = tickBudget(totalRemaining, batch, windowMinutesLeft(now));
     if (budget <= 0) { await recordRun(`held: daily cap reached (cap ${cap}, sentToday ${sentToday})`); return { skipped: 'daily-cap', cap, sentToday }; }
 
     // Round-robin the next sender that still has daily headroom.
@@ -1483,6 +1528,8 @@ module.exports = {
   transientBackoffMs,
   jitteredFollowUpAt,
   variableBatch,
+  windowMinutesLeft,
+  tickBudget,
   outreachMessageId,
   abVariant,
   isRoleEmail,
