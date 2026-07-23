@@ -95,6 +95,21 @@ function dayDiffFromToday(value, now = new Date()) {
   return Math.round((b - a) / 86400000);
 }
 
+// Whole ET-calendar-day distance from a past instant to now: 0 = same Eastern
+// day, 1 = it happened yesterday ET, etc. — counting the owner's day boundaries,
+// NOT elapsed 24-hour blocks. The outreach warm-up ramp uses this so a weekly
+// cap step lands at the start of a business day, never mid-send-window (a
+// timestamp-anchored floor((now-then)/86400000) flips the cap at the anchor's
+// wall-clock hour, which left ramp-boundary days short of their new cap).
+// Returns null for a missing/invalid value.
+function etDaysSince(value, now = new Date()) {
+  const key = etDayKey(value);
+  if (!key) return null;
+  const a = Date.parse(`${key}T00:00:00Z`);
+  const b = Date.parse(`${etToday(now)}T00:00:00Z`);
+  return Math.round((b - a) / 86400000);
+}
+
 // The exact UTC instant of 00:00:00.000 *in the business timezone* on the ET
 // calendar day that `now` falls on. (e.g. for an instant on 6/23 ET in summer →
 // 2026-06-23T04:00:00Z.) Compare a real timestamp `>= etStartOfToday()` to ask
@@ -134,6 +149,7 @@ module.exports = {
   BUSINESS_TZ,
   etToday,
   etDayKey,
+  etDaysSince,
   utcDayKey,
   dayDiffFromToday,
   etStartOfToday,
