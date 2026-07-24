@@ -18,6 +18,7 @@ const sendEmail = require('../utils/sendEmail');
 const { resolveImageBuffer } = require('../utils/pdfImage');
 const { nextNumber, bumpCounterTo, peekNumber } = require('../utils/sequence');
 const { normalizeOrderNumber } = require('./finances');
+const { mockupScopeFor } = require('../utils/mockupScope');
 const {
   vendorKey, findPoNumberClash, lineKey, chosenQuoteLines, costLineFromQuoteLine, costLineFromConfItem, buildPoLines,
 } = require('../utils/poCost');
@@ -948,7 +949,7 @@ async function gatherOrderMockupBuffers(order, cap = 12) {
   if (!out.length) {
     const nums = new Set(items.map((it) => it && norm(it.mockupNum)).filter(Boolean));
     if (nums.size) {
-      const libs = await StudioLibraryItem.find({ store: 'mockups' })
+      const libs = await StudioLibraryItem.find(mockupScopeFor(order))
         .select('thumbnail data extraViews pageState.mockupNum').lean();
       for (const m of libs) {
         if (!nums.has(norm(m.pageState && m.pageState.mockupNum))) continue;

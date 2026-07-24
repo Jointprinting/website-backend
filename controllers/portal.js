@@ -52,16 +52,23 @@ async function getPortal(req, res) {
       .sort({ orderDate: -1, updatedAt: -1 })
       .lean();
 
-    // One design thumbnail per order: the first confirmation-referenced mockup
-    // (same reference rule the approval page uses — never the whole library).
-    const mockupItems = await StudioLibraryItem.find({ store: 'mockups' })
-      .select('name pageState.mockupNum thumbnail').lean();
+    // One design thumbnail per order: the first confirmation-referenced mockup,
+    // else one from THAT order's own project. Same reference rule the approval
+    // page uses — never the whole library, and never another project's work.
+    // Scoped to this one company by indexed query (the token holder's company),
+    // which is also all this handler could ever legitimately show.
+    const mockupItems = await StudioLibraryItem
+      .find({ store: 'mockups', companyKey: client.companyKey })
+      .select('name pageState.mockupNum projectNumber thumbnail').lean();
     const byNorm = {};
+    const byProject = new Map();
     for (const m of mockupItems) {
       const k = norm(m.pageState && m.pageState.mockupNum);
       if (k && !byNorm[k]) byNorm[k] = m;
       const nk = norm(m.name);
       if (nk && !byNorm[nk]) byNorm[nk] = m;
+      const pn = String(m.projectNumber || '');
+      if (pn && !byProject.has(pn)) byProject.set(pn, m);
     }
 
     const now = Date.now();
@@ -69,8 +76,12 @@ async function getPortal(req, res) {
     for (const o of orders) {
       const confItems = (o.confirmation && o.confirmation.items) || [];
       const refs = confItems.map((it) => it && it.mockupNum).filter(Boolean);
-      const mockupRefs = refs.length ? refs : (o.mockupNumbers || []);
-      const firstMock = mockupRefs.map((n) => byNorm[norm(n)]).find(Boolean);
+      // No confirmation yet → this order's OWN project, not the client's whole
+      // back catalogue (order.mockupNumbers had been accumulating every mockup
+      // the client ever had — see the approval page for the full note).
+      const firstMock = refs.length
+        ? refs.map((n) => byNorm[norm(n)]).find(Boolean)
+        : byProject.get(String(o.projectNumber || ''));
 
       // Publish gate on the money — mirrors publicGetProject exactly.
       const published = _confPublished(o.confirmation);

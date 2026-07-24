@@ -11,6 +11,7 @@ const path = require('path');
 const Order = require('../models/Order');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
 const { resolveImageBuffer } = require('../utils/pdfImage');
+const { mockupScopeFor } = require('../utils/mockupScope');
 
 // The green "JP" logo box, embedded at the top of every confirmation PDF.
 const JP_LOGO_PATH = path.join(__dirname, '..', 'assets', 'jp-logo.png');
@@ -44,7 +45,7 @@ const confirmationPdf = async (req, res) => {
     items.forEach((it) => { if (it && it.mockupNum) referenced.add(norm(it.mockupNum)); });
     const thumbByNorm = {};
     if (referenced.size > 0) {
-      const libs = await StudioLibraryItem.find({ store: 'mockups' })
+      const libs = await StudioLibraryItem.find(mockupScopeFor(order))
         .select('name thumbnail data extraViews pageState.mockupNum').lean();
       libs.forEach((m) => {
         const entry = (m.thumbnail || m.data) ? { front: m.thumbnail, back: m.data, extraViews: Array.isArray(m.extraViews) ? m.extraViews : [] } : null;

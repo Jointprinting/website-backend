@@ -5,6 +5,7 @@ const ClientLogo = require('../models/ClientLogo');
 const sendEmail = require('../utils/sendEmail');
 const { nextNumber } = require('../utils/sequence');
 const { appendClientLog } = require('../services/clientLog');
+const { compareMockupNums: _cmpMockupNum } = require('../utils/mockupNumbers');
 
 const DEFAULT_TTL_DAYS = 7;
 const MAX_TTL_DAYS     = 365;
@@ -301,13 +302,18 @@ const publicGetProject = async (req, res) => {
     const confRefs = confItems
       .map(it => it && it.mockupNum)
       .filter(Boolean);
-    const mockupRefs = confRefs.length > 0 ? confRefs : (order.mockupNumbers || []);
-    const mockupItems = await StudioLibraryItem
-      .find({ store: 'mockups' })
-      .select('name pageState.mockupNum thumbnail data extraViews')
+
+    // Scope the lookup to THIS CLIENT with an indexed query rather than pulling
+    // the entire mockup library and indexing it in memory on every page view.
+    const scoped = await StudioLibraryItem
+      .find(order.companyKey
+        ? { store: 'mockups', companyKey: order.companyKey }
+        : { store: 'mockups', projectNumber: String(order.projectNumber || '') })
+      .select('name pageState.mockupNum projectNumber thumbnail data extraViews')
       .lean();
+
     const byNorm = {};
-    mockupItems.forEach(m => {
+    scoped.forEach(m => {
       const k = norm(m.pageState && m.pageState.mockupNum);
       if (k) byNorm[k] = m;
       // Fallback key: the picker stores the mockup NAME when an item has no
@@ -316,6 +322,26 @@ const publicGetProject = async (req, res) => {
       const nk = norm(m.name);
       if (nk && !byNorm[nk]) byNorm[nk] = m;
     });
+
+    // WHAT THE CLIENT SEES. Two cases, and neither is "everything":
+    //
+    //   1. A confirmation exists → exactly the mockups its items reference. The
+    //      owner curated that list; it's authoritative (and may legitimately
+    //      include a design carried over from an earlier project).
+    //   2. No confirmation yet (the mockup-review rounds, where a share link is
+    //      most often sent) → THIS PROJECT'S mockups, by the indexed project
+    //      link. This used to fall back to order.mockupNumbers, which the Order
+    //      Tracker's fuzzy client-name matcher had been quietly stuffing with
+    //      every mockup the client had ever had — so a brand-new project's link
+    //      showed years of previous work. That is the bug this closes.
+    const projectRefs = scoped
+      .filter(m => String(m.projectNumber || '') === String(order.projectNumber || '')
+        && String(order.projectNumber || '') !== '')
+      .map(m => (m.pageState && m.pageState.mockupNum) || m.name)
+      .filter(Boolean)
+      .sort(_cmpMockupNum);
+    const mockupRefs = confRefs.length > 0 ? confRefs : projectRefs;
+
     // Preserve confirmation item order + dedupe (an item might be listed twice
     // in confirmation.items if the user added the same product as separate
     // line items for sizing — we still only want one tile per mockup).
