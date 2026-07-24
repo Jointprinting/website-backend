@@ -72,12 +72,23 @@ point).
 - **Step 2 (brands, matrix, margin):** `studio/QuoteBuilder`. **Gap:** the "saved printer
   pricing matrix" and the margin math should be first-class, reusable structured data, not
   re-entered per quote.
-- **Step 3 (mockups):** the Mockup Studio is a **separate app launched via
-  `window.open('/jpstudio/')`** from the hub. **Gap:** it's a one-way launch — a mockup
-  built there has **no surfaced back-link** to the order/client it belongs to. `ClientLogo`
-  exists; mockup versions are not tied into the project timeline.
-- **Step 4 (iteration):** **Gap:** there's no structured record of the rounds — "showed 3
-  brands, 2 mockups, they picked round 2" is not remembered anywhere.
+- **Step 3 (mockups):** the Mockup Lab runs embedded in the Studio. A mockup belongs to
+  exactly **one project**, stored as the top-level indexed `StudioLibraryItem.projectNumber`
+  and derived from the number itself (`#000150A` is project 150). *Closed (Jul 2026):* the
+  link used to be decided four ways at once — the order's list, a string inside `pageState`,
+  a fuzzy **company-name** match in the Order Tracker, and an `excludedMockups` list that
+  existed only to undo that match. The name matcher won and was silently persisted on every
+  drawer open, so every project of a long-term client accumulated every mockup that client
+  had ever had — and the client saw that pile on any pre-confirmation approval link. Matcher,
+  exclusion list and the `/orders/mockups/auto-link` endpoint are all gone.
+- **Step 4 (iteration):** the mockup number encodes the rounds — letters are colourways,
+  the trailing number is the edit version — and the client's approval page now shows **one
+  tile per colourway, at its latest edit**, so superseded proofs don't stack up. Carrying a
+  design into a returning client's next job is an explicit action
+  (`POST /orders/:id/mockups/carry`): it **re-letters** under the target project
+  (`#000150A` → `#000200A`), clones the art, and records `carriedFrom`, so versioning,
+  grouping and per-project isolation keep working and the lineage stays queryable.
+  **Remaining gap:** which *brands* were shown in each round is still not modelled.
 - **Steps 6, 7, 9 (confirm → approve → track):** `studio/ConfirmationBuilder` →
   client-facing `ApprovalView` (share a link → client picks brand/options + payment method
   → owner approves → the link flips to a live **tracking timeline**). This flow is the
