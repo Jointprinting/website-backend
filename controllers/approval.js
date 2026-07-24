@@ -5,6 +5,35 @@ const ClientLogo = require('../models/ClientLogo');
 const sendEmail = require('../utils/sendEmail');
 const { nextNumber } = require('../utils/sequence');
 const { appendClientLog } = require('../services/clientLog');
+const { compareMockupNums, parseMockupNum } = require('../utils/mockupNumbers');
+
+// One tile per COLOUR, showing its latest edit — the client's view of a
+// project's designs.
+//
+// A mockup number carries design → colour → edit version: #000150A and #000150B
+// are two colourways of the same design, while #000150A2 is the second EDIT of
+// colour A. Listing them flat means a client reviewing four colourways after a
+// couple of revision rounds sees ten tiles, several of which are proofs already
+// superseded — they end up asking which one is current, which is exactly the
+// question the numbering was designed to answer.
+//
+// So: collapse each colour lane to its highest version, keep the design/colour
+// order, and leave anything unparseable (external promo shots) untouched, since
+// nothing can be inferred about it. Only ever applied to the project-designs
+// path — a confirmation's items are curated by the owner and shown verbatim.
+// PURE, exported for tests.
+function _latestPerColour(nums) {
+  const best = new Map();     // 'digits|letter' → { num, version }
+  const passthrough = [];
+  for (const n of (nums || [])) {
+    const p = parseMockupNum(n);
+    if (!p) { passthrough.push(n); continue; }
+    const lane = `${p.digits}|${p.letter}`;
+    const cur = best.get(lane);
+    if (!cur || p.version > cur.version) best.set(lane, { num: n, version: p.version });
+  }
+  return [...[...best.values()].map((v) => v.num), ...passthrough].sort(compareMockupNums);
+}
 
 const DEFAULT_TTL_DAYS = 7;
 const MAX_TTL_DAYS     = 365;
@@ -301,13 +330,18 @@ const publicGetProject = async (req, res) => {
     const confRefs = confItems
       .map(it => it && it.mockupNum)
       .filter(Boolean);
-    const mockupRefs = confRefs.length > 0 ? confRefs : (order.mockupNumbers || []);
-    const mockupItems = await StudioLibraryItem
-      .find({ store: 'mockups' })
-      .select('name pageState.mockupNum thumbnail data extraViews')
+
+    // Scope the lookup to THIS CLIENT with an indexed query rather than pulling
+    // the entire mockup library and indexing it in memory on every page view.
+    const scoped = await StudioLibraryItem
+      .find(order.companyKey
+        ? { store: 'mockups', companyKey: order.companyKey }
+        : { store: 'mockups', projectNumber: String(order.projectNumber || '') })
+      .select('name pageState.mockupNum projectNumber thumbnail data extraViews')
       .lean();
+
     const byNorm = {};
-    mockupItems.forEach(m => {
+    scoped.forEach(m => {
       const k = norm(m.pageState && m.pageState.mockupNum);
       if (k) byNorm[k] = m;
       // Fallback key: the picker stores the mockup NAME when an item has no
@@ -316,6 +350,27 @@ const publicGetProject = async (req, res) => {
       const nk = norm(m.name);
       if (nk && !byNorm[nk]) byNorm[nk] = m;
     });
+
+    // WHAT THE CLIENT SEES. Two cases, and neither is "everything":
+    //
+    //   1. A confirmation exists → exactly the mockups its items reference. The
+    //      owner curated that list; it's authoritative (and may legitimately
+    //      include a design carried over from an earlier project).
+    //   2. No confirmation yet (the mockup-review rounds, where a share link is
+    //      most often sent) → THIS PROJECT'S mockups, by the indexed project
+    //      link. This used to fall back to order.mockupNumbers, which the Order
+    //      Tracker's fuzzy client-name matcher had been quietly stuffing with
+    //      every mockup the client had ever had — so a brand-new project's link
+    //      showed years of previous work. That is the bug this closes.
+    const projectRefs = _latestPerColour(
+      scoped
+        .filter(m => String(m.projectNumber || '') === String(order.projectNumber || '')
+          && String(order.projectNumber || '') !== '')
+        .map(m => (m.pageState && m.pageState.mockupNum) || m.name)
+        .filter(Boolean),
+    );
+    const mockupRefs = confRefs.length > 0 ? confRefs : projectRefs;
+
     // Preserve confirmation item order + dedupe (an item might be listed twice
     // in confirmation.items if the user added the same product as separate
     // line items for sizing — we still only want one tile per mockup).
@@ -1205,6 +1260,7 @@ module.exports = {
   // Publish-gate primitives — shared with the client portal so its per-order
   // totals obey the exact same draft-hiding rules as the approval page.
   _confPublished, _hasConfContent,
+  _latestPerColour,   // exported for tests
   DEFAULT_TRACKING_STEPS,
   // Exported for unit tests (pure helpers).
   _pickedAtForCycle, _currentApprovalStatus, _safeConfirmation,

@@ -20,9 +20,10 @@ const Order = require('../models/Order');
 const Client = require('../models/Client');
 const Transaction = require('../models/Transaction');
 const DataCleanupBatch = require('../models/DataCleanupBatch');
+const StudioLibraryItem = require('../models/StudioLibraryItem');
 const {
   normalizeOrderNumber, detectOrphanOrders, detectPollutedClients, detectMisKeyedReceipts,
-  detectDuplicateSales,
+  detectDuplicateSales, detectCrossProjectMockups,
 } = require('../services/dataCleanup');
 
 // Only flag a mis-keyed receipt that was ENTERED recently. The owner's historical
@@ -35,8 +36,8 @@ const MISKEYED_RECENT_DAYS = 45;
 // Load the live data the detections diff against (lean; writes target rows by _id).
 async function buildPlan() {
   const cutoff = new Date(Date.now() - MISKEYED_RECENT_DAYS * 24 * 60 * 60 * 1000);
-  const [orders, clients, txns, incomeRows] = await Promise.all([
-    Order.find({}).select('orderNumber companyKey companyName clientName').lean(),
+  const [orders, clients, txns, incomeRows, mockups] = await Promise.all([
+    Order.find({}).select('orderNumber projectNumber companyKey companyName clientName mockupNumbers confirmation.items.mockupNum').lean(),
     Client.find({ archived: { $ne: true } }).select('companyKey companyName clientName archived').lean(),
     Transaction.find({ type: 'expense', orderNumber: { $ne: '' }, createdAt: { $gte: cutoff } })
       .select('orderNumber party amount category date type source').lean(),
@@ -45,21 +46,36 @@ async function buildPlan() {
     // is selected so the detector can exclude refund credits.
     Transaction.find({ type: 'income', category: 'Client Sales', orderNumber: { $ne: '' } })
       .select('orderNumber party amount category date type isCredit').lean(),
+    // Who each mockup really belongs to — the top-level project link plus any
+    // deliberate carry-over, so an intentional link is never mistaken for residue.
+    StudioLibraryItem.find({ store: 'mockups' })
+      .select('projectNumber carriedFrom pageState.mockupNum').lean(),
   ]);
   const orderKeys = new Set(orders.map((o) => normalizeOrderNumber(o.orderNumber)).filter(Boolean));
+  const normNum = (n) => String(n || '').replace(/^#/, '').replace(/^0+/, '').toUpperCase();
+  const mockupOwners = new Map();
+  for (const m of (mockups || [])) {
+    const k = normNum(m.pageState && m.pageState.mockupNum);
+    if (!k || mockupOwners.has(k)) continue;
+    mockupOwners.set(k, {
+      projectNumber: m.projectNumber || '',
+      carriedInto: (m.carriedFrom && m.carriedFrom.mockupNum) ? (m.projectNumber || '') : '',
+    });
+  }
   return {
     orders,
     orphans: detectOrphanOrders(orders),
     polluted: detectPollutedClients(clients),
     misKeyed: detectMisKeyedReceipts(txns, orderKeys),
     dupeSales: detectDuplicateSales(incomeRows, orderKeys),
+    crossProject: detectCrossProjectMockups(orders, mockupOwners),
   };
 }
 
 // ── GET/POST /preview ─────────────────────────────────────────────────────────
 async function cleanupPreview(req, res) {
   try {
-    const { orphans, polluted, misKeyed, dupeSales, orders } = await buildPlan();
+    const { orphans, polluted, misKeyed, dupeSales, crossProject, orders } = await buildPlan();
     // The real orders the owner can re-point a mis-keyed receipt to (newest first).
     const orderOptions = orders
       .filter((o) => String(o.orderNumber || '').trim())
@@ -68,9 +84,9 @@ async function cleanupPreview(req, res) {
     res.json({
       dryRun: true,
       counts: { orphans: orphans.length, polluted: polluted.length, misKeyed: misKeyed.length,
-        dupeSales: dupeSales.length,
-        total: orphans.length + polluted.length + misKeyed.length + dupeSales.length },
-      orphans, polluted, misKeyed, dupeSales, orderOptions,
+        dupeSales: dupeSales.length, crossProject: crossProject.length,
+        total: orphans.length + polluted.length + misKeyed.length + dupeSales.length + crossProject.length },
+      orphans, polluted, misKeyed, dupeSales, crossProject, orderOptions,
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
 }
@@ -85,7 +101,7 @@ async function cleanupApply(req, res) {
     if (body.confirm !== true && body.confirm !== 'true') {
       return res.status(400).json({ message: 'Refusing to apply without an explicit { confirm: true }. Run the preview first.' });
     }
-    const { orders, orphans, polluted, dupeSales } = await buildPlan();
+    const { orders, orphans, polluted, dupeSales, crossProject } = await buildPlan();
     const orphanWant = Array.isArray(body.orphanIds) ? new Set(body.orphanIds.map(String)) : null;
     const nameWant = Array.isArray(body.clientIds) ? new Set(body.clientIds.map(String)) : null;
     const receiptFixes = Array.isArray(body.receipts) ? body.receipts : [];
@@ -93,6 +109,7 @@ async function cleanupApply(req, res) {
     // eligible — an id the live plan no longer flags is ignored. Omitting dupeSaleIds
     // applies ALL detected dupes (the "Fix all" button), like orphans/names above.
     const dupeWant = Array.isArray(body.dupeSaleIds) ? new Set(body.dupeSaleIds.map(String)) : null;
+    const crossWant = Array.isArray(body.crossProjectIds) ? new Set(body.crossProjectIds.map(String)) : null;
     const orderKeys = new Set(orders.map((o) => normalizeOrderNumber(o.orderNumber)).filter(Boolean));
 
     const batchId = `datacleanup-${new Date().toISOString().slice(0, 10)}-${crypto.randomBytes(4).toString('hex')}`;
@@ -158,6 +175,22 @@ async function cleanupApply(req, res) {
       for (const r of full) snap.removedTransactions.push(r);   // full row → re-insertable on revert
     }
 
+    // 5) Cross-project mockups → drop the foreign numbers off the project, so a
+    //    client's approval link shows this job and not their whole history. Only
+    //    mockupNumbers is touched; the mockups themselves are never deleted, and
+    //    excludedMockups is cleared alongside because it only ever existed to
+    //    negate the fuzzy matcher that put them there.
+    const crossToFix = crossWant ? crossProject.filter((c) => crossWant.has(c.orderId)) : crossProject;
+    for (const c of crossToFix) {
+      const cur = await Order.findById(c.orderId).select('mockupNumbers excludedMockups').lean();
+      if (!cur) continue;
+      snap.orders.push({ id: c.orderId, before: {
+        mockupNumbers: cur.mockupNumbers || [],
+        excludedMockups: cur.excludedMockups || [],
+      } });
+      writes.orders.push({ id: c.orderId, set: { mockupNumbers: c.keep, excludedMockups: [] } });
+    }
+
     // Persist the backup FIRST (durable), then mutate. If a write throws midway, the
     // batch already holds every BEFORE value so revert restores the lot. (Mirrors
     // controllers/financeDedupe — backup before any change.)
@@ -176,7 +209,7 @@ async function cleanupApply(req, res) {
       removed += (del.deletedCount != null ? del.deletedCount : (del.n || 0));
     }
 
-    res.json({ applied: true, batchId, fixed: { orders: writes.orders.length, names: writes.clients.length, receipts: writes.transactions.length, dupeSales: dupesToFix.length, removedRows: removed }, skipped });
+    res.json({ applied: true, batchId, fixed: { orders: writes.orders.length, names: writes.clients.length, receipts: writes.transactions.length, dupeSales: dupesToFix.length, removedRows: removed, crossProject: crossToFix.length }, skipped });
   } catch (e) { res.status(500).json({ message: e.message }); }
 }
 
@@ -233,11 +266,11 @@ async function cleanupRevert(req, res) {
 // How many issues remain — the UI shows the "Fix data" entry only when total > 0.
 async function cleanupStatus(req, res) {
   try {
-    const { orphans, polluted, misKeyed, dupeSales } = await buildPlan();
+    const { orphans, polluted, misKeyed, dupeSales, crossProject } = await buildPlan();
     res.json({
-      total: orphans.length + polluted.length + misKeyed.length + dupeSales.length,
+      total: orphans.length + polluted.length + misKeyed.length + dupeSales.length + crossProject.length,
       orphans: orphans.length, polluted: polluted.length, misKeyed: misKeyed.length,
-      dupeSales: dupeSales.length,
+      dupeSales: dupeSales.length, crossProject: crossProject.length,
     });
   } catch (e) { res.json({ total: 0, error: e.message }); }
 }

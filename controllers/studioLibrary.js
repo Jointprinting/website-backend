@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
 const r2 = require('../services/r2');
 const { deriveCompanyKey, normMockupNum } = require('../utils/companyKey');
+const { parseMockupNum } = require('../utils/mockupNumbers');
 
 // Best-effort: free the R2 objects an item owned. Only called on delete —
 // update-replacement cleanup lives in saveItem.
@@ -39,9 +40,18 @@ async function listItems(req, res) {
     // library ask for just one client's mockups — spanning every project — via
     // the canonical companyKey. Filters the same summary payload, so no new
     // shape. Only meaningful for the mockups store; ignored for blanks/logos.
+    // Project-scoped mockups (?projectNumber): the project workspace's Designs
+    // panel and the client-facing surfaces ask for exactly one project's mockups.
+    // This is the isolation boundary — a mockup belongs to ONE project, so this
+    // is an exact indexed match, not a filter over everything. Pass
+    // ?projectNumber=none to list only mockups not yet linked to any project.
     const filter = { store };
     const companyKey = String(req.query.companyKey || '').trim();
     if (companyKey && store === 'mockups') filter.companyKey = companyKey;
+    const projectNumber = String(req.query.projectNumber || '').trim();
+    if (projectNumber && store === 'mockups') {
+      filter.projectNumber = projectNumber === 'none' ? '' : projectNumber;
+    }
     const q = StudioLibraryItem.find(filter).sort({ savedAt: -1 });
     // `data` (the BACK composite, an R2 URL post-migration) rides along so
     // the confirmation builder can offer + preview the back side; without it
@@ -55,7 +65,7 @@ async function listItems(req, res) {
     // with '' placeholders (not URL-filtered like extraViews), so exposing it in the
     // light payload would tempt a consumer to read misaligned data — the editor's
     // rehydrate reads it from the FULL doc instead. Keep it full-doc-only.
-    if (summary) q.select('store name thumbnail data client savedAt remoteId extraViews pageState.mockupNum pageState.projectNumber');
+    if (summary) q.select('store name thumbnail data client companyKey projectNumber carriedFrom savedAt remoteId extraViews pageState.mockupNum pageState.projectNumber');
     const items = await q.lean();
     if (summary) {
       // Keep the summary payload light: R2-hosted backs ship as URLs, but a
@@ -133,6 +143,26 @@ async function saveItem(req, res) {
       ? (String(req.body.companyKey || '').trim() || deriveCompanyKey(client))
       : '';
 
+    // Stamp the PROJECT link top-level so this mockup can be found by an indexed
+    // query instead of a whole-library scan + JS filter. The editor always knows
+    // which project it's on and sends it (explicitly, or inside pageState); a
+    // legacy sync that doesn't gets resolved from the order referencing its
+    // number. Only mockups carry it.
+    let projectNumber = '';
+    if (store === 'mockups') {
+      projectNumber = String(
+        req.body.projectNumber
+        || (pageState && pageState.projectNumber)
+        || '',
+      ).trim();
+      if (!projectNumber && pageState && pageState.mockupNum) {
+        const Order = require('../models/Order');
+        const owner = await Order.findOne({ mockupNumbers: pageState.mockupNum })
+          .select('projectNumber').lean();
+        if (owner && owner.projectNumber) projectNumber = String(owner.projectNumber);
+      }
+    }
+
     // Offload base64 images to R2 (when configured) so the document stays small
     // and well under Mongo's 16MB ceiling. uploadDataUrl returns the value
     // unchanged if it's already a URL or not base64, so this is safe to call
@@ -189,7 +219,7 @@ async function saveItem(req, res) {
     if (remoteId) {
       const fields = {
         store, name, data: data || '', thumbnail: thumbnail || '',
-        client: client || '', companyKey, pageState: pageState || null,
+        client: client || '', companyKey, projectNumber, pageState: pageState || null,
         pages: pages || null,
         extraViews: Array.isArray(extraViews) ? extraViews.filter(Boolean) : [],
         // Kept index-aligned to pages[1..] (NOT filtered): a front-only extra page
@@ -216,7 +246,7 @@ async function saveItem(req, res) {
     }
     const item = await StudioLibraryItem.create({
       store, name, data: data || '', thumbnail: thumbnail || '',
-      client: client || '', companyKey, pageState: pageState || null,
+      client: client || '', companyKey, projectNumber, pageState: pageState || null,
       pages: pages || null,
       extraViews: Array.isArray(extraViews) ? extraViews.filter(Boolean) : [],
       // Index-aligned to pages[1..] (NOT filtered) — see the upsert branch above.
@@ -237,6 +267,40 @@ async function saveItem(req, res) {
       code: err.code || err.name || undefined,
     });
   }
+}
+
+// Which PROJECT a mockup belongs to (pure, unit-tested). The mockup number
+// already encodes the project — '#000150A' is project 150 — so this is a lookup,
+// never a guess. Order of preference:
+//
+//   1. An explicit projectNumber (the editor always knows which order it's on).
+//   2. The order that REFERENCES this number in its mockupNumbers. Authoritative,
+//      and the only way to disambiguate historical sibling projects: '22-1' and
+//      '22-2' both base to '#000022', so the number alone can't tell them apart.
+//   3. The base digits, zero-stripped ('000150' → '150'), when exactly one order
+//      carries that projectNumber.
+//
+// `orderMap` is normMockupNum → projectNumber; `projectsByNum` is a Set of every
+// known Order.projectNumber. Returns '' when nothing resolves — an unlinked
+// mockup (a draft, or a client with no project yet) is a legitimate state.
+function resolveProjectFor(mockup, orderMap, projectsByNum, explicit) {
+  const given = String(explicit || '').trim();
+  if (given) return given;
+
+  const num = mockup && mockup.pageState && mockup.pageState.mockupNum;
+  if (!num) return '';
+
+  const byOrder = orderMap ? orderMap.get(normMockupNum(num)) : '';
+  if (byOrder) return byOrder;
+
+  const parsed = parseMockupNum(num);
+  if (!parsed) return '';
+  const plain = parsed.digits.replace(/^0+/, '');
+  if (!plain) return '';
+  // Only when it's unambiguous: if a suffixed sibling exists ('22-2') and the
+  // bare number doesn't, we can't know which one — leave it for the owner.
+  if (projectsByNum && !projectsByNum.has(plain)) return '';
+  return plain;
 }
 
 // Which companyKey a mockup belongs to (pure, unit-tested). Prefer the order
@@ -286,6 +350,49 @@ async function backfillCompanyKeys() {
   return n;
 }
 
+// One-time backfill (idempotent, runs at boot from server.js): stamp the
+// top-level projectNumber on every mockup that lacks one. Deterministic — the
+// mockup number already encodes the project — so this is a migration, not a
+// guess, and re-running it is a no-op once every doc is stamped.
+//
+// Legacy docs whose number was never lettered against a project (external promo
+// uploads from before numbering, junk) simply stay unlinked, which is a
+// legitimate state the Designs panel shows as "Unlinked".
+async function backfillProjectNumbers() {
+  const missing = await StudioLibraryItem.find({
+    store: 'mockups',
+    $or: [{ projectNumber: '' }, { projectNumber: null }, { projectNumber: { $exists: false } }],
+  }).select('pageState.mockupNum pageState.projectNumber').lean();
+  if (!missing.length) return 0;
+
+  const Order = require('../models/Order');
+  const orders = await Order.find({}).select('projectNumber mockupNumbers').lean();
+  const orderMap = new Map();       // normMockupNum → projectNumber
+  const projectsByNum = new Set();  // every known Order.projectNumber
+  for (const o of orders) {
+    if (o.projectNumber) projectsByNum.add(String(o.projectNumber));
+    if (!o.projectNumber) continue;
+    for (const n of (o.mockupNumbers || [])) {
+      const k = normMockupNum(n);
+      if (k && !orderMap.has(k)) orderMap.set(k, String(o.projectNumber));
+    }
+  }
+
+  const ops = [];
+  for (const m of missing) {
+    // pageState.projectNumber is where this lived before it was a real field —
+    // trust it first, then resolve from the number.
+    const stashed = m.pageState && m.pageState.projectNumber;
+    const num = resolveProjectFor(m, orderMap, projectsByNum, stashed);
+    if (num) ops.push({ updateOne: { filter: { _id: m._id }, update: { $set: { projectNumber: num } } } });
+  }
+  if (!ops.length) return 0;
+  const r = await StudioLibraryItem.bulkWrite(ops, { ordered: false });
+  const n = r.modifiedCount || 0;
+  if (n) console.log(`[studioLibrary] backfilled projectNumber on ${n} mockup(s).`);
+  return n;
+}
+
 async function deleteItem(req, res) {
   try {
     const item = await StudioLibraryItem.findByIdAndDelete(req.params.id);
@@ -312,4 +419,5 @@ module.exports = {
   listItems, getByRemoteIds, saveItem, deleteItem, deleteByRemoteId,
   backfillRemoteIds, resolveMockupRemoteId,
   backfillCompanyKeys, resolveCompanyKeyFor,
+  backfillProjectNumbers, resolveProjectFor,
 };

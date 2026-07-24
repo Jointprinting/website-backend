@@ -15,6 +15,29 @@ const StudioLibraryItemSchema = new mongoose.Schema({
   // client-name / mockup-number guessing. Derived on save from `client`;
   // backfilled on existing docs from the order that references the mockup #.
   companyKey: { type: String, default: '', index: true },
+  // The PROJECT this mockup belongs to — the one link, top-level and indexed.
+  //
+  // It used to live only inside `pageState.projectNumber`, an untyped Mixed blob
+  // that could never be queried or indexed. So every project-scoped view loaded
+  // the WHOLE library and filtered in JS, and the project↔mockup link was really
+  // decided by a fuzzy client-NAME match in the Order Tracker — which meant every
+  // project of a long-term client silently accumulated every mockup that client
+  // had ever had, and that pile leaked to the client on pre-confirmation approval
+  // links. This field is that link, done properly.
+  //
+  // Matches Order.projectNumber exactly (including sibling suffixes like '22-2'),
+  // so `{ store, projectNumber }` is an exact, indexed join. Resolved on save and
+  // backfilled for legacy docs — see controllers/studioLibrary.resolveProjectFor.
+  projectNumber: { type: String, default: '', index: true },
+  // Where a carried-over design came from. A mockup carried into a new project is
+  // re-lettered under that project (#000150A → #000200A) so versioning, grouping
+  // and per-project isolation all keep working; this remembers the lineage so the
+  // history isn't lost. Empty on an original.
+  carriedFrom: {
+    projectNumber: { type: String, default: '' },
+    mockupNum:     { type: String, default: '' },
+    at:            { type: Date, default: null },
+  },
   pageState:  { type: mongoose.Schema.Types.Mixed, default: null }, // full page state for mockups
   // MULTI-PAGE mockups: every page (view) of the one mockup file, trimmed like
   // pageState (base64 layers stripped client-side before sync). null = single.
@@ -36,5 +59,10 @@ StudioLibraryItemSchema.index({ store: 1, savedAt: -1 });
 // Client-scoped mockup lookups (lookbook picker, CRM design library) filter by
 // store + companyKey, newest first — one index serves all three surfaces.
 StudioLibraryItemSchema.index({ store: 1, companyKey: 1, savedAt: -1 });
+// Project-scoped lookups — the project workspace's Designs panel, the approval
+// page, the confirmation/PO PDFs. These all used to scan the entire mockups
+// collection and index it in memory to find two or three items; this serves them
+// all with an exact match.
+StudioLibraryItemSchema.index({ store: 1, projectNumber: 1, savedAt: -1 });
 
 module.exports = mongoose.model('StudioLibraryItem', StudioLibraryItemSchema);

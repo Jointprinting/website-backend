@@ -101,6 +101,26 @@ function nextEditVersion(sourceNum, existing) {
 // Back-compat shim for the old name (controllers/orders.js used _nextMockupLetter).
 const nextMockupLetter = nextColorLetter;
 
+// Sort key so a design's colours (and each colour's edits) sit adjacent and in
+// sequence: design → colour → version. Unparseable numbers (external promo
+// shots) sort last, by their raw string. MIRRORS the Studio's mockupSortKey in
+// src/screens/studio/_mockupNumbers.js — keep the two in step.
+function mockupSortKey(num) {
+  const p = parseMockupNum(num);
+  if (!p) return [1, '', 0, 0, String(num || '')];
+  return [0, p.digits, p.letterNum, p.version, ''];
+}
+
+// Comparator over full mockup numbers, for Array.prototype.sort.
+function compareMockupNums(a, b) {
+  const ka = mockupSortKey(a), kb = mockupSortKey(b);
+  for (let i = 0; i < ka.length; i++) {
+    if (ka[i] < kb[i]) return -1;
+    if (ka[i] > kb[i]) return 1;
+  }
+  return 0;
+}
+
 module.exports = {
   letterToNum,
   numToLetter,
@@ -110,4 +130,6 @@ module.exports = {
   nextColorLetter,
   nextEditVersion,
   nextMockupLetter,
+  mockupSortKey,
+  compareMockupNums,
 };

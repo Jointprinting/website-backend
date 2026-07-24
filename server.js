@@ -390,6 +390,16 @@ db.once('open', () => {
       .catch((e) => console.warn('[studioLibrary] companyKey backfill failed:', e.message));
   }, 8_500);
 
+  // Idempotent: stamp the top-level projectNumber on legacy mockups so every
+  // project-scoped surface (Designs panel, approval page, PDFs) can resolve a
+  // project's mockups with one indexed query instead of scanning the library.
+  // Deterministic — the mockup number already encodes the project. Runs after
+  // the companyKey pass so both are settled before the first client request.
+  setTimeout(() => {
+    require('./controllers/studioLibrary').backfillProjectNumbers()
+      .catch((e) => console.warn('[studioLibrary] projectNumber backfill failed:', e.message));
+  }, 10_000);
+
   // Re-pick-up any receipts left mid-read (pending/processing) so a restart or a
   // cleared rate-limit window resumes scanning without losing anything. No-op
   // when ANTHROPIC_API_KEY isn't set (receipts just wait for manual entry).

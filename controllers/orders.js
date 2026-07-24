@@ -1085,7 +1085,14 @@ const duplicateOrder = async (req, res) => {
       notes:               src.notes       || '',
       confirmationMessage: src.confirmationMessage || '',
       confirmationTerms:   src.confirmationTerms   || '',
-      mockupNumbers:       Array.isArray(req.body && req.body.carryMockups) ? src.mockupNumbers : [],
+      // A duplicated project always STARTS clean. When the owner asked to bring
+      // the designs along, they're carried below — re-lettered under the new
+      // project — rather than copied as-is. (This line used to read
+      // `Array.isArray(req.body.carryMockups) ? src.mockupNumbers : []`, and the
+      // client sends the flag as a boolean, so it silently carried nothing at
+      // all; when it did fire it copied the source's numbers verbatim, leaving
+      // the new project holding numbers whose base named the OLD one.)
+      mockupNumbers:       [],
       items:               (src.items || []).map(i => ({ description: i.description, qty: i.qty, unitPrice: i.unitPrice })),
       quoteLines:          (src.quoteLines || []).map(l => ({
         // Carry the FULL recipe so a duplicate is faithful: the group keeps its
@@ -1111,7 +1118,32 @@ const duplicateOrder = async (req, res) => {
     };
 
     const created = await Order.create(fresh);
-    res.status(201).json(created);
+
+    // Bring the designs along, properly: each of the source project's mockups is
+    // cloned and RE-LETTERED under the new project (#000150A → #000200A) with its
+    // lineage recorded, so the new job's designs are its own — versionable,
+    // correctly grouped, and isolated from the finished job the client already saw.
+    let carried = [];
+    if (req.body && req.body.carryMockups) {
+      const srcMockups = await StudioLibraryItem
+        .find({ store: 'mockups', projectNumber: String(src.projectNumber || '') })
+        .select('remoteId').lean();
+      const remoteIds = srcMockups.map((m) => m.remoteId).filter(Boolean);
+      if (remoteIds.length) {
+        const fake = { params: { id: String(created._id) }, body: { remoteIds: remoteIds.slice(0, 25) } };
+        // Reuse the one carry path rather than a second copy of the same logic;
+        // a failure here must not lose the duplicated project itself.
+        await new Promise((resolve) => {
+          carryMockups(fake, {
+            json: (payload) => { carried = (payload && payload.carried) || []; resolve(); },
+            status: () => ({ json: () => resolve() }),
+          }).catch(() => resolve());
+        });
+      }
+    }
+
+    const out = carried.length ? await Order.findById(created._id) : created;
+    res.status(201).json(carried.length ? { ...out.toObject(), _carried: carried } : out);
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -1326,10 +1358,21 @@ const createOrGetProjectForCompany = async (req, res) => {
   }
 };
 
-// GET /api/orders/mockup-health — diagnostic report: which project mockup #s
-// are backed by a Studio library item, which aren't, and which library items
-// don't belong to any project. Used by the Order Tracker "Mockup health"
-// button so the user can see the real state of mockup linking at a glance.
+// GET /api/orders/mockup-health — the census of the mockup library against the
+// project link. Deliberately the ONE place that reads the whole collection: a
+// census is the question. Everything else queries by an indexed scope.
+//
+// Buckets, now that the link is a real field rather than a name-similarity
+// guess: `linked` (a project's number resolves to a library item), `missing` (a
+// project references a number no library item carries) and `unlinked` (a mockup
+// with no project — a draft, or a design for a client with no project yet).
+//
+// The old `autoMatched` bucket, and the POST /mockups/auto-link endpoint that
+// acted on it, are gone. They matched mockups to projects on COMPANY-NAME
+// similarity, which is what quietly attached every one of a long-term client's
+// mockups to every one of their projects — and from there onto the client's
+// pre-confirmation approval page. A mockup's number already names its project;
+// there is nothing left to guess.
 const mockupHealth = async (req, res) => {
   try {
     const norm = (n) => String(n || '').replace(/^#/, '').replace(/^0+/, '').toUpperCase();
@@ -1337,271 +1380,75 @@ const mockupHealth = async (req, res) => {
     const [projects, library] = await Promise.all([
       Order.find({}).select('projectNumber orderNumber companyName clientName mockupNumbers').lean(),
       StudioLibraryItem.find({ store: 'mockups' })
-        .select('name client pageState.mockupNum thumbnail savedAt')
+        .select('name client projectNumber carriedFrom pageState.mockupNum thumbnail savedAt')
         .lean(),
     ]);
 
-    // Build a lookup: normalized mockup# → library item
     const libByNorm = {};
     library.forEach(m => {
       const k = norm(m.pageState && m.pageState.mockupNum);
       if (k) libByNorm[k] = m;
     });
 
-    // For each project, classify its mockup #s as matched or missing
-    const matched = [];        // { projectNumber, companyName, mockupNum, item: { _id, name } }
-    const missing = [];        // { projectNumber, companyName, mockupNum }
+    const linked = [];
+    const missing = [];
     projects.forEach(p => {
       (p.mockupNumbers || []).forEach(num => {
         const item = libByNorm[norm(num)];
-        if (item) {
-          matched.push({
-            projectNumber: p.projectNumber, orderNumber: p.orderNumber,
-            companyName: p.companyName, clientName: p.clientName,
-            mockupNum: num,
-            itemId: item._id, itemName: item.name,
-          });
-        } else {
-          missing.push({
-            projectNumber: p.projectNumber, orderNumber: p.orderNumber,
-            companyName: p.companyName, clientName: p.clientName,
-            mockupNum: num,
-          });
-        }
+        const base = {
+          projectNumber: p.projectNumber, orderNumber: p.orderNumber,
+          companyName: p.companyName, clientName: p.clientName, mockupNum: num,
+        };
+        if (item) linked.push({ ...base, itemId: item._id, itemName: item.name });
+        else missing.push(base);
       });
     });
 
-    // Set of normalized mockup #s referenced by any project
-    const referencedNorms = new Set();
-    projects.forEach(p => (p.mockupNumbers || []).forEach(n => referencedNorms.add(norm(n))));
-
-    // Auto-match orphans by client slug so the report reflects what the
-    // OrderTracker drawer actually displays (green AUTO tiles). A library
-    // item whose mockup# isn't linked but whose client name slug-matches a
-    // project is classified as "autoMatched", not "orphan".
-    const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
-    const projectSlugIndex = {};
-    projects.forEach(p => {
-      [p.companyName, p.clientName].forEach(raw => {
-        const k = slug(raw);
-        if (k) projectSlugIndex[k] = projectSlugIndex[k] || p;
-      });
-    });
-    const findProjectFor = (libItem) => {
-      const titleClient = String(libItem.name || '').replace(/\s+merch\s*$/i, '').trim();
-      const candidates = [
-        slug(libItem.client || (libItem.pageState && libItem.pageState.client) || ''),
-        slug(titleClient),
-      ].filter(Boolean);
-      // Exact slug
-      for (const k of candidates) if (projectSlugIndex[k]) return projectSlugIndex[k];
-      // Fuzzy: prefix / substring (min 4 chars on both sides)
-      for (const k of candidates) {
-        if (k.length < 4) continue;
-        for (const pk of Object.keys(projectSlugIndex)) {
-          if (pk.length < 4) continue;
-          if (pk.startsWith(k) || k.startsWith(pk) || pk.includes(k) || k.includes(pk)) {
-            return projectSlugIndex[pk];
-          }
-        }
-      }
-      return null;
-    };
-
-    const orphans = [];
-    const autoMatched = [];
-    for (const m of library) {
-      const k = norm(m.pageState && m.pageState.mockupNum);
-      if (k && referencedNorms.has(k)) continue;          // already linked
-      const proj = findProjectFor(m);
-      const entry = {
+    // A mockup with no project link. Reported so the owner can place it from the
+    // Designs panel — never auto-assigned.
+    const unlinked = library
+      .filter(m => !String(m.projectNumber || '').trim())
+      .map(m => ({
         _id: m._id, name: m.name, client: m.client,
         mockupNum: (m.pageState && m.pageState.mockupNum) || '',
         savedAt: m.savedAt,
-      };
-      if (proj) {
-        autoMatched.push({ ...entry, projectNumber: proj.projectNumber, companyName: proj.companyName });
-      } else {
-        orphans.push(entry);
-      }
-    }
+      }));
 
-    res.json({
-      summary: {
-        projects:           projects.length,
-        libraryItems:       library.length,
-        projectMockupRefs:  matched.length + missing.length,
-        linked:             matched.length,
-        autoMatched:        autoMatched.length,
-        missing:            missing.length,
-        orphans:            orphans.length,
-      },
-      matched, autoMatched, missing, orphans,
-    });
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
-};
-
-// POST /api/orders/mockups/auto-link  { commit?: boolean }
-// Links orphan jpstudio mockups (saved before the Project dropdown existed) to
-// their projects. Two signals, in priority order:
-//   1. base number — every project gets its own batch number, so #000061A..D
-//      all belong to one project. An orphan #000061E links to whatever project
-//      already references #000061*.
-//   2. company name — the library item's name/client text contains a project's
-//      companyKey (e.g. "Bleu Leaf Dispensary Merch" → bleuleafdispensary).
-// Without commit:true this is a dry run and only returns the proposed links.
-const autoLinkMockups = async (req, res) => {
-  try {
-    const commit = !!(req.body && req.body.commit);
-    const norm   = (n) => String(n || '').replace(/^#/, '').replace(/^0+/, '').toUpperCase();
-    const baseOf = (n) => { const m = norm(n).match(/^(\d+)/); return m ? m[1] : ''; };
-    const slug   = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
-
-    const [projects, library] = await Promise.all([
-      Order.find({}).select('projectNumber companyName clientName companyKey mockupNumbers excludedMockups status updatedAt').lean(),
-      StudioLibraryItem.find({ store: 'mockups' }).select('name client pageState.mockupNum').lean(),
-    ]);
-
-    // Active = anything still in flight; the current project for a recurring
-    // client. Closed orders shouldn't soak up new mockups.
-    const isClosed = (p) => p.status === 'delivered' || p.status === 'cancelled';
-    const isActive = (p) => !isClosed(p);
-
-    // Sort active-then-closed, then newest projectNumber first, so when
-    // multiple projects share a company we always pick the current one.
-    const rankProjects = (arr) => arr.slice().sort((a, b) => {
-      const ac = isClosed(a) ? 1 : 0, bc = isClosed(b) ? 1 : 0;
-      if (ac !== bc) return ac - bc;
-      const an = parseInt(String(a.projectNumber || '0').match(/\d+/)?.[0] || '0', 10);
-      const bn = parseInt(String(b.projectNumber || '0').match(/\d+/)?.[0] || '0', 10);
-      return bn - an;
-    });
-
-    // Index projects: every mockup# already referenced (active OR closed), and
-    // projects by base #. The earlier "active-only" rule was too clever — it
-    // tried to let stale links migrate from a closed order to the new active
-    // one, but it also meant any mockup linked to a closed project showed up
-    // as orphan FOREVER. Each auto-link run would re-link the same 10 mockups
-    // to the same closed project, and they'd stay in the "to link" bucket on
-    // the next scan. Now: once a mockup is in ANY project's mockupNumbers,
-    // it's treated as linked. Stale-link migration is a separate concern handled
-    // by the project drawer's auto-cleanup pass.
-    const referencedNorms = new Set();
-    const projectsByBase  = {};
+    // Mockups whose stored project link disagrees with the project that claims
+    // them in mockupNumbers — the residue of the old fuzzy linking. Surfaced so
+    // the cleanup tool can show exactly what it would repair.
+    const conflicting = [];
     projects.forEach(p => {
-      (p.mockupNumbers || []).forEach(n => {
-        const nn = norm(n);
-        if (nn) referencedNorms.add(nn);
-        const b = baseOf(n);
-        if (b) {
-          if (!projectsByBase[b]) projectsByBase[b] = [];
-          if (!projectsByBase[b].some(x => String(x._id) === String(p._id))) projectsByBase[b].push(p);
+      (p.mockupNumbers || []).forEach(num => {
+        const item = libByNorm[norm(num)];
+        if (!item) return;
+        const owns = String(item.projectNumber || '');
+        if (owns && String(p.projectNumber || '') !== owns) {
+          conflicting.push({
+            mockupNum: num,
+            claimedBy: p.projectNumber,
+            belongsTo: owns,
+            companyName: p.companyName,
+            itemName: item.name,
+          });
         }
       });
     });
-    const companyKeys = [...new Set(projects.map(p => p.companyKey).filter(k => k && k.length >= 4))];
-
-    const links = [], ambiguous = [], unmatched = [];
-    let alreadyLinked = 0;
-
-    for (const item of library) {
-      const rawNum = (item.pageState && item.pageState.mockupNum) || '';
-      const nn = norm(rawNum);
-      if (!nn) { unmatched.push({ itemId: item._id, itemName: item.name || '', mockupNum: rawNum, reason: 'no mockup #' }); continue; }
-      if (referencedNorms.has(nn)) { alreadyLinked++; continue; }
-
-      const base = baseOf(rawNum);
-      const baseHits = rankProjects((base && projectsByBase[base]) || []);
-      let target = null, via = null;
-
-      // Prefer the highest-ranked (active, newest) project even if multiple
-      // share the base. If the only matches are closed projects, fall back
-      // to the most recent of those — better than nothing.
-      const activeBaseHits = baseHits.filter(isActive);
-      if (activeBaseHits.length >= 1) {
-        target = activeBaseHits[0]; via = 'base';
-      } else if (baseHits.length >= 1) {
-        target = baseHits[0]; via = 'base';
-      }
-
-      if (!target) {
-        const itemSlug = slug(`${item.name || ''} ${item.client || ''}`);
-        let bestKey = '';
-        companyKeys.forEach(k => { if (itemSlug.includes(k) && k.length > bestKey.length) bestKey = k; });
-        if (bestKey) {
-          const nameHits = rankProjects(projects.filter(p => p.companyKey === bestKey));
-          const activeNameHits = nameHits.filter(isActive);
-          if (activeNameHits.length >= 1) {
-            target = activeNameHits[0]; via = 'name';
-          } else if (nameHits.length === 1) {
-            target = nameHits[0]; via = 'name';
-          } else if (nameHits.length > 1) {
-            // Multiple closed-only matches with no active. Genuinely ambiguous.
-            ambiguous.push({ itemId: item._id, itemName: item.name || '', mockupNum: rawNum,
-              candidates: nameHits.map(p => ({ projectNumber: p.projectNumber, companyName: p.companyName || p.clientName || '' })) });
-            continue;
-          }
-        }
-      }
-
-      if (!target) { unmatched.push({ itemId: item._id, itemName: item.name || '', mockupNum: rawNum, reason: 'no match' }); continue; }
-
-      // The owner explicitly X'd this number off the target project — an
-      // exclusion is what makes that removal stick, so auto-link honors it.
-      if ((target.excludedMockups || []).some((x) => norm(x) === nn)) {
-        unmatched.push({ itemId: item._id, itemName: item.name || '', mockupNum: rawNum, reason: 'removed by owner' });
-        continue;
-      }
-
-      links.push({
-        itemId: item._id, itemName: item.name || '', mockupNum: rawNum,
-        projectId: target._id, projectNumber: target.projectNumber,
-        projectCompany: target.companyName || target.clientName || '', via,
-      });
-    }
-
-    let projectsAffected = 0, mockupsLinked = 0;
-    if (commit && links.length) {
-      const byProject = {};
-      links.forEach(l => {
-        const k = String(l.projectId);
-        if (!byProject[k]) byProject[k] = { projectId: l.projectId, nums: [] };
-        if (!byProject[k].nums.includes(l.mockupNum)) byProject[k].nums.push(l.mockupNum);
-      });
-      for (const grp of Object.values(byProject)) {
-        await Order.updateOne(
-          { _id: grp.projectId },
-          {
-            $addToSet: { mockupNumbers: { $each: grp.nums } },
-            $push: { activity: {
-              kind: 'mockups_linked', actor: 'system',
-              message: `Auto-linked ${grp.nums.length} mockup${grp.nums.length === 1 ? '' : 's'}: ${grp.nums.join(', ')}`,
-              meta: { mockupNumbers: grp.nums, source: 'auto-link' },
-              at: new Date(),
-            } },
-          },
-        );
-        projectsAffected++;
-        mockupsLinked += grp.nums.length;
-      }
-    }
 
     res.json({
-      committed: commit,
       summary: {
-        libraryMockups:   library.length,
-        alreadyLinked,
-        proposed:         links.length,
-        byBase:           links.filter(l => l.via === 'base').length,
-        byName:           links.filter(l => l.via === 'name').length,
-        ambiguous:        ambiguous.length,
-        unmatched:        unmatched.length,
-        projectsAffected: commit ? projectsAffected : new Set(links.map(l => String(l.projectId))).size,
-        mockupsLinked:    commit ? mockupsLinked : links.length,
+        projects:          projects.length,
+        libraryItems:      library.length,
+        projectMockupRefs: linked.length + missing.length,
+        linked:            linked.length,
+        missing:           missing.length,
+        unlinked:          unlinked.length,
+        conflicting:       conflicting.length,
       },
-      links, ambiguous, unmatched,
+      // `matched` kept as an alias for the previous field name so an older
+      // deployed Studio bundle doesn't render an empty table mid-rollout.
+      matched: linked,
+      linked, missing, unlinked, conflicting,
     });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -1733,6 +1580,141 @@ function buildMockupVariation(src, newNum, remoteId) {
   };
 }
 
+// Clone a mockup INTO ANOTHER PROJECT — the "carry over" a long-term client
+// needs. PURE (exported for tests).
+//
+// The number is the point. A mockup number encodes its project (#000150A is
+// project 150), so copying #000150A onto project 200 verbatim — which is what
+// the old duplicate-order `carryMockups` flag did — leaves a number that lies:
+// it can't be versioned (the version reserver rejects a foreign base), the next
+// new mockup on 200 letters as #000200A beside it with no relationship shown,
+// and tile grouping files it under a different design. So a carry RE-LETTERS
+// under the target project and records where it came from, which keeps
+// versioning, grouping and per-project isolation all working while making the
+// history queryable ("this design started on #150").
+//
+// The art is cloned, not shared: editing the carried copy must never reach back
+// and change what a past client already approved.
+function buildCarriedMockup(src, newNum, remoteId, target) {
+  const s = src || {};
+  const t = target || {};
+  const pdfName = newNum ? `${String(newNum).replace(/^#/, '')}.pdf` : '';
+  const srcNum = (s.pageState && s.pageState.mockupNum) || '';
+  const restamp = (ps) => (ps && typeof ps === 'object'
+    ? {
+      ...ps,
+      mockupNum: newNum,
+      // Keep the blob's copy of the project in step with the real field, so a
+      // legacy reader and an indexed query can never disagree.
+      projectNumber: String(t.projectNumber || ''),
+      ...(t.companyName ? { client: t.companyName } : {}),
+      ...(pdfName ? { pdfName } : {}),
+    }
+    : ps);
+  return {
+    store: 'mockups',
+    // The design keeps its name — it is the same artwork on a new job, not a
+    // variation of it. Any "· v2" suffix from the source is dropped.
+    name: String(s.name || 'Mockup').replace(/\s*·\s*v\d+$/i, ''),
+    data: s.data || '',
+    thumbnail: s.thumbnail || '',
+    client: t.companyName || s.client || '',
+    companyKey: t.companyKey || '',
+    projectNumber: String(t.projectNumber || ''),
+    carriedFrom: {
+      projectNumber: String(s.projectNumber || (s.pageState && s.pageState.projectNumber) || ''),
+      mockupNum: srcNum,
+      at: new Date(),
+    },
+    pageState: restamp(s.pageState),
+    pages: Array.isArray(s.pages) ? s.pages.map(restamp) : s.pages || null,
+    extraViews: Array.isArray(s.extraViews) ? [...s.extraViews] : [],
+    // Page-2+ BACKS ride along — the source's pages[] have their base64 stripped,
+    // so this array is their only carrier (same trap buildMockupVariation hit).
+    extraBackViews: Array.isArray(s.extraBackViews) ? [...s.extraBackViews] : [],
+    savedAt: Date.now(),
+    remoteId,
+  };
+}
+
+// POST /api/orders/:id/mockups/carry — carry designs from the client's earlier
+// projects into THIS one. Body: { remoteIds: [..] } (or { remoteId }). Each is
+// re-lettered under this project, art and all, with its lineage recorded.
+//
+// Server-side for the same reasons as the variation clone: the heavy library doc
+// never round-trips through the browser, and the numbering reuses the one atomic
+// reservation path. Same-client only — carrying another company's artwork into a
+// project is never a thing the owner means to do.
+const carryMockups = async (req, res) => {
+  try {
+    const body = req.body || {};
+    const ids = (Array.isArray(body.remoteIds) ? body.remoteIds : [body.remoteId])
+      .map((v) => String(v || '').trim()).filter(Boolean);
+    if (!ids.length) return res.status(400).json({ message: 'Pass the mockups to carry over (remoteIds).' });
+    if (ids.length > 25) return res.status(400).json({ message: 'Carry at most 25 designs at a time.' });
+
+    const target = await Order.findById(req.params.id)
+      .select('projectNumber companyName clientName companyKey mockupNumbers').lean();
+    if (!target) return res.status(404).json({ message: 'Project not found' });
+    if (!target.projectNumber) return res.status(400).json({ message: 'This project has no number to letter against.' });
+
+    const sources = await StudioLibraryItem.find({ store: 'mockups', remoteId: { $in: ids } }).lean();
+    if (!sources.length) return res.status(404).json({ message: 'Those mockups are not in the studio library.' });
+
+    const carried = [];
+    const skipped = [];
+    for (const src of sources) {
+      // Guard the client boundary. A mockup with no key yet (legacy, pre-backfill)
+      // is allowed through — refusing would block the owner on his own history.
+      if (target.companyKey && src.companyKey && src.companyKey !== target.companyKey) {
+        skipped.push({ remoteId: src.remoteId, reason: 'belongs to a different client' });
+        continue;
+      }
+      if (String(src.projectNumber || '') === String(target.projectNumber)) {
+        skipped.push({ remoteId: src.remoteId, reason: 'already on this project' });
+        continue;
+      }
+
+      const got = await _reserveMockupNumber(req.params.id);
+      if (!got || !got.mockupNum) {
+        skipped.push({ remoteId: src.remoteId, reason: 'could not reserve a number' });
+        continue;
+      }
+      const newNum = got.mockupNum;
+      const newRemoteId = `carry-${crypto.randomUUID()}`;
+      try {
+        const item = await StudioLibraryItem.create(
+          buildCarriedMockup(src, newNum, newRemoteId, target),
+        );
+        carried.push({
+          remoteId: item.remoteId,
+          mockupNum: newNum,
+          from: (src.pageState && src.pageState.mockupNum) || '',
+          name: item.name,
+        });
+      } catch (e) {
+        // Never leave a reserved number linked to a project with no mockup behind it.
+        await Order.updateOne({ _id: req.params.id }, { $pull: { mockupNumbers: newNum } }).catch(() => {});
+        skipped.push({ remoteId: src.remoteId, reason: e.message });
+      }
+    }
+
+    if (carried.length) {
+      await Order.updateOne({ _id: req.params.id }, { $push: { activity: {
+        kind: 'mockups_linked', actor: 'owner',
+        message: `Carried over ${carried.length} design${carried.length === 1 ? '' : 's'}: `
+          + carried.map((c) => `${c.from || '?'} → ${c.mockupNum}`).join(', '),
+        meta: { mockupNumbers: carried.map((c) => c.mockupNum), source: 'carry' },
+        at: new Date(),
+      } } }).catch(() => { /* the paper trail must never fail the carry */ });
+    }
+
+    res.json({ carried, skipped, projectNumber: target.projectNumber });
+  } catch (e) {
+    res.status(e.message && e.message.includes('reserve') ? 409 : 500).json({ message: e.message });
+  }
+};
+
 // POST /api/orders/:id/mockups/duplicate — "Add a variation": clone an
 // existing mockup into a brand-new one on the SAME project (next letter),
 // identical art, ready to tweak in the studio. Server-side on purpose: the
@@ -1832,10 +1814,10 @@ module.exports = {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
   dashboard, attention, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
-  cleanupCandidates, cleanupDelete, mergeCompany, autoLinkMockups, assignMockupNumber,
+  cleanupCandidates, cleanupDelete, mergeCompany, assignMockupNumber, carryMockups,
   versionMockupNumber, duplicateMockup, createOrGetProjectForCompany, backfillConfirmationCogs, upsCheck,
   // exported for tests / reuse
   isPlacedStatus, bumpCustomerOnPlacement, pickLiveProjectForCompany, isLiveProject,
-  orderPlacedAt, etAgeDays, buildMockupVariation, buildOrderFromSubmission,
+  orderPlacedAt, etAgeDays, buildMockupVariation, buildCarriedMockup, buildOrderFromSubmission,
   ensureProjectForCompany, ensureDealForProject,
 };
