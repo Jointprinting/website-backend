@@ -44,3 +44,43 @@ test('one JP-supplied PO is enough to expect the receipt', () => {
 test('a new vendor still defaults to JP supplying the blanks', () => {
   assert.strictEqual(new Vendor({ name: 'Brand New Printer' }).blanksProvided, true);
 });
+
+// ── The rule the owner actually runs on ─────────────────────────────────────
+// "I only have printers supply blanks when it's promo products like lighters or
+// stress balls, cause they manufacture and print those themselves. Apparel I
+// order from S&S or approved vendors (supply blanks myself) to ship to the
+// printer."
+//
+// So the ITEMS decide, and the vendor's remembered boolean is only the fallback.
+// A vendor-only answer got the common case right by luck and a mixed job wrong
+// on principle — a promo house's PO would inherit "JP supplied the blanks" from
+// a vendor record, and chase a Blank COGS receipt that never existed.
+
+const { blanksModeForItems } = require('../../utils/apparel');
+
+// Mirrors the resolution the two PO creators run.
+const resolve = (items, vendorMode) => {
+  const m = blanksModeForItems(items);
+  return m == null ? vendorMode : m;
+};
+
+test('a promo PO does not expect a blanks receipt, even from a vendor that usually supplies', () => {
+  const items = [{ description: 'Custom Lighters, 500 units' }];
+  const blanksProvided = resolve(items, true);   // vendor remembers TRUE
+  assert.strictEqual(blanksProvided, false, 'the items overrule the vendor');
+  const po = new PurchaseOrder({ vendorName: 'Promo House', poNumber: 9, blanksProvided });
+  assert.ok(!expectedReceiptCats({}, [po]).includes('Blank COGS'));
+});
+
+test('an apparel PO expects one, even from a vendor that usually does not', () => {
+  const items = [{ description: 'Gildan 5000 Tee', taxExempt: true }];
+  const blanksProvided = resolve(items, false);  // vendor remembers FALSE
+  assert.strictEqual(blanksProvided, true);
+  const po = new PurchaseOrder({ vendorName: 'Promo House', poNumber: 9, blanksProvided });
+  assert.ok(expectedReceiptCats({}, [po]).includes('Blank COGS'));
+});
+
+test('with nothing to judge, the vendor still decides', () => {
+  assert.strictEqual(resolve([], false), false);
+  assert.strictEqual(resolve([], true), true);
+});

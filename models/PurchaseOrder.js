@@ -18,6 +18,12 @@ const PurchaseOrderSchema = new mongoose.Schema({
 
   // Vendor block
   vendorName:    { type: String, default: '' },      // "Heritage Screen Printing"
+  // Canonical vendor identity, derived from vendorName (utils/poCost.vendorKey —
+  // the same key POs are already GROUPED and NUMBERED on, now persisted and
+  // indexed so per-vendor queries stop scanning with a case-insensitive regex
+  // that disagreed with its neighbours about whitespace). Derived, never
+  // hand-set; the hook below keeps it in lockstep on every write path.
+  vendorKey:     { type: String, default: '', index: true },
   contactName:   { type: String, default: '' },      // "Jaide Thomas"
   vendorAddress: { type: String, default: '' },      // "331 York Rd, Warminster, PA 18974"
 
@@ -54,13 +60,20 @@ const PurchaseOrderSchema = new mongoose.Schema({
   // Prints a "proof required before production run" line when true.
   proofRequired: { type: Boolean, default: false },
 
-  // True for apparel jobs where JP supplies the garments — flips the section
-  // header to "Product/Print Info - (blanks provided)".
+  // Who supplies the blanks. TRUE = JP does — flips the PO section header to
+  // "Product/Print Info - (blanks provided)".
   //
-  // Defaults TRUE to match Vendor.blanksProvided and the ~99% reality (JP buys
-  // the blanks). It used to default FALSE, so the SAME concept had opposite
-  // defaults in the two models, and any creator that didn't set it explicitly
-  // silently asserted the RARE case. That is not cosmetic: expectedReceiptCats
+  // The owner's rule is about the PRODUCT, not the vendor: apparel he buys from
+  // S&S or an approved vendor and ships to the printer (true); promo products
+  // — lighters, stress balls — the printer manufactures and prints itself
+  // (false). utils/apparel derives this per PO from the items, reusing the
+  // taxExempt flag the confirmation already carries for the NJ clothing
+  // exemption; the vendor's remembered mode is only the fallback.
+  //
+  // Defaults TRUE to match Vendor.blanksProvided and because apparel is the
+  // overwhelming majority. It used to default FALSE, so the SAME concept had
+  // opposite defaults in the two models and any creator that didn't set it
+  // explicitly silently asserted the rare case. Not cosmetic: expectedReceiptCats
   // (controllers/finances.js) reads `pos.some(p => p.blanksProvided === true)`
   // to decide whether a Blank COGS receipt is expected, so a defaulted-false PO
   // quietly switched OFF the missing-blanks-receipt nag for its whole order.
@@ -97,5 +110,13 @@ const PurchaseOrderSchema = new mongoose.Schema({
   archivedAt:    { type: Date, default: null },
   archivedReason:{ type: String, default: '' },        // 'superseded-by-rebuild' | 'rebuild-revert' | …
 }, { timestamps: true });
+
+// Per-vendor PO lookups + the numbering/clash check are the hot path here, and
+// they are always "this vendor, newest first".
+PurchaseOrderSchema.index({ vendorKey: 1, archived: 1, poNumber: -1 });
+
+const { attachVendorKeySync } = require('../utils/vendorKeySync');
+
+attachVendorKeySync(PurchaseOrderSchema, 'vendorName');
 
 module.exports = mongoose.model('PurchaseOrder', PurchaseOrderSchema);

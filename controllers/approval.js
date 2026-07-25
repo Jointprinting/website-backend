@@ -141,6 +141,9 @@ const ensureApprovalToken = async (req, res) => {
       // post-pick "building" state even though this is a brand-new share. Reset
       // it so a fresh link always lands on the current confirmation / picker.
       order.optionsPickedAt = null;
+      // Same reasoning for the invoice: a fresh ask means fresh numbers, so an
+      // invoice sent against the old cycle is stale and must not read as "sent".
+      order.invoiceSentAt = null;
       // Fresh cycle = fresh guest list; the old links no longer resolve.
       if (rotate) order.approvalRecipients = [];
       await order.save();
@@ -999,6 +1002,7 @@ const sendApprovalLink = async (req, res) => {
     if (!rotated && _currentApprovalStatus(order).status === 'requested_changes') {
       order.approvalSupersededAt = new Date(now);
       order.optionsPickedAt = null;   // mirror the rotate path's stale-pick clear
+      order.invoiceSentAt = null;     // …and its stale-invoice clear
       order.activity = order.activity || [];
       order.activity.push({
         kind: 'approval_reopened', actor: 'admin',
@@ -1017,6 +1021,7 @@ const sendApprovalLink = async (req, res) => {
       // cycle starts at the current confirmation (or a fresh picker), not a
       // stale post-pick state.
       order.optionsPickedAt = null;
+      order.invoiceSentAt = null;
       order.approvalRecipients = [];
     }
     order.approvalTokenExpiresAt = new Date(now + ttlDays * 24 * 60 * 60 * 1000);
