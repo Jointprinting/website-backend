@@ -322,6 +322,102 @@ async function awaitingConfirmation(now) {
   ];
 }
 
+// ── The money gap between "they said yes" and "they paid" ────────────────────
+// Invoicing is manual, in QuickBooks, AFTER the client approves:
+//   approve → owner writes and sends the invoice → client pays → production.
+// The Studio never saw either half of that. An approved, unpaid order looked
+// exactly like an approved, invoiced, unpaid one, so the job could sit parked
+// behind an invoice nobody remembered to send — the single most expensive kind
+// of silence in the shop, because the client has already said yes.
+//
+// Two states, two different actions, so two signals:
+//   invoiceSentAt null → YOUR move. Write and send it. Critical: it blocks the
+//                        whole job and the client is waiting to pay.
+//   invoiceSentAt set  → THEIR move. Chase it. A warning, and only once it has
+//                        aged past INVOICE_CHASE_DAYS — an invoice sent this
+//                        morning is not a problem.
+//
+// Both PURE (exported for tests).
+const INVOICE_CHASE_DAYS = 7;
+
+// When did the client actually say yes? There is no `approvedAt` column — the
+// truth lives in approvalEvents. Only events from the CURRENT cycle count, on
+// the same rule the approval gate uses (anything older than approvalSupersededAt
+// belongs to a superseded ask). Falls back to the confirmation's order date.
+function approvedAtOf(o) {
+  if (!o) return null;
+  const cutoff = o.approvalSupersededAt ? new Date(o.approvalSupersededAt).getTime() : 0;
+  let latest = null;
+  for (const e of (o.approvalEvents || [])) {
+    if (!e || e.kind !== 'approved' || !e.at) continue;
+    const t = new Date(e.at).getTime();
+    if (t <= cutoff) continue;
+    if (!latest || t > latest) latest = t;
+  }
+  return latest ? new Date(latest) : (o.orderDate || null);
+}
+
+function bucketAwaitingInvoice(orders = [], now = new Date()) {
+  const items = [];
+  for (const o of orders) {
+    if (!o || o.paid || o.invoiceSentAt) continue;
+    const since = approvedAtOf(o) || o.updatedAt;
+    const days = since ? Math.max(0, Math.floor((now - new Date(since)) / 86400000)) : null;
+    items.push({
+      _id: String(o._id || ''),
+      orderNumber: o.orderNumber || '',
+      projectNumber: o.projectNumber || '',
+      companyKey: o.companyKey || '',
+      name: nameOf(o) || `#${o.orderNumber || o.projectNumber || ''}`,
+      metric: days == null ? '—' : days === 0 ? 'today' : `${days}d`,
+      note: 'approved — send the invoice',
+    });
+  }
+  items.sort((a, b) => (parseInt(b.metric, 10) || 0) - (parseInt(a.metric, 10) || 0));
+  return items;
+}
+
+function bucketInvoiceUnpaid(orders = [], now = new Date()) {
+  const items = [];
+  for (const o of orders) {
+    if (!o || o.paid || !o.invoiceSentAt) continue;
+    const days = Math.max(0, Math.floor((now - new Date(o.invoiceSentAt)) / 86400000));
+    if (days < INVOICE_CHASE_DAYS) continue;   // still fresh — not a problem yet
+    items.push({
+      _id: String(o._id || ''),
+      orderNumber: o.orderNumber || '',
+      projectNumber: o.projectNumber || '',
+      companyKey: o.companyKey || '',
+      name: nameOf(o) || `#${o.orderNumber || o.projectNumber || ''}`,
+      metric: `${days}d`,
+      note: 'invoice sent, still unpaid',
+    });
+  }
+  items.sort((a, b) => (parseInt(b.metric, 10) || 0) - (parseInt(a.metric, 10) || 0));
+  return items;
+}
+
+// One read serves both — an approved-or-beyond, unpaid order is the whole
+// population, and the two buckets split it on invoiceSentAt.
+async function invoiceGap(now) {
+  const open = await Order.find({
+    status: { $in: ['approved', 'placed', 'in_production', 'shipped', 'delivered'] },
+    paid: { $ne: true },
+    archived: { $ne: true },
+  }).select('orderNumber projectNumber companyKey companyName clientName paid invoiceSentAt orderDate updatedAt approvalEvents approvalSupersededAt').lean();
+
+  const toSend = bucketAwaitingInvoice(open, now);
+  const toChase = bucketInvoiceUnpaid(open, now);
+  return [
+    { id: 'awaiting_invoice', severity: 'critical', kind: 'order',
+      label: `${toSend.length} approved order${toSend.length === 1 ? '' : 's'} with no invoice sent`,
+      count: toSend.length, items: cap(toSend) },
+    { id: 'invoice_unpaid', severity: 'warning', kind: 'order',
+      label: `${toChase.length} invoice${toChase.length === 1 ? '' : 's'} unpaid past ${INVOICE_CHASE_DAYS} days`,
+      count: toChase.length, items: cap(toChase) },
+  ];
+}
+
 // ── Preorder drops that hit their minimum ────────────────────────────────────
 // A preorder link tallies commitments until the drop clears its MOQ. Clearing it
 // is the whole point — that's the moment the run is a go and the owner turns the
@@ -501,7 +597,7 @@ async function siteEditsWaiting() {
 // buildSignals — compose all sources; a thrown source drops only its group.
 async function buildSignals({ now = new Date() } = {}) {
   const sources = [unhandledInquiries(now), ordersAging(now), followUps(now), quotesAwaiting(now),
-    awaitingConfirmation(now), preorderDropsReady(now),
+    awaitingConfirmation(now), preorderDropsReady(now), invoiceGap(now),
     siteEditsWaiting(), outreachReplies(now), lookbookFeedback(now)];
   const [settled, pulse] = await Promise.all([
     Promise.allSettled(sources),
@@ -528,6 +624,9 @@ module.exports = {
   bucketSiteEdits,
   bucketAwaitingConfirmation,
   bucketPreorderDrops,
+  bucketAwaitingInvoice,
+  bucketInvoiceUnpaid,
+  approvedAtOf,
   replyAgeLabel,
   toGroups,
   // constants
@@ -539,4 +638,5 @@ module.exports = {
   INQUIRY_BRANDS,
   QUOTE_VALID_DAYS,
   QUOTE_EXPIRY_WARN_DAYS,
+  INVOICE_CHASE_DAYS,
 };

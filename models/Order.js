@@ -305,6 +305,21 @@ const OrderSchema = new mongoose.Schema({
     default: 'quoted',
   },
   paid:          { type: Boolean, default: false },
+  // When the owner sent the client their invoice. Invoicing happens by hand in
+  // QuickBooks AFTER the client approves — approve → invoice → pay → production
+  // — so between approval and payment there are TWO different states that `paid`
+  // alone flattens into one:
+  //
+  //   invoiceSentAt null  → the invoice hasn't gone out. It's the OWNER's move,
+  //                         and the whole job is parked behind it.
+  //   invoiceSentAt set   → it's out and unpaid. Now it's the CLIENT's move,
+  //                         and the right action is a chase, not more work.
+  //
+  // That distinction is the difference between "do something" and "wait", which
+  // is exactly what the hub signals need in order to be worth reading. Cleared
+  // whenever the approval is superseded — a fresh ask means fresh numbers, so
+  // the invoice already sent is stale.
+  invoiceSentAt: { type: Date, default: null, index: true },
   totalValue:    { type: Number, default: 0 },
   cogs:          { type: Number, default: 0 },
   printerName:   { type: String, default: '' },
