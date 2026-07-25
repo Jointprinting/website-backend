@@ -239,75 +239,8 @@ function detectDuplicateSales(incomeRows, orderKeys, opts = {}) {
   return out;
 }
 
-// 5) Cross-project mockups — orders carrying mockup numbers that belong to a
-//    DIFFERENT project.
-//
-//    Where they came from: the Order Tracker used to attach mockups to a project
-//    by fuzzy COMPANY-NAME match, and silently wrote those matches into
-//    order.mockupNumbers every time the project drawer opened. For a client with
-//    many projects, every project accumulated every mockup that client had ever
-//    had — and because a pre-confirmation approval link fell back to that list,
-//    the client saw the whole back catalogue instead of the job in front of them.
-//
-//    The matcher is gone; this un-does the residue it left in the data. It is
-//    deliberately conservative — a number is only proposed for removal when ALL
-//    of the following hold, so an intentional link is never touched:
-//      · its base names a different project than the order it sits on, AND
-//      · no confirmation item on that order references it (owner-curated wins), AND
-//      · the mockup wasn't carried over into this project on purpose (carriedFrom).
-//
-//    `mockupOwners` maps normalised mockup number → { projectNumber, carriedInto }
-//    from the library. Pure — the controller supplies the data.
-function detectCrossProjectMockups(orders, mockupOwners) {
-  const owners = mockupOwners || new Map();
-  const normNum = (n) => String(n || '').replace(/^#/, '').replace(/^0+/, '').toUpperCase();
-  // The 6-digit base a number belongs to, as a plain project number ('000150' → '150').
-  const baseOf = (n) => {
-    const m = normNum(n).match(/^(\d+)/);
-    return m ? String(m[1]).replace(/^0+/, '') : '';
-  };
-
-  const out = [];
-  for (const o of orders || []) {
-    const nums = Array.isArray(o.mockupNumbers) ? o.mockupNumbers : [];
-    if (nums.length === 0) continue;
-    const mine = String(o.projectNumber || '');
-    if (!mine) continue;                       // no project number → nothing to compare against
-    const mineBase = mine.split('-')[0].replace(/^0+/, '');
-
-    const confRefs = new Set(
-      (((o.confirmation && o.confirmation.items) || [])
-        .map((it) => normNum(it && it.mockupNum))
-        .filter(Boolean)),
-    );
-
-    const foreign = [];
-    for (const n of nums) {
-      const b = baseOf(n);
-      if (!b || b === mineBase) continue;      // belongs here
-      if (confRefs.has(normNum(n))) continue;  // the owner put it on the confirmation
-      const owner = owners.get(normNum(n));
-      if (owner && String(owner.carriedInto || '') === mine) continue;  // carried over on purpose
-      foreign.push({ mockupNum: n, belongsTo: owner ? String(owner.projectNumber || b) : b });
-    }
-    if (!foreign.length) continue;
-
-    out.push({
-      orderId: String(o._id),
-      projectNumber: o.projectNumber,
-      orderNumber: o.orderNumber || '',
-      companyName: o.companyName || o.clientName || '',
-      foreign,
-      // What mockupNumbers becomes — the order keeps everything that is really its own.
-      keep: nums.filter((n) => !foreign.some((f) => normNum(f.mockupNum) === normNum(n))),
-    });
-  }
-  return out;
-}
-
 module.exports = {
   deriveCompanyKey, normalizeOrderNumber, splitPollutedName,
   detectOrphanOrders, detectPollutedClients, detectMisKeyedReceipts, detectDuplicateSales,
-  detectCrossProjectMockups,
   partyCompanyKeys, companyKeyOf, COST_CATEGORIES,
 };
