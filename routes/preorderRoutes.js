@@ -4,11 +4,13 @@
 const express = require('express');
 const router = express.Router();
 const { requireAdmin } = require('../middleware/auth');
-const { createPreorder, listPreorders, updatePreorder } = require('../controllers/preorders');
+const { createPreorder, listPreorders, updatePreorder, preorderToOrder } = require('../controllers/preorders');
 
 router.use(requireAdmin);
 router.get('/', listPreorders);
 router.post('/', createPreorder);
 router.patch('/:id', updatePreorder);
+// Roll a cleared drop's tally into its project's confirmation.
+router.post('/:id/to-order', preorderToOrder);
 
 module.exports = router;

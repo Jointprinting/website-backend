@@ -10,6 +10,7 @@
 const crypto = require('crypto');
 const PreorderLink = require('../models/PreorderLink');
 const Order = require('../models/Order');
+const { rollupCommitments } = require('../utils/preorderRollup');
 const ClientLogo = require('../models/ClientLogo');
 
 const MAX_ITEMS = 20;
@@ -168,6 +169,71 @@ async function updatePreorder(req, res) {
   } catch (e) { res.status(500).json({ message: e.message }); }
 }
 
+// POST /api/preorders/:id/to-order — roll the tally into the linked order's
+// confirmation. THE step the whole drop exists for: clearing MOQ means the run
+// is a go, and the very next thing is turning a pile of per-person rows into the
+// lines a printer and a client read. Doing that by hand, at exactly that moment,
+// is how a size gets miscounted — and a miscount here becomes an invoice and a
+// print run.
+//
+// DELIBERATELY NOT DESTRUCTIVE, matching the house preview→confirm rule:
+//   • It never overwrites a confirmation that already has content unless the
+//     caller passes { replace: true }. A drop that ran twice must not silently
+//     erase the lines the owner already tuned.
+//   • It never touches an APPROVED order — those are money-locked, and the
+//     client signed off on what's there.
+//   • The link is left OPEN. Linking it to an order is what clears the hub
+//     signal; revoking is a separate, explicit decision.
+async function preorderToOrder(req, res) {
+  try {
+    const link = await PreorderLink.findById(req.params.id);
+    if (!link) return res.status(404).json({ message: 'Preorder not found.' });
+    if (!link.orderId) {
+      return res.status(400).json({ message: 'This drop is not linked to a project yet — link it first, then roll it in.' });
+    }
+
+    const order = await Order.findById(link.orderId);
+    if (!order) return res.status(404).json({ message: "That drop's project no longer exists." });
+
+    const MONEY_LOCKED = ['approved', 'placed', 'in_production', 'shipped', 'delivered'].includes(order.status);
+    if (MONEY_LOCKED) {
+      return res.status(409).json({
+        message: `Project #${order.projectNumber} is already ${order.status} — its confirmation is locked. Re-open it first if the numbers really need to change.`,
+      });
+    }
+
+    const { items, units, people, skipped } = rollupCommitments(link.toObject ? link.toObject() : link);
+    if (!items.length) {
+      return res.status(400).json({ message: 'No commitments with a quantity yet — nothing to roll in.' });
+    }
+
+    const conf = order.confirmation || {};
+    const hadContent = Array.isArray(conf.items) && conf.items.length > 0;
+    if (hadContent && !(req.body && req.body.replace === true)) {
+      return res.status(409).json({
+        message: `Project #${order.projectNumber} already has ${conf.items.length} confirmation line(s). Re-send with replace to overwrite them.`,
+        needsConfirm: true, existingLines: conf.items.length, wouldAdd: items.length,
+      });
+    }
+
+    order.confirmation = { ...conf, items };
+    order.activity = order.activity || [];
+    order.activity.push({
+      kind: 'preorder_rolled_in', actor: 'owner',
+      message: `Rolled "${link.title}" into the confirmation — ${items.length} line(s), ${units} unit(s) from ${people} ${people === 1 ? 'person' : 'people'}` +
+        (skipped ? ` (${skipped} row(s) had no quantity and were skipped)` : ''),
+      meta: { preorderId: String(link._id), lines: items.length, units, people, skipped, replaced: hadContent },
+      at: new Date(),
+    });
+    await order.save();
+
+    res.json({
+      order, lines: items.length, units, people, skipped, replaced: hadContent,
+      message: `${units} unit(s) from ${people} ${people === 1 ? 'person' : 'people'} rolled into project #${order.projectNumber}.`,
+    });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+}
+
 // ── Public (token-gated, no auth) ───────────────────────────────────────────
 
 // GET /api/preorder/:token — the page payload. Totals only; no names, no
@@ -308,7 +374,7 @@ async function getClientPreorder(req, res) {
 }
 
 module.exports = {
-  createPreorder, listPreorders, updatePreorder,
+  createPreorder, listPreorders, updatePreorder, preorderToOrder,
   getPublicPreorder, commitPreorder, getClientPreorder,
   _tally: tally, _cleanItems, _publicProgress: publicProgress,
 };
