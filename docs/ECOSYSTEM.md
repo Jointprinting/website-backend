@@ -117,13 +117,24 @@ reworked:
   PO # is also a free-text field the owner can overwrite, and the counter only bumps when
   the number changed. **Two POs for one printer can silently share `#007`** — no
   prevention or detection.
-- **Vendor identity is matched by free-text name** (case-insensitive regex on `vendorName` /
-  `Transaction.party`), not a stable id. A rename/typo ("Heritage" vs "Heritage Screen
-  Printing") **orphans spend off the card** until a merge re-points it.
-- **`blanksProvided` lives in two places with different defaults** (`Vendor.blanksProvided`
-  defaults `true`; `PurchaseOrder.blanksProvided` defaults `false`). A PO created/edited
-  outside the seed path, or a vendor toggle changed after POs exist, can leave them out of
-  sync — directly relevant to step 8 of the order flow.
+- ~~**Vendor identity is matched by free-text name**~~ — **FIXED (July 2026).** `Vendor`
+  and `PurchaseOrder` now carry an indexed, derived `vendorKey` (`utils/poCost.vendorKey`
+  — trim + collapse whitespace + lowercase, the same key POs were already grouped and
+  numbered on), synced on every write path by `utils/vendorKeySync`. `Vendor.findByName`
+  is the one lookup; each query keeps an `unkeyed` arm on the old name regex so a partial
+  backfill can't hide a vendor. `scripts/backfillVendorKeys.js` stamps existing rows and
+  REPORTS (never merges) any that collapse to one key.
+  Still true: **`Transaction.party` stays free text** — the ledger has no vendor FK, so
+  spend matching there is genuinely a name match and can still drift.
+- ~~**`blanksProvided` lives in two places with different defaults**~~ — **FIXED
+  (July 2026).** Both models default `true`, and the value is no longer read off the
+  vendor at all in the normal path: it is DERIVED FROM THE ITEMS by `utils/apparel`,
+  because the owner's rule is about the product. **Apparel → JP supplies the blanks**
+  (bought from S&S / an approved vendor, shipped to the printer). **Promo — lighters,
+  stress balls — → the printer manufactures and prints them.** The derivation reuses the
+  `taxExempt` flag the confirmation already carries for the NJ clothing exemption, so
+  there is one fact, not two. The vendor's remembered mode is only the fallback when a
+  PO has no items to judge.
 - **Two money figures on the vendor card can disagree with no reconciliation:** "PO total"
   (sum of PO `grandTotal`) vs "Lifetime spend" (signed sum of expense transactions matched
   by party name). An unpaid PO or a receipt under a slightly different party string makes
@@ -143,8 +154,8 @@ reworked:
   time (16 cards × ~6 fields after a Drive rebuild).
 - **Capabilities is one comma-separated text field** — no chip multi-select, no autocomplete
   against tags already used elsewhere.
-- **Every PO-builder outcome is a blocking `alert()`** (created/skipped/held/warnings) instead
-  of inline, actionable rows.
+- ~~**Every PO-builder outcome is a blocking `alert()`**~~ — **FIXED**; outcomes are
+  inline rows now.
 - The **"generate POs from confirmation" held case dead-ends in prose** — it tells him to go
   assign suppliers on the confirmation items and re-run, but the PO builder can't set the
   per-item printer itself.
@@ -224,6 +235,47 @@ Captured directly from Nate; treat as the spec for these areas.
   sidebar). Alternate names (akas): add tastefully once there's data to populate them.
 - **Mockup studio:** **rebuild the Lookbook maker entirely** — genius, every aspect
   beautiful. (Plan ready — see below.)
+
+## Owner decisions — round 3 (July 2026: money flow, brands, portal, blanks)
+
+- **Invoicing is MANUAL and happens AFTER approval.** The full sequence is
+  **approve → the owner writes and sends the invoice in QuickBooks → client pays →
+  production starts.** The Studio never sees the payment. He says this is fine — do NOT
+  try to automate the invoice itself.
+  What the Studio DOES now track is the gap: `Order.invoiceSentAt` separates *"I owe
+  them an invoice"* (his move, and the job is parked behind it) from *"sent and unpaid"*
+  (their move — chase it). `Order.paid` keeps its old meaning so no money math changed.
+  Two hub signals ride this: `awaiting_invoice` (critical) and `invoice_unpaid`
+  (warning, only past 7 days).
+- **The QuickBooks API connection is BROKEN and is not being pursued.** OAuth wiring
+  exists; no export has ever been committed. Don't plan around a live QB integration,
+  and don't describe finance numbers as reconciled against QuickBooks — they reconcile
+  against `data/financeLedgerSeed.json`, which is the app checking its own homework.
+- **JP Webworks is ACTIVE**, with a client pending, and the owner wants real business
+  tooling for it (sites, care plans, MRR, the edit backlog). Only its **lead-gen** tools
+  (Lead Recon, Cold Call Tree, Spider) are cancelled — kept for history in the hub's
+  `held` group. `docs/BUSINESS-MODEL.md` previously said Webworks was paused and its
+  tooling legacy; that was stale and produced a wrong recommendation to retire it.
+- **JP Atom is PAUSED** — an outline exists, waiting for someone who needs it. No
+  customers. Don't build for it speculatively.
+- **NO client portal, and none wanted.** Halted 2026-07-14 for the reason recorded in
+  `controllers/portal.js`: a magic link is bearer access, so one forward lets a third
+  party read a client's order totals. `PORTAL_ENABLED` gates both the read and the mint,
+  defaults off, and is set nowhere — it fails closed. The client-facing surfaces are
+  **`/approve`, `/lookbook` and `/preorder` only**. Do not propose a portal.
+- **Who supplies the blanks — by PRODUCT, not vendor.** **Apparel: the owner does**
+  (bought from S&S or an approved vendor, shipped to the printer). **Promo — lighters,
+  stress balls: the printer manufactures and prints them.** `utils/apparel` derives this
+  from the confirmation's `taxExempt` flag (already curated per item for the NJ clothing
+  exemption), so there is one fact rather than two that can drift.
+- **Turnaround alarms confirmed: 2 weeks / 3 weeks.** These drive the late filter and the
+  hub badge — `AGE_RUNNING_LONG` / `AGE_POSSIBLY_LATE` in `services/signals.js` and
+  `attention()` in `controllers/orders.js`. Keep the two in sync.
+- **A cleared preorder drop rolls into its confirmation** in one action
+  (`POST /api/preorders/:id/to-order`) — per-person commitments become one line per
+  product/colour with the size run under it. Non-destructive: it refuses to overwrite
+  existing confirmation lines without `{ replace: true }`, and refuses outright on an
+  approved (money-locked) order.
 
 ## Big builds — plans on file
 

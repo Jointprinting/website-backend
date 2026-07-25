@@ -23,10 +23,19 @@
 - **Primary vertical: cannabis** — dispensaries first (dedicated catalogs "JP ×
   Dispensary", "Dispensary Promos"), then breweries, startups, restaurants, events,
   gyms, nonprofits, retail. Customer base skews small cannabis brands.
-- **Second business in the same codebase: JP Webworks (JPW)** — web-design/marketing
-  lead-gen for South Jersey service businesses (Lead Recon, Cold Call Tree, "Spider"
-  Google Sheet). **Paused** — owner: it returns only as a **side project for simple
-  website creation, nothing more**. Treat the JPW tooling as legacy; don't invest in it.
+- **Second business in the same codebase: JP Webworks (JPW)** — website design + a
+  recurring **care plan** for South Jersey businesses. **ACTIVE** (owner, July 2026):
+  he is doing Webworks, has a client he is about to build a site for, and wants the
+  tooling to be a real business — sites, care plans, MRR, and the edit backlog.
+  What IS retired is the **lead-gen** half (Lead Recon, Cold Call Tree, the "Spider"
+  Google Sheet); those tools are kept for historical reference only and live in the
+  hub's `held` group. Do not confuse the two.
+  > This entry previously read "Paused… treat its tooling as legacy; don't invest in
+  > it," which was stale and directly caused a recommendation to retire Webworks.
+  > Correct it here first if the status changes again.
+- **Third brand: JP Atom** — **paused**. The owner built an outline and is waiting to
+  find someone who needs it. Subscription plumbing and a hub page exist; there are no
+  customers yet. Don't build for it speculatively.
 
 ## How money is made
 
@@ -163,9 +172,15 @@ frontier sweep (opt-in). Receipt scanner resumes interrupted reads on boot.
 
 ## Known issues & opportunity backlog (from the July 2026 code scan)
 
-Owner-flagged: **Vendors/POs** (hard-delete PO, duplicate PO numbers possible,
-free-text vendor identity, `blanksProvided` default drift) and **CRM interaction
-depth** (no multi-select/marquee, calendar drag) — details in `docs/ECOSYSTEM.md`.
+Owner-flagged, **all four now RESOLVED** (July 2026 — this list described them as live
+long after they were fixed, which is its own hazard):
+- PO hard-delete → soft-archive; `findPoNumberClash` guards duplicate PO numbers.
+- Free-text vendor identity → indexed, derived `vendorKey` on `Vendor` +
+  `PurchaseOrder`, synced on every write path (`utils/vendorKeySync`).
+- `blanksProvided` default drift → both models default `true`, and the value is now
+  derived from the items (`utils/apparel`) rather than the vendor's remembered boolean.
+
+Still open: **CRM interaction depth** (no multi-select/marquee, calendar drag).
 
 Additional findings worth a pass:
 
@@ -185,20 +200,50 @@ branded; dead marketing components deleted.
 Captured from Nate; treat as ground truth until he updates them.
 
 1. **Goals & scale:** full-time; ~**$75k revenue to date**, **$150k** 12-month target.
-   JP Webworks returns only as a side project doing simple website creation — nothing
-   more; treat its tooling as legacy.
+   **JP Webworks is ACTIVE** with a client pending, and the owner wants full business
+   tooling for it. Only its LEAD-GEN tools are cancelled (kept for history). **JP Atom
+   is paused** — outline built, waiting for a customer.
 2. **Margins:** apparel and promos both; **no floor** — has done **$0-profit orders to
    win a client**; typical order nets **~$200**.
 3. **Customer mix:** most revenue is **dispensaries**.
 4. **Winning channels:** **road visits + cold email** close deals.
 5. **Bottleneck:** **quality lead volume** — not time, cash, or capacity.
 6. **Reorders:** "not a lot but a good amount."
-7. **Off-app work:** nothing painful (QuickBooks invoicing is fine as-is).
+7. **Off-app work — invoicing and payment happen in QUICKBOOKS, BY HAND.** The
+   sequence is: client approves → **the owner writes and sends the invoice in
+   QuickBooks** → client pays → production starts. The Studio never sees the payment
+   itself; `Order.paid` is set by hand, and `Order.invoiceSentAt` records the send so
+   the hub can tell "I owe them an invoice" (my move, job parked) apart from "sent and
+   unpaid" (their move, chase it). He says this is fine as-is — do NOT try to automate
+   the invoice itself.
+   **The QuickBooks API connection is broken and is NOT being pursued.** There is OAuth
+   wiring in the repo and no export has ever been committed; don't plan around a live QB
+   integration, and don't claim finance numbers are reconciled against QuickBooks —
+   they are reconciled against `data/financeLedgerSeed.json`, which is the app checking
+   its own homework.
 8. **Seasonality:** real (4/20, holidays, USA-250th) but handled by making new
    marketing, not by tooling.
 9. **Email:** `nate@jointprinting.com` is the only address that exists.
 10. **Tracking:** keep Clarity, Apollo removed (never used).
 
+11. **Who supplies the blanks:** **apparel — the owner does.** He buys from **S&S** or
+    an approved vendor and ships the blanks to the printer. **Promo products** (lighters,
+    stress balls) are the exception: the printer **manufactures and prints those
+    themselves**. So `blanksProvided` follows the PRODUCT, not the vendor — see
+    `utils/apparel.js`, which derives it from the `taxExempt` flag the confirmation
+    already carries for the NJ clothing exemption.
+12. **Client portal: NO, and not wanted.** Halted 2026-07-14 for the reason written into
+    `controllers/portal.js` — a magic link is bearer access, so one forward lets a third
+    party read a client's order totals. `PORTAL_ENABLED` gates both the read and the
+    mint, defaults off, and is set nowhere. The owner does not want one built. Client-
+    facing surfaces are `/approve`, `/lookbook` and `/preorder` only.
+13. **Turnaround alarms:** **2 weeks / 3 weeks confirmed correct** (July 2026). These
+    drive the late filter and the hub badge — see `AGE_RUNNING_LONG` /
+    `AGE_POSSIBLY_LATE` in `services/signals.js` and `attention()` in
+    `controllers/orders.js`; keep the two in sync.
+
 **Implication for future work:** the highest-leverage direction is anything that
 increases *quality* dispensary lead flow into road-visit and cold-email motions (and
 conversion of them) — not internal-ops automation, which the owner says doesn't hurt.
+JP Webworks is the exception: it is an active, growing second business and the owner
+has explicitly asked for the tools to run it.
