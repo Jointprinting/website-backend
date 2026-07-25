@@ -128,9 +128,12 @@ async function rebuildApply(req, res) {
     const createdVendorIds = [];
     const createdPoIds = [];
 
-    // Resolve a canonical vendor NAME → its Vendor _id (create-or-find), so POs link
-    // to the right printer. Built as we upsert vendors; falls back to a name lookup.
-    const vendorIdByName = new Map();
+    // Canonical vendor NAME → its remembered blanks mode, filled as we upsert the
+    // vendors below so loading their POs doesn't re-query per PO. (This replaced a
+    // vendorIdByName map that was written in both loops and never read once — its
+    // comment claimed POs linked to a Vendor _id, which they never did. POs still
+    // key on vendorName.)
+    const blanksModeCache = new Map();
 
     // 1) CREATE the canonical vendors.
     for (const v of plan.vendorsToCreate) {
@@ -156,7 +159,7 @@ async function rebuildApply(req, res) {
         doc.source = 'drive-rebuild';
         doc.rebuildBatchId = batchId;
         await doc.save();
-        vendorIdByName.set(v.name, doc._id);
+        blanksModeCache.set(v.name, doc.blanksProvided !== false);
         if (isNew) { report.vendorsCreated++; createdVendorIds.push(doc._id); } else { report.vendorsUpdated++; }
       } catch (err) {
         report.errors.push({ stage: 'vendor-create', name: v.name, message: err.message });
@@ -180,19 +183,25 @@ async function rebuildApply(req, res) {
         doc.source = doc.source || 'drive-rebuild';
         doc.rebuildBatchId = batchId;
         await doc.save();
-        vendorIdByName.set(v.name, doc._id);
+        blanksModeCache.set(v.name, doc.blanksProvided !== false);
         report.vendorsUpdated++;
       } catch (err) {
         report.errors.push({ stage: 'vendor-update', name: u.seed.name, message: err.message });
       }
     }
 
-    // Helper: resolve a PO's vendor id (use the map; else look it up by exact name).
-    const resolveVendorId = async (name) => {
-      if (vendorIdByName.has(name)) return vendorIdByName.get(name);
-      const v = await Vendor.findOne({ name, archived: { $ne: true } }).select('_id').lean();
-      if (v) { vendorIdByName.set(name, v._id); return v._id; }
-      return null;
+    // Helper: the vendor's remembered blanks mode for a PO about to be loaded.
+    // createPo and createPosFromConfirmation both read vendor.blanksProvided and
+    // fall back to true (JP supplies the blanks ~99%); the rebuild loader was the
+    // one creator that set nothing, so its POs took the model default and asserted
+    // the RARE case — which switches off the Blank COGS receipt nag for that order
+    // (expectedReceiptCats). Same rule here as the other two creators.
+    const resolveBlanksMode = async (name) => {
+      if (blanksModeCache.has(name)) return blanksModeCache.get(name);
+      const v = await Vendor.findOne({ name, archived: { $ne: true } }).select('blanksProvided').lean();
+      const mode = v && v.blanksProvided != null ? !!v.blanksProvided : true;
+      blanksModeCache.set(name, mode);
+      return mode;
     };
 
     // 2) LOAD the Drive POs. Each carries its sourceFileId (idempotency key) so a
@@ -216,6 +225,7 @@ async function rebuildApply(req, res) {
           vendorName: p.vendorName,
           grandTotal: Number(p.grandTotal) || 0,
           notes: p.sourceTitle ? `Loaded from Drive: ${p.sourceTitle}` : '',
+          blanksProvided: await resolveBlanksMode(p.vendorName),
           source: 'drive-rebuild',
           sourceFileId: p.sourceFileId || '',
           rebuildBatchId: batchId,
