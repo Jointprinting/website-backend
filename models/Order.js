@@ -527,12 +527,28 @@ const OrderSchema = new mongoose.Schema({
     }],
   },
 
+  // The owner's CURATED, ORDERED selection of designs for this project — which
+  // mockups appear on the client's documents, and in what order.
+  //
+  // This is NOT the same question as StudioLibraryItem.projectNumber, and the two
+  // are not redundant:
+  //   • StudioLibraryItem.projectNumber = MEMBERSHIP. Which designs belong to
+  //     this project. Authoritative, indexed, one project per mockup.
+  //   • Order.mockupNumbers            = PRESENTATION. Which of them the owner
+  //     picked to show, in the sequence he arranged.
+  //
+  // A design can belong to the project without being on the confirmation, and
+  // the ORDER of this array is a real decision the confirmation respects. So
+  // don't "deduplicate" this away against projectNumber — that ordering is the
+  // owner's, and nothing else stores it.
+  //
+  // The historical bug was never that both existed: it was that a fuzzy
+  // client-name matcher silently WROTE here on every drawer open, so a guess
+  // masqueraded as curation — and leaked to clients. The matcher is gone; this
+  // array is now only ever written by an explicit action (the picker, a carried
+  // mockup, a new variation). controllers/orders.mockupHealth reports any drift
+  // between the two fields rather than letting either quietly win.
   mockupNumbers: [{ type: String }],
-  // Mockup #s the owner explicitly REMOVED from this project. The client-name
-  // auto-matcher (drawer + server auto-link) skips these, so an X actually
-  // sticks instead of the mockup re-attaching itself. An explicit re-link via
-  // the picker still wins — exclusion only blocks AUTO matching.
-  excludedMockups: [{ type: String }],
   contactSubmissionId: { type: mongoose.Schema.Types.ObjectId, ref: 'ContactSubmission', default: null },
   // Which brand's inquiry this order was started from, carried over from the
   // originating ContactSubmission.source so the Order Tracker can show the brand
@@ -638,6 +654,20 @@ const OrderSchema = new mongoose.Schema({
     _id: false,
   }],
 }, { timestamps: true });
+
+// ── Compound indexes for the two shapes that actually run hot ────────────────
+// Every field below was already indexed singly, but `status` was not indexed at
+// all — and the hub's signals feed fires FOUR status+archived reads on every
+// load (orders aging, quotes expiring, awaiting confirmation, the invoice gap),
+// so that pair is the busiest query shape in the app. `archived` leads because
+// every one of those reads excludes archived first and then narrows by status.
+OrderSchema.index({ archived: 1, status: 1 });
+
+// Company-scoped reads: the CRM company card, the order tracker's per-company
+// grouping, and the client-facing surfaces, which are all "this company's live
+// orders". Deliberately only these two — an index costs write time on every
+// order save, so speculative ones are not free.
+OrderSchema.index({ companyKey: 1, archived: 1 });
 
 // Totals lifecycle — one source of truth per stage:
 //   - Quote stage (no confirmation content): totalValue/cogs derive from
