@@ -21,8 +21,9 @@ const Client = require('../models/Client');
 const Transaction = require('../models/Transaction');
 const DataCleanupBatch = require('../models/DataCleanupBatch');
 const {
+  partyCompanyKeys, companyKeyOf,
   normalizeOrderNumber, detectOrphanOrders, detectPollutedClients, detectMisKeyedReceipts,
-  detectDuplicateSales,
+  detectDuplicateSales, detectVendorRefunds,
 } = require('../services/dataCleanup');
 
 // Only flag a mis-keyed receipt that was ENTERED recently. The owner's historical
@@ -32,10 +33,16 @@ const {
 // caught (and an active order missing its receipt is also surfaced by Needs-receipts).
 const MISKEYED_RECENT_DAYS = 45;
 
+// Where a supplier refund can be booked. Derived from the Transaction model's
+// own list minus the ones that are never a COST: client revenue, the owner's
+// equity movements, and 'Refund' itself (which is the thing being corrected).
+const EXPENSE_CATEGORIES = require('../models/Transaction').CATEGORIES
+  .filter((c) => !['Client Sales', 'Owner Draw', 'Owner Contribution', 'Refund'].includes(c));
+
 // Load the live data the detections diff against (lean; writes target rows by _id).
 async function buildPlan() {
   const cutoff = new Date(Date.now() - MISKEYED_RECENT_DAYS * 24 * 60 * 60 * 1000);
-  const [orders, clients, txns, incomeRows] = await Promise.all([
+  const [orders, clients, txns, incomeRows, refundScope] = await Promise.all([
     Order.find({}).select('orderNumber companyKey companyName clientName').lean(),
     Client.find({ archived: { $ne: true } }).select('companyKey companyName clientName archived').lean(),
     Transaction.find({ type: 'expense', orderNumber: { $ne: '' }, createdAt: { $gte: cutoff } })
@@ -45,21 +52,50 @@ async function buildPlan() {
     // is selected so the detector can exclude refund credits.
     Transaction.find({ type: 'income', category: 'Client Sales', orderNumber: { $ne: '' } })
       .select('orderNumber party amount category date type isCredit').lean(),
+    // Every 'Refund' row, and the expense rows that tell us which category a
+    // given supplier's spend normally sits in (the dropdown's default).
+    Transaction.find({ $or: [{ category: 'Refund' }, { type: 'expense' }] })
+      .select('orderNumber party amount category date type isCredit description').lean(),
   ]);
   const orderKeys = new Set(orders.map((o) => normalizeOrderNumber(o.orderNumber)).filter(Boolean));
+  // Known clients, so a refund FROM a client stays contra-revenue while a refund
+  // from a supplier gets re-booked against cost.
+  const clientKeys = new Set(
+    clients.map((c) => String(c.companyKey || '')).filter(Boolean),
+  );
+  for (const o of orders) if (o.companyKey) clientKeys.add(String(o.companyKey));
+
+  // Which expense category each party's other rows use — the suggested default.
+  const categoryHint = new Map();
+  const hintCount = new Map();
+  for (const t of (refundScope || [])) {
+    if (!t || t.type !== 'expense' || !t.category) continue;
+    const key = companyKeyOf(partyCompanyKeys(t.party));
+    if (!key) continue;
+    const per = hintCount.get(key) || new Map();
+    per.set(t.category, (per.get(t.category) || 0) + 1);
+    hintCount.set(key, per);
+  }
+  for (const [key, per] of hintCount) {
+    let best = '', n = 0;
+    for (const [cat, c] of per) if (c > n) { best = cat; n = c; }
+    if (best) categoryHint.set(key, best);
+  }
+
   return {
     orders,
     orphans: detectOrphanOrders(orders),
     polluted: detectPollutedClients(clients),
     misKeyed: detectMisKeyedReceipts(txns, orderKeys),
     dupeSales: detectDuplicateSales(incomeRows, orderKeys),
+    vendorRefunds: detectVendorRefunds(refundScope, clientKeys, categoryHint),
   };
 }
 
 // ── GET/POST /preview ─────────────────────────────────────────────────────────
 async function cleanupPreview(req, res) {
   try {
-    const { orphans, polluted, misKeyed, dupeSales, orders } = await buildPlan();
+    const { orphans, polluted, misKeyed, dupeSales, vendorRefunds, orders } = await buildPlan();
     // The real orders the owner can re-point a mis-keyed receipt to (newest first).
     const orderOptions = orders
       .filter((o) => String(o.orderNumber || '').trim())
@@ -68,9 +104,11 @@ async function cleanupPreview(req, res) {
     res.json({
       dryRun: true,
       counts: { orphans: orphans.length, polluted: polluted.length, misKeyed: misKeyed.length,
-        dupeSales: dupeSales.length,
-        total: orphans.length + polluted.length + misKeyed.length + dupeSales.length },
-      orphans, polluted, misKeyed, dupeSales, orderOptions,
+        dupeSales: dupeSales.length, vendorRefunds: vendorRefunds.length,
+        total: orphans.length + polluted.length + misKeyed.length + dupeSales.length + vendorRefunds.length },
+      orphans, polluted, misKeyed, dupeSales, vendorRefunds, orderOptions,
+      // The categories a supplier refund can be booked against.
+      expenseCategories: EXPENSE_CATEGORIES,
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
 }
@@ -85,7 +123,7 @@ async function cleanupApply(req, res) {
     if (body.confirm !== true && body.confirm !== 'true') {
       return res.status(400).json({ message: 'Refusing to apply without an explicit { confirm: true }. Run the preview first.' });
     }
-    const { orders, orphans, polluted, dupeSales } = await buildPlan();
+    const { orders, orphans, polluted, dupeSales, vendorRefunds } = await buildPlan();
     const orphanWant = Array.isArray(body.orphanIds) ? new Set(body.orphanIds.map(String)) : null;
     const nameWant = Array.isArray(body.clientIds) ? new Set(body.clientIds.map(String)) : null;
     const receiptFixes = Array.isArray(body.receipts) ? body.receipts : [];
@@ -158,6 +196,27 @@ async function cleanupApply(req, res) {
       for (const r of full) snap.removedTransactions.push(r);   // full row → re-insertable on revert
     }
 
+    // 5) Supplier refunds → re-book as an EXPENSE CREDIT in the category the cost
+    //    came from. `isCredit` already nets cost down, so this puts the money back
+    //    where it belongs instead of quietly shrinking revenue. Body:
+    //    { vendorRefunds: [{ txnId, category }] } — the owner picks each category.
+    const refundFixes = Array.isArray(body.vendorRefunds) ? body.vendorRefunds : [];
+    const eligibleRefunds = new Set(vendorRefunds.map((r) => String(r.txnId)));
+    for (const f of refundFixes) {
+      if (!f || !f.txnId) continue;
+      const id = String(f.txnId);
+      // Only rows the LIVE plan still flags — never re-book on a stale id.
+      if (!eligibleRefunds.has(id)) { skipped.push({ txnId: id, reason: 'no longer a supplier refund' }); continue; }
+      const category = String(f.category || '').trim();
+      if (!EXPENSE_CATEGORIES.includes(category)) { skipped.push({ txnId: id, reason: `not an expense category: ${category}` }); continue; }
+      const cur = await Transaction.findById(id).select('type category isCredit').lean();
+      if (!cur) continue;
+      snap.transactions.push({ id, before: {
+        type: cur.type, category: cur.category, isCredit: cur.isCredit === true,
+      } });
+      writes.transactions.push({ id, set: { type: 'expense', category, isCredit: true } });
+    }
+
     // Persist the backup FIRST (durable), then mutate. If a write throws midway, the
     // batch already holds every BEFORE value so revert restores the lot. (Mirrors
     // controllers/financeDedupe — backup before any change.)
@@ -176,7 +235,7 @@ async function cleanupApply(req, res) {
       removed += (del.deletedCount != null ? del.deletedCount : (del.n || 0));
     }
 
-    res.json({ applied: true, batchId, fixed: { orders: writes.orders.length, names: writes.clients.length, receipts: writes.transactions.length, dupeSales: dupesToFix.length, removedRows: removed }, skipped });
+    res.json({ applied: true, batchId, fixed: { orders: writes.orders.length, names: writes.clients.length, receipts: writes.transactions.length, dupeSales: dupesToFix.length, removedRows: removed, vendorRefunds: refundFixes.length }, skipped });
   } catch (e) { res.status(500).json({ message: e.message }); }
 }
 
@@ -233,11 +292,11 @@ async function cleanupRevert(req, res) {
 // How many issues remain — the UI shows the "Fix data" entry only when total > 0.
 async function cleanupStatus(req, res) {
   try {
-    const { orphans, polluted, misKeyed, dupeSales } = await buildPlan();
+    const { orphans, polluted, misKeyed, dupeSales, vendorRefunds } = await buildPlan();
     res.json({
-      total: orphans.length + polluted.length + misKeyed.length + dupeSales.length,
+      total: orphans.length + polluted.length + misKeyed.length + dupeSales.length + vendorRefunds.length,
       orphans: orphans.length, polluted: polluted.length, misKeyed: misKeyed.length,
-      dupeSales: dupeSales.length,
+      dupeSales: dupeSales.length, vendorRefunds: vendorRefunds.length,
     });
   } catch (e) { res.json({ total: 0, error: e.message }); }
 }
