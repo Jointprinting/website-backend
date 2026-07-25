@@ -11,6 +11,8 @@
 
 const mongoose = require('mongoose');
 const JpwSite = require('../models/JpwSite');
+const Subscription = require('../models/Subscription');
+const { recordStatusFor } = require('./subscriptions');
 const jpwCopywriter = require('../services/jpwCopywriter');
 const aiBudget = require('../services/aiBudget');
 
@@ -112,19 +114,79 @@ function publicSiteView(site) {
   };
 }
 
+// Join each site to the care plan that PAYS for it. Webworks is a subscription
+// business, and until now the Studio could tell you a site was LIVE but not
+// whether it was EARNING — the only number that matters for a recurring brand.
+// Subscription already carried `siteId` and `companyKey` for exactly this join
+// and nothing was reading either.
+//
+// Two ways a plan reaches a site, in priority order:
+//   1. siteId  — explicitly linked. Authoritative.
+//   2. companyKey — the company's webworks plan, for sites created before the
+//      link existed. Reported as linkedBy:'company' so a guess is VISIBLE rather
+//      than passing itself off as fact.
+// An active plan beats a paused/canceled one for the company fallback.
+//
+// PURE (takes `today` rather than reading the clock) — unit-tested.
+function attachPlans(sites, subs, today) {
+  const bySiteId = new Map();
+  const byCompany = new Map();
+  for (const sub of subs || []) {
+    if (sub.siteId) bySiteId.set(String(sub.siteId), sub);
+    if (!sub.companyKey) continue;
+    const cur = byCompany.get(sub.companyKey);
+    if (!cur || (cur.status !== 'active' && sub.status === 'active')) byCompany.set(sub.companyKey, sub);
+  }
+
+  return (sites || []).map((s) => {
+    const linked = bySiteId.get(String(s._id)) || null;
+    const sub = linked || (s.companyKey ? byCompany.get(s.companyKey) : null) || null;
+    // recordStatusFor is the same helper the Finances "record this month's plans"
+    // checklist uses — one definition of "have I billed this period", not two.
+    const rs = sub ? recordStatusFor(sub, today) : null;
+    return {
+      ...s,
+      openEdits: (s.edits || []).filter((e) => e.status !== 'done').length,
+      // A compact summary — enough for the card, no period log on the wire.
+      plan: sub ? {
+        id: String(sub._id),
+        label: sub.plan || 'Care plan',
+        amount: Number(sub.amount) || 0,
+        cadence: sub.cadence === 'annual' ? 'annual' : 'monthly',
+        status: sub.status || 'active',
+        nextBillDate: sub.nextBillDate || null,
+        currentPeriod: rs.currentPeriod,
+        // The question that actually gets forgotten: is THIS period billed?
+        recordedThisPeriod: rs.recorded,
+        linkedBy: linked ? 'site' : 'company',
+      } : null,
+    };
+  });
+}
+
 // ── Admin CRUD ────────────────────────────────────────────────────────────────
 
 // GET /api/jpw/sites — newest first (the Studio list). Excludes soft-deleted.
 // Decorates each with `openEdits` so the ops list can badge outstanding work
-// without shipping every edit body in the list payload.
+// without shipping every edit body in the list payload, and with the care plan
+// that pays for it (attachPlans).
 async function listSites(req, res) {
   try {
     const sites = await JpwSite.find({ archived: { $ne: true } }).sort({ updatedAt: -1 }).lean();
-    const decorated = sites.map((s) => ({
-      ...s,
-      openEdits: (s.edits || []).filter((e) => e.status !== 'done').length,
-    }));
-    res.json({ sites: decorated });
+
+    // Join each site to the care plan that pays for it (see attachPlans).
+    const siteIds = sites.map((s) => s._id);
+    const companyKeys = [...new Set(sites.map((s) => s.companyKey).filter(Boolean))];
+    const subs = await Subscription.find({
+      archived: { $ne: true },
+      brand: 'webworks',
+      $or: [
+        { siteId: { $in: siteIds } },
+        ...(companyKeys.length ? [{ companyKey: { $in: companyKeys } }] : []),
+      ],
+    }).select('siteId companyKey plan amount cadence status startedAt nextBillDate periods').lean();
+
+    res.json({ sites: attachPlans(sites, subs, new Date()) });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -427,4 +489,5 @@ module.exports = {
   listEdits, addEdit, updateEdit, healthCheck,
   // pure helpers (unit-tested)
   slugifySiteName, sanitizeSiteUpdate, sanitizeEditUpdate, publicSiteView, normalizeHost, healthFromHttpStatus, SITE_STATUSES,
+  attachPlans,
 };
