@@ -534,9 +534,11 @@ const updatePo = async (req, res) => {
       if (po.vendorAddress) set.address     = po.vendorAddress;
       if (po.shipMethod)    set.shipMethod  = po.shipMethod;
       await Vendor.findOneAndUpdate(
-        // Case-insensitive, like the createPo lookup — otherwise "heritage"
-        // and "Heritage" become two contact-book entries.
-        { name: new RegExp(`^${String(po.vendorName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+        // Match on the canonical key, like every other vendor lookup — this used
+        // a case-insensitive regex that did NOT collapse whitespace, so a name
+        // with a double space minted a second contact-book entry with its own PO
+        // numbering. The pre-hook keeps vendorKey in step with the name it sets.
+        { vendorKey: vendorKey(po.vendorName) },
         { $set: set, $setOnInsert: { blanksProvided: !!po.blanksProvided } },
         { upsert: true },
       ).catch(() => { /* contact book is best-effort */ });
@@ -719,15 +721,19 @@ const poCostHistory = async (req, res) => {
     const q = String((req.query && req.query.q) || '').trim().toLowerCase();
     if (!vendor) return res.json({ vendor: '', rows: [] });
 
-    // Same exact-ish, case-insensitive vendor match the rest of the PO code uses
-    // so "heritage" and "Heritage Screen Printing" resolve consistently. The PO
-    // cap is the real bound on the work (each PO has only a handful of charges),
-    // so cap POS in the QUERY (M2) — not rows after the fact — and lift the row
-    // cap to a generous bound that won't bite normal usage.
+    // Canonical-key vendor match, like every other vendor lookup — and this one
+    // is index-backed ({ vendorKey, archived, poNumber }) rather than a regex
+    // scan. The `vendorKey: ''` arm covers POs written before the field existed
+    // so a partial backfill can't hide a vendor's real cost history. The PO cap
+    // is the real bound on the work (each PO has only a handful of charges), so
+    // cap POS in the QUERY (M2) — not rows after the fact — and lift the row cap
+    // to a generous bound that won't bite normal usage.
     const PO_CAP = 60;
     const ROW_CAP = 250;
+    const vKey = vendorKey(vendor);
+    const vRe = new RegExp(`^${vendor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')}$`, 'i');
     const pos = await PurchaseOrder.find({
-      vendorName: new RegExp(`^${vendor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+      $or: [{ vendorKey: vKey }, { vendorKey: { $in: ['', null] }, vendorName: vRe }],
       ...NOT_ARCHIVED,
     })
       .sort({ date: -1, createdAt: -1 })
@@ -1032,12 +1038,15 @@ const sendPo = async (req, res) => {
 
 // ── Per-vendor numbering control ──────────────────────────────────────────────
 
-// Case-insensitive exact-name vendor lookup — the SAME match the PO seeders use,
-// so "heritage" and "Heritage" resolve to one record. Returns the POJO or null.
+// Exact-identity vendor lookup, on the stored vendorKey (Vendor.findByName):
+// trim + collapse whitespace + lowercase, so "heritage", "Heritage" and
+// "Heritage  Printing" all resolve to the one record instead of forking a
+// second. Was a case-insensitive name REGEX that did not collapse whitespace —
+// unlike its neighbours, which did. Returns the POJO or null.
 async function _findVendorByName(name) {
   const v = String(name || '').trim();
   if (!v) return null;
-  return Vendor.findOne({ name: new RegExp(`^${v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'), ...NOT_ARCHIVED }).lean();
+  return Vendor.findByName(v, NOT_ARCHIVED).lean();
 }
 
 // GET /api/orders/po-next-number?vendor=<name> — the number that WOULD be assigned

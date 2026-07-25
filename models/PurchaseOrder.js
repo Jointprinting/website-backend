@@ -18,6 +18,12 @@ const PurchaseOrderSchema = new mongoose.Schema({
 
   // Vendor block
   vendorName:    { type: String, default: '' },      // "Heritage Screen Printing"
+  // Canonical vendor identity, derived from vendorName (utils/poCost.vendorKey —
+  // the same key POs are already GROUPED and NUMBERED on, now persisted and
+  // indexed so per-vendor queries stop scanning with a case-insensitive regex
+  // that disagreed with its neighbours about whitespace). Derived, never
+  // hand-set; the hook below keeps it in lockstep on every write path.
+  vendorKey:     { type: String, default: '', index: true },
   contactName:   { type: String, default: '' },      // "Jaide Thomas"
   vendorAddress: { type: String, default: '' },      // "331 York Rd, Warminster, PA 18974"
 
@@ -104,5 +110,13 @@ const PurchaseOrderSchema = new mongoose.Schema({
   archivedAt:    { type: Date, default: null },
   archivedReason:{ type: String, default: '' },        // 'superseded-by-rebuild' | 'rebuild-revert' | …
 }, { timestamps: true });
+
+// Per-vendor PO lookups + the numbering/clash check are the hot path here, and
+// they are always "this vendor, newest first".
+PurchaseOrderSchema.index({ vendorKey: 1, archived: 1, poNumber: -1 });
+
+const { attachVendorKeySync } = require('../utils/vendorKeySync');
+
+attachVendorKeySync(PurchaseOrderSchema, 'vendorName');
 
 module.exports = mongoose.model('PurchaseOrder', PurchaseOrderSchema);

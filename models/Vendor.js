@@ -20,6 +20,21 @@ const VendorOrderLinkSchema = new mongoose.Schema({
 // controllers/purchaseOrders.getVendor).
 const VendorSchema = new mongoose.Schema({
   name:        { type: String, default: '', index: true },
+
+  // The canonical identity key, derived from `name` (trim + collapse internal
+  // whitespace + lowercase — utils/poCost.vendorKey, the SAME function POs are
+  // already grouped and numbered on).
+  //
+  // Lookups used to match on a case-insensitive regex built from the raw name,
+  // and the ~5 sites that did it DISAGREED about whitespace — some collapsed
+  // runs of spaces, some didn't. So "Heritage  Printing" could fail to find
+  // "Heritage Printing" and quietly mint a SECOND vendor record, with its own PO
+  // numbering sequence. Same class of bug as matching mockups by client name.
+  //
+  // Derived, never hand-set: the hooks below keep it in lockstep with `name` on
+  // every write path (save and findOneAndUpdate/updateOne alike), so it cannot
+  // drift from the name it describes.
+  vendorKey:   { type: String, default: '', index: true },
   contactName: { type: String, default: '' },
   email:       { type: String, default: '' },
   phone:       { type: String, default: '' },
@@ -87,5 +102,28 @@ const VendorSchema = new mongoose.Schema({
   archivedReason: { type: String, default: '' },   // 'merged' | …
   mergedInto: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', default: null },
 }, { timestamps: true });
+
+// Keep vendorKey in lockstep with name on EVERY write path. A pre('save') hook
+// alone would miss the upsert paths (the contact book learns a vendor via
+// findOneAndUpdate), and a key that only sometimes tracks its name is worse than
+// no key at all — it makes lookups silently partial.
+const { vendorKey } = require('../utils/poCost');
+const { attachVendorKeySync } = require('../utils/vendorKeySync');
+
+attachVendorKeySync(VendorSchema, 'name');
+
+// The lookup the controllers actually use: exact identity, index-backed, and
+// immune to the whitespace/case forks the regex allowed. Falls back to the old
+// case-insensitive name match for any document written before this field
+// existed, so a partial backfill can never make a real vendor invisible.
+VendorSchema.statics.findByName = function findByName(name, extra = {}) {
+  const key = vendorKey(name);
+  if (!key) return this.findOne({ _id: null });   // never matches; keeps the caller's shape
+  const escaped = String(name).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+  return this.findOne({
+    ...extra,
+    $or: [{ vendorKey: key }, { vendorKey: { $in: ['', null] }, name: new RegExp(`^${escaped}$`, 'i') }],
+  });
+};
 
 module.exports = mongoose.model('Vendor', VendorSchema);
