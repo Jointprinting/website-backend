@@ -239,8 +239,53 @@ function detectDuplicateSales(incomeRows, orderKeys, opts = {}) {
   return out;
 }
 
+// 5) VENDOR refunds miscategorised as customer refunds.
+//
+//    'Refund' in a P&L means money handed back to a CUSTOMER — contra-revenue,
+//    which is exactly how incomeContribution treats it. But the same category has
+//    been used for money coming back FROM a supplier (an S&S sample return, a
+//    refunded Amtrak ticket). Those are cost reductions, not negative sales, so
+//    booking them as income/'Refund' understates revenue AND overstates cost —
+//    and because the two errors push profit the same way, it understates profit
+//    by twice the amount.
+//
+//    The party is what separates them, not the order number: an S&S sample return
+//    carries the order # it was bought for, yet S&S is a supplier. So a refund is
+//    a CUSTOMER refund only when its party resolves to a known client; everything
+//    else is a supplier refund and belongs against cost as an expense credit
+//    (`isCredit` already nets cost DOWN — the mechanism exists, it just wasn't used).
+//
+//    `clientKeys` is a Set of known client companyKeys. `categoryHint` maps a
+//    party's companyKey → the expense category that party's OTHER rows use, so
+//    the owner gets a sensible default instead of a blank dropdown. Pure.
+function detectVendorRefunds(transactions, clientKeys, categoryHint) {
+  const keys = clientKeys instanceof Set ? clientKeys : new Set(clientKeys || []);
+  const hint = categoryHint instanceof Map ? categoryHint : new Map();
+  const out = [];
+  for (const t of (transactions || [])) {
+    if (!t || t.type !== 'income' || t.category !== 'Refund') continue;
+    const cks = partyCompanyKeys(t.party);
+    const key = companyKeyOf(cks);
+    // A known client handing money back IS contra-revenue — leave it alone.
+    if (key && keys.has(key)) continue;
+    if (cks && cks.full && keys.has(cks.full)) continue;
+    out.push({
+      txnId: String(t._id),
+      date: t.date || null,
+      party: t.party || '',
+      amount: Number(t.amount) || 0,
+      orderNumber: t.orderNumber || '',
+      description: t.description || '',
+      // Best guess at where the cost originally sat; the owner can override.
+      suggestedCategory: hint.get(key) || hint.get(cks && cks.full) || 'Other',
+    });
+  }
+  return out;
+}
+
 module.exports = {
   deriveCompanyKey, normalizeOrderNumber, splitPollutedName,
   detectOrphanOrders, detectPollutedClients, detectMisKeyedReceipts, detectDuplicateSales,
+  detectVendorRefunds,
   partyCompanyKeys, companyKeyOf, COST_CATEGORIES,
 };
