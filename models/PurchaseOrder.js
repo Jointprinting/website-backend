@@ -56,7 +56,15 @@ const PurchaseOrderSchema = new mongoose.Schema({
 
   // True for apparel jobs where JP supplies the garments — flips the section
   // header to "Product/Print Info - (blanks provided)".
-  blanksProvided: { type: Boolean, default: false },
+  //
+  // Defaults TRUE to match Vendor.blanksProvided and the ~99% reality (JP buys
+  // the blanks). It used to default FALSE, so the SAME concept had opposite
+  // defaults in the two models, and any creator that didn't set it explicitly
+  // silently asserted the RARE case. That is not cosmetic: expectedReceiptCats
+  // (controllers/finances.js) reads `pos.some(p => p.blanksProvided === true)`
+  // to decide whether a Blank COGS receipt is expected, so a defaulted-false PO
+  // quietly switched OFF the missing-blanks-receipt nag for its whole order.
+  blanksProvided: { type: Boolean, default: true },
 
   // Lettered product items: "A) Glass Ashtrays, 100 units" with sub-bullets.
   items: [{
