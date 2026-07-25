@@ -14,7 +14,7 @@ const { getDefaultsFor } = require('./clients');
 // placed order bumps the company to 'customer' without ever regressing a
 // won/lost/dormant record. Order writes never depend on this succeeding.
 const { promoteCompanyToCustomerOnPlacement, ensureCompanyForQuoting } = require('./crm');
-const { nextNumber, bumpCounterTo } = require('../utils/sequence');
+const { nextNumber, bumpCounterTo, peekNumber } = require('../utils/sequence');
 // Mockup Lab numbering (colours = letters A→Z→AA, edits = trailing version) —
 // one shared engine so the API and the studio editor never drift. See
 // utils/mockupNumbers.js.
@@ -251,23 +251,27 @@ const listProjects = async (req, res) => {
   }
 };
 
-// GET /api/orders/next-numbers — returns the next project # and next invoice #
-// so the UI can pre-fill them when starting a project or moving one to approved.
+// GET /api/orders/next-numbers — the next project # and next invoice #, so the UI
+// can pre-fill them when starting a project or moving one to approved.
+//
+// This used to scan the WHOLE orders collection and return max+1, which was wrong
+// as well as wasteful: numbers are actually assigned from the atomic counter
+// (utils/sequence.nextNumber), and bumpCounterTo pushes that counter past any
+// number the owner types by hand. So after manually creating project #200 with a
+// document max of #150, the scan pre-filled "151" while the server would really
+// assign "201" — a preview that quietly disagreed with the assignment it was
+// previewing.
+//
+// peekNumber reports exactly what nextNumber WOULD claim, without consuming it,
+// and falls back to the same max-seed for a counter that has never been used. One
+// keyed read instead of a collection scan, and the preview can no longer lie.
 const nextNumbers = async (req, res) => {
   try {
-    const all = await Order.find({}).select('projectNumber orderNumber').lean();
-    const maxProject = all.reduce((m, o) => {
-      const n = parseInt((o.projectNumber || '0').split('-')[0], 10) || 0;
-      return Math.max(m, n);
-    }, 0);
-    const maxInvoice = all.reduce((m, o) => {
-      const n = parseInt(o.orderNumber || '0', 10) || 0;
-      return Math.max(m, n);
-    }, 0);
-    res.json({
-      nextProject: String(maxProject + 1),
-      nextInvoice: String(maxInvoice + 1),
-    });
+    const [nextProject, nextInvoice] = await Promise.all([
+      peekNumber('project'),
+      peekNumber('invoice'),
+    ]);
+    res.json({ nextProject: String(nextProject), nextInvoice: String(nextInvoice) });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -1748,12 +1752,14 @@ const duplicateMockup = async (req, res) => {
       throw e;
     }
 
-    // A variation is an explicit re-add — if this number was somehow excluded
-    // before, the owner's new intent wins. Activity keeps the paper trail.
+    // Activity keeps the paper trail for the new variation. (This also used to
+    // $pull from excludedMockups — that field only ever existed to stop the fuzzy
+    // client-name matcher re-attaching a mockup the owner had removed. The matcher
+    // was deleted, so nothing could add to the list any more and this was pulling
+    // from a set that could only ever be empty.)
     await Order.updateOne(
       { _id: req.params.id },
       {
-        $pull: { excludedMockups: newNum },
         $push: { activity: {
           kind: 'mockups_linked', actor: 'owner',
           message: `Added variation ${newNum} of ${src.pageState && src.pageState.mockupNum ? src.pageState.mockupNum : (src.name || 'mockup')}`,
