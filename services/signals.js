@@ -262,6 +262,109 @@ async function quotesAwaiting(now) {
   ];
 }
 
+// ── The ball is in YOUR court ────────────────────────────────────────────────
+// A client who picked their options on the approval link has done their part and
+// is now waiting on a confirmation to approve. That is the hottest state in the
+// shop — the client is actively engaged, mid-decision — and it was the one
+// hand-off the hub never mentioned. Nothing here read optionsPickedAt at all, so
+// the only way to find out was to go looking.
+//
+// The window is precise: picks landed FOR THE CURRENT CYCLE (picks older than
+// approvalSupersededAt belong to a superseded ask and are stale), and the
+// confirmation is not yet published to them. Publishing clears it, so the signal
+// self-closes the moment the work is done rather than nagging forever.
+//
+// PURE (exported for tests). `pickedAtForCycle` is passed in so this file doesn't
+// take a controller dependency for one predicate.
+function bucketAwaitingConfirmation(orders = [], pickedAtForCycle, isPublished, now = new Date()) {
+  const items = [];
+  for (const o of orders) {
+    const picked = pickedAtForCycle(o);
+    if (!picked) continue;
+    // Already published FOR these picks → the ball is back with the client.
+    if (isPublished(o.confirmation)
+      && o.confirmation.publishedAt
+      && new Date(o.confirmation.publishedAt).getTime() >= new Date(picked).getTime()) continue;
+    const waitedDays = Math.max(0, Math.floor((now - new Date(picked)) / 86400000));
+    items.push({
+      _id: String(o._id || ''),
+      orderNumber: o.orderNumber || '',
+      projectNumber: o.projectNumber || '',
+      companyKey: o.companyKey || '',
+      name: nameOf(o) || `#${o.orderNumber || o.projectNumber || ''}`,
+      metric: waitedDays === 0 ? 'today' : `${waitedDays}d`,
+      note: 'picked their options — needs a confirmation',
+    });
+  }
+  // Longest wait first: the client who has been waiting three days outranks the
+  // one who picked ten minutes ago.
+  items.sort((a, b) => (parseInt(b.metric, 10) || 0) - (parseInt(a.metric, 10) || 0));
+  return items;
+}
+
+// Orders where the client picked and is waiting on a confirmation. CRITICAL —
+// an engaged client mid-decision is the most perishable thing on the board.
+// kind:'order' → the hub row deep-links straight to the order, where the
+// confirmation gets built.
+async function awaitingConfirmation(now) {
+  const { _pickedAtForCycle } = require('../controllers/approval');
+  const { confirmationIsPublished } = require('../models/Order');
+  const picked = await Order.find({
+    optionsPickedAt: { $ne: null },
+    status: { $in: ['quoted', 'approved'] },
+    archived: { $ne: true },
+  }).select('orderNumber projectNumber companyKey companyName clientName optionsPickedAt approvalSupersededAt confirmation.publishedAt confirmation.items confirmation.customLines').lean();
+  const items = bucketAwaitingConfirmation(picked, _pickedAtForCycle, confirmationIsPublished, now);
+  return [
+    { id: 'awaiting_confirmation', severity: 'critical', kind: 'order',
+      label: `${items.length} client${items.length === 1 ? '' : 's'} picked — build the confirmation`,
+      count: items.length, items: cap(items) },
+  ];
+}
+
+// ── Preorder drops that hit their minimum ────────────────────────────────────
+// A preorder link tallies commitments until the drop clears its MOQ. Clearing it
+// is the whole point — that's the moment the run is a go and the owner turns the
+// tally into a real order — and the hub said nothing about it either.
+//
+// Only OPEN links (un-revoked, un-expired) with no order yet: linking the drop to
+// an order or revoking it clears the signal, so it can't nag about a drop already
+// handled. PURE (exported for tests).
+function bucketPreorderDrops(links = [], now = new Date()) {
+  const items = [];
+  for (const l of links) {
+    if (!l || l.orderId) continue;                                   // already an order
+    if (l.revokedAt) continue;                                       // door closed
+    if (l.expiresAt && new Date(l.expiresAt).getTime() < now.getTime()) continue;
+    const units = (l.commitments || []).reduce((n, c) => n + (Number(c && c.qty) || 0), 0);
+    // No MOQ means an open tally — never "a go", so never nagged about.
+    if (!l.moq || units < l.moq) continue;
+    items.push({
+      _id: String(l._id || ''),
+      companyKey: l.companyKey || '',
+      projectNumber: l.projectNumber || '',
+      name: l.title || 'Preorder drop',
+      metric: `${units}/${l.moq}`,
+      note: 'hit its minimum — turn it into an order',
+    });
+  }
+  // Biggest overshoot first — the drop most past its minimum is the most urgent.
+  items.sort((a, b) => (parseInt(b.metric, 10) || 0) - (parseInt(a.metric, 10) || 0));
+  return items;
+}
+
+async function preorderDropsReady(now) {
+  const PreorderLink = require('../models/PreorderLink');
+  const links = await PreorderLink.find({ revokedAt: null, orderId: null, moq: { $gt: 0 } })
+    .select('title companyKey projectNumber moq expiresAt revokedAt orderId commitments.qty').lean();
+  const items = bucketPreorderDrops(links, now);
+  return [
+    { id: 'preorder_ready', severity: 'warning', kind: 'preorder',
+      label: `${items.length} preorder drop${items.length === 1 ? '' : 's'} hit the minimum`,
+      count: items.length, items: cap(items) },
+  ];
+}
+
 // Un-answered outreach replies → the hub alert the owner asked for: a heads-up
 // when a good lead has replied and is waiting. Hot (buying-signal) replies are
 // critical; other new replies to answer are info. kind:'triage' → the hub row
@@ -397,7 +500,9 @@ async function siteEditsWaiting() {
 
 // buildSignals — compose all sources; a thrown source drops only its group.
 async function buildSignals({ now = new Date() } = {}) {
-  const sources = [unhandledInquiries(now), ordersAging(now), followUps(now), quotesAwaiting(now), siteEditsWaiting(), outreachReplies(now), lookbookFeedback(now)];
+  const sources = [unhandledInquiries(now), ordersAging(now), followUps(now), quotesAwaiting(now),
+    awaitingConfirmation(now), preorderDropsReady(now),
+    siteEditsWaiting(), outreachReplies(now), lookbookFeedback(now)];
   const [settled, pulse] = await Promise.all([
     Promise.allSettled(sources),
     hubPulse(now).catch(() => null), // pulse is garnish — never sinks the feed
@@ -421,6 +526,8 @@ module.exports = {
   bucketQuotesAwaiting,
   quoteDaysLeft,
   bucketSiteEdits,
+  bucketAwaitingConfirmation,
+  bucketPreorderDrops,
   replyAgeLabel,
   toGroups,
   // constants
