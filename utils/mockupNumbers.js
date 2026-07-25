@@ -121,6 +121,16 @@ function compareMockupNums(a, b) {
   return 0;
 }
 
+// A design name with the internal variation marker removed. "Add a variation"
+// names a clone "<design> · v2" so the owner's library never shows two designs
+// with the same label; that marker is bookkeeping. A client identifies a design
+// by its NUMBER (ECOSYSTEM.md: the mockup # and the project # are the only
+// identifiers they ever see), so it must not reach a client-facing document.
+// MIRRORS src/common/mockupNum.js clientDesignName in the frontend.
+function clientDesignName(name) {
+  return String(name == null ? '' : name).replace(/\s*·\s*v\d+\s*$/i, '').trim();
+}
+
 module.exports = {
   letterToNum,
   numToLetter,
@@ -132,4 +142,5 @@ module.exports = {
   nextMockupLetter,
   mockupSortKey,
   compareMockupNums,
+  clientDesignName,
 };

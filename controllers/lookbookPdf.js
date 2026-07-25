@@ -16,6 +16,7 @@ const PDFDocument = require('pdfkit');
 const path = require('path');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
 const { resolveImageBuffer } = require('../utils/pdfImage');
+const { clientDesignName } = require('../utils/mockupNumbers');
 let sharp = null;
 try { sharp = require('sharp'); } catch (_) { /* knockout degrades to the raw image */ }
 
@@ -216,7 +217,8 @@ function drawCell(doc, cell, mk, opts) {
       doc.text(num, tx, ty, { lineBreak: false });
       tx += doc.widthOfString(num) + 6;
     }
-    const name = (mk.name || '').trim();
+    // Never print the internal '· v2' variation marker to a client.
+    const name = clientDesignName(mk.name);
     if (name) {
       doc.fillColor(C.ink).font('Helvetica-Bold').fontSize(fs);
       const maxW = cell.x + cell.w - pad - tx;

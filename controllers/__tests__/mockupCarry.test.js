@@ -10,7 +10,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 
 const { buildCarriedMockup } = require('../orders');
-const { parseMockupNum, baseForProject } = require('../../utils/mockupNumbers');
+const { parseMockupNum, baseForProject, clientDesignName } = require('../../utils/mockupNumbers');
 
 const source = () => ({
   _id: 'src1',
@@ -131,4 +131,34 @@ test('falls back to the pageState project when the field is unbackfilled', () =>
   const src = { ...source(), projectNumber: '' };
   const out = buildCarriedMockup(src, '#000200A', 'carry-1', target());
   assert.strictEqual(out.carriedFrom.projectNumber, '150');
+});
+
+test('clientDesignName strips the internal variation marker', () => {
+  // "Add a variation" labels a clone "<design> · v2" so the owner's library
+  // never shows two designs with the same name. A client identifies a design by
+  // its NUMBER, so that marker must not reach a client-facing document.
+  assert.strictEqual(clientDesignName('Happy Leaf Hoodie · v2'), 'Happy Leaf Hoodie');
+  assert.strictEqual(clientDesignName('Happy Leaf Hoodie · v11'), 'Happy Leaf Hoodie');
+});
+
+test('clientDesignName only strips a TRAILING marker', () => {
+  assert.strictEqual(clientDesignName('v2 Collection Tee'), 'v2 Collection Tee');
+  assert.strictEqual(clientDesignName('Tee · v2 Collection'), 'Tee · v2 Collection');
+  assert.strictEqual(clientDesignName('Series 5'), 'Series 5');
+});
+
+test('clientDesignName is empty-safe and idempotent', () => {
+  assert.strictEqual(clientDesignName(''), '');
+  assert.strictEqual(clientDesignName(null), '');
+  assert.strictEqual(clientDesignName(clientDesignName('Hoodie · v4')), 'Hoodie');
+});
+
+test('clientDesignName matches the frontend mirror', () => {
+  // src/common/mockupNum.js carries the same rule — drift would put the marker
+  // back on one surface but not another.
+  for (const [input, want] of [
+    ['Hoodie ·v3', 'Hoodie'],
+    ['Hoodie · v3   ', 'Hoodie'],
+    ['Hoodie V', 'Hoodie V'],
+  ]) assert.strictEqual(clientDesignName(input), want, `for ${JSON.stringify(input)}`);
 });
