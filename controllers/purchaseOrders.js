@@ -19,6 +19,7 @@ const { resolveImageBuffer } = require('../utils/pdfImage');
 const { nextNumber, bumpCounterTo, peekNumber } = require('../utils/sequence');
 const { normalizeOrderNumber } = require('./finances');
 const { mockupScopeFor } = require('../utils/mockupScope');
+const { blanksModeForItems } = require('../utils/apparel');
 const {
   vendorKey, findPoNumberClash, lineKey, chosenQuoteLines, costLineFromQuoteLine, costLineFromConfItem, buildPoLines,
 } = require('../utils/poCost');
@@ -330,7 +331,13 @@ const createPosFromConfirmation = async (req, res) => {
       // Advisory skip: surface it, but only suppress when not forced (H3).
       if (key && existingKeys.has(key) && !force) { skipped.push(vendorName); continue; }
 
-      const blanksProvided = vendor && vendor.blanksProvided != null ? !!vendor.blanksProvided : true;
+      // Per GROUP, not per order: a mixed job splits across suppliers, and the
+      // promo house's PO must not claim JP supplied blanks just because the
+      // apparel printer's PO on the same order does. Items decide; the vendor's
+      // remembered mode is the fallback (see utils/apparel).
+      const vendorMode = vendor && vendor.blanksProvided != null ? !!vendor.blanksProvided : true;
+      const itemsMode = blanksModeForItems(g.items);
+      const blanksProvided = itemsMode == null ? vendorMode : itemsMode;
 
       const seeded = _seedPoForGroup(order, vendorName, g.items, blanksProvided, quoteLineByKey);
       if (seeded.zeroCostCount > 0) {
@@ -413,9 +420,19 @@ const createPo = async (req, res) => {
       vendor = resolved.vendor;
       vendorName = resolved.name || vendorNameRaw;
     }
-    // Honor the vendor's remembered mode (vendor.blanksProvided — previously
-    // written but never read). Default true (JP supplies the blanks ~99%).
-    const blanksProvided = vendor && vendor.blanksProvided != null ? !!vendor.blanksProvided : true;
+    // WHO SUPPLIES THE BLANKS is a property of what's being made, not of the
+    // vendor: apparel JP buys from S&S and ships in, promo the printer
+    // manufactures itself. So the order's own items decide, and the vendor's
+    // remembered mode is only the fallback for an order with nothing to judge
+    // (see utils/apparel). Default true — JP supplies them on apparel, which is
+    // the overwhelming majority of the work.
+    const vendorMode = vendor && vendor.blanksProvided != null ? !!vendor.blanksProvided : true;
+    // The confirmation is the approved truth and carries the owner-curated
+    // taxExempt flag; before there is one, the chosen quote lines are what this
+    // PO is actually seeded from, so judge those instead.
+    const itemsMode = blanksModeForItems((order.confirmation || {}).items)
+      ?? blanksModeForItems(chosenQuoteLines(order.quoteLines));
+    const blanksProvided = itemsMode == null ? vendorMode : itemsMode;
 
     const seeded = req.body && req.body.seed === false ? {} : _seedFromOrder(order, blanksProvided);
     // Prefer the canonicalized vendor name; only fall back to the seed when no

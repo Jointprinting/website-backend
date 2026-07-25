@@ -54,13 +54,20 @@ const PurchaseOrderSchema = new mongoose.Schema({
   // Prints a "proof required before production run" line when true.
   proofRequired: { type: Boolean, default: false },
 
-  // True for apparel jobs where JP supplies the garments — flips the section
-  // header to "Product/Print Info - (blanks provided)".
+  // Who supplies the blanks. TRUE = JP does — flips the PO section header to
+  // "Product/Print Info - (blanks provided)".
   //
-  // Defaults TRUE to match Vendor.blanksProvided and the ~99% reality (JP buys
-  // the blanks). It used to default FALSE, so the SAME concept had opposite
-  // defaults in the two models, and any creator that didn't set it explicitly
-  // silently asserted the RARE case. That is not cosmetic: expectedReceiptCats
+  // The owner's rule is about the PRODUCT, not the vendor: apparel he buys from
+  // S&S or an approved vendor and ships to the printer (true); promo products
+  // — lighters, stress balls — the printer manufactures and prints itself
+  // (false). utils/apparel derives this per PO from the items, reusing the
+  // taxExempt flag the confirmation already carries for the NJ clothing
+  // exemption; the vendor's remembered mode is only the fallback.
+  //
+  // Defaults TRUE to match Vendor.blanksProvided and because apparel is the
+  // overwhelming majority. It used to default FALSE, so the SAME concept had
+  // opposite defaults in the two models and any creator that didn't set it
+  // explicitly silently asserted the rare case. Not cosmetic: expectedReceiptCats
   // (controllers/finances.js) reads `pos.some(p => p.blanksProvided === true)`
   // to decide whether a Blank COGS receipt is expected, so a defaulted-false PO
   // quietly switched OFF the missing-blanks-receipt nag for its whole order.
