@@ -50,6 +50,7 @@ const { verifyDomainsMx, emailDomain } = require('./emailVerify');
 const { applySpintax, hashStr } = require('./outreachContent');
 const { getSenders } = require('./senderPool');
 const { getAuthStatus, recommendedRecords } = require('../utils/dnsAuth');
+const { replyPathStatus, normalizeAddress } = require('../utils/replyPath');
 const { BUSINESS_TZ, etStartOfToday, etToday, etDaysSince } = require('../utils/time');
 
 // Hold cold sends when the sender domain is missing SPF/DMARC (the Gmail/Yahoo
@@ -128,6 +129,10 @@ const PUBLIC_BASE = String(process.env.OUTREACH_PUBLIC_API_BASE || '').replace(/
 // legacy single identity when OUTREACH_SENDERS is unset, so this stays correct.
 const outreachFrom    = () => (getSenders()[0] || {}).from || process.env.OUTREACH_EMAIL_FROM || '';
 const outreachReplyTo = () => process.env.OUTREACH_REPLY_TO || '';
+// The inbox the owner actually reads (the main transactional identity — never
+// the cold-sending one). Only used to say "monitored, but not in your own mail";
+// unset just means we skip that nuance.
+const ownerInbox      = () => process.env.APPROVAL_NOTIFY_EMAIL || process.env.EMAIL_FROM || '';
 const globalSmtpSet   = () => !!(process.env.SMTP_HOST && process.env.SMTP_USER);
 // Sendable when there's at least one identity that has a usable transport
 // (its own per-identity SMTP, or the shared global SMTP_* one).
@@ -136,6 +141,32 @@ const smtpConfigured  = () => {
   if (!senders.length) return globalSmtpSet();
   return senders.some((s) => s.smtp || globalSmtpSet());
 };
+
+// Where a reply to our cold email ACTUALLY lands, resolved exactly the way the
+// send path does (sendOne + sendTestEmail): the identity's own replyTo, else the
+// global OUTREACH_REPLY_TO, else — with no Reply-To header at all — the From
+// address itself. A multi-identity pool can disagree, so we return the primary's
+// destination AND the whole set instead of picking a winner silently.
+function effectiveReplyDestination() {
+  const pool = getSenders();
+  const globalReplyTo = outreachReplyTo();
+  const base = pool.length ? pool : [{ label: 'primary', from: outreachFrom(), replyTo: '' }];
+  const identities = base.map((s) => {
+    const from = normalizeAddress(s.from);
+    const replyTo = normalizeAddress(s.replyTo || globalReplyTo);
+    return { label: s.label || 'primary', from, replyTo, destination: replyTo || from };
+  });
+  const primary = identities[0] || { from: '', replyTo: '', destination: '' };
+  const destinations = [...new Set(identities.map((i) => i.destination).filter(Boolean))];
+  return {
+    address: primary.destination,   // the one to judge the reply path on
+    from: primary.from,
+    replyTo: primary.replyTo,
+    identities,
+    destinations,
+    agree: destinations.length <= 1,
+  };
+}
 
 // ── Pure helpers (unit-tested in services/__tests__/outreach.test.js) ─────────
 
@@ -892,7 +923,21 @@ async function senderWarmupDays(senders, state, now = new Date()) {
 }
 
 // Engine status snapshot for the Studio (Outreach tab header + overview).
-async function engineStatus(now = new Date()) {
+//
+// Call it either way: engineStatus(now) — the original signature — or
+// engineStatus({ now, triageIdentity }). The triage identity (which mailbox the
+// reply sync is signed in to) has to be PASSED IN rather than read here:
+// controllers/replyTriage requires this service, so importing it back would be a
+// cycle. Unknown identity → the reply-path read degrades, it never throws.
+const NO_TRIAGE_IDENTITY = { address: '', checkedAt: null, configured: false };
+async function engineStatus(nowOrOpts = new Date(), opts = {}) {
+  const asOpts = nowOrOpts && typeof nowOrOpts === 'object' && !(nowOrOpts instanceof Date)
+    ? nowOrOpts
+    : (opts || {});
+  const now = nowOrOpts instanceof Date
+    ? nowOrOpts
+    : (asOpts.now instanceof Date ? asOpts.now : new Date());
+  const triage = asOpts.triageIdentity || NO_TRIAGE_IDENTITY;
   const state = await OutreachState.findOne({ key: 'engine' }).lean();
   const firstSendAt = state && state.firstSendAt ? state.firstSendAt : null;
   // ET calendar days, matching the tick's ramp math — never a mid-day week flip.
@@ -926,12 +971,27 @@ async function engineStatus(now = new Date()) {
   // can show "paste this, here" instead of pointing at a doc.
   const auth = authRaw ? { ...authRaw, records: recommendedRecords(authRaw) } : null;
   const deliverability = await deliverabilityStats(now).catch(() => null);
+  // The reply path: where an answer lands vs. which mailbox is actually read.
+  // Without this a silent campaign is unfalsifiable — "0 replies" could just as
+  // easily be "every reply is piling up in a mailbox nobody has ever opened".
+  const replyDest = effectiveReplyDestination();
+  const replyPath = replyPathStatus({
+    from: replyDest.from,
+    replyTo: replyDest.replyTo,
+    triageAddress: triage.address,
+    triageConfigured: !!triage.configured,
+    ownerAddress: ownerInbox(),
+  });
   return {
     senderConfigured: !!outreachFrom(),
     smtpConfigured: smtpConfigured(),
     from: fromLabel,
     senders,
     senderCount: pool.length,
+    replyPath,
+    // Every distinct mailbox the pool's replies land in (>1 = the identities
+    // disagree, and replyPath only speaks for the primary).
+    replyDestinations: replyDest.destinations,
     auth,
     authGate: authGateEnabled(),
     deliverability,
@@ -984,6 +1044,11 @@ async function sendTestEmail(to) {
     'If it went to spam or never arrived, finish the SPF / DKIM / DMARC setup first — the Outreach dashboard shows the exact DNS records to paste.',
     '',
     authLine,
+    '',
+    // Name the mailbox that will hold every reply, in plain English. A test that
+    // only proves "mail goes out" still lets replies pile up somewhere nobody
+    // opens — so the test email says which inbox to watch, before any lead is enrolled.
+    `Replies to this campaign will arrive in ${replyToAddr || fromAddr}. If that isn’t an inbox you read every day, set OUTREACH_REPLY_TO on the API (or turn on forwarding from that mailbox) — otherwise you’ll never see a reply.`,
     '',
     `Sent from ${fromAddr}${replyToAddr ? ` · replies go to ${replyToAddr}` : ''}.`,
   ].join('\n');
@@ -1511,6 +1576,9 @@ module.exports = {
   recheckAuth,
   newToken,
   pickEmail,
+  // Where replies actually land (the same resolution the send path uses) — so
+  // callers read the reply path off the engine instead of re-deriving it.
+  effectiveReplyDestination,
   // pure helpers (unit-tested)
   rampCap,
   senderKey,

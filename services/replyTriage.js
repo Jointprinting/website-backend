@@ -152,6 +152,106 @@ function headerSaysAuto(headers) {
   return false;
 }
 
+// ── Quoted-reply stripping (the "our own footer opted them out" bug) ─────────
+// Our outgoing footer literally says: Reply "unsubscribe" to opt out. A prospect
+// who hits Reply and types "yes, send pricing!" ships our footer back underneath
+// their answer — and the opt-out regex, run over the whole message, matched OUR
+// text and suppressed the lead. A positive reply must never unsubscribe anyone.
+//
+// stripQuotedReply() returns only the NEW text the human typed above the quote.
+// Two passes, because a Gmail `snippet` arrives as ONE line with the newlines
+// collapsed — line anchors alone would never fire on synced mail:
+//   1) line pass   — stop at the first '>' quote line or plain-text separator
+//   2) inline pass — cut at the earliest quote/footer marker anywhere in the text
+// Top-post-only by construction: text typed BELOW the quote is dropped. That is
+// the right question for "did a human type something new?" (hasHumanSignal) and
+// the WRONG question for a kill-signal — see senderWords() below.
+const QUOTE_MARKERS = [
+  /\bon\b[^\n]{0,200}?\bwrote:/i,                       // Gmail / Apple Mail
+  /-{2,}\s*original message\s*-{2,}/i,                  // Outlook
+  /-{2,}\s*forwarded message\s*-{2,}/i,
+  /\bfrom:[^\n]{0,160}?\b(?:sent|date):/i,              // Outlook quoted header block
+  /_{5,}/,                                              // OWA divider rule
+  /\bsent from my \w+/i,                                // mobile sig — quote follows
+  /\bget outlook for \w+/i,
+  // Our own footer + signature line — everything from here down is OUR message.
+  /\breply\s*["“'‘]?\s*unsubscribe\s*["”'’]?\s*to opt[ -]?out/i,
+  /\bdon'?t want these\?/i,
+  /\bunsubscribe:\s*https?:\/\//i,
+  /\bjoint ?printing\b[^\n]{0,24}jointprinting\.com/i,
+];
+
+function stripQuotedReply(text) {
+  const raw = String(text == null ? '' : text);
+  if (!raw.trim()) return '';
+  const kept = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const t = line.trim();
+    if (/^>+/.test(t)) break;        // quoted block — everything below is theirs/ours
+    if (/^-{2,}\s*$/.test(t)) break; // RFC 3676 signature delimiter
+    if (/^_{3,}\s*$/.test(t)) break;
+    kept.push(line);
+  }
+  const head = kept.join('\n');
+  let cut = head.length;
+  for (const re of QUOTE_MARKERS) {
+    const m = head.match(re);
+    if (m && m.index != null && m.index < cut) cut = m.index;
+  }
+  return head.slice(0, cut).trim();
+}
+
+// The only strings in OUR outbound mail that can trip a kill-signal: the CAN-SPAM
+// footer (which literally instructs the reader to reply "unsubscribe") and the
+// signature. Redacted — not truncated at — so nothing the human typed is lost.
+// Global flags: the quote can repeat down a long thread.
+const OUR_FOOTER_MARKERS = [
+  /\bdon'?t want these\?[^\n]*/gi,                                  // …Reply "unsubscribe" and we'll take you off the list.
+  /\breply\s*["“'‘]?\s*unsubscribe\s*["”'’]?\s*to opt[ -]?out/gi,
+  /\bunsubscribe:\s*https?:\/\/\S*/gi,
+  /\bjoint ?printing\b[^\n]{0,24}jointprinting\.com/gi,
+];
+
+// What the SENDER actually said, anywhere in the message.
+//
+// stripQuotedReply() truncates at the first quote marker, which is fatal for a
+// kill-signal: plenty of people bottom-post ("please remove me" UNDER the quoted
+// thread, or inline after our pitch). Truncating dropped that opt-out entirely —
+// and then the full-text nets below matched OUR OWN quoted sales copy and filed
+// the person as a pricing enquiry, i.e. an opt-out was promoted to a warm lead.
+// Failing to honor a stated opt-out is a CAN-SPAM problem, not just a bug.
+//
+// So for kill-signals we REDACT instead: drop quoted ('>') lines and blank out
+// our own footer wording, and keep every word the human typed wherever they put
+// it. Un-prefixed Outlook-style quotes still carry our body through, which is
+// exactly why the footer markers are removed by value rather than by position.
+function senderWords(text) {
+  const raw = String(text == null ? '' : text);
+  if (!raw.trim()) return '';
+  const unquoted = raw
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*>+/.test(line))
+    .join('\n');
+  return OUR_FOOTER_MARKERS.reduce((s, re) => s.replace(re, ' '), unquoted).trim();
+}
+
+// Wording that marks a PERSON writing to us. Used for exactly one purpose: to
+// overrule the header-based bulk/auto flag on a message we can already tie to a
+// real send of ours (see classifyReply). Never used to promote unknown mail.
+const RE_HUMANISH = /\b(thanks|thank you|sure|sounds good|yes|yep|no problem|happy to|we(?:'| a)?re interested|i(?:'| a)?m interested|can you|could you|would you|please send|send (?:me|us|over)|what(?:'s| is| are) your|do you (?:have|make|print|offer|do)|our (?:store|shop|team|staff|budtenders|owner|buyer)|let me know|give me a call|call me|attached|see below)\b/i;
+
+// Is there a real human/buying signal in the text the sender actually TYPED?
+// Runs on stripped text only, so our own quoted footer can never supply it.
+function hasHumanSignal(subject = '', newText = '') {
+  const body = String(newText || '').trim();
+  if (!body) return false;                                   // nothing new was typed
+  const hay = `${String(subject || '')}\n${body}`;
+  if (looksPromotional({ subject, snippet: body })) return false; // a blast, not a reply
+  return RE_UNSUB.test(hay) || RE_NOT_INTERESTED.test(hay) || RE_WRONG_PERSON.test(hay)
+      || RE_PRICING.test(hay) || RE_MOCKUP.test(hay) || RE_HOT.test(hay) || RE_LATER.test(hay)
+      || RE_HUMANISH.test(hay);
+}
+
 // A machine or human note that the mailbox MOVED — "we've changed emails",
 // "please direct inquiries to …". Actionable (it names the right contact), so
 // it must outrank the auto-ack/header ignore gates.
@@ -171,11 +271,22 @@ const RE_LATER = /\b(not (?:right )?now|next (?:month|quarter|year|week|season)|
 // "unsubscribe — btw what are your prices" is never mis-filed as a pricing lead.
 // Returns { category, ignore, self, ooo }: `ignore` = not a real human reply to
 // act on; `ooo` = an out-of-office auto-reply the caller should snooze on.
-function classifyReply({ subject = '', snippet = '', fromEmail = '', fromName = '', headers = null } = {}) {
+// `matched` / `matchBy` are OPTIONAL match context (the controller re-runs this
+// once matchReply has spoken). They only ever LOOSEN the header-based bulk gate —
+// omitted, every gate behaves exactly as before.
+function classifyReply({ subject = '', snippet = '', fromEmail = '', fromName = '', headers = null, matched = false, matchBy = '' } = {}) {
   const from = String(fromEmail).toLowerCase();
   const subj = String(subject);
   const body = String(snippet);
   const hay = `${subj}\n${body}`;
+  // The text the human actually TYPED — our quoted footer (which says to reply
+  // "unsubscribe") stripped out. Opt-out and the header override read ONLY this.
+  const newBody = stripQuotedReply(body);
+  const newHay = `${subj}\n${newBody}`;
+  // Kill-signals ("stop emailing me", "not interested") read this instead: every
+  // word the sender typed, top- or bottom-posted, with only OUR quoted footer
+  // redacted. Truncating at the quote lost bottom-posted opt-outs entirely.
+  const ownHay = `${subj}\n${senderWords(body)}`;
 
   // Our own outbound mail is never a reply to triage.
   if (isSelf(from) || isSelf(fromName)) return { category: 'bounce_auto_ignore', ignore: true, self: true };
@@ -193,7 +304,7 @@ function classifyReply({ subject = '', snippet = '', fromEmail = '', fromName = 
   // is not noise — it hands us the right mailbox. Surface it as wrong_person
   // (actionable: "get the right contact") BEFORE the machine-mail gates below
   // would swallow it, unless it also asks to stop (then the opt-out wins).
-  if (CHANGED_EMAIL.test(hay) && !RE_UNSUB.test(hay)) {
+  if (CHANGED_EMAIL.test(hay) && !RE_UNSUB.test(ownHay)) {
     return { category: 'wrong_person', ignore: false, self: false };
   }
   // Generic auto-responder / bulk / list mail — flagged by RFC headers
@@ -202,17 +313,33 @@ function classifyReply({ subject = '', snippet = '', fromEmail = '', fromName = 
   // not monitored"). A machine acknowledged us — NEVER a real reply, so ignore it
   // outright (no CRM warm, no "Replied" state). This is the fix for auto-replies
   // that used to slip through and pollute the pipeline.
-  if (headerSaysAuto(headers) || AUTO_ACK_SUBJECT.test(subj) || AUTO_ACK_BODY.test(hay)) {
-    return { category: 'bounce_auto_ignore', ignore: true, self: false, auto: true };
+  // …with ONE escape hatch. Plenty of real shops run their mail through Shopify/
+  // Dutchie/Square/a helpdesk, and those stamp List-Unsubscribe / Feedback-ID /
+  // X-Auto-Response-Suppress on ordinary 1:1 mail — so the header alone was
+  // silently eating genuine replies. When the message ties back to a send of OURS
+  // (a thread/email/subject match — the strongest evidence a message can carry)
+  // AND the sender typed a real human/buying line, the header is downgraded from
+  // veto to evidence (`bulkHeader`) and the message is classified on its content.
+  // Wording-based auto-acks ("this mailbox is not monitored") still hard-ignore:
+  // that hardening was deliberate and a machine is a machine, matched or not.
+  const bulkHeader = headerSaysAuto(headers);
+  const trustedMatch = matched === true && STRONG_MATCHES.has(String(matchBy || ''));
+  const headerOverride = bulkHeader && trustedMatch && hasHumanSignal(subj, newBody);
+  if ((bulkHeader && !headerOverride) || AUTO_ACK_SUBJECT.test(subj) || AUTO_ACK_BODY.test(hay)) {
+    return { category: 'bounce_auto_ignore', ignore: true, self: false, auto: true, bulkHeader };
   }
 
-  if (RE_UNSUB.test(hay))          return { category: 'unsubscribe',      ignore: false, self: false };
-  if (RE_NOT_INTERESTED.test(hay)) return { category: 'not_interested',  ignore: false, self: false };
-  if (RE_WRONG_PERSON.test(hay))   return { category: 'wrong_person',    ignore: false, self: false };
-  if (RE_PRICING.test(hay))        return { category: 'asked_pricing',   ignore: false, self: false };
-  if (RE_MOCKUP.test(hay))         return { category: 'asked_mockups',   ignore: false, self: false };
-  if (RE_HOT.test(hay))            return { category: 'hot_lead',        ignore: false, self: false };
-  if (RE_LATER.test(hay))          return { category: 'follow_up_later', ignore: false, self: false };
+  // Opt-out reads the STRIPPED text only — our own quoted footer must never
+  // unsubscribe the person answering it.
+  if (RE_UNSUB.test(ownHay))       return { category: 'unsubscribe',      ignore: false, self: false, bulkHeader };
+  // Same for the other kill-signal: "not interested" stops the sequence, so it
+  // too must come from the sender's own words, not from our quoted pitch.
+  if (RE_NOT_INTERESTED.test(ownHay)) return { category: 'not_interested', ignore: false, self: false, bulkHeader };
+  if (RE_WRONG_PERSON.test(hay))   return { category: 'wrong_person',    ignore: false, self: false, bulkHeader };
+  if (RE_PRICING.test(hay))        return { category: 'asked_pricing',   ignore: false, self: false, bulkHeader };
+  if (RE_MOCKUP.test(hay))         return { category: 'asked_mockups',   ignore: false, self: false, bulkHeader };
+  if (RE_HOT.test(hay))            return { category: 'hot_lead',        ignore: false, self: false, bulkHeader };
+  if (RE_LATER.test(hay))          return { category: 'follow_up_later', ignore: false, self: false, bulkHeader };
   // The fuzzy auto-ack combo runs LAST, only when NO real buying signal fired —
   // a "thanks, someone will be in touch, but send me a mockup?" already resolved
   // to asked_mockups above. What's left here (acknowledge + defer, no substance)
@@ -473,10 +600,15 @@ function parseFromHeader(from) {
 }
 
 // The Gmail search query for inbound replies to pull: recent, not our own
-// outbound, not chats, primary inbox. Deduped downstream by gmailMessageId, so
-// re-scanning the window each tick is safe. PURE.
+// outbound, not chats, not unsent drafts. Deduped downstream by gmailMessageId,
+// so re-scanning the window each tick is safe. PURE.
+//
+// `in:anywhere` is load-bearing: without it Gmail searches the inbox only, and
+// cold-outreach replies routinely land in SPAM (and a mis-swipe puts them in
+// Trash). Those are the replies we most need to see — a spam-foldered reply is
+// classified and matched exactly like any other, no downgrade.
 function gmailQuery({ windowDays = 7 } = {}) {
-  return `newer_than:${Math.max(1, Math.round(windowDays))}d -from:me -in:chats`;
+  return `in:anywhere newer_than:${Math.max(1, Math.round(windowDays))}d -from:me -in:chats -in:drafts`;
 }
 
 // Reports whether a read-only Gmail sync CAN run (creds present + enabled).
@@ -497,6 +629,9 @@ module.exports = {
   isValidCategory,
   isValidStatus,
   classifyReply,
+  stripQuotedReply,
+  senderWords,
+  hasHumanSignal,
   headerSaysAuto,
   isVendorNoiseSender,
   VENDOR_NOISE_DOMAINS,

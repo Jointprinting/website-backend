@@ -15,6 +15,7 @@ const OutreachState = require('../models/OutreachState');
 const Client = require('../models/Client');
 const {
   classifyReply,
+  stripQuotedReply,
   finalizeCategory,
   classifyBounceNdr,
   matchReply,
@@ -77,7 +78,7 @@ async function ingestOne(raw = {}) {
   // Pass the raw header map through so classifyReply can use the RFC-standard
   // auto/bulk signals (Auto-Submitted / Precedence / X-Auto* / List-*), which are
   // far more reliable than subject/body wording for catching auto-responders.
-  const cls = classifyReply({ subject, snippet, fromEmail, fromName, headers: raw.headers || null });
+  let cls = classifyReply({ subject, snippet, fromEmail, fromName, headers: raw.headers || null });
   if (cls.self) return { skip: 'self' }; // our own outbound mail is never a reply
 
   // Candidate matches (loaded here; matchReply itself is pure/testable). Beyond
@@ -116,6 +117,25 @@ async function ingestOne(raw = {}) {
     clients,
     messageIds,
   });
+
+  // Second look, now that the match is known. A message auto-ignored PURELY on a
+  // bulk RFC header (List-Unsubscribe / Feedback-ID / X-Auto-Response-Suppress —
+  // which Shopify/Dutchie/Square/helpdesk-hosted shops stamp on ordinary mail)
+  // gets re-classified with that match context: threading back to a send of ours
+  // is the strongest evidence a message can carry that it IS a real reply, so the
+  // header becomes evidence instead of a veto. classifyReply still requires a
+  // human/buying line in the sender's own (unquoted) words to flip it.
+  if (cls.auto && cls.bulkHeader && match.matched) {
+    const second = classifyReply({
+      subject, snippet, fromEmail, fromName,
+      headers: raw.headers || null,
+      matched: true, matchBy: match.matchBy,
+    });
+    if (second.category !== cls.category) {
+      console.log(`[triage] bulk-header override: ${fromEmail || '(no sender)'} matched by ${match.matchBy} → ${second.category}`);
+      cls = second;
+    }
+  }
 
   // Post-match final say: unmatched + no buying signal + promotional shape is
   // machine mail (the Google Workspace "free trial is ending" class), never a
@@ -343,6 +363,32 @@ async function resweepStoredNdrs({ windowDays = 45 } = {}) {
   return acted;
 }
 
+// Damage report for the quoted-footer opt-out bug — READ ONLY, on purpose.
+// Before the fix, a prospect who replied WITH our footer quoted underneath ("…
+// Reply 'unsubscribe' to opt out.") tripped the opt-out regex on our own words
+// and got suppressed. This finds those rows: stored 'unsubscribe' replies whose
+// TYPED text (quote stripped) contains no opt-out at all. It never un-suppresses
+// anyone — reversing an opt-out is a legal call the owner makes deliberately,
+// not something a boot-time healer should do behind his back. Logs + returns
+// the list so the damage is visible and countable.
+async function auditQuotedFooterOptOuts({ limit = 500 } = {}) {
+  const rows = await TriageReply.find({ category: 'unsubscribe' })
+    .select('fromEmail companyKey companyName subject snippet receivedAt')
+    .sort({ receivedAt: -1 }).limit(limit).lean();
+  const suspect = rows.filter((r) => {
+    const typed = stripQuotedReply(r.snippet || '');
+    // Re-ask the classifier using ONLY what they typed; still an opt-out → real.
+    return classifyReply({ subject: r.subject, snippet: typed, fromEmail: r.fromEmail }).category !== 'unsubscribe';
+  }).map((r) => ({
+    fromEmail: r.fromEmail, companyKey: r.companyKey, companyName: r.companyName,
+    subject: r.subject, receivedAt: r.receivedAt,
+  }));
+  if (suspect.length) {
+    console.warn(`[triage] ${suspect.length} of ${rows.length} stored opt-outs look like our own quoted footer, not the sender: ${suspect.map((s) => s.fromEmail).filter(Boolean).slice(0, 10).join(', ')} — review before re-contacting (suppression left in place).`);
+  }
+  return { checked: rows.length, suspect };
+}
+
 // GET /api/triage/replies?category=&status=&matched=&includeIgnored=
 // Bounces/auto-replies are hidden by default (they're noise) unless explicitly
 // asked for via ?category=bounce_auto_ignore or ?includeIgnored=true.
@@ -501,15 +547,156 @@ async function gmailApi(path, token) {
   return res.json();
 }
 
-// Pull recent inbound replies and ingest them. Bounded (maxMessages) and safe to
-// re-run (ingestOne dedupes). Returns a summary; records last-sync on state.
-async function runGmailSync({ maxMessages = 50, windowDays = 7 } = {}) {
+// ── Sync cursor + triage identity (persisted in the generic SiteSetting store) ─
+// Both survive a restart and are readable without a live Gmail call, following
+// the same key/value pattern the finance/site settings already use.
+const SYNC_KEY = 'gmailTriageSync';         // { lastCompleteAt, lastInternalDate }
+const IDENTITY_KEY = 'gmailTriageIdentity'; // { address, checkedAt }
+const IDENTITY_TTL_MS = 6 * 60 * 60 * 1000; // re-ask Gmail who we are twice a day
+const IDENTITY_RETRY_MS = 10 * 60 * 1000;   // …and never hammer it when it's down
+const MAX_SYNC_PAGES = 10;                  // hard ceiling on Gmail list pages/run
+const PAGE_SIZE = 100;                      // Gmail's max page for messages.list
+const MAX_GAP_DAYS = 30;                    // widest catch-up window we'll ever ask for
+
+const settingsModel = () => require('../models/SiteSetting');
+
+async function readSetting(key) {
+  try {
+    const doc = await settingsModel().findOne({ key }).lean();
+    return (doc && doc.value && typeof doc.value === 'object') ? doc.value : null;
+  } catch { return null; }
+}
+async function writeSetting(key, value) {
+  try {
+    await settingsModel().findOneAndUpdate(
+      { key }, { $set: { value, updatedAt: new Date() } }, { upsert: true },
+    );
+  } catch (e) { console.warn('[triage] setting write failed:', e.message); }
+}
+
+// How far back this run must look. PURE (now injected) so it's unit-tested.
+// The rolling window is a floor, not a ceiling: if the last COMPLETE sync was
+// days ago (cron down, API redeploy, a run that errored out), widen to cover the
+// gap so those replies are re-scanned instead of silently skipped forever.
+// Bounded at MAX_GAP_DAYS so a long outage can't ask Gmail for everything.
+function syncWindowDays({ windowDays = 7, lastCompleteAt = null } = {}, now = new Date()) {
+  const base = Math.max(1, Math.round(windowDays));
+  const t = lastCompleteAt ? new Date(lastCompleteAt).getTime() : NaN;
+  if (!Number.isFinite(t)) return Math.min(MAX_GAP_DAYS, base);
+  const gap = Math.ceil((now.getTime() - t) / 86400000) + 1; // +1 day of overlap
+  return Math.min(MAX_GAP_DAYS, Math.max(base, gap));
+}
+
+// Walk Gmail's paged messages.list until we run out of pages or hit a bound.
+// `fetchPage(pageToken)` is injected so the paging/bounding logic is unit-tested
+// without the network. Returns { ids, pages, truncated } — `truncated` means we
+// stopped early, which is what keeps the cursor from advancing past unseen mail.
+async function collectMessageIds(fetchPage, { maxMessages = 250, maxPages = MAX_SYNC_PAGES } = {}) {
+  const ids = [];
+  let pageToken = '';
+  let pages = 0;
+  let truncated = false;
+  while (pages < maxPages) {
+    const page = await fetchPage(pageToken);
+    pages += 1;
+    for (const m of (page && page.messages) || []) if (m && m.id) ids.push(m.id);
+    pageToken = (page && page.nextPageToken) || '';
+    if (!pageToken) break;
+    if (ids.length >= maxMessages) break;
+  }
+  if (pageToken) truncated = true;                      // more pages Gmail still has
+  if (ids.length > maxMessages) { ids.length = maxMessages; truncated = true; }
+  return { ids, pages, truncated };
+}
+
+// Ask Gmail which mailbox this refresh token actually belongs to. Never throws.
+async function fetchGmailProfile(token) {
+  try {
+    const t = token || await gmailAccessToken();
+    const prof = await gmailApi('profile', t);
+    const addr = normEmail(prof && prof.emailAddress);
+    return addr || '';
+  } catch (e) {
+    console.warn('[triage] gmail profile lookup failed:', e.message);
+    return '';
+  }
+}
+
+let identityMemo = null;      // { at, address, checkedAt }
+let identityAttemptAt = 0;
+
+// getTriageIdentity() — WHICH mailbox the reply sync is actually reading.
+// The whole "zero replies" question hangs on this: replies land wherever the
+// outreach mail says to reply, and the Studio only ever sees THIS mailbox. If
+// the two differ, every reply is invisible — so the address is published rather
+// than assumed. Cheap (memo + persisted value), and it never throws.
+async function getTriageIdentity({ refresh = false } = {}) {
+  const configured = isGmailConfigured();
+  try {
+    if (!refresh && identityMemo && Date.now() - identityMemo.at < 60 * 1000) {
+      return { address: identityMemo.address, checkedAt: identityMemo.checkedAt, configured };
+    }
+    const stored = await readSetting(IDENTITY_KEY);
+    let address = stored && typeof stored.address === 'string' ? normEmail(stored.address) : '';
+    let checkedAt = stored && stored.checkedAt ? new Date(stored.checkedAt) : null;
+    if (checkedAt && isNaN(checkedAt.getTime())) checkedAt = null;
+
+    const stale = !checkedAt || (Date.now() - checkedAt.getTime()) > IDENTITY_TTL_MS;
+    const mayAsk = configured && (refresh || stale) && (Date.now() - identityAttemptAt) > IDENTITY_RETRY_MS;
+    if (mayAsk) {
+      identityAttemptAt = Date.now();
+      const fresh = await fetchGmailProfile(null);
+      if (fresh) {
+        address = fresh;
+        checkedAt = new Date();
+        await writeSetting(IDENTITY_KEY, { address, checkedAt });
+      }
+    }
+    identityMemo = { at: Date.now(), address, checkedAt };
+    return { address, checkedAt, configured };
+  } catch (e) {
+    console.warn('[triage] triage identity unavailable:', e.message);
+    return { address: '', checkedAt: null, configured };
+  }
+}
+
+// Record the mailbox a live sync authenticated as (we already hold a token, so
+// this costs one cheap call and keeps the persisted identity warm).
+async function refreshTriageIdentity(token) {
+  const address = await fetchGmailProfile(token);
+  if (!address) return '';
+  const checkedAt = new Date();
+  await writeSetting(IDENTITY_KEY, { address, checkedAt });
+  identityMemo = { at: Date.now(), address, checkedAt };
+  return address;
+}
+
+// Pull recent inbound replies and ingest them. Paged and bounded (maxMessages ×
+// maxPages) and safe to re-run (ingestOne dedupes). Returns a summary — including
+// per-message failure counts, so "0 imported (50 scanned)" can no longer look
+// identical to a completely broken ingest — and records last-sync on state.
+async function runGmailSync({ maxMessages = 250, windowDays = 7, maxPages = MAX_SYNC_PAGES } = {}) {
   if (!isGmailConfigured()) return { configured: false, imported: 0 };
   const token = await gmailAccessToken();
-  const q = encodeURIComponent(gmailQuery({ windowDays }));
-  const list = await gmailApi(`messages?q=${q}&maxResults=${maxMessages}`, token);
-  const ids = (list.messages || []).map((m) => m.id);
+  const cursor = (await readSetting(SYNC_KEY)) || {};
+  const effectiveWindow = syncWindowDays({ windowDays, lastCompleteAt: cursor.lastCompleteAt });
+  const q = encodeURIComponent(gmailQuery({ windowDays: effectiveWindow }));
+  const { ids, pages, truncated } = await collectMessageIds(
+    (pageToken) => gmailApi(
+      `messages?q=${q}&maxResults=${PAGE_SIZE}${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''}`,
+      token,
+    ),
+    { maxMessages, maxPages },
+  );
   let imported = 0;
+  let errors = 0;
+  let fromSpam = 0;
+  let newestInternalDate = Number(cursor.lastInternalDate) || 0;
+  const errorSamples = [];
+  const noteError = (id, e) => {
+    errors += 1;
+    if (errorSamples.length < 5) errorSamples.push(`${id}: ${e && e.message ? e.message : String(e)}`);
+  };
   const skipped = { empty: 0, self: 0, duplicate: 0 };
   // Pull the auto-reply / bulk detection headers alongside the routing ones, so
   // an auto-responder is caught by its RFC headers even when its wording is novel.
@@ -523,8 +710,20 @@ async function runGmailSync({ maxMessages = 50, windowDays = 7 } = {}) {
     'X-SG-EID', 'X-Mailgun-Sid', 'X-SES-Outgoing', 'X-Mandrill-User',
   ].map((h) => `metadataHeaders=${h}`).join('&');
   for (const id of ids) {
-    const msg = await gmailApi(`messages/${id}?format=metadata&${HEADERS}`, token).catch(() => null);
-    if (!msg) continue;
+    let msg = null;
+    try {
+      msg = await gmailApi(`messages/${id}?format=metadata&${HEADERS}`, token);
+    } catch (e) {
+      noteError(id, e);       // counted + logged below — never a silent skip
+      continue;
+    }
+    if (!msg) { noteError(id, new Error('empty message payload')); continue; }
+    // A reply Gmail filed under Spam/Trash is still a reply — we only COUNT the
+    // folder (so the summary can say so); nothing downstream treats it as lesser.
+    const labels = (msg.labelIds || []);
+    if (labels.includes('SPAM') || labels.includes('TRASH')) fromSpam += 1;
+    const internal = Number(msg.internalDate) || 0;
+    if (internal > newestInternalDate) newestInternalDate = internal;
     const h = {};
     for (const hdr of (msg.payload && msg.payload.headers) || []) h[hdr.name.toLowerCase()] = hdr.value;
     const { email, name } = parseFromHeader(h.from);
@@ -545,19 +744,46 @@ async function runGmailSync({ maxMessages = 50, windowDays = 7 } = {}) {
     } catch (e) {
       // A concurrent sync (the 10-min cron overlapping a manual POST /triage/sync)
       // can both pass the findOne dedupe then race the unique gmailMessageId
-      // insert → E11000 on the loser. Swallow any single-row failure so one
-      // message never aborts the rest of the batch (it re-syncs next tick).
+      // insert → E11000 on the loser. One row never aborts the batch (it re-syncs
+      // next tick) — but it IS counted and logged, because a run where every
+      // ingest throws used to look exactly like a quiet mailbox.
+      const dup = /E11000|duplicate key/i.test(e.message || '');
+      if (dup) skipped.duplicate += 1;
+      else noteError(id, e);
       continue;
     }
     if (r.saved) imported += 1;
     else if (r.skip && skipped[r.skip] != null) skipped[r.skip] += 1;
   }
+
+  // The cursor only advances on a run that saw EVERYTHING it asked for. A
+  // truncated or partly-failed run leaves the old stamp in place, so the next
+  // run widens its window back over the gap instead of skipping it forever.
+  const complete = !truncated && errors === 0;
+  if (complete) {
+    await writeSetting(SYNC_KEY, {
+      lastCompleteAt: new Date(),
+      lastInternalDate: newestInternalDate || null,
+      lastScanned: ids.length,
+    });
+  }
+  if (errors) {
+    console.warn(`[triage] gmail sync: ${errors} message(s) failed to ingest (${ids.length} scanned) — ${errorSamples.join(' | ')}`);
+  }
+  if (truncated) {
+    console.warn(`[triage] gmail sync hit its per-run bound (${ids.length} messages, ${pages} page(s)) — window stays open for the next tick`);
+  }
+  await refreshTriageIdentity(token).catch(() => {});
   await OutreachState.findOneAndUpdate(
     { key: 'engine' },
     { $set: { gmailLastSyncAt: new Date(), gmailLastCount: imported } },
     { upsert: true },
   ).catch(() => {});
-  return { configured: true, scanned: ids.length, imported, skipped };
+  return {
+    configured: true, scanned: ids.length, imported, skipped,
+    errors, errorSamples, fromSpam, pages, truncated, complete,
+    windowDays: effectiveWindow,
+  };
 }
 
 // POST /api/triage/sync — run the read-only Gmail pull now (owner-triggered),
@@ -571,7 +797,18 @@ async function syncGmail(_req, res) {
   }
   try {
     const r = await runGmailSync();
-    res.json({ ...r, message: `Synced Gmail — ${r.imported} new repl${r.imported === 1 ? 'y' : 'ies'} imported (${r.scanned} scanned).` });
+    // Say out loud what the run actually did: how many messages failed to ingest,
+    // how many came out of Spam/Trash, and which mailbox we're even reading.
+    const parts = [`${r.scanned} scanned`];
+    if (r.fromSpam) parts.push(`${r.fromSpam} from spam/trash`);
+    if (r.errors) parts.push(`${r.errors} failed`);
+    if (r.truncated) parts.push('more waiting — run again');
+    const who = await getTriageIdentity();
+    res.json({
+      ...r,
+      mailbox: who.address,
+      message: `Synced Gmail${who.address ? ` (${who.address})` : ''} — ${r.imported} new repl${r.imported === 1 ? 'y' : 'ies'} imported (${parts.join(', ')}).`,
+    });
   } catch (e) {
     res.status(502).json({ configured: true, imported: 0, message: `Gmail sync failed: ${e.message}` });
   }
@@ -581,10 +818,16 @@ async function syncGmail(_req, res) {
 async function getSyncStatus(_req, res) {
   try {
     const st = await OutreachState.findOne({ key: 'engine' }).select('gmailLastSyncAt gmailLastCount').lean();
+    // `mailbox` is the honest answer to "whose replies is this counter counting?"
+    const who = await getTriageIdentity();
+    const cursor = (await readSetting(SYNC_KEY)) || {};
     res.json({
       configured: isGmailConfigured(),
       lastSyncAt: st ? st.gmailLastSyncAt : null,
       lastCount: st ? st.gmailLastCount : 0,
+      mailbox: who.address,
+      mailboxCheckedAt: who.checkedAt,
+      lastCompleteSyncAt: cursor.lastCompleteAt || null,
     });
   } catch (e) {
     res.status(400).json({ message: e.message });
@@ -600,10 +843,20 @@ function startGmailIngest() {
   }
   cron.schedule('*/10 * * * *', () => {
     runGmailSync()
-      .then((r) => { if (r.imported) console.log(`[triage] gmail sync: +${r.imported} new (${r.scanned} scanned)`); })
+      .then((r) => {
+        if (r.imported || r.errors || r.truncated) {
+          console.log(`[triage] gmail sync: +${r.imported} new (${r.scanned} scanned, ${r.fromSpam} spam/trash, ${r.errors} failed${r.truncated ? ', truncated' : ''})`);
+        }
+      })
       .catch((e) => console.warn('[triage] gmail sync failed:', e.message));
   });
   console.log('[triage] Gmail read-only reply ingest started — every 10 min');
+  // Once per boot, say out loud which mailbox we're reading (the reply-path
+  // check depends on it) and how many stored opt-outs were our own footer.
+  getTriageIdentity({ refresh: true })
+    .then((id) => { if (id.address) console.log(`[triage] reply sync is reading ${id.address}`); })
+    .catch(() => {});
+  auditQuotedFooterOptOuts().catch((e) => console.warn('[triage] opt-out audit failed:', e.message));
 }
 
 // GET /api/triage/worklist — the Follow-Up Command Center's action buckets.
@@ -660,5 +913,10 @@ async function getWorklist(_req, res) {
 module.exports = {
   listReplies, addReplies, updateStatus, syncGmail, getSyncStatus, getWorklist,
   ingestOne, applyStatusSideEffects, runGmailSync, startGmailIngest, retriageStoredReplies,
-  resweepStoredNdrs,
+  resweepStoredNdrs, auditQuotedFooterOptOuts,
+  // Shared contract: which mailbox the reply sync is authenticated as (read by
+  // the outreach overview to detect a reply black hole).
+  getTriageIdentity,
+  // Pure sync internals, exported for the unit tests.
+  syncWindowDays, collectMessageIds, MAX_SYNC_PAGES,
 };

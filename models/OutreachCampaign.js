@@ -63,6 +63,16 @@ const OutreachCampaignSchema = new mongoose.Schema({
   // the campaign editor ("resume first touches") once the list is rebuilt.
   firstTouchQuarantinedAt: { type: Date, default: null },
   quarantineReason:        { type: String, default: '' },
+  // LIST QUALITY overrides. Enrollment excludes corporate chains and shops that
+  // aren't a real licensed retail market, using the Field Map's own `isChain` /
+  // `segment` read on the same companyKey (fieldMapExclusions in
+  // controllers/outreach.js) — neither can buy dispensary merch off a cold
+  // email. These two flags are the owner's explicit opt-back-in; both default
+  // OFF, so the filters apply unless he asks for those leads.
+  enrollFilters: {
+    includeChains:    { type: Boolean, default: false },
+    includeNonRetail: { type: Boolean, default: false },
+  },
 }, { timestamps: true });
 
 OutreachCampaignSchema.statics.CAMPAIGN_STATUSES = CAMPAIGN_STATUSES;
