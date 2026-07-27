@@ -39,6 +39,8 @@ const TEMPLATE_VIBES = {
   wellness:     'calm, elegant, and reassuring — unhurried, caring, and grounded',
   professional: 'trustworthy and precise — clear, credible, and competent without being stiff or corporate',
   retail:       'fun, friendly, and energetic — lively and welcoming, with real personality',
+  // Custom one-off client builds (frontend: webworks/templates CUSTOM_SITES).
+  'custom-todd-reuben': 'quiet, high-end, and gallery-like — an artist talking about the work, never a sales pitch; short declarative sentences, no adjective pile-ups',
 };
 const DEFAULT_VIBE = 'friendly, clear, and genuinely trustworthy';
 
