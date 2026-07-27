@@ -485,6 +485,46 @@ test('buildNextActions: no "cold leads waiting" nudge when auto-enroll is on (no
     'auto-enroll explicitly off → the manual-enroll nudge still fires');
 });
 
+// ── The dead sequence: one touch and nobody ever gets a follow-up ────────────
+test('campaignHealth: an active one-touch campaign is an ACTION, named plainly', () => {
+  const h = campaignHealth(
+    { status: 'active', steps: [{ subject: 'Intro', body: 'hi' }] },
+    { enrolled: 349, active: 349, sent: 272, replied: 0 },
+  );
+  assert.equal(h.level, 'action');
+  assert.equal(h.label, 'One-touch sequence');
+  assert.match(h.hint, /nobody ever gets a follow-up/i);
+  assert.match(h.hint, /day-3/);
+  // A campaign with NO usable steps at all is the same dead end.
+  assert.equal(campaignHealth({ status: 'active', steps: [] }, { enrolled: 5, active: 5, sent: 1 }).label, 'One-touch sequence');
+});
+
+test('campaignHealth: two or more touches clears the one-touch alarm', () => {
+  const steps = [{ subject: 'Intro' }, { subject: 'Bump', offsetDays: 3 }];
+  const h = campaignHealth({ status: 'active', steps }, { enrolled: 20, active: 15, sent: 5, replied: 1 });
+  assert.equal(h.level, 'ok');
+  assert.equal(h.label, 'Sending');
+});
+
+test('campaignHealth: one-touch outranks the deliverability reads, but not "not sending at all"', () => {
+  const one = [{ subject: 'Intro' }];
+  // A bounce-rate warn on a one-touch campaign still reports the one-touch first —
+  // a sequence nobody follows up is the bigger problem.
+  const bouncing = campaignHealth({ status: 'active', steps: one }, { enrolled: 40, active: 20, sent: 20, bounced: 2, replied: 1 });
+  assert.equal(bouncing.label, 'One-touch sequence');
+  // But "0 enrolled" / "nothing can send" still name the real blocker.
+  assert.equal(campaignHealth({ status: 'active', steps: one }, { enrolled: 0 }).label, 'No leads yet');
+  assert.equal(campaignHealth({ status: 'paused', steps: one }, { enrolled: 9 }).label, 'Paused');
+});
+
+test('campaignHealth: a stats-only read (no steps field) never invents the one-touch alarm', () => {
+  // The analytics/overview callers always pass the campaign doc (steps present).
+  // A caller that has only funnel stats knows nothing about the sequence — it
+  // must not manufacture a red alert out of a missing field.
+  const h = campaignHealth({ status: 'active' }, { enrolled: 20, active: 15, sent: 5, replied: 1 });
+  assert.equal(h.level, 'ok');
+});
+
 // ── campaignHealth: the quarantined banner reports what the machine DID ───────
 test('campaignHealth: a quarantined campaign reports the auto-action, not a chore', () => {
   const h = campaignHealth(
@@ -495,4 +535,211 @@ test('campaignHealth: a quarantined campaign reports the auto-action, not a chor
   assert.equal(h.label, 'List quarantined');
   assert.match(h.hint, /stopped NEW first-touches automatically/);
   assert.match(h.hint, /14 of 98/);
+});
+
+// ── The reply black hole + the dead sequence, in the ranked to-do list ────────
+const { planReArm, fieldMapExclusions, sanitizeEnrollFilters } = require('../outreach');
+
+test('buildNextActions: a broken reply path is an ACTION, shown verbatim, above warm leads', () => {
+  const hint = 'Replies to your cold email land in send@shop.example, but the Studio reads owner@real.example — you will never see them. Fix: set the reply-to on the API, or turn on forwarding from the sending mailbox.';
+  const a = buildNextActions({
+    engine: { senderConfigured: true, authGate: true, auth: { level: 'green' }, deliverability: { tripped: false },
+      replyPath: { level: 'action', hint, destination: 'send@shop.example', monitored: false } },
+    campaigns: [{ _id: 'c1', name: 'Dispo', status: 'active', health: { level: 'ok' } }],
+    warmCount: 4, coldReserve: 5, replySyncOn: true,
+  });
+  const item = a.find((x) => x.text === hint);
+  assert.ok(item, 'the reply-path hint is surfaced word for word (it already names both addresses)');
+  assert.equal(item.level, 'action');
+  assert.deepEqual(item.cta, { view: 'replies' });
+  // Ranked above the warm-lead nudge.
+  assert.ok(a.indexOf(item) < a.findIndex((x) => x.level === 'warm'));
+});
+
+test('buildNextActions: a healthy (or unknown) reply path adds nothing', () => {
+  const base = {
+    engine: { senderConfigured: true, authGate: true, auth: { level: 'green' }, deliverability: { tripped: false } },
+    campaigns: [{ _id: 'c1', name: 'Dispo', status: 'active', health: { level: 'ok' } }],
+    warmCount: 0, coldReserve: 5, replySyncOn: true,
+  };
+  assert.equal(buildNextActions(base).length, 1);                       // no replyPath at all
+  assert.equal(buildNextActions({ ...base, engine: { ...base.engine, replyPath: { level: 'ok' } } }).length, 1);
+  assert.equal(buildNextActions({ ...base, engine: { ...base.engine, replyPath: { level: 'warn', hint: 'x' } } }).length, 1);
+  // 'action' with no hint text can't say anything useful — don't emit an empty row.
+  assert.equal(buildNextActions({ ...base, engine: { ...base.engine, replyPath: { level: 'action', hint: '' } } }).length, 1);
+});
+
+test('buildNextActions: a one-touch sequence is an ACTION above warm leads, pointing at Campaigns', () => {
+  const base = {
+    engine: { senderConfigured: true, authGate: true, auth: { level: 'green' }, deliverability: { tripped: false } },
+    campaigns: [{ _id: 'c1', name: 'Dispo', status: 'active', health: { level: 'ok' } }],
+    warmCount: 2, coldReserve: 5, replySyncOn: true,
+  };
+  const a = buildNextActions({ ...base, noFollowUpsPossible: true });
+  const item = a.find((x) => /single touch/i.test(x.text));
+  assert.ok(item, 'expected the one-touch alarm');
+  assert.equal(item.level, 'action');
+  assert.deepEqual(item.cta, { view: 'campaigns' });
+  assert.ok(a.indexOf(item) < a.findIndex((x) => x.level === 'warm'));
+  // Off by default / when the sequence has follow-ups.
+  assert.equal(buildNextActions(base).some((x) => /single touch/i.test(x.text)), false);
+  assert.equal(buildNextActions({ ...base, noFollowUpsPossible: false }).some((x) => /single touch/i.test(x.text)), false);
+});
+
+// ── Re-arming the leads a too-short sequence already burned ──────────────────
+const DAY = 86400000;
+const steps3 = [{ offsetDays: 0, subject: 'Intro' }, { offsetDays: 3, subject: 'Bump' }, { offsetDays: 7, subject: 'Break' }];
+
+test('planReArm: a burned one-touch lead resumes at the NEXT UNSENT touch, never a repeat', () => {
+  const now = new Date('2026-07-27T12:00:00Z');
+  const rows = [{
+    _id: 'e1', companyKey: 'shop-a', toEmail: 'a@shop.com', status: 'completed', stepIndex: 0,
+    sends: [{ stepIndex: 0, at: new Date(now - 20 * DAY) }],
+  }];
+  const { plan } = planReArm(rows, steps3, { now, rand: () => 0.5 });
+  assert.equal(plan.length, 1);
+  assert.equal(plan[0].stepIndex, 1, 'they already got touch 0 — the next email is touch 1');
+  // The owed date is 17 days past, so it floors to a jittered slot just ahead of
+  // now rather than a backdated pile that all fires at once.
+  assert.ok(plan[0].nextSendAt > now, 'never scheduled in the past');
+  assert.ok(plan[0].nextSendAt - now <= 90 * 60 * 1000);
+});
+
+test('planReArm: a still-future offset is honoured from their LAST send, not from now', () => {
+  const now = new Date('2026-07-27T12:00:00Z');
+  const rows = [{
+    _id: 'e1', companyKey: 'shop-a', toEmail: 'a@shop.com', status: 'completed', stepIndex: 0,
+    sends: [{ stepIndex: 0, at: new Date(now.getTime() - 1 * DAY) }],
+  }];
+  const { plan } = planReArm(rows, steps3, { now, rand: () => 0.5 });
+  // touch 1 is +3 days from the touch-0 send → 2 days out from now.
+  assert.equal(plan[0].nextSendAt.getTime(), now.getTime() - DAY + 3 * DAY);
+});
+
+test('planReArm: reads the touch they RECEIVED off the sends, not the parked stepIndex', () => {
+  const now = new Date('2026-07-27T12:00:00Z');
+  const rows = [
+    // Got touches 0 and 1; stepIndex is parked on 1 by the engine's completion path.
+    { _id: 'e2', companyKey: 'b', toEmail: 'b@shop.com', status: 'completed', stepIndex: 1,
+      sends: [{ stepIndex: 0, at: new Date(now - 30 * DAY) }, { stepIndex: 1, at: new Date(now - 27 * DAY) }] },
+    // Enrolled into a campaign with no usable step — nothing ever sent, so touch 0 is owed.
+    { _id: 'e3', companyKey: 'c', toEmail: 'c@shop.com', status: 'completed', stepIndex: 0, sends: [] },
+  ];
+  const { plan } = planReArm(rows, steps3, { now, rand: () => 0.5 });
+  assert.deepEqual(plan.map((p) => [p._id, p.stepIndex]), [['e2', 2], ['e3', 0]]);
+});
+
+test('planReArm: guards — replied/active rows, finished sequences, suppression, do-not-email', () => {
+  const now = new Date('2026-07-27T12:00:00Z');
+  const send = [{ stepIndex: 0, at: new Date(now - 10 * DAY) }];
+  const rows = [
+    { _id: 'ok', companyKey: 'ok', toEmail: 'ok@shop.com', status: 'completed', stepIndex: 0, sends: send },
+    // Non-'completed' rows are untouchable: a reply, an opt-out, a bounce, or a
+    // lead still walking the sequence must never be rescheduled by a re-arm.
+    { _id: 'replied', companyKey: 'r', toEmail: 'r@shop.com', status: 'replied', stepIndex: 0, sends: send },
+    { _id: 'unsub', companyKey: 'u', toEmail: 'u@shop.com', status: 'unsubscribed', stepIndex: 0, sends: send },
+    { _id: 'bounced', companyKey: 'x', toEmail: 'x@shop.com', status: 'failed', stopReason: 'bounced', stepIndex: 0, sends: send },
+    { _id: 'active', companyKey: 'a', toEmail: 'a@shop.com', status: 'active', stepIndex: 1, sends: send },
+    // Address suppressed via some OTHER campaign.
+    { _id: 'supp', companyKey: 's', toEmail: 'Supp@Shop.com', status: 'completed', stepIndex: 0, sends: send },
+    // Company the live send path would refuse (do-not-email / archived / customer).
+    { _id: 'dne', companyKey: 'blocked-key', toEmail: 'd@shop.com', status: 'completed', stepIndex: 0, sends: send },
+    // Already had every touch in the (still 3-step) sequence.
+    { _id: 'done', companyKey: 'z', toEmail: 'z@shop.com', status: 'completed', stepIndex: 2,
+      sends: [{ stepIndex: 0, at: new Date(now - 30 * DAY) }, { stepIndex: 1 }, { stepIndex: 2, at: new Date(now - 10 * DAY) }] },
+  ];
+  const { plan, skipped } = planReArm(rows, steps3, {
+    now,
+    blockedEmails: new Set(['supp@shop.com']),
+    blockedKeys: new Set(['blocked-key']),
+    rand: () => 0.5,
+  });
+  assert.deepEqual(plan.map((p) => p._id), ['ok']);
+  assert.equal(skipped.blocked, 2);
+  assert.equal(skipped.sequenceFinished, 1);
+});
+
+test('planReArm: idempotent — re-running over rows it already flipped plans nothing', () => {
+  const now = new Date('2026-07-27T12:00:00Z');
+  const row = { _id: 'e1', companyKey: 'a', toEmail: 'a@shop.com', status: 'completed', stepIndex: 0,
+    sends: [{ stepIndex: 0, at: new Date(now - 10 * DAY) }] };
+  const first = planReArm([row], steps3, { now, rand: () => 0.5 });
+  assert.equal(first.plan.length, 1);
+  // The write flips them to 'active' (filtered on status:'completed', so a
+  // concurrent second write matches nothing) — and re-planning skips them.
+  const applied = { ...row, status: 'active', stepIndex: first.plan[0].stepIndex };
+  assert.equal(planReArm([applied], steps3, { now, rand: () => 0.5 }).plan.length, 0);
+});
+
+test('planReArm: tolerates garbage input', () => {
+  assert.deepEqual(planReArm().plan, []);
+  assert.deepEqual(planReArm([null, undefined], steps3).plan, []);
+  assert.deepEqual(planReArm([{ _id: 'x', status: 'completed', sends: [] }], []).plan, []);
+});
+
+// ── List quality: reuse the Field Map's own read on the same shops ───────────
+test('fieldMapExclusions: chains and non-retail shops are excluded, real dispensaries kept', () => {
+  const rows = [
+    { companyKey: 'rec-nj',   isChain: false, segment: 'rec',  state: 'NJ' },  // licensed adult-use
+    { companyKey: 'med-pa',   isChain: false, segment: 'med',  state: 'PA' },  // licensed medical-only
+    { companyKey: 'chain-il', isChain: true,  segment: 'rec',  state: 'IL' },  // corporate chain
+    { companyKey: 'hemp-nj',  isChain: false, segment: 'hemp', state: 'NJ' },  // CBD shop in a legal state
+    { companyKey: 'smoke-tx', isChain: false, segment: 'hemp', state: 'TX' },  // no legal retail market
+    { companyKey: 'nolegal',  isChain: false, segment: '',     state: 'SC' },  // unstamped, still no market
+  ];
+  const { excluded, chains, nonRetail } = fieldMapExclusions(rows);
+  assert.equal(excluded.has('rec-nj'), false);
+  assert.equal(excluded.has('med-pa'), false);
+  assert.equal(excluded.get('chain-il'), 'chain');
+  assert.equal(excluded.get('hemp-nj'), 'non-retail');
+  assert.equal(excluded.get('smoke-tx'), 'non-retail');
+  assert.equal(excluded.get('nolegal'), 'non-retail');
+  assert.equal(chains, 1);
+  assert.equal(nonRetail, 3);
+});
+
+test('fieldMapExclusions: a company with no Field Map row is never excluded', () => {
+  // Other verticals (breweries) aren't in the dispensary collection at all — the
+  // filter must be inert for them, not a silent pool wipe.
+  const { excluded, chains, nonRetail } = fieldMapExclusions([]);
+  assert.equal(excluded.size, 0);
+  assert.equal(chains, 0);
+  assert.equal(nonRetail, 0);
+  assert.deepEqual([...fieldMapExclusions(null).excluded.keys()], []);
+});
+
+test('fieldMapExclusions: multiple rows per shop — any chain row wins, one real retail row saves it', () => {
+  const rows = [
+    // Same shop, two sources: the roster row knows it's licensed retail.
+    { companyKey: 'dual', isChain: false, segment: '',    state: 'US' },
+    { companyKey: 'dual', isChain: false, segment: 'rec', state: 'CO' },
+    // Same shop, one row flags the chain — that's a brand fact, so it holds.
+    { companyKey: 'brand', isChain: false, segment: 'rec', state: 'MI' },
+    { companyKey: 'brand', isChain: true,  segment: 'rec', state: 'MI' },
+    { companyKey: '',      isChain: true,  segment: 'rec', state: 'MI' }, // keyless row ignored
+  ];
+  const { excluded } = fieldMapExclusions(rows);
+  assert.equal(excluded.has('dual'), false);
+  assert.equal(excluded.get('brand'), 'chain');
+  assert.equal(excluded.size, 1);
+});
+
+test('fieldMapExclusions: the owner can opt each filter back in', () => {
+  const rows = [
+    { companyKey: 'chain-il', isChain: true, segment: 'rec', state: 'IL' },
+    { companyKey: 'smoke-tx', isChain: false, segment: 'hemp', state: 'TX' },
+  ];
+  const chainsBack = fieldMapExclusions(rows, { includeChains: true });
+  assert.equal(chainsBack.excluded.has('chain-il'), false);
+  assert.equal(chainsBack.chains, 0, 'counts report what was actually skipped');
+  assert.equal(chainsBack.excluded.get('smoke-tx'), 'non-retail');
+  const allBack = fieldMapExclusions(rows, { includeChains: true, includeNonRetail: true });
+  assert.equal(allBack.excluded.size, 0);
+});
+
+test('sanitizeEnrollFilters: both filters default ON (flags off) and only true opts back in', () => {
+  assert.deepEqual(sanitizeEnrollFilters(), { includeChains: false, includeNonRetail: false });
+  assert.deepEqual(sanitizeEnrollFilters(null), { includeChains: false, includeNonRetail: false });
+  assert.deepEqual(sanitizeEnrollFilters({ includeChains: 'true', includeNonRetail: 1 }),
+    { includeChains: true, includeNonRetail: false });
 });

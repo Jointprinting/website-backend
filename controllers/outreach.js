@@ -35,13 +35,22 @@ async function keysWithPlacedOrders(keys) {
     .select('companyKey').lean();
   return new Set(rows.map((r) => r.companyKey));
 }
-const { engineStatus, runOutreachTick, sendTestEmail, recheckAuth, newToken, pickEmail, sendBlockReason, deliverabilityStats, cityFromAddress, openPixelEnabled, DAILY_CAP_MAX } = require('../services/outreachEngine');
+const { engineStatus, runOutreachTick, sendTestEmail, recheckAuth, newToken, pickEmail, sendBlockReason, deliverabilityStats, cityFromAddress, jitteredFollowUpAt, openPixelEnabled, DAILY_CAP_MAX } = require('../services/outreachEngine');
 const { runFinder, finderStatus } = require('../services/leadFinderRunner');
 const { scoreLead } = require('../services/leadScore');
 const { runFrontierSweep } = require('../services/leadFinderScheduler');
 const { REGIONS, isRegion } = require('../services/dispensaryFinder');
 const { isVertical, verticalPoolFilter, verticalOptions, DEFAULT_VERTICAL_ID } = require('../services/leadVerticals');
 const { isGmailConfigured } = require('../services/replyTriage');
+// WHICH mailbox the reply sync is signed in to — the reading half of the reply
+// path (the sending half comes off the engine). engineStatus can't read it
+// itself without a require cycle, so the overview passes it in.
+const { getTriageIdentity } = require('./replyTriage');
+const Dispensary = require('../models/Dispensary');
+// The states with a real licensed retail market (adult-use + medical-only) —
+// the same registry the Field Map segments pins with, so "pitchable market"
+// means exactly one thing across the ecosystem.
+const { ROSTER_STATES } = require('../services/dispensaryStates');
 const TriageReply = require('../models/TriageReply');
 const outreachCopy = require('../services/outreachCopy');
 const aiBudget = require('../services/aiBudget');
@@ -175,6 +184,17 @@ function campaignHealth(campaign = {}, stats = {}, now = new Date()) {
     return { level: 'warn', label: 'Roster exhausted',
       hint: `No one is still in sequence (${st.sent} sent, ${st.replied} replied). Enroll fresh leads to keep it going.` };
   }
+  // A ONE-TOUCH SEQUENCE is a dead campaign that looks alive: every lead gets a
+  // single email, hits the end of the steps, and is stamped 'completed' — and
+  // because auto-enroll only ever draws never-contacted leads, that lead can
+  // never come back. Follow-ups are where cold-email replies come from, so this
+  // outranks the deliverability reads below. `steps` is only judged when it's
+  // actually present (a stats-only read has nothing to say about the sequence —
+  // never invent an alarm from an absent field).
+  if (Array.isArray(campaign.steps) && campaign.steps.length < 2) {
+    return { level: 'action', label: 'One-touch sequence',
+      hint: 'This campaign only sends one email — nobody ever gets a follow-up, and follow-ups are where replies come from. Add at least a day-3 and a day-7 touch.' };
+  }
   // Deliverability first — but bounces are no longer a chore assigned to the
   // owner. The machine already handles the routine case itself: each bounced
   // address is auto-suppressed the moment it bounces, a spike triggers the
@@ -223,7 +243,7 @@ function campaignHealth(campaign = {}, stats = {}, now = new Date()) {
 // getOverview already has, so the operator always knows the single most-important
 // next move instead of scanning cards. Pure + unit-tested. Levels rank
 // action > warm > info > ok; the first item is the "next best action" banner.
-function buildNextActions({ engine = {}, campaigns = [], warmCount = 0, coldReserve = 0, autoEnrollOn = false, replySyncOn = true } = {}) {
+function buildNextActions({ engine = {}, campaigns = [], warmCount = 0, coldReserve = 0, autoEnrollOn = false, replySyncOn = true, noFollowUpsPossible = false } = {}) {
   const actions = [];
   const add = (level, text, cta = null) => actions.push({ level, text, cta });
   const anyActiveCampaign = campaigns.some((c) => c.status === 'active');
@@ -246,6 +266,20 @@ function buildNextActions({ engine = {}, campaigns = [], warmCount = 0, coldRese
   // whenever cold email is actually flowing.
   if (anyActiveCampaign && !replySyncOn) {
     add('action', 'Replies are NOT being auto-detected (Gmail sync is off) — the drip keeps emailing people who already answered. Connect the outreach inbox (GMAIL_TRIAGE_* on the API) or log replies by hand the moment they arrive.', { view: 'replies' });
+  }
+  // THE REPLY BLACK HOLE. Everything above is "nothing is going out"; this is
+  // the worse one — mail IS going out, and every answer lands in a mailbox
+  // nobody reads, so "0 replies" isn't a measurement at all. The hint already
+  // names both addresses and the exact fix, so it's shown verbatim.
+  if (engine.replyPath && engine.replyPath.level === 'action' && engine.replyPath.hint) {
+    add('action', engine.replyPath.hint, { view: 'replies' });
+  }
+  // A one-touch sequence burns the list one email at a time: each lead gets a
+  // single touch, completes, and (auto-enroll only draws never-contacted leads)
+  // can never be enrolled again. Ranks above warm leads — no follow-ups means
+  // there won't BE warm leads.
+  if (noFollowUpsPossible) {
+    add('action', 'Your active campaign has only one email in it — everyone is burned on a single touch and nobody ever gets a follow-up, which is where cold-email replies actually come from. Add a day-3 and a day-7 touch, then re-arm the leads that already ran out.', { view: 'campaigns' });
   }
   if (warmCount > 0) {
     add('warm', `${warmCount} warm lead${warmCount === 1 ? '' : 's'} replied or opening — follow up today.`, { view: 'replies' });
@@ -272,6 +306,20 @@ function buildNextActions({ engine = {}, campaigns = [], warmCount = 0, coldRese
   return actions;
 }
 
+// Which mailbox the reply sync is authenticated as, for the engine's reply-path
+// read. Cheap (a persisted value, no live API call) and deliberately total: an
+// unknown identity degrades to "nothing to judge" — replyPathStatus turns that
+// into level 'ok', so a hiccup here can never manufacture a scary alert, and
+// can never take the dashboard down either.
+const NO_TRIAGE_IDENTITY = { address: '', checkedAt: null, configured: false };
+async function triageIdentity() {
+  try {
+    return (await getTriageIdentity()) || NO_TRIAGE_IDENTITY;
+  } catch {
+    return NO_TRIAGE_IDENTITY;
+  }
+}
+
 // Fire a catch-up tick when the dashboard is opened and the in-process cron may
 // have missed a beat (host idled/restarted). Guarded so it only fires when the
 // window is open, the sender is configured, and the last real run is stale —
@@ -293,7 +341,11 @@ function maybeSelfHealTick(engine) {
 async function getOverview(req, res) {
   try {
     const [engine, campaigns, enrollments] = await Promise.all([
-      engineStatus(),
+      // The engine's status carries `replyPath` — where a reply LANDS vs. which
+      // mailbox is actually read — which needs the triage identity passed in
+      // (controllers/replyTriage → services/outreachEngine would be a cycle).
+      // Chained inside the Promise.all so it still costs one round-trip, not two.
+      triageIdentity().then((identity) => engineStatus({ triageIdentity: identity })),
       OutreachCampaign.find({ status: { $ne: 'archived' } }).sort({ createdAt: -1 }).lean(),
       OutreachEnrollment.find({}).lean(),
     ]);
@@ -326,8 +378,18 @@ async function getOverview(req, res) {
           ).catch(() => {});
         }
       }
-      return { ...c, abWinner, stats, health: campaignHealth(c, stats), abTest };
+      // How many touches this sequence HAS, and whether anyone has ever gotten
+      // past the first one. Both read off the enrollment rows already in memory
+      // — no extra query, and `everFollowedUp` is the honest answer to "is the
+      // follow-up machinery actually running?" (a 4-step campaign where nobody
+      // has ever reached step 1 is still, in practice, a one-touch campaign).
+      const stepCount = (c.steps || []).length;
+      const everFollowedUp = rows.some((e) => e && (e.stepIndex || 0) > 0);
+      return { ...c, abWinner, stats, health: campaignHealth(c, stats), abTest, stepCount, everFollowedUp };
     });
+    // TRUE when an ACTIVE campaign can't ever send a second touch — the dead
+    // sequence, stated as one boolean the Studio can badge.
+    const noFollowUpsPossible = campaignRows.some((c) => c.status === 'active' && c.stepCount < 2);
     const campaignName = new Map(campaigns.map((c) => [String(c._id), c.name]));
 
     // Warm = engaged: replied first (hottest), then multi-opens, then single
@@ -387,6 +449,7 @@ async function getOverview(req, res) {
       engine, campaigns: campaignRows, warmCount: warm.length, coldReserve, autoEnrollOn,
       // Reply auto-stop only works when Gmail sync is on — surface it loudly if not.
       replySyncOn: isGmailConfigured(),
+      noFollowUpsPossible,
     });
 
     // Today's plan — the plain-English "here's what the engine is doing" readout,
@@ -406,6 +469,9 @@ async function getOverview(req, res) {
     const plan = {
       followUpsDue, firstTouchesDue, dueNow: followUpsDue + firstTouchesDue,
       inSequence, reserve: coldReserve,
+      // "0 follow-ups due" is ambiguous — it can mean "none are ripe yet" OR
+      // "there is no second email to send, ever". This says which.
+      noFollowUpsPossible,
       dailyCap: (engine && (engine.cap != null ? engine.cap : engine.dailyCap)) || null,
       sentToday: (engine && engine.sentToday) || 0,
       pipelineTarget: pipelineTarget(),
@@ -459,14 +525,124 @@ function sanitizeSteps(steps) {
     .filter((s) => s.subject.trim() || s.body.trim());
 }
 
+// ── Re-arming a burned list ───────────────────────────────────────────────────
+//
+// A lead that ran out of steps is stamped 'completed' — and auto-enroll only
+// ever draws leads with `lastContact: null`, which every send stamps, so a
+// completed lead is PERMANENTLY out of the machine. With a one-touch sequence
+// that means the whole list gets spent one email at a time and can never be
+// worked again. When the owner adds touches, those people are exactly who the
+// new touches are for: re-arm them instead of losing them.
+//
+// PURE planner (unit-tested): given a campaign's 'completed' enrollments and its
+// NEW steps, decide who gets which touch next and when. Returns the write plan;
+// the caller applies it.
+function planReArm(enrollments = [], steps = [], { now = new Date(), blockedEmails = new Set(), blockedKeys = new Set(), rand = () => 0.5 } = {}) {
+  const plan = [];
+  const skipped = { blocked: 0, sequenceFinished: 0 };
+  const nowMs = (now instanceof Date ? now : new Date(now)).getTime();
+  for (const e of enrollments || []) {
+    if (!e || e.status !== 'completed') continue;
+    const sends = e.sends || [];
+    // Which touch have they actually RECEIVED? `stepIndex` is "the next step to
+    // send" and the engine parks it on the LAST SENT step when it completes an
+    // enrollment, so the sends are the authoritative record — reading stepIndex
+    // alone would re-send someone the email they already got. No sends at all
+    // (enrolled into a campaign that had no usable step) → start at the first
+    // touch, which they never received.
+    const lastSent = sends.length ? Math.max(...sends.map((s) => (s && s.stepIndex) || 0)) : -1;
+    const nextIndex = lastSent + 1;
+    const step = (steps || [])[nextIndex];
+    if (!step) { skipped.sequenceFinished += 1; continue; }
+    // Never re-arm someone the machine is holding: an address that opted out /
+    // bounced / complained anywhere (suppression), or a company that's archived,
+    // do-not-email, closed, or has since become a real customer. Same gates the
+    // send path re-checks — a re-arm must never do what a send wouldn't.
+    const email = String(e.toEmail || '').toLowerCase();
+    if ((email && blockedEmails.has(email)) || blockedKeys.has(e.companyKey)) { skipped.blocked += 1; continue; }
+    // Due where the sequence WOULD have put them: the new step's offset from
+    // their last send. That date is normally already past (the touch was owed
+    // weeks ago), and a pile of backdated rows would all fire in one burst — so
+    // anything in the past floors to a jittered slot just ahead of now, and the
+    // daily cap paces the rest.
+    const lastAt = sends.length ? new Date(sends[sends.length - 1].at || 0).getTime() : 0;
+    const base = Number.isFinite(lastAt) && lastAt > 0 ? lastAt : nowMs;
+    const due = jitteredFollowUpAt(base, step.offsetDays, rand());
+    const nextSendAt = due.getTime() > nowMs ? due : new Date(nowMs + Math.floor(rand() * 90 * 60 * 1000));
+    plan.push({ _id: e._id, stepIndex: nextIndex, nextSendAt });
+  }
+  return { plan, skipped };
+}
+
+// Apply the re-arm for one campaign whose steps just grew. Idempotent: the
+// write only matches rows still 'completed', so a second run (or two concurrent
+// saves) can't double-schedule anyone. Never touches the Suppression list, the
+// CRM, or anyone who replied / unsubscribed / bounced — those enrollments aren't
+// 'completed' in the first place, and the address/company gates below catch the
+// ones suppressed through some other campaign.
+async function reArmCompleted(campaign, steps, { now = new Date() } = {}) {
+  const total = (steps || []).length;
+  const empty = { reArmed: 0, candidates: 0, skipped: { blocked: 0, sequenceFinished: 0 } };
+  if (total < 2) return empty;
+  // Only rows that could possibly have an unsent touch left (stepIndex is parked
+  // on their last sent step) — the per-row check below is the precise one.
+  const rows = await OutreachEnrollment.find({
+    campaignId: campaign._id, status: 'completed', stepIndex: { $lt: total - 1 },
+  }).select('companyKey toEmail status stepIndex sends').lean();
+  if (!rows.length) return empty;
+
+  const keys = [...new Set(rows.map((r) => r.companyKey))];
+  const [blockedEmails, clients, customerKeys] = await Promise.all([
+    suppressedSet(rows.map((r) => r.toEmail)).catch(() => new Set()),
+    Client.find({ companyKey: { $in: keys } }).select('companyKey archived doNotEmail stage').lean().catch(() => []),
+    keysWithPlacedOrders(keys).catch(() => new Set()),
+  ]);
+  const clientByKey = new Map(clients.map((c) => [c.companyKey, c]));
+  // A company with no Client row anymore, or one the live send path would
+  // refuse, is blocked — same verdict function the engine uses at send time.
+  const blockedKeys = new Set([
+    ...keys.filter((k) => sendBlockReason(clientByKey.get(k))),
+    ...customerKeys,
+  ]);
+
+  const { plan, skipped } = planReArm(rows, steps, { now, blockedEmails, blockedKeys, rand: Math.random });
+  if (!plan.length) return { ...empty, candidates: rows.length, skipped };
+  const result = await OutreachEnrollment.bulkWrite(plan.map((p) => ({
+    updateOne: {
+      // `status: 'completed'` in the FILTER is what makes this idempotent.
+      filter: { _id: p._id, status: 'completed' },
+      update: { $set: { status: 'active', stepIndex: p.stepIndex, nextSendAt: p.nextSendAt, stopReason: '', sendAttempts: 0, lastError: '' } },
+    },
+  })), { ordered: false });
+  return { reArmed: result.modifiedCount || 0, candidates: rows.length, skipped };
+}
+
+// The owner's opt-back-in switches for the list-quality filters (see
+// fieldMapExclusions). Both default OFF — chains and non-retail shops stay out
+// of the pool unless he deliberately asks for them.
+function sanitizeEnrollFilters(v) {
+  const f = v && typeof v === 'object' ? v : {};
+  return {
+    includeChains: f.includeChains === true || f.includeChains === 'true',
+    includeNonRetail: f.includeNonRetail === true || f.includeNonRetail === 'true',
+  };
+}
+
 // PATCH /api/outreach/campaigns/:id — edit name/description/steps/status.
 // Pausing ('paused') instantly halts its sends; enrollments keep their place.
+// Adding touches to the sequence also RE-ARMS the leads the old, shorter
+// sequence already burned (pass { reArm: false } to skip).
 async function updateCampaign(req, res) {
   try {
     const body = req.body || {};
     const set = {};
+    // Read the sequence as it stands BEFORE the edit — growing it is what
+    // re-arms the leads the shorter sequence already burned.
+    const before = await OutreachCampaign.findById(req.params.id).select('steps').lean();
+    if (!before) return res.status(404).json({ message: 'campaign not found' });
     if ('name' in body) set.name = String(body.name || '').trim();
     if ('description' in body) set.description = String(body.description || '');
+    if ('enrollFilters' in body) set.enrollFilters = sanitizeEnrollFilters(body.enrollFilters);
     if ('steps' in body) {
       set.steps = sanitizeSteps(body.steps);
       // Editing the steps rewrites the subjects under test — any locked A/B
@@ -501,7 +677,19 @@ async function updateCampaign(req, res) {
         ).catch(() => {});
       }
     }
-    res.json({ campaign, lint: lintSteps(campaign.steps) });
+    // The sequence just got longer → the people it already ran dry on are
+    // exactly who the new touches are for. Re-arm them (idempotent, and it
+    // honours every suppression / do-not-email / customer gate the sender does)
+    // and report the count so the Studio can say "re-armed N burned leads".
+    let reArm = null;
+    const grew = Array.isArray(set.steps) && set.steps.length > (before.steps || []).length;
+    if (grew && body.reArm !== false && body.reArm !== 'false') {
+      reArm = await reArmCompleted(campaign, campaign.steps).catch((err) => {
+        console.error('[outreach] re-arm failed:', err.message);
+        return null;
+      });
+    }
+    res.json({ campaign, lint: lintSteps(campaign.steps), ...(reArm ? { reArm } : {}) });
   } catch (e) {
     res.status(400).json({ message: e.message });
   }
@@ -974,12 +1162,52 @@ function interleaveByCity(rows = [], cityOf = (r) => r && r.city) {
   return out.concat(unknown);
 }
 
+// ── List quality (the Field Map already knows) ────────────────────────────────
+//
+// The Dispensary collection carries `isChain` and `segment` for the SAME shops
+// the outreach pool draws from, joined on the same `companyKey` spine — so the
+// intelligence to skip a lead who structurally cannot buy already exists; the
+// enroll path just never asked for it. Two exclusions:
+//   • CHAINS — a corporate chain's listed inbox routes to a marketing team with
+//     a national vendor contract; a cold merch email there is dead on arrival.
+//   • NON-RETAIL — a hemp/CBD smoke shop, or a shop in a state with no legal
+//     marijuana retail at all, isn't a dispensary and can't buy dispensary merch.
+// A company with NO Dispensary row is never excluded: other verticals (breweries)
+// simply aren't in this collection, and an unknown shop gets the benefit of the
+// doubt. PURE + unit-tested; the caller supplies the joined rows.
+const LEGAL_RETAIL_STATES = new Set(Object.keys(ROSTER_STATES));
+function fieldMapExclusions(rows = [], { includeChains = false, includeNonRetail = false } = {}) {
+  // One shop can have several Dispensary rows (roster + Google sweep). Chain-ness
+  // is a brand fact, so ANY row flagging it wins; "real retail" is the generous
+  // read — one row in a licensed retail market with a non-hemp segment is enough.
+  const byKey = new Map();
+  for (const r of rows || []) {
+    const key = r && String(r.companyKey || '').trim();
+    if (!key) continue;
+    if (!byKey.has(key)) byKey.set(key, { chain: false, retail: false });
+    const v = byKey.get(key);
+    if (r.isChain) v.chain = true;
+    if (LEGAL_RETAIL_STATES.has(String(r.state || '').toUpperCase()) && r.segment !== 'hemp') v.retail = true;
+  }
+  const excluded = new Map(); // companyKey → 'chain' | 'non-retail'
+  let chains = 0;
+  let nonRetail = 0;
+  for (const [key, v] of byKey) {
+    if (v.chain) { if (!includeChains) { excluded.set(key, 'chain'); chains += 1; } continue; }
+    if (!v.retail && !includeNonRetail) { excluded.set(key, 'non-retail'); nonRetail += 1; }
+  }
+  return { excluded, chains, nonRetail };
+}
+
 // Discover cold candidates and enroll up to `limit` of them into `campaign`,
 // best-lead-first with a per-city spread — the same cold-only + suppression +
 // hygiene guards the manual enroll uses, so the auto path can never do anything
 // the owner couldn't. Used by the auto-enroll cron and the "fill now" toggle.
-// Returns { enrolled }.
-async function autoFillCampaign(campaign, { limit } = {}) {
+// Returns { enrolled, filtered: { chains, nonRetail } } — the filtered counts so
+// the Studio can say "N chains / N non-retail skipped" instead of the pool
+// silently shrinking. `includeChains` / `includeNonRetail` (from the campaign's
+// enrollFilters, overridable per call) opt those back in.
+async function autoFillCampaign(campaign, { limit, includeChains, includeNonRetail } = {}) {
   // A quarantined list gets no fresh leads — pouring the reserve into a pool
   // whose first-touches are stopped would just strand them behind the gate.
   if (campaign.firstTouchQuarantinedAt) return { enrolled: 0, skipped: 'quarantined' };
@@ -1002,11 +1230,22 @@ async function autoFillCampaign(campaign, { limit } = {}) {
   if (!clients.length) return { enrolled: 0 };
 
   const keys = clients.map((c) => c.companyKey);
-  const [existing, customerKeys, allEnrollments] = await Promise.all([
+  const filterOpts = {
+    ...sanitizeEnrollFilters(campaign.enrollFilters),
+    ...(includeChains == null ? {} : { includeChains: !!includeChains }),
+    ...(includeNonRetail == null ? {} : { includeNonRetail: !!includeNonRetail }),
+  };
+  const [existing, customerKeys, allEnrollments, fieldMapRows] = await Promise.all([
     OutreachEnrollment.find({ campaignId: campaign._id, companyKey: { $in: keys } }).select('companyKey').lean(),
     keysWithPlacedOrders(keys),
     OutreachEnrollment.find({}).select('toEmail').lean(),
+    // The Field Map's read on these exact shops — ONE indexed query scoped to the
+    // pool we already loaded (not a scan of the national collection), so the join
+    // costs a single round-trip per fill.
+    Dispensary.find({ companyKey: { $in: keys } }).select('companyKey isChain segment state').lean().catch(() => []),
   ]);
+  const { excluded, chains, nonRetail } = fieldMapExclusions(fieldMapRows, filterOpts);
+  const filtered = { chains, nonRetail };
   const enrolledSet = new Set(existing.map((e) => e.companyKey));
   const usedEmails = new Set(allEnrollments.map((e) => String(e.toEmail || '').toLowerCase()).filter(Boolean));
   const suppressed = await suppressedSet(clients.map((c) => pickEmail(c)));
@@ -1026,13 +1265,16 @@ async function autoFillCampaign(campaign, { limit } = {}) {
   const eligible = [];
   for (const { c } of spread) {
     if (eligible.length >= limit) break;
+    // Chains and non-retail shops never enter the pool — they can't buy, so a
+    // send to them is pure burned cap (and burned reputation).
+    if (excluded.has(c.companyKey)) continue;
     const email = String(pickEmail(c) || '').toLowerCase();
     const reason = enrollBlockReason(c, enrolledSet.has(c.companyKey), customerKeys.has(c.companyKey), email ? suppressed.has(email) : false);
     if (reason || !email || usedEmails.has(email)) continue;
     usedEmails.add(email);
     eligible.push(c);
   }
-  if (!eligible.length) return { enrolled: 0 };
+  if (!eligible.length) return { enrolled: 0, filtered };
 
   // List hygiene: drop dead-MX domains before enrolling.
   const mxMap = await verifyDomainsMx(eligible.map((c) => emailDomain(String(pickEmail(c) || '').toLowerCase()))).catch(() => new Map());
@@ -1040,7 +1282,7 @@ async function autoFillCampaign(campaign, { limit } = {}) {
     const d = emailDomain(String(pickEmail(c) || '').toLowerCase());
     return !(d && mxMap.get(d) === false);
   });
-  if (!kept.length) return { enrolled: 0 };
+  if (!kept.length) return { enrolled: 0, filtered };
 
   const now = new Date();
   try {
@@ -1058,7 +1300,7 @@ async function autoFillCampaign(campaign, { limit } = {}) {
     if (err.code !== 11000 && !(err.writeErrors || []).every((w) => w.code === 11000)) throw err;
   }
   await Client.updateMany({ companyKey: { $in: kept.map((c) => c.companyKey) } }, { $addToSet: { tags: COLD_TAG } });
-  return { enrolled: kept.length };
+  return { enrolled: kept.length, filtered };
 }
 
 // Cron: top up the auto-enroll target from the reserve every 30 min (idle when
@@ -1811,6 +2053,10 @@ module.exports = {
   enrollBlockReason,
   autoEnrollOnFromState,
   sanitizeSteps,
+  sanitizeEnrollFilters,
+  planReArm,
+  reArmCompleted,
+  fieldMapExclusions,
   extractBounceEmails,
   classifyBounceEvent,
   parseState,
