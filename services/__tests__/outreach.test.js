@@ -591,3 +591,54 @@ test('shouldQuarantineList: needs a real sample, a real count, and an action-lev
   assert.equal(shouldQuarantineList({ sent: 100, bounced: 12 }, at), true);  // 12% at volume
   assert.equal(shouldQuarantineList({}, at), false);
 });
+
+// ── Send-time address gate (the bounce engine) ───────────────────────────────
+//
+// pickEmail used to score any local-part outside a 23-item role list as "a named
+// person", so careers@ / privacy@ / postmaster@ outranked info@ — the engine
+// mailed the alias least likely to exist and ate the bounce. Addresses harvested
+// under that rule are already on file, so the send-time gate is what protects
+// the existing list without rewriting a single stored record.
+
+test('pickEmail never returns a never-send address, even as the only one on file', () => {
+  assert.equal(pickEmail({ email: 'careers@greenleaf.com' }), '');
+  assert.equal(pickEmail({ email: 'noreply@greenleaf.com' }), '');
+  assert.equal(pickEmail({ email: 'postmaster@greenleaf.com' }), '');
+  assert.equal(pickEmail({ contacts: [{ email: 'privacy@greenleaf.com' }] }), '');
+  assert.equal(pickEmail({}), '');
+});
+
+test('pickEmail picks info@ over the aliases the old rule preferred', () => {
+  assert.equal(
+    pickEmail({ email: 'careers@greenleaf.com', contacts: [{ email: 'info@greenleaf.com' }] }),
+    'info@greenleaf.com'
+  );
+  assert.equal(
+    pickEmail({ email: 'webmaster@greenleaf.com', contacts: [{ email: 'contact@greenleaf.com' }] }),
+    'contact@greenleaf.com'
+  );
+});
+
+test('pickEmail still prefers a real person, and a named contact wins the tie', () => {
+  assert.equal(
+    pickEmail({ email: 'info@greenleaf.com', contacts: [{ email: 'jane.doe@greenleaf.com', name: 'Jane Doe' }] }),
+    'jane.doe@greenleaf.com'
+  );
+  // Two role inboxes of the SAME tier, one with a contact name attached → the
+  // named one wins. Holding a human name is what turns a bare "Hey," into "Hi
+  // Sam", so it is worth more than the sub-point ordering between role inboxes.
+  assert.equal(
+    pickEmail({ email: 'info@greenleaf.com', contacts: [{ email: 'sales@greenleaf.com', name: 'Sam' }] }),
+    'sales@greenleaf.com'
+  );
+  // …but a name never promotes an address ACROSS tiers: a named never-send stays
+  // unsendable, and a named unknown alias still loses to a plain role inbox.
+  assert.equal(
+    pickEmail({ email: 'info@greenleaf.com', contacts: [{ email: 'careers@greenleaf.com', name: 'Sam' }] }),
+    'info@greenleaf.com'
+  );
+  assert.equal(
+    pickEmail({ email: 'info@greenleaf.com', contacts: [{ email: 'xq7zplt@greenleaf.com', name: 'Sam' }] }),
+    'info@greenleaf.com'
+  );
+});

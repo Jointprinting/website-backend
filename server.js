@@ -247,6 +247,25 @@ db.once('open', () => {
     }
   }, 7_000);
 
+  // One-time repair: a hard bounce used to blacklist the whole COMPANY, not just
+  // the dead address — so one nonexistent alias (careers@, privacy@ — exactly
+  // what the old address ranker preferred) permanently destroyed a real
+  // dispensary lead. A bounce is not an opt-out; release those companies so they
+  // can be worked again. Only flags carrying the bounce path's own marker are
+  // lifted, and the dead addresses stay suppressed.
+  setTimeout(async () => {
+    const KEY = 'releaseBounceBlacklist-v1';
+    try {
+      const migrations = mongoose.connection.db.collection('migrations');
+      if (await migrations.findOne({ _id: KEY })) return;
+      const r = await require('./controllers/outreach').releaseBounceBlacklistedLeads();
+      await migrations.insertOne({ _id: KEY, at: new Date(), ...r });
+      if (r.released) console.log(`[outreach] released ${r.released} lead(s) blacklisted by a bounce (of ${r.scanned} scanned).`);
+    } catch (e) {
+      console.warn('[outreach] bounce-blacklist release failed (will retry next boot):', e.message);
+    }
+  }, 9_500);
+
   // Crash-resume: pick up any newsletter blast a deploy/restart interrupted.
   // Per-recipient sentAt is the checkpoint, so nothing double-sends and the
   // tail of the list still goes out.

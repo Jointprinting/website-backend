@@ -51,6 +51,7 @@ const { applySpintax, hashStr } = require('./outreachContent');
 const { getSenders } = require('./senderPool');
 const { getAuthStatus, recommendedRecords } = require('../utils/dnsAuth');
 const { replyPathStatus, normalizeAddress } = require('../utils/replyPath');
+const { isNeverSend, scoreEmail } = require('../utils/emailQuality');
 const { BUSINESS_TZ, etStartOfToday, etToday, etDaysSince } = require('../utils/time');
 
 // Hold cold sends when the sender domain is missing SPF/DMARC (the Gmail/Yahoo
@@ -484,10 +485,17 @@ function isRoleEmail(email) {
   return ROLE_LOCALS.has(local.replace(/[.+_-].*$/, '')); // "sales.team" / "info+nj" → role
 }
 
-// Best usable email for a company: prefer a NAMED person over a role inbox.
-// Ranks every candidate (the company's own email + each contact's) by
-// non-role + has-a-name, so a buyer's personal address beats info@ when both
-// exist — but a role inbox is still returned when it's all we have.
+// Best usable email for a company, or '' when every address on file is one we
+// must never cold-email. Ranking is the SHARED verdict in utils/emailQuality —
+// person > known-good role inbox > unrecognized — so send time and harvest time
+// can't disagree. The old local rule scored every unrecognized local-part as "a
+// named person", which put `careers@` / `privacy@` / `postmaster@` AHEAD of
+// `info@`; those mailboxes usually don't exist, so the engine kept mailing the
+// one address most likely to bounce.
+//
+// Returning '' matters as much as the ranking: addresses harvested under the old
+// rule are already on file, and this is what stops them being mailed at all
+// without needing to rewrite a single stored record.
 function pickEmail(client = {}) {
   const cands = [];
   const own = String(client.email || '').trim();
@@ -496,10 +504,13 @@ function pickEmail(client = {}) {
     const e = String((c && c.email) || '').trim();
     if (e) cands.push({ email: e, name: String((c && c.name) || '').trim() });
   }
-  if (!cands.length) return '';
-  const score = (c) => (isRoleEmail(c.email) ? 0 : 2) + (c.name ? 1 : 0);
-  cands.sort((a, b) => score(b) - score(a));
-  return cands[0].email;
+  const usable = cands.filter((c) => !isNeverSend(c.email));
+  if (!usable.length) return '';
+  // A candidate we hold a real contact NAME for still wins the tie — that name
+  // is what makes the greeting personal.
+  const score = (c) => scoreEmail(c.email) + (c.name ? 1 : 0);
+  usable.sort((a, b) => score(b) - score(a));
+  return usable[0].email;
 }
 
 const newToken = () => crypto.randomBytes(16).toString('hex');
@@ -1332,17 +1343,38 @@ async function sendOne(enr, campaign, now = new Date(), sender = null) {
       enr.stopReason = 'invalid-address';
       enr.nextSendAt = null;
       await enr.save();
-      // Suppress the ADDRESS globally (survives re-discovery under a new key)…
+      // Retire the ADDRESS, never the COMPANY. A hard bounce says one mailbox
+      // doesn't exist — it says nothing about whether the dispensary wants to
+      // hear from us, and it is emphatically not an opt-out (those set
+      // doNotEmail through the unsubscribe path, which is the right place).
+      //
+      // This used to set doNotEmail on the Client, which quietly destroyed the
+      // lead: paired with the old ranker's habit of harvesting `careers@` /
+      // `privacy@` over `info@`, one dead alias permanently blacklisted a real,
+      // licensed dispensary. Suppressing the address is already enough to stop
+      // every campaign re-sending to it; clearing it off the record lets the
+      // enricher discover a working address on a later pass and the company
+      // stays a live lead.
       await suppress(to, { reason: 'hard-bounce', source: 'smtp-bounce' });
-      // …and flag the company so no OTHER campaign wastes a send on it either.
+      const bounced = String(to || '').trim().toLowerCase();
+      if (bounced) {
+        // Clear the primary email ONLY when it is the address that bounced — a
+        // company whose primary is fine keeps it.
+        await Client.updateOne(
+          { companyKey: enr.companyKey, email: bounced },
+          { $unset: { email: '' } },
+        ).catch(() => {});
+        // Same for contact rows, so pickEmail can't re-select the dead address.
+        await Client.updateOne(
+          { companyKey: enr.companyKey },
+          { $pull: { contacts: { email: bounced } } },
+        ).catch(() => {});
+      }
       await Client.updateOne(
-        { companyKey: enr.companyKey, doNotEmail: { $ne: true } },
-        {
-          $set: { doNotEmail: true },
-          $push: { log: { at: now, text: 'Email address rejected (bounced) — suppressed from outreach', kind: 'email', dedupKey: `outreach-bounce:${enr._id}` } },
-        },
+        { companyKey: enr.companyKey },
+        { $push: { log: { at: now, text: `Email ${bounced || '(unknown)'} rejected (bounced) — address retired, company kept as a lead`, kind: 'email', dedupKey: `outreach-bounce:${enr._id}` } } },
       ).catch(() => {});
-      console.warn(`[outreach] permanent bounce for ${enr.companyKey} (${to}) — suppressed`);
+      console.warn(`[outreach] permanent bounce for ${enr.companyKey} (${to}) — address retired, company kept`);
       return 'skipped';
     }
     // TRANSIENT or SENDER-SIDE error (greylist / timeout / rate limit / auth /

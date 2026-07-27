@@ -2012,7 +2012,43 @@ async function draftSequence(req, res) {
   }
 }
 
+// ── Boot healer: give back the dispensaries a bounce blacklisted ─────────────
+//
+// Until now a hard bounce set `doNotEmail: true` on the COMPANY, not just the
+// address. Paired with the old address ranker — which scored `careers@` /
+// `privacy@` / `webmaster@` above `info@`, so the engine preferentially mailed
+// the alias least likely to exist — that meant one dead alias permanently
+// destroyed a real, licensed dispensary lead. Weeks of sweeping 43 states left
+// a 42-lead reserve for exactly this reason.
+//
+// A bounce is not an opt-out, so those flags are safe to lift. This ONLY
+// releases companies whose flag carries the bounce path's own log marker
+// (dedupKey 'outreach-bounce:'), so an owner-set do-not-email or a real
+// unsubscribe is never touched. The dead address itself stays on the global
+// suppression list, so nothing can re-send to it — the company simply becomes
+// eligible again once the enricher finds a working address.
+//
+// Idempotent: the filter only matches rows still flagged.
+async function releaseBounceBlacklistedLeads() {
+  const rows = await Client.find(
+    { doNotEmail: true, 'log.dedupKey': { $regex: '^outreach-bounce:' } },
+    { _id: 1, companyKey: 1, email: 1, log: 1 },
+  ).lean().catch(() => []);
+  if (!rows.length) return { released: 0, scanned: 0 };
+  // Never release a company that ALSO carries an unsubscribe/complaint marker —
+  // a bounce log next to a genuine opt-out must lose to the opt-out.
+  const optedOut = /unsubscrib|opt[- ]?out|do not (?:contact|email)|complaint|spam report/i;
+  const releasable = rows.filter((r) => !(r.log || []).some((l) => optedOut.test(String((l && l.text) || ''))));
+  if (!releasable.length) return { released: 0, scanned: rows.length };
+  const res = await Client.updateMany(
+    { _id: { $in: releasable.map((r) => r._id) }, doNotEmail: true },
+    { $set: { doNotEmail: false } },
+  ).catch(() => ({ modifiedCount: 0 }));
+  return { released: res.modifiedCount || 0, scanned: rows.length };
+}
+
 module.exports = {
+  releaseBounceBlacklistedLeads,
   getOverview,
   createCampaign,
   updateCampaign,
