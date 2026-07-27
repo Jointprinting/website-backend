@@ -14,7 +14,8 @@ const test = require('node:test');
 const assert = require('node:assert');
 
 const {
-  bucketAwaitingInvoice, bucketInvoiceUnpaid, approvedAtOf, INVOICE_CHASE_DAYS,
+  bucketAwaitingInvoice, bucketInvoiceUnpaid, approvedAtOf,
+  INVOICE_CHASE_DAYS, INVOICE_STALE_DAYS,
 } = require('../signals');
 
 const NOW = new Date('2026-07-25T12:00:00Z');
@@ -126,4 +127,58 @@ test('handles empty and missing input', () => {
   assert.deepStrictEqual(bucketInvoiceUnpaid([], NOW), []);
   assert.deepStrictEqual(bucketInvoiceUnpaid(undefined, NOW), []);
   assert.strictEqual(approvedAtOf(null), null);
+});
+
+// ── History is not a to-do ──────────────────────────────────────────────────
+// The first version of this signal surfaced 28 orders aged 383–782 days: two
+// years of finished history presented as urgent work. That is precisely how a
+// feed teaches you to stop reading it.
+//
+// The receipt nag already had this right — it chases ONGOING work and never
+// re-audits finished history. These pin the same rule here.
+
+test('a two-year-old approved order is HISTORY and never nags', () => {
+  // #1001 Jotkoff Financial Services, 782d — straight off the owner's screen.
+  const out = bucketAwaitingInvoice([order({
+    orderNumber: '1001', companyName: 'Jotkoff Financial Services',
+    approvalEvents: [{ kind: 'approved', at: daysAgo(782) }], orderDate: daysAgo(782),
+  })], NOW);
+  assert.deepStrictEqual(out, []);
+});
+
+test('the whole historical pile is silent', () => {
+  const ages = [782, 753, 683, 634, 614, 591, 554, 522, 518, 503, 487, 439, 423, 392, 383];
+  const rows = ages.map((d, i) => order({
+    _id: `h${i}`, orderNumber: String(1000 + i),
+    approvalEvents: [{ kind: 'approved', at: daysAgo(d) }], orderDate: daysAgo(d),
+  }));
+  assert.deepStrictEqual(bucketAwaitingInvoice(rows, NOW), []);
+});
+
+test('but a genuinely recent one still surfaces', () => {
+  const out = bucketAwaitingInvoice([order({
+    approvalEvents: [{ kind: 'approved', at: daysAgo(3) }], orderDate: daysAgo(3),
+  })], NOW);
+  assert.strictEqual(out.length, 1, 'the point is to keep chasing live work');
+});
+
+test('the cutoff is inclusive — exactly at the ceiling still counts', () => {
+  const at = (d) => bucketAwaitingInvoice([order({
+    approvalEvents: [{ kind: 'approved', at: daysAgo(d) }], orderDate: daysAgo(d),
+  })], NOW).length;
+  assert.strictEqual(at(INVOICE_STALE_DAYS), 1);
+  assert.strictEqual(at(INVOICE_STALE_DAYS + 1), 0);
+});
+
+test('an ancient SENT invoice stops being chased too', () => {
+  assert.deepStrictEqual(
+    bucketInvoiceUnpaid([order({ invoiceSentAt: daysAgo(400) })], NOW), []);
+});
+
+test('the chase window is fresh-enough AND recent-enough', () => {
+  const at = (d) => bucketInvoiceUnpaid([order({ invoiceSentAt: daysAgo(d) })], NOW).length;
+  assert.strictEqual(at(INVOICE_CHASE_DAYS - 1), 0, 'too fresh to be a problem');
+  assert.strictEqual(at(INVOICE_CHASE_DAYS), 1);
+  assert.strictEqual(at(30), 1);
+  assert.strictEqual(at(INVOICE_STALE_DAYS + 1), 0, 'too old to be an action');
 });

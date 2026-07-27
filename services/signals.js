@@ -339,6 +339,18 @@ async function awaitingConfirmation(now) {
 //
 // Both PURE (exported for tests).
 const INVOICE_CHASE_DAYS = 7;
+// …and a CEILING. An invoice you haven't sent in two months isn't a forgotten
+// to-do, it's history — and the first version of this signal proved the point by
+// surfacing 28 orders aged 383–782 days, which is exactly how a feed teaches you
+// to ignore it. This mirrors the rule the receipt nag already follows: chase
+// ONGOING work, never re-audit finished history (see orderInProgress in
+// controllers/finances.js — "the owner doesn't want to back-fill receipts for old
+// completed orders, just collect them going forward").
+//
+// The money itself is NOT hidden by this: an old unpaid order still counts in the
+// Order Tracker's Unpaid total. That's the record. This is the nag, and a nag has
+// to be about something you'd actually act on today.
+const INVOICE_STALE_DAYS = 60;
 
 // When did the client actually say yes? There is no `approvedAt` column — the
 // truth lives in approvalEvents. Only events from the CURRENT cycle count, on
@@ -363,6 +375,7 @@ function bucketAwaitingInvoice(orders = [], now = new Date()) {
     if (!o || o.paid || o.invoiceSentAt) continue;
     const since = approvedAtOf(o) || o.updatedAt;
     const days = since ? Math.max(0, Math.floor((now - new Date(since)) / 86400000)) : null;
+    if (days != null && days > INVOICE_STALE_DAYS) continue;   // history, not a to-do
     items.push({
       _id: String(o._id || ''),
       orderNumber: o.orderNumber || '',
@@ -383,6 +396,7 @@ function bucketInvoiceUnpaid(orders = [], now = new Date()) {
     if (!o || o.paid || !o.invoiceSentAt) continue;
     const days = Math.max(0, Math.floor((now - new Date(o.invoiceSentAt)) / 86400000));
     if (days < INVOICE_CHASE_DAYS) continue;   // still fresh — not a problem yet
+    if (days > INVOICE_STALE_DAYS) continue;   // past chasing; it's history now
     items.push({
       _id: String(o._id || ''),
       orderNumber: o.orderNumber || '',
@@ -400,8 +414,11 @@ function bucketInvoiceUnpaid(orders = [], now = new Date()) {
 // One read serves both — an approved-or-beyond, unpaid order is the whole
 // population, and the two buckets split it on invoiceSentAt.
 async function invoiceGap(now) {
+  // 'delivered' and 'cancelled' are deliberately absent: the job is wrapped, so the
+  // money question is settled in reality even where the flag was never ticked.
+  // Same exclusion the receipt nag makes, for the same reason.
   const open = await Order.find({
-    status: { $in: ['approved', 'placed', 'in_production', 'shipped', 'delivered'] },
+    status: { $in: ['approved', 'placed', 'in_production', 'shipped'] },
     paid: { $ne: true },
     archived: { $ne: true },
   }).select('orderNumber projectNumber companyKey companyName clientName paid invoiceSentAt orderDate updatedAt approvalEvents approvalSupersededAt').lean();
@@ -639,4 +656,5 @@ module.exports = {
   QUOTE_VALID_DAYS,
   QUOTE_EXPIRY_WARN_DAYS,
   INVOICE_CHASE_DAYS,
+  INVOICE_STALE_DAYS,
 };

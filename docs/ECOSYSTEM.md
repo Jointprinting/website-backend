@@ -247,6 +247,14 @@ Captured directly from Nate; treat as the spec for these areas.
   (their move — chase it). `Order.paid` keeps its old meaning so no money math changed.
   Two hub signals ride this: `awaiting_invoice` (critical) and `invoice_unpaid`
   (warning, only past 7 days).
+  **Both are bounded at BOTH ends** (`INVOICE_STALE_DAYS = 60`). The first version
+  wasn't, and it surfaced **28 orders aged 383–782 days** — two years of finished
+  history presented as urgent work, which is exactly how a feed teaches you to stop
+  reading it. `delivered`/`cancelled` are excluded too. This is the same rule the
+  receipt nag already followed (`orderInProgress`): **chase ongoing work, never
+  re-audit finished history.** Apply it to any future signal.
+  The money is not hidden by this — an old unpaid order still counts in the Order
+  Tracker's Unpaid total. That's the record; the signal is the nag.
 - **The QuickBooks API connection is BROKEN and is not being pursued.** OAuth wiring
   exists; no export has ever been committed. Don't plan around a live QB integration,
   and don't describe finance numbers as reconciled against QuickBooks — they reconcile
