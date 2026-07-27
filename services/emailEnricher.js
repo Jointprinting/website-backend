@@ -15,6 +15,7 @@
 // is pure and unit-tested.
 
 const axios = require('axios');
+const { bestEmail, isNeverSend } = require('../utils/emailQuality');
 
 const POLITE_UA = 'JointPrintingLeadFinder/1.0 (+https://jointprinting.com)';
 const FETCH_TIMEOUT_MS = 12_000;
@@ -48,8 +49,10 @@ function sanitizeEmail(raw) {
   if (ASSET_EXT_RE.test(s)) return '';
   if (JUNK_DOMAINS.includes(domain)) return '';
   if (JUNK_LOCAL_RE.test(local)) return '';
-  // Hex-blob local parts (e.g. tracking hashes) — not a human inbox.
-  if (/^[0-9a-f]{16,}$/.test(local)) return '';
+  // Never-send classes (postmaster@, careers@, privacy@, tracking hashes…) are
+  // dropped at HARVEST time so a bad address never reaches the DB in the first
+  // place — see utils/emailQuality for why each class costs more than it's worth.
+  if (isNeverSend(s)) return '';
   return s;
 }
 
@@ -119,28 +122,16 @@ function extractEmails(html) {
   return ordered;
 }
 
-// Rank extracted emails and return the single best (''). Prefer a NAMED person on
-// the shop's own domain — the best cold-outreach target, and what send-time
-// pickEmail also prefers (they used to disagree: the enricher returned info@ and
-// send-time then had no named address to choose). Then a role inbox on-domain,
-// then off-domain. A lone role inbox is still returned, so a shop that only
-// publishes info@ is never dropped. Pure.
+// Rank extracted emails and return the single best (''). Delegates to the shared
+// verdict in utils/emailQuality so the harvester and the sender can never
+// disagree again — they used to rank independently, and BOTH scored any
+// unrecognized local-part as "a named person". That handed `careers@`,
+// `privacy@` and `webmaster@` a higher rank than `info@`, so the engine
+// preferentially harvested the address on the page most likely to bounce.
+// A lone role inbox is still returned — a shop that only publishes info@ is
+// never dropped — but a never-send address is now never returned at all. Pure.
 function pickBestEmail(emails, siteHost = '') {
-  const list = (emails || []).filter(Boolean);
-  if (!list.length) return '';
-  const host = String(siteHost || '').toLowerCase().replace(/^www\./, '');
-  const score = (e) => {
-    const [local, domain] = e.split('@');
-    const onDomain = !!host && !!domain && (domain === host || domain.endsWith(`.${host}`));
-    const roleIdx = ROLE_PRIORITY.indexOf(local);
-    const isRole = roleIdx >= 0;
-    let s = 0;
-    if (onDomain) s += 100;                             // on the shop's own domain — strongly preferred
-    if (!isRole) s += 40;                               // a named person beats a role inbox…
-    else s += (ROLE_PRIORITY.length - roleIdx);         // …but a role inbox stays a ranked fallback
-    return s;
-  };
-  return [...list].sort((a, b) => score(b) - score(a))[0];
+  return bestEmail(emails, { siteHost });
 }
 
 function hostOf(url) {
