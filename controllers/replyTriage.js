@@ -631,6 +631,16 @@ let identityAttemptAt = 0;
 // the two differ, every reply is invisible — so the address is published rather
 // than assumed. Cheap (memo + persisted value), and it never throws.
 async function getTriageIdentity({ refresh = false } = {}) {
+  // The IMAP reader wins when it's on: it reads the mailbox we SEND from, which
+  // is by definition where replies land, and it needs no hand-wired OAuth to get
+  // there. Answering with it makes the reply-path check report the truth —
+  // "something is watching the mailbox replies go to" — instead of judging the
+  // system by a Gmail grant that may point at an unrelated account.
+  const imapAddress = (() => {
+    try { return require('../services/replyImap').imapMailbox(); } catch { return ''; }
+  })();
+  if (imapAddress) return { address: normEmail(imapAddress), checkedAt: new Date(), configured: true };
+
   const configured = isGmailConfigured();
   try {
     if (!refresh && identityMemo && Date.now() - identityMemo.at < 60 * 1000) {
@@ -837,6 +847,14 @@ async function getSyncStatus(_req, res) {
 // Cron: read-only Gmail ingest every 10 min (only when configured). Modeled on
 // the outreach engine + jpwScheduler crons; started from server.js.
 function startGmailIngest() {
+  // The COLD-SENDING mailbox is read over IMAP with the credentials the sender
+  // already holds (SMTP_USER/SMTP_PASS). That mailbox is where replies to cold
+  // email actually land, so this is the path that matters — and it needs no
+  // setup at all, unlike the Gmail OAuth grant below, which is wired by hand and
+  // can silently point at a different account. Both feed the same ingestOne, and
+  // the RFC Message-ID dedupe means a message seen by both is stored once.
+  startImapIngest();
+
   if (!isGmailConfigured()) {
     console.log('[triage] Gmail ingest idle — set GMAIL_TRIAGE_ENABLED + GMAIL_* creds to enable read-only reply sync');
     return;
@@ -857,6 +875,30 @@ function startGmailIngest() {
     .then((id) => { if (id.address) console.log(`[triage] reply sync is reading ${id.address}`); })
     .catch(() => {});
   auditQuotedFooterOptOuts().catch((e) => console.warn('[triage] opt-out audit failed:', e.message));
+}
+
+// Read the sending mailbox itself, every 10 minutes, offset from the Gmail tick
+// so two syncs never hammer the same minute. Idle and silent when there are no
+// SMTP credentials or the provider is a send-only relay with no mailbox.
+function startImapIngest() {
+  const { runImapSync, imapMailbox } = require('../services/replyImap');
+  const mailbox = imapMailbox();
+  if (!mailbox) {
+    console.log('[triage] sending-mailbox reader idle — no SMTP/IMAP credentials, or a send-only relay');
+    return;
+  }
+  cron.schedule('5,15,25,35,45,55 * * * *', () => {
+    runImapSync()
+      .then((r) => {
+        if (r && (r.imported || r.errors)) {
+          console.log(`[triage] sending-mailbox sync: +${r.imported} new (${r.scanned} scanned, ${r.errors} failed)`);
+        }
+      })
+      .catch((e) => console.warn('[triage] sending-mailbox sync failed:', e.message));
+  });
+  console.log(`[triage] reading the sending mailbox (${mailbox}) every 10 min — replies surface in the Studio with no extra setup`);
+  // Kick once shortly after boot so a fresh deploy doesn't wait for the cron.
+  setTimeout(() => { runImapSync().catch(() => {}); }, 20_000);
 }
 
 // GET /api/triage/worklist — the Follow-Up Command Center's action buckets.
