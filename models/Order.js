@@ -617,6 +617,17 @@ const OrderSchema = new mongoose.Schema({
     markup:       { type: Number, default: 1.4 }, // multiplier; unit price = (blankCost + printCost + (setup+ship)/qty) * markup; matches the builder default
     noMarkup:     { type: Boolean, default: false }, // promo/vendor-catalog price already includes margin — un-typed cells auto-fill at COST (×1), not ×1.4. COGS unaffected.
     unitPrice:    { type: Number, default: 0 },   // computed but stored so user can override
+    // ── Promo catalog provenance ───────────────────────────────────────────
+    // The vendor's published client price for this line, kept pristine while
+    // `unitPrice` moves (shipping passed through, or an owner override). It is
+    // what "restore catalog price" restores, and the proof the catalog's
+    // baked-in margin is still intact.
+    catalogUnitPrice: { type: Number, default: 0 },
+    // Catalog-sourced money is protected from the Quoter's margin chips. The
+    // chips used to reprice a promo line off COGS — silently destroying the
+    // vendor price, with no undo. The builder's row lock clears this when an
+    // override is deliberate.
+    priceLocked:  { type: Boolean, default: false },
     // Optional client-facing lead time for THIS option, in weeks. 0 = not set
     // (the quote/approval page shows nothing). Purely informational — never
     // affects pricing/COGS. Per-line so a "quick print" option can quote a
