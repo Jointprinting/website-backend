@@ -80,14 +80,18 @@ function replyPathStatus({
     // The black hole: mail goes one place, the Studio reads another.
     level = 'action';
     label = 'Replies land in a mailbox nobody reads';
-    hint = `Replies to your cold email land in ${destination}, but the Studio reads ${triage} — you will never see them. Fix: set OUTREACH_REPLY_TO=${triage} on the API, or turn on forwarding from ${destination} to ${triage}.`;
-  } else if (owner && destination !== owner) {
-    level = 'warn';
-    label = 'Replies show in the Studio, not your inbox';
-    hint = `Replies land in ${destination} and the Studio does read that mailbox, so they’ll show up on the Outreach tab — but ${owner} is the inbox you actually open, and nothing forwards there. Turn on forwarding from ${destination} to ${owner} if you want them in your own mail.`;
+    hint = `Replies to your cold email land in ${destination}, but the Studio reads ${triage} — you will never see them. Fix: point the reply sync (GMAIL_* on the API) at ${destination} so leads surface here in the Studio. Alternative, if you'd rather have replies in your own mail: set OUTREACH_REPLY_TO=${triage}, or forward ${destination} → ${triage}.`;
   } else {
+    // Reading matches sending. This is the INTENDED design, including — in fact
+    // especially — when the sending mailbox isn't the owner's day-to-day inbox:
+    // cold volume, its bounces and its opt-outs stay quarantined off the real
+    // inbox, and the Studio is the one place a genuine lead has to show up. An
+    // earlier version warned here; that was backwards, and nagging about the
+    // desired state is how a real alert stops being read.
     label = 'Replies land where you’ll see them';
-    hint = `Replies to your cold email land in ${destination}, which is the mailbox the Studio reads. Nothing to do.`;
+    hint = owner && destination !== owner
+      ? `Replies land in ${destination} and the Studio reads that mailbox, so a real lead shows up on the Outreach tab — ${owner} stays clear of cold-email traffic and its bounces. Nothing to do.`
+      : `Replies to your cold email land in ${destination}, which is the mailbox the Studio reads. Nothing to do.`;
   }
 
   return { level, label, hint, destination, triageAddress: triage, monitored };

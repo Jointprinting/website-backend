@@ -24,6 +24,7 @@ const {
   sendBlockReason,
   bodyToHtml,
   pickEmail,
+  teamGreetingName,
   isPermanentSmtpError,
   isBadRecipientError,
   transientBackoffMs,
@@ -228,13 +229,35 @@ test('buildMergeContext derives firstName and falls back through contacts', () =
   assert.equal(empty.companyName, '');
 });
 
-test('greeting: "Hey Sam," with a name, plain "Hey," without — never "Hey ,"', () => {
+test('greeting: person > shop team > bare "Hey," — and never "Hey ,"', () => {
   assert.equal(buildMergeContext({ clientName: 'Sam Rivera' }).greeting, 'Hey Sam,');
   assert.equal(buildMergeContext({ contacts: [{ name: 'Bob Ray' }] }).greeting, 'Hey Bob,');
-  assert.equal(buildMergeContext({ companyName: 'Green Leaf' }).greeting, 'Hey,');
+  // No person on file — the shop's own name beats an anonymous "Hey,". Scraped
+  // dispensaries almost never carry a contact, so this is the COMMON path, and
+  // it's addressed to the people who actually open a shared info@ inbox.
+  assert.equal(buildMergeContext({ companyName: 'Green Leaf' }).greeting, 'Hey Green Leaf team,');
+  assert.equal(buildMergeContext({ companyName: 'Green Leaf Dispensary LLC' }).greeting, 'Hey Green Leaf team,');
+  // Nothing usable at all still degrades cleanly.
   assert.equal(buildMergeContext({}).greeting, 'Hey,');
-  // Rendered through a template, the no-name case is clean.
+  assert.equal(buildMergeContext({ companyName: 'LIC-004821' }).greeting, 'Hey,');
   assert.equal(renderTemplate('{{greeting}} quick question…', buildMergeContext({})), 'Hey, quick question…');
+  assert.equal(
+    renderTemplate('{{greeting}} quick question…', buildMergeContext({ companyName: 'Zen Leaf' })),
+    'Hey Zen Leaf team, quick question…'
+  );
+});
+
+test('teamGreetingName trims legal suffixes and category words, refuses junk', () => {
+  assert.equal(teamGreetingName('Green Leaf Dispensary'), 'Green Leaf');
+  assert.equal(teamGreetingName('Curaleaf NJ, Inc.'), 'Curaleaf NJ');
+  assert.equal(teamGreetingName('Rise Cannabis'), 'Rise');
+  assert.equal(teamGreetingName('The Botanist'), 'The Botanist');
+  // Never strip a name down to nothing.
+  assert.equal(teamGreetingName('Cannabis Co'), 'Cannabis');
+  // Junk that must fall back to a plain "Hey,".
+  for (const junk of ['', null, undefined, 'LIC-004821', 'Some Extremely Long Dispensary Name Of Doom Holdings', 'x']) {
+    assert.equal(teamGreetingName(junk), '', String(junk));
+  }
 });
 
 test('cityFromAddress handles the common address shapes', () => {

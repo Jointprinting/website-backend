@@ -326,18 +326,49 @@ function cityFromAddress(address) {
 // against. MIRRORED (as a comment list) in the frontend's outreach/_outreach.js
 // MERGE_FIELDS; keep in sync.
 //
-// `greeting` is the smart opener: "Hey Sam," when we have a first name, plain
-// "Hey," when we don't (scraped shops rarely carry a person) — never a stilted
-// "Hey there," and never a broken "Hey ,". Templates open with {{greeting}}.
+// The shop name as you'd say it out loud in a greeting: "Green Leaf Dispensary
+// LLC" → "Green Leaf". Legal suffixes and the category words every dispensary
+// name ends in are noise in "Hey ___ team," — and a name that survives as
+// nothing, is a bare license number, or runs long enough to read as a mail-merge
+// artifact returns '' so the caller falls back to a plain "Hey,". Pure.
+const GREETING_STRIP = /\b(llc|l\.l\.c\.?|inc|inc\.|incorporated|corp|corp\.|corporation|co|co\.|ltd|ltd\.|lp|llp|plc|dba)\b/gi;
+const GREETING_TAIL = /\s+(dispensary|dispensaries|cannabis|marijuana|weed|provisioning\s*center|wellness\s*center|collective|company|holdings|group|enterprises|ventures)$/i;
+function teamGreetingName(companyName) {
+  let s = String(companyName || '').replace(/[’']/g, '').trim();
+  if (!s) return '';
+  s = s.replace(GREETING_STRIP, ' ').replace(/[,&]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  // Clean up what stripping a suffix leaves behind ("Curaleaf NJ, Inc." would
+  // otherwise greet as "Curaleaf NJ .").
+  s = s.replace(/\s*[.,;:\-–]+\s*$/, '').replace(/\s{2,}/g, ' ').trim();
+  // Drop ONE trailing category word — "Green Leaf Dispensary" → "Green Leaf" —
+  // but never strip a name down to nothing ("Cannabis Co" keeps "Cannabis").
+  const trimmed = s.replace(GREETING_TAIL, '').trim();
+  if (trimmed) s = trimmed;
+  if (!s || s.length < 2 || s.length > 28) return '';
+  if (!/[a-z]{2}/i.test(s)) return '';              // needs real letters, not an ID
+  if (/\d{3,}/.test(s)) return '';                  // "LIC-004821" is a licence, not a shop
+  if (s.split(/\s+/).length > 4) return '';         // too long to read as spoken
+  return s;
+}
+
+// `greeting` is the smart opener, best available of three:
+//   "Hey Sam,"              — we hold a first name (rare on scraped shops)
+//   "Hey Green Leaf team,"  — we don't, but we know the shop. Addresses the
+//                             people who actually open a shared info@ inbox, and
+//                             reads as written-for-them rather than blasted.
+//   "Hey,"                  — last resort. Never a stilted "Hey there,", never a
+//                             broken "Hey ,".
+// Templates open with {{greeting}}.
 function buildMergeContext(client = {}) {
   const contacts = Array.isArray(client.contacts) ? client.contacts : [];
   const personName = String(client.clientName || (contacts[0] && contacts[0].name) || '').trim();
   const firstName = personName.split(/\s+/)[0] || '';
+  const company = String(client.companyName || client.clientName || '').trim();
   return {
-    companyName: String(client.companyName || client.clientName || '').trim(),
+    companyName: company,
     clientName:  personName,
     firstName,
-    greeting:    firstName ? `Hey ${firstName},` : 'Hey,',
+    greeting:    firstName ? `Hey ${firstName},` : (teamGreetingName(company) ? `Hey ${teamGreetingName(company)} team,` : 'Hey,'),
     city:        cityFromAddress(client.address || client.area),
     state:       stateFromAddress(client.address || client.area),
     senderName:  outreachSenderName(),
@@ -1608,6 +1639,7 @@ module.exports = {
   recheckAuth,
   newToken,
   pickEmail,
+  teamGreetingName,
   // Where replies actually land (the same resolution the send path uses) — so
   // callers read the reply path off the engine instead of re-deriving it.
   effectiveReplyDestination,
