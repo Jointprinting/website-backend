@@ -59,15 +59,20 @@ test('Reply-To pointed at the triage mailbox → ok + monitored', () => {
   assert.equal(r.destination, READING);
 });
 
-test('monitored but not the owner’s own inbox → warn (Studio sees it, his mail doesn’t)', () => {
+test('monitored sending mailbox that is NOT the owner’s inbox → ok, not a warning', () => {
+  // This is the INTENDED setup, by explicit owner preference: cold replies (and
+  // their bounces and opt-outs) stay quarantined in the sending mailbox, and the
+  // Studio is the one place a genuine lead surfaces. An earlier version warned
+  // here — backwards, and nagging about the desired state is how a real alert
+  // stops being read.
   const r = replyPathStatus({
     from: SENDING, replyTo: 'replies@jointprintingshop.com',
     triageAddress: 'replies@jointprintingshop.com', triageConfigured: true,
     ownerAddress: READING,
   });
-  assert.equal(r.level, 'warn');
+  assert.equal(r.level, 'ok');
   assert.equal(r.monitored, true);
-  assert.ok(r.hint.includes('replies@jointprintingshop.com') && r.hint.includes(READING), r.hint);
+  assert.ok(r.hint.includes('replies@jointprintingshop.com'), r.hint);
 });
 
 test('monitored and it IS the owner’s inbox → ok', () => {
