@@ -1108,6 +1108,9 @@ const duplicateOrder = async (req, res) => {
         printerKey: l.printerKey, printerName: l.printerName, printSpec: l.printSpec,
         setupCost: l.setupCost, shippingCost: l.shippingCost,
         markup: l.markup, noMarkup: l.noMarkup, unitPrice: l.unitPrice, turnaroundWeeks: l.turnaroundWeeks,
+        // Promo provenance rides along so a duplicated order keeps its catalog
+        // price protected instead of quietly becoming markup-able.
+        catalogUnitPrice: l.catalogUnitPrice, priceLocked: l.priceLocked,
       })),
       orderDate:     null,
       shipDate:      null,

@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const PromoProduct = require('../models/PromoProduct');
 const { normalizePromoProduct } = require('../services/promoCatalog');
+const { estimateShipping } = require('../services/promoShipping');
 
 const escapeRegex = (s) => String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -47,6 +48,20 @@ async function upsertOne(p, source) {
   if (!p.netCostBreaks.length) delete set.netCostBreaks;
   if (!p.setupCostClient) delete set.setupCostClient;
   if (!p.setupCostNet) delete set.setupCostNet;
+  // A weight the owner measured (or the vendor published) outranks anything an
+  // import carries, so a re-seed can never silently undo it. An import that
+  // DOES carry a weight still wins over a stored estimate.
+  if (set.unitWeightOz === undefined || !(Number(set.unitWeightOz) > 0)) {
+    delete set.unitWeightOz;
+    delete set.weightSource;
+  }
+  const protectedFields = ['unitWeightOz', 'weightSource'];
+  if (protectedFields.some((f) => set[f] !== undefined)) {
+    const existing = await PromoProduct.findOne(key).select('weightSource').lean();
+    if (existing && (existing.weightSource === 'owner' || existing.weightSource === 'catalog')) {
+      protectedFields.forEach((f) => delete set[f]);
+    }
+  }
   const r = await PromoProduct.updateOne(key, { $set: set }, { upsert: true });
   return r.upsertedCount ? 'created' : 'updated';
 }
@@ -80,10 +95,72 @@ async function patchPromoProduct(req, res) {
     for (const f of ['name', 'category', 'description', 'turnaround']) {
       if (b[f] !== undefined) set[f] = String(b[f] || '');
     }
+    // Correcting a weight promotes it to 'owner', which outranks the estimate
+    // and survives every future catalog re-seed. Clearing it (null/0) hands the
+    // item back to the estimator.
+    if (b.unitWeightOz !== undefined) {
+      const w = Number(b.unitWeightOz);
+      if (w > 0) { set.unitWeightOz = w; set.weightSource = 'owner'; }
+      else { set.unitWeightOz = null; set.weightSource = ''; }
+    }
+    if (b.cartonPackQty !== undefined) {
+      const c = Number(b.cartonPackQty);
+      set.cartonPackQty = c > 0 ? Math.round(c) : null;
+    }
     if (!Object.keys(set).length) return res.status(400).json({ message: 'Nothing to update.' });
     const doc = await PromoProduct.findByIdAndUpdate(req.params.id, { $set: set }, { new: true }).lean();
     if (!doc) return res.status(404).json({ message: 'Not found' });
     res.json({ product: doc });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+}
+
+// POST /api/promo-products/shipping-estimate
+//   { lines: [{ sku, variant, name, qty }], destState, pad }
+// Ballpark freight for a set of promo quote lines, allocated back per line so
+// the Quoter can autofill each line's own shippingCost. The Quoter sends what a
+// promo line already carries (styleCode = sku, description = name), so no new
+// identifier has to be threaded through the builder.
+//
+// Resolution order per line: sku+variant, then sku, then exact name. An
+// unresolved line still returns, with resolved:false, so the UI can say which
+// item it could not weigh instead of silently under-quoting the order.
+async function estimateQuoteShipping(req, res) {
+  try {
+    const body = req.body || {};
+    const raw = Array.isArray(body.lines) ? body.lines : [];
+    if (!raw.length) return res.status(400).json({ message: 'No lines provided.' });
+
+    const skus = raw.map((l) => String(l.sku || '').trim()).filter(Boolean);
+    const names = raw.map((l) => String(l.name || '').trim()).filter(Boolean);
+    const docs = await PromoProduct.find({
+      $or: [{ sku: { $in: skus } }, { name: { $in: names } }],
+    }).lean();
+
+    const unresolved = [];
+    const lines = raw.map((l) => {
+      const sku = String(l.sku || '').trim();
+      const variant = String(l.variant || '');
+      const name = String(l.name || '').trim();
+      const product =
+        (sku && docs.find((d) => d.sku === sku && (d.variant || '') === variant)) ||
+        (sku && docs.find((d) => d.sku === sku)) ||
+        (name && docs.find((d) => d.name === name)) ||
+        null;
+      if (!product) unresolved.push(name || sku || '(unnamed)');
+      return { product: product || {}, qty: Number(l.qty) || 0, resolved: !!product };
+    });
+
+    const estimate = estimateShipping({
+      lines,
+      destState: body.destState || '',
+      pad: body.pad === undefined ? undefined : Number(body.pad),
+    });
+    estimate.perLine.forEach((p, i) => { p.resolved = lines[i].resolved; });
+    if (unresolved.length) {
+      estimate.unresolved = unresolved;
+      estimate.basis.push(`Not in the promo catalog, so not weighed: ${unresolved.join(', ')}`);
+    }
+    res.json(estimate);
   } catch (e) { res.status(500).json({ message: e.message }); }
 }
 
@@ -104,4 +181,7 @@ async function seedPromoCatalog() {
   return { seeded };
 }
 
-module.exports = { listPromoProducts, importPromoCatalog, patchPromoProduct, seedPromoCatalog };
+module.exports = {
+  listPromoProducts, importPromoCatalog, patchPromoProduct,
+  estimateQuoteShipping, seedPromoCatalog,
+};

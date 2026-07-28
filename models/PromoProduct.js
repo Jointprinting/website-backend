@@ -48,6 +48,23 @@ const PromoProductSchema = new mongoose.Schema({
   flags:  { type: [String], default: [] },       // scrape caveats (shared SKU, packs, CR…)
   source: { type: String, default: '' },         // which catalog drop it came from
 
+  // ── Shipping weight ────────────────────────────────────────────────────────
+  // The vendor catalogs carry price breaks but NO weights, so promo freight had
+  // to be guessed. `unitWeightOz` is the weight of ONE PRICED UNIT (a cone
+  // 3-pack counts as one), and `weightSource` records how much to trust it:
+  //   'owner'     — the owner measured/entered it. Highest authority.
+  //   'catalog'   — the vendor published it. Same authority as owner.
+  //   'estimated' — derived by services/promoWeights.js from the description's
+  //                 dimensions and material.
+  // services/promoWeights.js#effectiveUnitWeightOz honors that precedence, and
+  // the boot-time seed never overwrites an owner/catalog weight — see
+  // controllers/promoProducts.js#upsertOne.
+  unitWeightOz: { type: Number, default: null },
+  weightSource: { type: String, default: '', enum: ['', 'owner', 'catalog', 'estimated'] },
+  // Units the vendor packs per carton, when they tell us. Sharpens cartonization
+  // in services/promoShipping.js; null = fall back to the weight/volume ceiling.
+  cartonPackQty: { type: Number, default: null },
+
   archived:   { type: Boolean, default: false, index: true },
   archivedAt: { type: Date, default: null },
 }, { timestamps: true });
