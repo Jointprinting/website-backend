@@ -103,6 +103,10 @@ function extractAlphaBroderMinPrice(item) {
 // ─────────────────────────────────────────────────────────────────────────────
 //  S&S constants
 // ─────────────────────────────────────────────────────────────────────────────
+const {
+  DEFAULT_SIZE_WINDOW, summarizeBlank, assignTiers, pickPerTier,
+} = require('../services/blankOptions');
+
 const SS_API_BASE = process.env.SS_API_BASE || 'https://api.ssactivewear.com/V2';
 const SS_CDN_BASE = process.env.SS_CDN_BASE || 'https://cdn.ssactivewear.com/';
 const SS_ACCOUNT  = process.env.SS_ACCOUNT;
@@ -1162,6 +1166,94 @@ exports.getSSStyleDetail = exports.getProductByStyleCode;
 // ─────────────────────────────────────────────────────────────────────────────
 //  syncFromSS — kept for the day S&S unlocks /products/ for this account.
 //  Tries the per-style fetch; throws on 404 (which is what happens today).
+// ─────────────────────────────────────────────────────────────────────────────
+//  GET /api/products/blank-options?q=tshirt&color=Black&fit=Unisex&limit=15
+//
+//  Tiered blank options for the Quoter's apparel picker. Replaces the owner's
+//  manual loop — leave the Studio, ask an LLM for a budget / mid / premium tee,
+//  hand-average XS-2XL, paste the number back as blankCost — with one call.
+//
+//  The free-text query is classified by the SAME detectCategory() the grid uses,
+//  so "hoodie" lands on Hoodies and anything unrecognized falls to T-Shirts.
+//  Candidates are drawn across brands (so a tier isn't all one label), priced
+//  from /products/?styleid=N, then split into terciles of the actual candidate
+//  set — see services/blankOptions.js for why list price, why XS-2XL, and why
+//  stock is part of the answer rather than a footnote.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getBlankOptions = async (req, res) => {
+  try {
+    ensureSsCredentials();
+    const q = String(req.query.q || req.query.type || 'tshirt');
+    const color = String(req.query.color || '');
+    const fit = String(req.query.fit || 'Unisex');
+    const limit = Math.min(24, Math.max(3, parseInt(req.query.limit, 10) || 15));
+    const sizeWindow = req.query.sizes
+      ? String(req.query.sizes).split(',').map((x) => x.trim()).filter(Boolean)
+      : DEFAULT_SIZE_WINDOW;
+
+    const category = detectCategory(q);
+
+    // Gather candidates across brands so one label can't own a whole tier.
+    const perBrand = await Promise.all(
+      SS_POPULAR_BRANDS.map((b) => fetchAndGroupSSBrand(b).catch(() => ({ styles: [] })))
+    );
+    let candidates = perBrand.flatMap((r) => (r && r.styles) || [])
+      .filter((s) => s && s.styleID != null && s.category === category);
+    if (fit) candidates = candidates.filter((s) => !s.type || s.type === fit);
+
+    // Round-robin by brand, then cap — keeps the fan-out bounded AND the tiers
+    // varied instead of 15 Gildans.
+    candidates = roundRobinByBrand(candidates).slice(0, limit);
+
+    if (!candidates.length) {
+      return res.json({
+        query: q, category, fit, color, sizeWindow,
+        tiers: { budget: null, mid: null, premium: null }, options: [], count: 0,
+        note: `No S&S styles matched "${q}" (read as ${category}).`,
+      });
+    }
+
+    const summaries = (await mapWithConcurrency(candidates, 8, async (st) => {
+      try {
+        const skus = await fetchSSProducts(null, st.styleID);
+        return summarizeBlank(st, skus, { sizeWindow, color });
+      } catch (e) {
+        return null;   // one style failing must not fail the picker
+      }
+    })).filter(Boolean);
+
+    const options = assignTiers(summaries);
+    const tiers = pickPerTier(options);
+    res.json({
+      query: q, category, fit, color, sizeWindow,
+      tiers, options, count: options.length,
+      priced: options.length, considered: candidates.length,
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+// Interleave styles by brand so a capped candidate list stays varied.
+function roundRobinByBrand(styles) {
+  const byBrand = new Map();
+  for (const s of styles) {
+    const k = s.brand || s.brandName || '?';
+    if (!byBrand.has(k)) byBrand.set(k, []);
+    byBrand.get(k).push(s);
+  }
+  const queues = [...byBrand.values()];
+  const out = [];
+  let added = true;
+  while (added) {
+    added = false;
+    for (const qq of queues) {
+      if (qq.length) { out.push(qq.shift()); added = true; }
+    }
+  }
+  return out;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 async function fetchSSProducts(styleName, styleID = null) {
   ensureSsCredentials();

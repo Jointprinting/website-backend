@@ -22,6 +22,7 @@ const {
   debugSSStyle,
   findSSStyle,
   ssFinder,
+  getBlankOptions,
   dropGridfsAndStaleSync,
 } = require('../controllers/product');
 
@@ -46,6 +47,10 @@ router.get('/ss/find', findSSStyle);
 // our own S&S integration (owner keys). Admin-gated: it fans out to the metered
 // /styles catalog, and the Studio already sends its bearer token.
 router.get('/ss/finder', requireAdmin, ssFinder);
+// Tiered blank options for the Quoter's apparel picker — budget / mid / premium
+// with XS-2XL averaged LIST pricing, live stock, and per-unit weight.
+// Owner-only: it exposes blank COST, which is never client-facing.
+router.get('/blank-options', requireAdmin, getBlankOptions);
 router.get('/ss/style/:style', getSSStyleDetail);       // honest live fallback
 router.get('/style/:style', getProductByStyleCode);     // Mongo -> sync -> fallback
 router.get('/:id', getProductById);
