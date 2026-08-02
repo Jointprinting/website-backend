@@ -665,3 +665,58 @@ test('pickEmail still prefers a real person, and a named contact wins the tie', 
     'info@greenleaf.com'
   );
 });
+
+// ── Quarantine must not be a one-way door ────────────────────────────────────
+//
+// Quarantine stops NEW first-touches when a list bounces badly; follow-ups keep
+// running, so the campaign keeps producing fresh delivery data while paused.
+// The trip test read LIFETIME sends, so a campaign that bounced in week one
+// carried those bounces in its numerator forever and could never fall back
+// under the threshold — the pause was permanent and the pipeline idled until
+// someone noticed a button. (Live case: 0 of 65 recent sends bounced, 271
+// first-touches due, 0 sent.)
+
+const { recentBounceSignal, shouldLiftQuarantine } = require('../outreachEngine');
+
+const daysAgo = (n) => new Date(Date.now() - n * 86400000);
+
+test('recentBounceSignal only counts sends inside the window', () => {
+  const rows = [
+    { stopReason: 'bounced', sends: [{ at: daysAgo(30) }] },          // old bounce — excluded
+    { stopReason: 'bounced', sends: [{ at: daysAgo(29) }] },          // old bounce — excluded
+    { stopReason: '', sends: [{ at: daysAgo(2) }] },                  // recent clean
+    { stopReason: '', sends: [{ at: daysAgo(1) }] },                  // recent clean
+    { stopReason: 'bounced', sends: [{ at: daysAgo(1) }] },           // recent bounce
+    { stopReason: '', sends: [] },                                    // never sent
+    null,
+  ];
+  const r = recentBounceSignal(rows);
+  assert.equal(r.sent, 3);
+  assert.equal(r.bounced, 1);
+  // Lifetime would have said 5 sent / 3 bounced — a rate that never recovers.
+  assert.equal(campaignBounceSignal(rows).bounced, 3);
+});
+
+test('recentBounceSignal uses the LAST send, so a long sequence stays in-window', () => {
+  const rows = [{ stopReason: '', sends: [{ at: daysAgo(30) }, { at: daysAgo(20) }, { at: daysAgo(1) }] }];
+  assert.equal(recentBounceSignal(rows).sent, 1);
+});
+
+test('shouldLiftQuarantine: a healed list resumes, a still-bouncing one does not', () => {
+  const at = daysAgo(3);
+  // The live case: 0 of 65 recent bounced.
+  assert.equal(shouldLiftQuarantine({ sent: 65, bounced: 0 }, { quarantinedAt: at }), true);
+  assert.equal(shouldLiftQuarantine({ sent: 65, bounced: 2 }, { quarantinedAt: at }), true);   // 3% — under
+  assert.equal(shouldLiftQuarantine({ sent: 65, bounced: 3 }, { quarantinedAt: at }), false);  // 4.6% — still bad
+});
+
+test('shouldLiftQuarantine will not flap on thin data or a fresh quarantine', () => {
+  const at = daysAgo(3);
+  assert.equal(shouldLiftQuarantine({ sent: 24, bounced: 0 }, { quarantinedAt: at }), false, 'needs real volume');
+  assert.equal(shouldLiftQuarantine({ sent: 0, bounced: 0 }, { quarantinedAt: at }), false);
+  // Quarantined an hour ago — let hygiene/suppression land first.
+  assert.equal(shouldLiftQuarantine({ sent: 65, bounced: 0 }, { quarantinedAt: new Date(Date.now() - 3600000) }), false);
+  // Unknown stamp → leave it alone rather than guess.
+  assert.equal(shouldLiftQuarantine({ sent: 65, bounced: 0 }, { quarantinedAt: null }), false);
+  assert.doesNotThrow(() => shouldLiftQuarantine(null, {}));
+});
