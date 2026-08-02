@@ -222,6 +222,48 @@ test('the pad is applied and reported, and can be turned off', () => {
   assert.ok(Math.abs(padded.freight - raw.freight) < 0.02, 'the pad must not change the underlying freight');
 });
 
+// ── Calibration against a real UPS invoice line ──────────────────────────────
+// Jul 10 2026, Heritage Screen Print (Warminster PA) -> a client in Somerdale NJ.
+// Zone 2, 26.6 lb actual but 22x17x12 dims, so UPS applied dimensional weight and
+// billed 33 lb. Published $31.98 (incl. $6.09 fuel), 30% incentive, NET $22.39.
+// The owner does NOT pay published, and quoting as if he did ran ~42% high.
+
+test('dimensional weight matches what UPS actually billed', () => {
+  // 22 x 17 x 12 = 4488 in3 / 139 = 32.3 -> UPS billed 33 lb against 26.6 actual.
+  assert.strictEqual(Math.round((22 * 17 * 12) / 139), 32);
+  assert.ok((22 * 17 * 12) / 139 > 26.6, 'dim weight must exceed actual, which is why it was applied');
+});
+
+test('a zone-2 parcel prices near the real net charge, not the published one', () => {
+  // ~33 lb billable into a zone-2 lane (FL origin, FL destination).
+  const oneLb = { name: 'cal', category: 'Grinder', description: '1.5"D x 1.3"H; metal', unitWeightOz: 16, weightSource: 'owner' };
+  const r = estimateShipping({ lines: [{ product: oneLb, qty: 31 }], destState: 'FL', pad: 0 });
+  assert.strictEqual(r.zone, 2);
+  assert.ok(r.billableLb >= 32 && r.billableLb <= 35, `billable ${r.billableLb} lb should land near 33`);
+  // Within 20% of the $22.39 the owner actually paid.
+  assert.ok(Math.abs(r.total - 22.39) / 22.39 < 0.20, `estimated $${r.total} vs real $22.39`);
+  // And nowhere near the $31.98 published figure it used to quote.
+  assert.ok(r.total < 28, `$${r.total} is still quoting like published rates`);
+});
+
+test('the incentive is applied and explained, not silently baked in', () => {
+  const p = { name: 'x', category: 'Grinder', description: '1.5"D x 1.3"H; metal', unitWeightOz: 16, weightSource: 'owner' };
+  const r = estimateShipping({ lines: [{ product: p, qty: 31 }], destState: 'FL', pad: 0 });
+  assert.ok(r.basis.some((b) => /incentive/i.test(b)), 'the owner should be able to see the discount applied');
+  assert.ok(r.basis.some((b) => /fuel/i.test(b)));
+});
+
+test('parcel carries a small pad and LTL a wide one, since LTL is the guess', () => {
+  const light = { name: 'l', category: 'Grinder', description: '1.5"D x 1.3"H; metal', unitWeightOz: 16, weightSource: 'owner' };
+  const parcel = estimateShipping({ lines: [{ product: light, qty: 31 }], destState: 'FL' });
+  const ltl = estimateShipping({ lines: [{ product: light, qty: 4000 }], destState: 'FL' });
+  assert.strictEqual(parcel.method, 'parcel');
+  assert.strictEqual(ltl.method, 'ltl');
+  const parcelPct = parcel.pad / parcel.freight;
+  const ltlPct = ltl.pad / ltl.freight;
+  assert.ok(ltlPct > parcelPct, `LTL pad ${ltlPct} should exceed parcel pad ${parcelPct}`);
+});
+
 test('a range is returned around the estimate rather than false precision', () => {
   const r = estimateShipping({ lines: [{ product: find('Black Metal 4 Piece Grinder (40mm)'), qty: 1000 }], destState: 'PA' });
   assert.ok(r.low < r.total && r.total < r.high);

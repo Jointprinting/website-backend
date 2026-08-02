@@ -71,6 +71,23 @@ const PARCEL_RATES = {
   8: { base: 14.50, perLb: 1.70 },
 };
 
+// Fuel, as a percentage of the transportation charge. Calibrated against a real
+// invoice line: 33 lb, zone 2, published transportation $25.89 + $6.09 fuel.
+const FUEL_SURCHARGE_PCT = 0.235;
+
+// The owner's negotiated UPS discount. The rate table above is PUBLISHED pricing
+// and he does not pay published — a July 2026 invoice line shows a flat 30% off
+// both transportation and fuel ($31.98 published -> $22.39 net). Quoting off
+// published made the estimate ~42% high, which loses jobs just as surely as
+// under-quoting loses margin. Override with UPS_INCENTIVE_PCT when the discount
+// changes; set it to 0 to quote at published.
+const ACCOUNT_INCENTIVE_PCT = clampPct(process.env.UPS_INCENTIVE_PCT, 0.30);
+
+function clampPct(raw, fallback) {
+  const v = Number(raw);
+  return Number.isFinite(v) && v >= 0 && v < 1 ? v : fallback;
+}
+
 // LTL freight, dollars per hundredweight, plus a fuel surcharge and a floor.
 const LTL_CWT = { 2: 22, 3: 26, 4: 32, 5: 38, 6: 44, 7: 50, 8: 58 };
 const LTL_MIN_CHARGE = 145;
@@ -82,9 +99,14 @@ const DIM_DIVISOR = 139;          // standard domestic dimensional divisor
 const PACKAGING_OVERHEAD = 1.08;  // box, void fill, tape
 const PARCEL_CEILING_LB = 150;    // above this it moves as freight, not parcel
 
-// Default safety margin. Promo freight is a cost the catalog price never
-// covered, so the autofill leans high rather than leaving the owner short.
-const DEFAULT_PAD = 0.15;
+// Safety margin, by how certain the underlying number is.
+// Parcel is now calibrated against a real invoice line (published rates + fuel,
+// less the account incentive), so it only needs a small cushion. LTL is still a
+// genuine unknown — real freight is negotiated per shipment — so it keeps a
+// wide one. A single flat 15% on top of uncalibrated published rates was
+// running ~42% over what the owner actually pays, which loses jobs.
+const DEFAULT_PAD = 0.08;
+const LTL_PAD = 0.20;
 
 function haversineMiles(a, b) {
   const R = 3958.8;
@@ -117,7 +139,7 @@ function normalizeState(s) {
  * @param {number} [input.pad]       safety margin, default 0.15.
  * @returns {Object} estimate with a per-line allocation and an explainable basis.
  */
-function estimateShipping({ lines = [], destState = '', pad = DEFAULT_PAD } = {}) {
+function estimateShipping({ lines = [], destState = '', pad = null } = {}) {
   const basis = [];
   const st = normalizeState(destState);
   const miles = st ? haversineMiles([ORIGIN.lat, ORIGIN.lon], STATE_CENTROIDS[st]) : null;
@@ -177,8 +199,11 @@ function estimateShipping({ lines = [], destState = '', pad = DEFAULT_PAD } = {}
       const billablePerCarton = Math.max(perCartonLb, Math.min(dimLb, CARTON_MAX_LB));
       billableLb = +(billablePerCarton * cartons).toFixed(1);
       const r = PARCEL_RATES[zone];
-      freight = cartons * (r.base + r.perLb * billablePerCarton);
+      const transportation = cartons * (r.base + r.perLb * billablePerCarton);
+      const withFuel = transportation * (1 + FUEL_SURCHARGE_PCT);
+      freight = withFuel * (1 - ACCOUNT_INCENTIVE_PCT);
       basis.push(`${grossLb.toFixed(1)} lb gross in ${cartons} carton(s), billable ${billableLb} lb, zone ${zone} ground`);
+      basis.push(`$${transportation.toFixed(2)} published + ${Math.round(FUEL_SURCHARGE_PCT * 100)}% fuel, less your ${Math.round(ACCOUNT_INCENTIVE_PCT * 100)}% UPS incentive`);
     } else {
       method = 'ltl';
       cartons = Math.ceil(grossLb / CARTON_MAX_LB);
@@ -192,7 +217,11 @@ function estimateShipping({ lines = [], destState = '', pad = DEFAULT_PAD } = {}
     basis.push('No shippable weight on these lines.');
   }
 
-  const padPct = Math.max(0, Number(pad) || 0);
+  // An explicit pad wins; otherwise it follows how certain the method is.
+  const defaultPad = method === 'ltl' ? LTL_PAD : DEFAULT_PAD;
+  const padPct = pad === null || pad === undefined
+    ? defaultPad
+    : Math.max(0, Number(pad) || 0);
   const padded = freight * (1 + padPct);
   if (freight > 0 && padPct > 0) basis.push(`+${Math.round(padPct * 100)}% safety margin (catalog prices exclude freight)`);
   if (hazmatTotal > 0) basis.push(`+$${hazmatTotal.toFixed(2)} vendor hazmat fee (published, not estimated)`);
@@ -246,6 +275,7 @@ function reconcile(perLine, total) {
 
 module.exports = {
   ORIGIN, STATE_CENTROIDS, ZONE_BANDS, PARCEL_RATES, LTL_CWT,
-  CARTON_MAX_LB, PARCEL_CEILING_LB, DEFAULT_PAD,
+  CARTON_MAX_LB, PARCEL_CEILING_LB, DEFAULT_PAD, LTL_PAD,
+  FUEL_SURCHARGE_PCT, ACCOUNT_INCENTIVE_PCT,
   haversineMiles, zoneForMiles, normalizeState, estimateShipping,
 };
