@@ -285,8 +285,40 @@ function startLeadFinderScheduler() {
   console.log(`[lead-finder] engine started — always on, queue-aware refill every 6h per active vertical (low<${LOW_WATERMARK}, target ${REFILL_TARGET} emailable, ≤${MAX_REGIONS_PER_RUN} states/run, ≤${MAX_UPGRADE_PER_RUN} auto-upgrades/run)`);
 }
 
+// ── Un-park the markets the old retry cap threw away ─────────────────────────
+//
+// A region that failed MAX_REGION_ATTEMPTS consecutive sweeps left the retry
+// queue for good, and the coverage-upgrade path drops it too. Overpass times out
+// on big, dense states, so the ledger filled up with exactly the markets worth
+// the most — New York and Massachusetts (~600 licensed shops between them) sat
+// at "not reached yet" while states with no legal retail swept fine.
+//
+// That cap made sense when a map query WAS the sweep. It isn't any more: a
+// failed query now falls through to the license roster, so those states can
+// succeed on the next attempt. Clearing the ledger once puts them back in the
+// queue. Idempotent — a state doc with an empty ledger is left alone, and any
+// region that genuinely still fails simply re-accumulates its count.
+async function clearParkedRegions() {
+  const LeadFinderState = require('../models/LeadFinderState');
+  const docs = await LeadFinderState.find({}).catch(() => []);
+  let cleared = 0;
+  const regions = new Set();
+  for (const doc of docs) {
+    const failed = doc.failedRegions || {};
+    const parked = Object.entries(failed).filter(([r, n]) => isRegion(r) && (Number(n) || 0) >= MAX_REGION_ATTEMPTS);
+    if (!parked.length) continue;
+    for (const [r] of parked) regions.add(r);
+    doc.failedRegions = {};
+    doc.markModified('failedRegions');
+    await doc.save().catch(() => {});
+    cleared += parked.length;
+  }
+  return { cleared, regions: [...regions] };
+}
+
 module.exports = {
   startLeadFinderScheduler, runFrontierSweep, runAllFrontierSweeps, activeVerticalIds, getState,
+  clearParkedRegions,
   retryableFailedRegions, // pure — unit-tested
   underAttemptCap,        // pure — unit-tested
 };

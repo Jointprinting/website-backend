@@ -60,7 +60,29 @@ async function pool(items, concurrency, worker) {
 // { region, label, found, candidates, withEmail, enriched }. No DB writes — the
 // caller decides dry-run vs live.
 async function discoverRegion(regionId, { maxEnrich = DEFAULT_MAX_ENRICH, vertical } = {}) {
-  const { region, label, candidates: osmCandidates } = await fetchDispensaries(regionId, { vertical });
+  // The map query is best-effort, NOT load-bearing. Overpass times out on big,
+  // dense states — and the scheduler parks a region after three consecutive
+  // failures, permanently. The states most likely to time out are the biggest
+  // ones, so the engine was systematically discarding its most valuable markets:
+  // New York and Massachusetts, ~600 licensed shops between them, sat at "not
+  // reached yet" while Alabama (zero legal retail) swept fine.
+  //
+  // Now that the licensed roster is the primary source, a failed map query is
+  // survivable: sweep the roster and carry on. The region only fails when BOTH
+  // sources come up empty, which is a real failure worth parking.
+  let osmCandidates = [];
+  let region = regionId;
+  let label = String(regionId || '').toUpperCase();
+  let osmError = '';
+  try {
+    const found = await fetchDispensaries(regionId, { vertical });
+    osmCandidates = found.candidates || [];
+    region = found.region;
+    label = found.label;
+  } catch (e) {
+    osmError = String((e && e.message) || e || 'overpass failed').slice(0, 200);
+    console.warn(`[lead-finder] map query failed for ${regionId} (${osmError}) — continuing on the license roster`);
+  }
 
   // The roster is the REAL universe — every licensed retailer the regulator
   // lists — and OSM is a partial, volunteer-maintained view of it. Work both:
@@ -71,6 +93,11 @@ async function discoverRegion(regionId, { maxEnrich = DEFAULT_MAX_ENRICH, vertic
   const rosterRows = cannabis
     ? await rosterCandidates(String(region || regionId).toUpperCase(), { limit: maxEnrich })
     : [];
+  // Both sources dry AND the map errored → nothing was covered; let the caller
+  // record a real failure rather than a silent zero.
+  if (osmError && !rosterRows.length) {
+    throw Object.assign(new Error(`no coverage for ${regionId}: ${osmError}`), { osmError });
+  }
   // De-dupe across sources on the shop's own site — the same store found twice
   // must only be scraped once.
   const seenSite = new Set(rosterRows.map((c) => normalizeSite(c.website)).filter(Boolean));
@@ -135,6 +162,9 @@ async function discoverRegion(regionId, { maxEnrich = DEFAULT_MAX_ENRICH, vertic
     // roster rows moved off the frontier — the numbers that show whether a state
     // is actually being worked through.
     fromRoster: rosterRows.length, fromOsm: osmCandidates.length, rosterStamped,
+    // Set when the map query failed but the roster carried the sweep — visible
+    // in the run audit so a degraded sweep isn't mistaken for a clean one.
+    osmError,
   };
 }
 

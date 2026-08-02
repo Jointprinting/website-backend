@@ -638,3 +638,30 @@ test('selectImportable still requires an inbox and drops chains, roster rows inc
   const out = selectImportable(rows, { skipChains: true });
   assert.deepEqual(out.map((c) => c.name), ['Roster Shop 2']);
 });
+
+// ── The map query is best-effort, the roster is load-bearing ─────────────────
+//
+// Overpass times out on big, dense states, and the scheduler parked a region
+// after three consecutive failures — permanently. The states most likely to time
+// out are the biggest ones, so the engine systematically discarded its most
+// valuable markets: NY and MA (~600 licensed shops between them) sat at "not
+// reached yet" while Alabama, with no legal retail at all, swept fine.
+
+
+test('a region that burned its retry budget is dropped from BOTH paths', () => {
+  // This is the behavior that stranded NY/MA — pinned so the un-park healer's
+  // purpose stays legible.
+  const ledger = { ny: 3, ma: 4, oh: 1 };
+  assert.deepEqual(retryableFailedRegions(ledger, { maxAttempts: 3 }), ['oh']);
+  assert.deepEqual(underAttemptCap(['ny', 'ma', 'oh'], ledger, 3), ['oh']);
+});
+
+test('a cleared ledger puts every parked region back in play', () => {
+  assert.deepEqual(retryableFailedRegions({}, { maxAttempts: 3 }), []);
+  assert.deepEqual(underAttemptCap(['ny', 'ma', 'oh'], {}, 3), ['ny', 'ma', 'oh']);
+});
+
+test('retryableFailedRegions goes least-tried first, so one bad state cannot hog retries', () => {
+  assert.deepEqual(retryableFailedRegions({ ca: 2, ny: 1, ma: 1 }, { maxAttempts: 3 })[0] === 'ca', false);
+  assert.equal(retryableFailedRegions({ ca: 2, ny: 1 }, { maxAttempts: 3 }).pop(), 'ca');
+});
