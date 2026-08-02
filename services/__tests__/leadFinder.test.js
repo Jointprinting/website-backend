@@ -601,3 +601,40 @@ test('disambiguateKey foreignPool mode: burden of proof flips for non-default ve
   assert.equal(disambiguateKey('greenleaf', 'Newark', 'Newark'), 'greenleaf');
   assert.equal(disambiguateKey('greenleaf', 'Denver', 'Newark'), 'greenleaf-denver');
 });
+
+// ── Roster sourcing (the reason coverage sat at a few percent) ────────────────
+//
+// OSM is a volunteer-maintained, partial view of the dispensary universe. The
+// Field Map's Dispensary collection holds the STATE LICENSE ROSTERS — the
+// regulator's own list. Outreach never read it, so a state with 199 licensed
+// dispensaries contributed five leads and California (1,200+) contributed 32.
+// Sourcing now starts from the roster and stamps every attempt, so consecutive
+// sweeps advance through a state instead of re-attempting the same first rows.
+
+const { normalizeSite } = require('../leadFinderRunner');
+
+test('normalizeSite collapses a shop to its own host so one store is scraped once', () => {
+  assert.equal(normalizeSite('https://www.GreenLeaf.com/'), 'greenleaf.com');
+  assert.equal(normalizeSite('http://greenleaf.com'), 'greenleaf.com');
+  assert.equal(normalizeSite('https://greenleaf.com/contact?x=1'), 'greenleaf.com');
+  assert.equal(normalizeSite('greenleaf.com'), 'greenleaf.com');
+  // Different shops stay distinct.
+  assert.notEqual(normalizeSite('https://greenleaf.com'), normalizeSite('https://greenleaf.net'));
+  // Junk degrades quietly.
+  assert.equal(normalizeSite(''), '');
+  assert.equal(normalizeSite(null), '');
+  assert.equal(normalizeSite(undefined), '');
+});
+
+test('selectImportable still requires an inbox and drops chains, roster rows included', () => {
+  // Roster rows arrive with email:'' and get one from the scrape; an unenriched
+  // roster row must NOT become a mail-merge lead.
+  const rows = [
+    { name: 'Roster Shop', email: '', fromRoster: true },
+    { name: 'Roster Shop 2', email: 'info@rs2.com', fromRoster: true },
+    { name: 'Chain HQ', email: 'info@chain.com', chain: true, fromRoster: true },
+    { name: 'Dupe', email: 'info@rs2.com', fromRoster: true },
+  ];
+  const out = selectImportable(rows, { skipChains: true });
+  assert.deepEqual(out.map((c) => c.name), ['Roster Shop 2']);
+});

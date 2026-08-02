@@ -27,7 +27,18 @@ const OutreachEnrollment = require('../models/OutreachEnrollment');
 const { PLACED_STATUSES } = require('../models/Order');
 const { buildMappedRows, applyMappedRow } = require('../controllers/crm');
 
-const DEFAULT_MAX_ENRICH = parseInt(process.env.LEAD_FINDER_MAX_ENRICH || '80', 10);
+// Per-run politeness bound on outbound page fetches, NOT a spend cap — every
+// fetch is a free GET of a page the shop publishes. Raised because the old 80
+// left states with hundreds of licensees permanently unfinished; attempts are
+// stamped now, so runs advance through the roster instead of repeating.
+const DEFAULT_MAX_ENRICH = parseInt(process.env.LEAD_FINDER_MAX_ENRICH || '400', 10);
+
+/** Compare shops by their own site, ignoring scheme/host noise. Pure. */
+function normalizeSite(url) {
+  const s = String(url || '').trim().toLowerCase();
+  if (!s) return '';
+  return s.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/+$/, '').split('/')[0];
+}
 const ENRICH_CONCURRENCY = parseInt(process.env.LEAD_FINDER_CONCURRENCY || '4', 10);
 
 // Run `worker` over `items` with at most `concurrency` in flight. Resolves to the
@@ -49,10 +60,31 @@ async function pool(items, concurrency, worker) {
 // { region, label, found, candidates, withEmail, enriched }. No DB writes — the
 // caller decides dry-run vs live.
 async function discoverRegion(regionId, { maxEnrich = DEFAULT_MAX_ENRICH, vertical } = {}) {
-  const { region, label, candidates } = await fetchDispensaries(regionId, { vertical });
+  const { region, label, candidates: osmCandidates } = await fetchDispensaries(regionId, { vertical });
+
+  // The roster is the REAL universe — every licensed retailer the regulator
+  // lists — and OSM is a partial, volunteer-maintained view of it. Work both:
+  // roster first (authoritative, and the reason this used to miss ~95% of a
+  // state), then everything OSM turned up that the roster didn't already cover.
+  // Cannabis verticals only; a brewery sweep has no dispensary roster to read.
+  const cannabis = vertical && (vertical.id === 'dispensary' || vertical.id === 'medical' || vertical.id === 'field-map');
+  const rosterRows = cannabis
+    ? await rosterCandidates(String(region || regionId).toUpperCase(), { limit: maxEnrich })
+    : [];
+  // De-dupe across sources on the shop's own site — the same store found twice
+  // must only be scraped once.
+  const seenSite = new Set(rosterRows.map((c) => normalizeSite(c.website)).filter(Boolean));
+  const candidates = [
+    ...rosterRows,
+    ...osmCandidates.filter((c) => !c.website || !seenSite.has(normalizeSite(c.website))),
+  ];
 
   // Split: already have an email (free, from OSM) vs. need a scrape (have a
   // website but no email). No website + no email → unreachable, still counted.
+  // maxEnrich is a per-run POLITENESS bound, not a budget: scraping is a plain
+  // HTTP GET of a page the shop publishes itself and costs nothing. Because
+  // every attempt is now stamped, consecutive runs advance through the roster
+  // rather than re-attempting the same rows, so the state does get finished.
   const needScrape = candidates.filter((c) => !c.email && c.website).slice(0, Math.max(0, maxEnrich));
   let enriched = 0;
   const scraped = await pool(needScrape, ENRICH_CONCURRENCY, async (c) => {
@@ -66,6 +98,13 @@ async function discoverRegion(regionId, { maxEnrich = DEFAULT_MAX_ENRICH, vertic
     const email = c.email || emailByWebsite.get(c.website) || '';
     return { ...c, email };
   });
+
+  // Record what we tried on the roster — hit OR miss. This is what makes the
+  // sweep a frontier instead of a treadmill: next run skips these and moves
+  // deeper into the state, so a 1,200-shop market actually gets finished.
+  const attemptedIds = new Set(needScrape.map((c) => c._dispensaryId).filter(Boolean).map(String));
+  const rosterAttempted = withEmailCandidates.filter((c) => c._dispensaryId && attemptedIds.has(String(c._dispensaryId)));
+  const rosterStamped = await markRosterAttempts(rosterAttempted);
   const withEmail = withEmailCandidates.filter((c) => c.email).length;
 
   // Verify deliverability (free MX/A check) so scraped-but-dead addresses never
@@ -92,6 +131,10 @@ async function discoverRegion(regionId, { maxEnrich = DEFAULT_MAX_ENRICH, vertic
   return {
     region, label, found: candidates.length, candidates: candidatesOut,
     withEmail, enriched, verified,
+    // How much of this sweep came from the licensed roster vs. OSM, and how many
+    // roster rows moved off the frontier — the numbers that show whether a state
+    // is actually being worked through.
+    fromRoster: rosterRows.length, fromOsm: osmCandidates.length, rosterStamped,
   };
 }
 
@@ -144,6 +187,68 @@ function selectImportable(candidates, { skipChains = true } = {}) {
     seenEmail.add(c.email);
     return true;
   });
+}
+
+// ── The licensed universe (the real lead source) ─────────────────────────────
+//
+// OSM discovery finds a fraction of the shops that actually exist — the map is
+// volunteer-maintained and dispensaries are under-mapped. Meanwhile the Field
+// Map's Dispensary collection already holds STATE LICENSE ROSTERS: the
+// authoritative list of every licensed retailer, pulled from the regulators
+// themselves. Outreach never read it. That is why a state with 199 licensed
+// dispensaries contributed five leads, and why California — 1,200+ licensed —
+// contributed thirty-two.
+//
+// So sourcing now starts from the roster: every licensed, open, independent shop
+// in a real retail market that we haven't yet tried to reach, worked through in
+// order, stamping each attempt so successive sweeps make FORWARD PROGRESS
+// instead of re-attempting the same first rows forever.
+const ROSTER_SEGMENTS = ['rec', 'med'];   // hemp/CBD shops are not merch buyers
+
+/** Roster rows worth trying, oldest-attempt-first. Never returns a row twice
+ *  in a run. `Dispensary` is required lazily to keep this file's import graph
+ *  identical to before. */
+async function rosterCandidates(state, { limit = 250 } = {}) {
+  const Dispensary = require('../models/Dispensary');
+  const rows = await Dispensary.find({
+    ...(state ? { state: String(state).toUpperCase() } : {}),
+    active: true,
+    hidden: false,
+    isChain: false,                       // corporate handles merch, not the store
+    segment: { $in: ROSTER_SEGMENTS },
+    website: { $nin: ['', null] },        // no site, nothing to scrape (yet)
+    emailAttemptedAt: null,               // never tried — the frontier
+  })
+    .select('_id name address city state zip phone website companyKey')
+    .limit(Math.max(1, limit))
+    .lean()
+    .catch(() => []);
+
+  return rows.map((d) => ({
+    _dispensaryId: d._id,
+    name: d.name,
+    address: [d.address, d.city, d.state, d.zip].filter(Boolean).join(', '),
+    phone: d.phone || '',
+    website: d.website || '',
+    email: '',
+    chain: false,
+    fromRoster: true,
+  }));
+}
+
+/** Stamp what we tried, so the next sweep starts where this one stopped. */
+async function markRosterAttempts(candidates, { now = new Date() } = {}) {
+  const rows = (candidates || []).filter((c) => c && c._dispensaryId);
+  if (!rows.length) return 0;
+  const Dispensary = require('../models/Dispensary');
+  const ops = rows.map((c) => ({
+    updateOne: {
+      filter: { _id: c._dispensaryId },
+      update: { $set: { emailAttemptedAt: now, emailFound: !!c.email } },
+    },
+  }));
+  const res = await Dispensary.bulkWrite(ops, { ordered: false }).catch(() => ({ modifiedCount: 0 }));
+  return res.modifiedCount || 0;
 }
 
 // Full run: discover → (live) import → tag → record. `dryRun` skips all writes
@@ -438,5 +543,8 @@ async function finderStatus({ vertical } = {}) {
 
 module.exports = {
   runFinder, discoverRegion, finderStatus, countAvailableColdLeads, staleRegions, pool,
-  selectImportable, disambiguateKey, // pure — unit-tested
+  selectImportable,
+  rosterCandidates,
+  markRosterAttempts,
+  normalizeSite, disambiguateKey, // pure — unit-tested
 };
