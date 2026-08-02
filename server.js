@@ -266,6 +266,24 @@ db.once('open', () => {
     }
   }, 9_500);
 
+  // One-time repair: the lead engine parked any region that failed three
+  // consecutive map queries — and Overpass times out on the biggest, densest
+  // states, so the ledger collected exactly the markets worth the most (NY, MA,
+  // CA). A failed map query now falls through to the license roster, so those
+  // states can succeed; clear the ledger once to put them back in the queue.
+  setTimeout(async () => {
+    const KEY = 'clearParkedLeadRegions-v1';
+    try {
+      const migrations = mongoose.connection.db.collection('migrations');
+      if (await migrations.findOne({ _id: KEY })) return;
+      const r = await require('./services/leadFinderScheduler').clearParkedRegions();
+      await migrations.insertOne({ _id: KEY, at: new Date(), ...r });
+      if (r.cleared) console.log(`[lead-finder] un-parked ${r.cleared} region(s): ${r.regions.join(', ')}`);
+    } catch (e) {
+      console.warn('[lead-finder] un-park failed (will retry next boot):', e.message);
+    }
+  }, 11_000);
+
   // Crash-resume: pick up any newsletter blast a deploy/restart interrupted.
   // Per-recipient sentAt is the checkpoint, so nothing double-sends and the
   // tail of the list still goes out.
