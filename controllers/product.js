@@ -1191,7 +1191,21 @@ exports.getBlankOptions = async (req, res) => {
       ? String(req.query.sizes).split(',').map((x) => x.trim()).filter(Boolean)
       : DEFAULT_SIZE_WINDOW;
 
-    const category = detectCategory(q);
+    // A query carrying digits is almost certainly a style code the owner already
+    // knows — "3001C", "G500", "18500". Browsing by category would answer that
+    // with generic tees, so resolve it directly first. findStyleByName already
+    // knows S&S strips brand-letter prefixes (marketing G500 is stored as 5000).
+    const looksLikeStyleCode = /\d/.test(q) && q.trim().split(/\s+/).length <= 2;
+    let exact = null;
+    if (looksLikeStyleCode) {
+      try { exact = await findStyleByName(q.trim()); } catch (_) { exact = null; }
+    }
+
+    // With an exact hit, peers come from ITS category — so searching a hoodie
+    // style shows hoodies, not whatever the raw text classified as.
+    const category = exact
+      ? detectCategory(exact.title || exact.styleName || exact.style || q)
+      : detectCategory(q);
 
     // Gather candidates across brands so one label can't own a whole tier.
     const perBrand = await Promise.all(
@@ -1202,8 +1216,12 @@ exports.getBlankOptions = async (req, res) => {
     if (fit) candidates = candidates.filter((s) => !s.type || s.type === fit);
 
     // Round-robin by brand, then cap — keeps the fan-out bounded AND the tiers
-    // varied instead of 15 Gildans.
+    // varied instead of 15 Gildans. An exact style-code hit is pinned to the
+    // front and never dropped by the cap: the owner asked for that one.
     candidates = roundRobinByBrand(candidates).slice(0, limit);
+    if (exact && exact.styleID != null) {
+      candidates = [exact, ...candidates.filter((c) => c.styleID !== exact.styleID)];
+    }
 
     if (!candidates.length) {
       return res.json({
@@ -1224,8 +1242,13 @@ exports.getBlankOptions = async (req, res) => {
 
     const options = assignTiers(summaries);
     const tiers = pickPerTier(options);
+    // Surface the exact hit separately so the UI can pin it rather than leaving
+    // the owner to spot his own style in a list of alternatives.
+    const exactId = exact && exact.styleID != null ? exact.styleID : null;
     res.json({
       query: q, category, fit, color, sizeWindow,
+      exactStyleID: exactId,
+      exact: exactId != null ? options.find((o) => o.styleID === exactId) || null : null,
       tiers, options, count: options.length,
       priced: options.length, considered: candidates.length,
     });
