@@ -1104,6 +1104,7 @@ const duplicateOrder = async (req, res) => {
         // how it was priced) ride along instead of being silently dropped.
         group: l.group, qty: l.qty, styleCode: l.styleCode, description: l.description, color: l.color,
         supplier: l.supplier, supplierUrl: l.supplierUrl, blankCost: l.blankCost,
+        blankWeightOz: l.blankWeightOz,
         printType: l.printType, printDetails: l.printDetails, printCost: l.printCost,
         printerKey: l.printerKey, printerName: l.printerName, printSpec: l.printSpec,
         setupCost: l.setupCost, shippingCost: l.shippingCost,

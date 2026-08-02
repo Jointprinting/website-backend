@@ -592,6 +592,11 @@ const OrderSchema = new mongoose.Schema({
     // wholesale prices behind login). Exposed publicly as `productUrl`.
     supplierUrl:  { type: String, default: '' },
     blankCost:    { type: Number, default: 0 },   // per unit
+    // Per-unit garment weight in ounces, captured when a blank is picked from
+    // the S&S chooser. Stored on the line rather than re-fetched, so the apparel
+    // freight estimator can weigh a run from the quote alone — the same reason
+    // promo lines carry their own shippingCost. 0 = unknown (hand-typed line).
+    blankWeightOz: { type: Number, default: 0 },
     printType:    { type: String, default: '' },  // e.g. "Screen Print", "DTG", "Embroidery"
     printDetails: { type: String, default: '' },  // e.g. "1 color front + 2 color back"
     // The network printer that priced THIS design in the Quoter — INTERNAL, never
