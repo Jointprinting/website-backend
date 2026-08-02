@@ -43,6 +43,14 @@ const DispensarySchema = new mongoose.Schema({
   googleMapsUri:  { type: String, default: '' },
   enrichedAt:     { type: Date, default: null },
 
+  // Cold-email sourcing: when the lead finder last tried to scrape a contact
+  // address off this shop's own site, and what it got. Stamped even on failure,
+  // so successive sweeps WORK THROUGH a state's roster instead of re-attempting
+  // the same first rows forever — the reason coverage sat at a few percent of
+  // the licensed universe. Indexed because the sweep query sorts on it.
+  emailAttemptedAt: { type: Date, default: null, index: true },
+  emailFound:       { type: Boolean, default: false },
+
   // Chain detection (services/dispensaryChains.js)
   isChain:   { type: Boolean, default: false },
   chainName: { type: String, default: '' },
