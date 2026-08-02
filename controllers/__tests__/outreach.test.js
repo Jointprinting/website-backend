@@ -540,20 +540,20 @@ test('campaignHealth: a quarantined campaign reports the auto-action, not a chor
 // ── The reply black hole + the dead sequence, in the ranked to-do list ────────
 const { planReArm, fieldMapExclusions, sanitizeEnrollFilters } = require('../outreach');
 
-test('buildNextActions: a broken reply path is an ACTION, shown verbatim, above warm leads', () => {
-  const hint = 'Replies to your cold email land in send@shop.example, but the Studio reads owner@real.example — you will never see them. Fix: set the reply-to on the API, or turn on forwarding from the sending mailbox.';
+test('buildNextActions: the reply-path problem is NOT repeated here — the banner owns it', () => {
+  // It renders as its own dedicated banner at the top of the Outreach tab.
+  // Adding it to Next Best Action too printed the identical paragraph twice on
+  // one screen, which is how a screen stops being read. One failure, one place.
+  const hint = 'Replies to your cold email land in send@shop.example, but the Studio reads owner@real.example — you will never see them.';
   const a = buildNextActions({
     engine: { senderConfigured: true, authGate: true, auth: { level: 'green' }, deliverability: { tripped: false },
       replyPath: { level: 'action', hint, destination: 'send@shop.example', monitored: false } },
     campaigns: [{ _id: 'c1', name: 'Dispo', status: 'active', health: { level: 'ok' } }],
     warmCount: 4, coldReserve: 5, replySyncOn: true,
   });
-  const item = a.find((x) => x.text === hint);
-  assert.ok(item, 'the reply-path hint is surfaced word for word (it already names both addresses)');
-  assert.equal(item.level, 'action');
-  assert.deepEqual(item.cta, { view: 'replies' });
-  // Ranked above the warm-lead nudge.
-  assert.ok(a.indexOf(item) < a.findIndex((x) => x.level === 'warm'));
+  assert.equal(a.find((x) => x.text === hint), undefined, 'the banner says this already');
+  // The warm-lead nudge (which has no banner of its own) still shows.
+  assert.ok(a.some((x) => x.level === 'warm'));
 });
 
 test('buildNextActions: a healthy (or unknown) reply path adds nothing', () => {

@@ -631,11 +631,12 @@ let identityAttemptAt = 0;
 // the two differ, every reply is invisible — so the address is published rather
 // than assumed. Cheap (memo + persisted value), and it never throws.
 async function getTriageIdentity({ refresh = false } = {}) {
-  // The IMAP reader wins when it's on: it reads the mailbox we SEND from, which
-  // is by definition where replies land, and it needs no hand-wired OAuth to get
-  // there. Answering with it makes the reply-path check report the truth —
-  // "something is watching the mailbox replies go to" — instead of judging the
-  // system by a Gmail grant that may point at an unrelated account.
+  // The IMAP reader answers ONLY when it can genuinely read a mailbox — it reads
+  // the address we send from, which is by definition where replies land. When
+  // the sender is a send-only relay (Resend/SendGrid/SES host no inbox) it stays
+  // silent and the Gmail grant answers instead. It must never speak over a
+  // working Gmail sync: doing that once made the Studio report that it "reads
+  // resend", which is a service login, not an inbox.
   const imapAddress = (() => {
     try { return require('../services/replyImap').imapMailbox(); } catch { return ''; }
   })();

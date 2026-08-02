@@ -34,12 +34,29 @@ const IMAP_HOST_BY_SMTP = [
   [/(^|\.)gmail\.com$|(^|\.)googlemail\.com$/i, 'imap.gmail.com'],
   [/(^|\.)office365\.com$|(^|\.)outlook\.com$/i, 'outlook.office365.com'],
   [/(^|\.)zoho\.com$/i, 'imap.zoho.com'],
-  [/(^|\.)sendpulse\.com$/i, ''],   // relay-only: no mailbox to read
+  // Send-only relays: they accept mail for delivery and host NO mailbox, so
+  // there is nothing to read and connecting is a guaranteed failure on a loop.
+  [/(^|\.)resend\.com$/i, ''],
+  [/(^|\.)sendpulse\.com$/i, ''],
   [/(^|\.)sendgrid\.net$/i, ''],
   [/(^|\.)brevo\.com$|(^|\.)sendinblue\.com$/i, ''],
   [/(^|\.)mailersend\.net$/i, ''],
   [/(^|\.)mailjet\.com$/i, ''],
+  [/(^|\.)postmarkapp\.com$/i, ''],
+  [/(^|\.)mailgun\.org$|(^|\.)mailgun\.com$/i, ''],
+  [/(^|\.)amazonaws\.com$/i, ''],    // SES
+  [/(^|\.)sparkpostmail\.com$/i, ''],
+  [/(^|\.)socketlabs\.com$/i, ''],
+  [/(^|\.)elasticemail\.com$/i, ''],
+  [/(^|\.)smtp2go\.com$/i, ''],
 ];
+
+// A relay's SMTP *username* is usually a service login, not a mailbox: Resend
+// uses the literal "resend", SendGrid "apikey", Mailgun a postmaster@ robot.
+// Treating one of those as an inbox is how the Studio ended up reporting that it
+// "reads resend". Only a real address can name a mailbox.
+const RE_ADDRESS = /^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i;
+const RELAY_USERNAMES = new Set(['resend', 'apikey', 'api', 'token', 'user', 'smtp']);
 
 /** Which IMAP host serves the mailbox behind this SMTP host? '' = none. Pure. */
 function imapHostFor(smtpHost) {
@@ -58,6 +75,10 @@ function imapConfig(env = process.env) {
   const user = String(env.IMAP_USER || env.SMTP_USER || '').trim();
   const pass = String(env.IMAP_PASS || env.SMTP_PASS || '').trim();
   if (!user || !pass) return null;
+  // The username must actually BE a mailbox. A relay login ("resend", "apikey")
+  // names no inbox, and guessing a host for it produced a connection that failed
+  // on a ten-minute loop while the Studio reported it as the mailbox being read.
+  if (!RE_ADDRESS.test(user) || RELAY_USERNAMES.has(user.toLowerCase())) return null;
   const host = String(env.IMAP_HOST || '').trim() || imapHostFor(env.SMTP_HOST);
   if (!host) return null;                       // send-only relay — nothing to read
   const port = Number(env.IMAP_PORT || 993) || 993;
