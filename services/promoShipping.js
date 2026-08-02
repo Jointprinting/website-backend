@@ -93,6 +93,17 @@ const LTL_CWT = { 2: 22, 3: 26, 4: 32, 5: 38, 6: 44, 7: 50, 8: 58 };
 const LTL_MIN_CHARGE = 145;
 const LTL_FUEL_SURCHARGE = 1.28;
 
+// WHEN THIS TABLE WAS LAST CHECKED AGAINST A REAL BILL. Everything above is
+// static, and two forces pull it out of true:
+//   • UPS raises published rates roughly every January (~5-6%);
+//   • the fuel surcharge floats WEEKLY — 23.5% here came off one July invoice.
+// A quoting tool that drifts silently is worse than one that admits it, so an
+// estimate reports its own age and says so once it is past its shelf life.
+// Re-calibrating is a five-minute job: open any recent invoice, compare the net
+// charge against what the estimator predicts, and update these constants.
+const RATES_CALIBRATED_ON = '2026-08-02';
+const RATES_STALE_AFTER_DAYS = 180;
+
 const CARTON_MAX_LB = 40;         // what a picker will actually build
 const CARTON_USABLE_IN3 = 2600;   // ~18x14x12 less dunnage
 const DIM_DIVISOR = 139;          // standard domestic dimensional divisor
@@ -121,6 +132,14 @@ function haversineMiles(a, b) {
 function zoneForMiles(miles) {
   for (const b of ZONE_BANDS) if (miles <= b.maxMiles) return b.zone;
   return 8;
+}
+
+// How stale the rate table is, in days. Exported so the Studio can badge it.
+function rateAgeDays(now) {
+  const then = Date.parse(`${RATES_CALIBRATED_ON}T00:00:00Z`);
+  const ref = now === undefined ? Date.now() : now;
+  if (!Number.isFinite(then)) return 0;
+  return Math.max(0, Math.floor((ref - then) / 86400000));
 }
 
 function normalizeState(s) {
@@ -228,6 +247,12 @@ function estimateShipping({ lines = [], destState = '', pad = null } = {}) {
 
   const total = round2(padded + hazmatTotal);
 
+  // Say it out loud rather than quietly quoting last year's rates.
+  const ageDays = rateAgeDays();
+  if (freight > 0 && ageDays > RATES_STALE_AFTER_DAYS) {
+    basis.push(`Rate table last checked against a real invoice ${ageDays} days ago (${RATES_CALIBRATED_ON}). UPS raises rates each January and fuel floats weekly — worth re-checking against a recent bill.`);
+  }
+
   // Allocate freight across the lines by their share of shippable weight, so
   // each quote line carries its own shippingCost. Hazmat rides on its own line.
   const base = perLine.reduce((s, p) => s + p.lineWeightLb, 0);
@@ -250,6 +275,9 @@ function estimateShipping({ lines = [], destState = '', pad = null } = {}) {
     grossLb: +grossLb.toFixed(2),
     billableLb,
     freight: round2(freight),
+    ratesCalibratedOn: RATES_CALIBRATED_ON,
+    ratesAgeDays: ageDays,
+    ratesStale: ageDays > RATES_STALE_AFTER_DAYS,
     pad: round2(padded - freight),
     hazmat: round2(hazmatTotal),
     total,
@@ -276,6 +304,7 @@ function reconcile(perLine, total) {
 module.exports = {
   ORIGIN, STATE_CENTROIDS, ZONE_BANDS, PARCEL_RATES, LTL_CWT,
   CARTON_MAX_LB, PARCEL_CEILING_LB, DEFAULT_PAD, LTL_PAD,
+  RATES_CALIBRATED_ON, RATES_STALE_AFTER_DAYS, rateAgeDays,
   FUEL_SURCHARGE_PCT, ACCOUNT_INCENTIVE_PCT,
   haversineMiles, zoneForMiles, normalizeState, estimateShipping,
 };
