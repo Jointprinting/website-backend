@@ -64,6 +64,9 @@ const NOT_ARCHIVED = { archived: { $ne: true } };
 const PIPELINE_DAYS = parseInt(process.env.OUTREACH_PIPELINE_DAYS || '7', 10);
 // Never enroll more than this in a single tick (politeness / MX-verify bound).
 const ENROLL_TICK_MAX = parseInt(process.env.OUTREACH_ENROLL_TICK_MAX || '150', 10);
+// How many candidate leads one fill considers. Raised from a hard-coded 1500
+// now that roster sourcing can push the reserve well past it.
+const POOL_SCAN_MAX = parseInt(process.env.OUTREACH_POOL_SCAN_MAX || '5000', 10);
 const pipelineTarget = () => Math.max(0, (Number(DAILY_CAP_MAX) || 50) * PIPELINE_DAYS);
 
 // ── Pure funnel math (unit-tested) ────────────────────────────────────────────
@@ -1224,10 +1227,16 @@ async function autoFillCampaign(campaign, { limit, includeChains, includeNonReta
   const clients = await Client.find({ ...NOT_ARCHIVED, doNotEmail: { $ne: true },
     stage: { $in: ['lead', 'contacted'] }, lastContact: null, ...verticalPoolFilter(campaign.vertical) })
     .select('companyKey companyName clientName email phone address area stage leadSource contacts lastContact createdAt')
-    .limit(1500).lean();
+    // Sorted, not arbitrary. With no sort Mongo returns whichever 1500 rows it
+    // likes, so "best lead first" only ever ranked the best of a random slice —
+    // and that slice could silently exclude a whole state. Freshest-found first
+    // matches the enrollment tiebreak.
+    .sort({ createdAt: -1 })
+    .limit(POOL_SCAN_MAX).lean();
   if (!clients.length) return { enrolled: 0 };
 
   const keys = clients.map((c) => c.companyKey);
+  const poolEmails = [...new Set(clients.map((c) => String(pickEmail(c) || '').toLowerCase()).filter(Boolean))];
   const filterOpts = {
     ...sanitizeEnrollFilters(campaign.enrollFilters),
     ...(includeChains == null ? {} : { includeChains: !!includeChains }),
@@ -1236,7 +1245,12 @@ async function autoFillCampaign(campaign, { limit, includeChains, includeNonReta
   const [existing, customerKeys, allEnrollments, fieldMapRows] = await Promise.all([
     OutreachEnrollment.find({ campaignId: campaign._id, companyKey: { $in: keys } }).select('companyKey').lean(),
     keysWithPlacedOrders(keys),
-    OutreachEnrollment.find({}).select('toEmail').lean(),
+    // Only the inboxes among THIS pool's candidates — an indexed $in instead of
+    // loading EVERY enrollment in the database on every 30-minute fill. The
+    // question is "is this candidate's inbox already enrolled somewhere?",
+    // which never needed the whole collection, and the scan only got heavier
+    // as roster sourcing grew the pool.
+    OutreachEnrollment.find({ toEmail: { $in: poolEmails } }).select('toEmail').lean(),
     // The Field Map's read on these exact shops — ONE indexed query scoped to the
     // pool we already loaded (not a scan of the national collection), so the join
     // costs a single round-trip per fill.
