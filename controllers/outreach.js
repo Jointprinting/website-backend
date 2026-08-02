@@ -341,15 +341,25 @@ function maybeSelfHealTick(engine) {
 // hottest first), and recent send activity.
 async function getOverview(req, res) {
   try {
-    const [engine, campaigns, enrollments] = await Promise.all([
+    const [engine, campaigns] = await Promise.all([
       // The engine's status carries `replyPath` — where a reply LANDS vs. which
       // mailbox is actually read — which needs the triage identity passed in
       // (controllers/replyTriage → services/outreachEngine would be a cycle).
       // Chained inside the Promise.all so it still costs one round-trip, not two.
       triageIdentity().then((identity) => engineStatus({ triageIdentity: identity })),
       OutreachCampaign.find({ status: { $ne: 'archived' } }).sort({ createdAt: -1 }).lean(),
-      OutreachEnrollment.find({}).lean(),
     ]);
+    // Every dashboard load used to pull EVERY enrollment as a FULL document —
+    // archived campaigns included, and each row dragging its entire sends[]
+    // history (message ids, tokens, per-send subjects). This is the tab the
+    // owner opens all day, on a free-tier cluster, and the cost grows with every
+    // lead the finder adds. Scoped to the campaigns actually being rendered and
+    // projected to the fields the response is built from — one extra round-trip
+    // in exchange for a fraction of the bytes.
+    const enrollments = await OutreachEnrollment.find({ campaignId: { $in: campaigns.map((c) => c._id) } })
+      .select('campaignId status stopReason openCount lastOpenedAt repliedAt companyKey companyName '
+        + 'sends.at sends.subject sends.openedAt sends.stepIndex sends.variant')
+      .lean();
 
     const byCampaign = new Map();
     for (const e of enrollments) {
