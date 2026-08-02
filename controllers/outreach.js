@@ -267,13 +267,11 @@ function buildNextActions({ engine = {}, campaigns = [], warmCount = 0, coldRese
   if (anyActiveCampaign && !replySyncOn) {
     add('action', 'Replies are NOT being auto-detected (Gmail sync is off) — the drip keeps emailing people who already answered. Connect the outreach inbox (GMAIL_TRIAGE_* on the API) or log replies by hand the moment they arrive.', { view: 'replies' });
   }
-  // THE REPLY BLACK HOLE. Everything above is "nothing is going out"; this is
-  // the worse one — mail IS going out, and every answer lands in a mailbox
-  // nobody reads, so "0 replies" isn't a measurement at all. The hint already
-  // names both addresses and the exact fix, so it's shown verbatim.
-  if (engine.replyPath && engine.replyPath.level === 'action' && engine.replyPath.hint) {
-    add('action', engine.replyPath.hint, { view: 'replies' });
-  }
+  // THE REPLY BLACK HOLE is deliberately NOT added here. It already renders as
+  // its own dedicated banner at the top of the Outreach tab, and adding it again
+  // printed the identical paragraph twice on one screen — which is how a screen
+  // stops being read. One failure, one place: the banner owns this one, and
+  // everything else in this list is a condition with no banner of its own.
   // A one-touch sequence burns the list one email at a time: each lead gets a
   // single touch, completes, and (auto-enroll only draws never-contacted leads)
   // can never be enrolled again. Ranks above warm leads — no follow-ups means
