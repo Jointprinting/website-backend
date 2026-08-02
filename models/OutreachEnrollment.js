@@ -38,7 +38,11 @@ const OutreachEnrollmentSchema = new mongoose.Schema({
   // engine re-reads the live Client at send time, so an owner edit (fixed
   // email, archived, do-not-email) always wins over these snapshots.
   companyName: { type: String, default: '' },
-  toEmail:     { type: String, default: '' },
+  // Indexed: auto-enroll checks "is this inbox already in some campaign?" on
+  // every fill. That used to load EVERY enrollment in the database to build
+  // the set — a full-collection scan every 30 minutes, which only got worse
+  // as the lead engine grew the pool. It's a scoped $in lookup now.
+  toEmail:     { type: String, default: '', index: true },
 
   status:    { type: String, enum: ENROLLMENT_STATUSES, default: 'active', index: true },
   stepIndex: { type: Number, default: 0 },              // next step to send
