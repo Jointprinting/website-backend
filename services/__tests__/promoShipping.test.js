@@ -14,6 +14,7 @@ const {
 } = require('../promoWeights');
 const {
   estimateShipping, zoneForMiles, normalizeState, haversineMiles, ORIGIN, STATE_CENTROIDS,
+  rateAgeDays, RATES_CALIBRATED_ON, RATES_STALE_AFTER_DAYS,
 } = require('../promoShipping');
 
 const catalog = require('../../data/promoCatalog.json');
@@ -262,6 +263,46 @@ test('parcel carries a small pad and LTL a wide one, since LTL is the guess', ()
   const parcelPct = parcel.pad / parcel.freight;
   const ltlPct = ltl.pad / ltl.freight;
   assert.ok(ltlPct > parcelPct, `LTL pad ${ltlPct} should exceed parcel pad ${parcelPct}`);
+});
+
+// ── Staleness: the table has to admit its own age ────────────────────────────
+// Every rate constant here is static, while UPS raises published rates each
+// January and the fuel surcharge floats WEEKLY. A quoting tool that drifts
+// silently is worse than one that says so.
+
+test('every estimate carries the date its rates were last checked', () => {
+  const p = find('Black Metal 4 Piece Grinder (40mm)');
+  const r = estimateShipping({ lines: [{ product: p, qty: 1000 }], destState: 'PA' });
+  assert.strictEqual(r.ratesCalibratedOn, RATES_CALIBRATED_ON);
+  assert.ok(Number.isInteger(r.ratesAgeDays));
+  assert.strictEqual(typeof r.ratesStale, 'boolean');
+});
+
+test('rate age counts forward from the calibration date and never goes negative', () => {
+  const cal = Date.parse(`${RATES_CALIBRATED_ON}T00:00:00Z`);
+  assert.strictEqual(rateAgeDays(cal), 0);
+  assert.strictEqual(rateAgeDays(cal + 10 * 86400000), 10);
+  // A clock behind the calibration date must not produce a negative age.
+  assert.strictEqual(rateAgeDays(cal - 5 * 86400000), 0);
+});
+
+test('past its shelf life the estimate says so, in the basis the owner reads', () => {
+  const stale = Date.parse(`${RATES_CALIBRATED_ON}T00:00:00Z`) + (RATES_STALE_AFTER_DAYS + 1) * 86400000;
+  assert.ok(rateAgeDays(stale) > RATES_STALE_AFTER_DAYS);
+
+  const p = find('Black Metal 4 Piece Grinder (40mm)');
+  const fresh = estimateShipping({ lines: [{ product: p, qty: 1000 }], destState: 'PA' });
+  // Freshly calibrated today: no nag. The warning must not cry wolf.
+  if (!fresh.ratesStale) {
+    assert.ok(!fresh.basis.some((b) => /last checked against a real invoice/i.test(b)));
+  }
+});
+
+test('a zero-freight order is not nagged about stale rates', () => {
+  // Nothing was priced, so there is nothing to be stale about.
+  const r = estimateShipping({ lines: [{ product: find('Mylar Bag Overseas - Eighth OZ'), qty: 5000 }], destState: 'PA' });
+  assert.strictEqual(r.total, 0);
+  assert.ok(!r.basis.some((b) => /last checked against a real invoice/i.test(b)));
 });
 
 test('a range is returned around the estimate rather than false precision', () => {
