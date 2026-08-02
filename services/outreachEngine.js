@@ -725,6 +725,50 @@ function campaignBounceSignal(rows = []) {
   return { sent, bounced };
 }
 
+// The same signal, but only over sends inside a trailing window. The lifetime
+// count can never recover: a campaign that bounced badly in week one carries
+// those bounces in its numerator forever, so a quarantine tripped on it is a
+// ONE-WAY DOOR — every new send can be clean and the rate still reads bad. This
+// is what lets the engine notice a list has healed. PURE + unit-tested.
+function recentBounceSignal(rows = [], { sinceMs = 0, now = Date.now() } = {}) {
+  const since = sinceMs || (now - 7 * 24 * 60 * 60 * 1000);
+  let sent = 0, bounced = 0;
+  for (const e of rows || []) {
+    if (!e) continue;
+    const sends = Array.isArray(e.sends) ? e.sends : [];
+    let last = 0;
+    for (const s of sends) {
+      const t = s && s.at ? new Date(s.at).getTime() : 0;
+      if (Number.isFinite(t) && t > last) last = t;
+    }
+    if (!last || last < since) continue;              // nothing sent in the window
+    sent += 1;
+    if (['bounced', 'invalid-address', 'complaint'].includes(e.stopReason)) bounced += 1;
+  }
+  return { sent, bounced };
+}
+
+// Has a quarantined list healed enough to start first-touches again?
+//
+// Quarantine stops NEW first-touches when a list bounces badly; follow-ups keep
+// running, so the campaign keeps producing fresh delivery data even while
+// paused. When that recent data is clean there is nothing left to protect
+// against, and leaving it stopped just idles the whole pipeline until someone
+// notices a button. Deliberately stricter than the trip threshold and needs real
+// recent volume, so it can't flap on one lucky send. PURE + unit-tested.
+const UNQUARANTINE_MIN_SENT = 25;      // enough recent sends to trust the rate
+const UNQUARANTINE_RATE = 0.04;        // a third of the 0.12 trip rate
+const UNQUARANTINE_MIN_HOURS = 12;     // let the hygiene/suppression passes land first
+function shouldLiftQuarantine(recent = {}, { quarantinedAt = null, now = Date.now() } = {}) {
+  const sent = Number((recent || {}).sent) || 0;
+  const bounced = Number((recent || {}).bounced) || 0;
+  if (sent < UNQUARANTINE_MIN_SENT) return false;
+  if (bounced / sent >= UNQUARANTINE_RATE) return false;
+  const at = quarantinedAt ? new Date(quarantinedAt).getTime() : 0;
+  if (!Number.isFinite(at) || !at) return false;        // unknown stamp → leave it alone
+  return (now - at) >= UNQUARANTINE_MIN_HOURS * 60 * 60 * 1000;
+}
+
 // Should the hygiene pass run for a campaign with this bounce signal right now?
 // Trips only on a real spike — ≥2 bounced AND ≥5% of ≥10 sent — and at most
 // once per 24h per campaign (lastHygieneAt; an unparseable stamp reads as
@@ -802,10 +846,32 @@ async function runListQuarantine(campaigns = [], now = new Date()) {
     (campaigns || []).filter((c) => c && c.firstTouchQuarantinedAt).map((c) => String(c._id)),
   );
   for (const campaign of campaigns || []) {
-    if (!campaign || quarantined.has(String(campaign._id))) continue;
+    if (!campaign) continue;
     try {
       const rows = await OutreachEnrollment.find({ campaignId: campaign._id })
         .select('status stopReason sends.at').lean();
+
+      // ALREADY QUARANTINED: can it come back? Follow-ups keep sending while
+      // first-touches are stopped, so the campaign keeps producing fresh
+      // delivery data — and when that recent data is clean there is nothing
+      // left to protect against. Without this the pause is permanent: the
+      // lifetime rate still carries the original bounces, so it can never fall
+      // back under the threshold, and the whole pipeline idles until someone
+      // notices a button.
+      if (quarantined.has(String(campaign._id))) {
+        const recent = recentBounceSignal(rows, { now: now.getTime() });
+        if (!shouldLiftQuarantine(recent, { quarantinedAt: campaign.firstTouchQuarantinedAt, now: now.getTime() })) continue;
+        const r = await OutreachCampaign.updateOne(
+          { _id: campaign._id, firstTouchQuarantinedAt: { $ne: null } },
+          { $set: { firstTouchQuarantinedAt: null, quarantineReason: '' } },
+        ).catch(() => ({ modifiedCount: 0 }));
+        if (r.modifiedCount) {
+          quarantined.delete(String(campaign._id));
+          console.log(`[outreach] list recovered: "${campaign.name}" — ${recent.bounced} of ${recent.sent} recent sends bounced; first-touches resumed`);
+        }
+        continue;
+      }
+
       const signal = campaignBounceSignal(rows);
       if (!shouldQuarantineList(signal, { lastHygieneAt: campaign.lastHygieneAt })) continue;
       const reason = `${signal.bounced} of ${signal.sent} sent bounced or complained even after auto-cleaning`;
@@ -1673,6 +1739,8 @@ module.exports = {
   shouldQuarantineList,
   runListQuarantine,
   campaignBounceSignal,
+  recentBounceSignal,
+  shouldLiftQuarantine,
   shouldRunHygiene,
   pickInvalidEnrollments,
   looksLikeDnsOutage,
