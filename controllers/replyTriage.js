@@ -462,10 +462,33 @@ async function applyStatusSideEffects(reply, status, { companyLevel = true } = {
       { $set: { status: 'stopped', stopReason: 'triage-do-not-contact', nextSendAt: null } },
     );
   } else if (status === 'not_interested') {
+    // A human told us no — "we already design our own merch", "we use another
+    // printer". That is a real answer, so it has to end the relationship in
+    // every place the company can resurface, or it clogs the pipeline and the
+    // drip finds them again on the next sweep:
+    //   • stop the sequence            (no more touches)
+    //   • doNotEmail                   (no future campaign re-enrolls them)
+    //   • close the CRM stage to lost  (out of the working pipeline)
+    // No follow-up date is set — there is nothing to follow up on. The card and
+    // its history stay, and clearing doNotEmail re-opens them if that changes.
+    // Deliberately NOT suppressed globally: suppression is for opt-outs and dead
+    // addresses, and a polite "not right now" is neither.
     await OutreachEnrollment.updateMany(
       { companyKey: reply.companyKey, status: 'active' },
       { $set: { status: 'stopped', stopReason: 'triage-not-interested', nextSendAt: null } },
     );
+    await Client.updateOne(
+      { companyKey: reply.companyKey },
+      {
+        $set: { doNotEmail: true },
+        $push: { log: { at: now, text: 'Replied not interested — sequence stopped, removed from cold outreach', kind: 'email', dedupKey: `triage-ni:${reply._id}` } },
+      },
+    ).catch(() => {});
+    // Close the stage, but never drag a real customer or a won deal backwards.
+    await Client.updateOne(
+      { companyKey: reply.companyKey, stage: { $nin: ['won', 'customer', 'lost', 'dormant'] } },
+      { $set: { stage: 'lost' } },
+    ).catch(() => {});
   }
 }
 
