@@ -357,7 +357,13 @@ async function getOverview(req, res) {
     // projected to the fields the response is built from — one extra round-trip
     // in exchange for a fraction of the bytes.
     const enrollments = await OutreachEnrollment.find({ campaignId: { $in: campaigns.map((c) => c._id) } })
-      .select('campaignId status stopReason openCount lastOpenedAt repliedAt companyKey companyName '
+      // stepIndex is the ENROLLMENT's own position in the sequence — distinct from
+      // sends.stepIndex, and the field everFollowedUp reads. Trimming this
+      // projection for bytes dropped it, which silently pinned everFollowedUp to
+      // false and made every active campaign claim "no lead has ever reached
+      // touch 2". A projection that omits a field a reader depends on doesn't
+      // fail; it lies.
+      .select('campaignId status stopReason stepIndex openCount lastOpenedAt repliedAt companyKey companyName '
         + 'sends.at sends.subject sends.openedAt sends.stepIndex sends.variant')
       .lean();
 
