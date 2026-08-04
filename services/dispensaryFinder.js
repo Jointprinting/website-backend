@@ -96,6 +96,7 @@ const REGIONS = {
   id: { label: 'Idaho',        bbox: [41.99, -117.24, 49.00, -111.04] },
   wy: { label: 'Wyoming',      bbox: [40.99, -111.06, 45.01, -104.05] },
   hi: { label: 'Hawaii',       bbox: [18.86, -160.30, 22.30, -154.75] },
+  pr: { label: 'Puerto Rico',  bbox: [17.88, -67.29, 18.53, -65.22] },
 };
 const DEFAULT_REGION = 'nj';
 
@@ -122,6 +123,7 @@ const NATIONAL_ROLLOUT = [
   'la', 'ms', 'al', 'tx',                                // gulf south
   'ut', 'ks', 'ne', 'sd', 'nd',                          // plains/mountain
   'id', 'wy', 'hi',                                      // thinnest markets last
+  'pr',                                                  // territory: ~100 med storefronts, OSM/sweep-fed
 ];
 
 // Bump when the discovery/enrichment/import logic materially improves (a wider

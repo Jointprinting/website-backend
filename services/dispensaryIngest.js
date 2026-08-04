@@ -22,8 +22,46 @@
 const axios = require('axios');
 const { StringDecoder } = require('string_decoder');
 const Dispensary = require('../models/Dispensary');
+const SiteSetting = require('../models/SiteSetting');
 const { ROSTER_STATES, MED_STATES, deriveSegment } = require('./dispensaryStates');
 const { assignChains, detectKnownChain } = require('./dispensaryChains');
+
+// ── Persisted per-state roster source overrides ──────────────────────────────
+//
+// Roster URLs rot: a regulator moves a dataset, a community aggregate is
+// renamed, and the affected states quietly go OSM-only until someone notices.
+// The ingest already accepted a per-REQUEST sourceUrlOverride, but that fixed
+// one run — the 6-hourly autopilot went straight back to the dead URL. These
+// overrides persist in SiteSetting, so re-pointing a state from the admin UI
+// sticks for every later ingest WITHOUT a deploy (which is what the module
+// header has always claimed). Shape: { CO: 'https://…', PA: '…' }.
+const ROSTER_SOURCE_KEY = 'dispensaryRosterSources';
+
+async function getRosterOverrides() {
+  try {
+    const row = await SiteSetting.findOne({ key: ROSTER_SOURCE_KEY }).lean();
+    const val = row && row.value;
+    return val && typeof val === 'object' ? val : {};
+  } catch {
+    return {};   // a settings read must never break an ingest
+  }
+}
+
+/** Set (url) or clear (falsy url) one state's roster override. Returns the map. */
+async function setRosterOverride(state, url) {
+  const st = String(state || '').toUpperCase();
+  if (!st) throw Object.assign(new Error('state is required.'), { statusCode: 400 });
+  const current = await getRosterOverrides();
+  const next = { ...current };
+  if (url) next[st] = String(url);
+  else delete next[st];
+  await SiteSetting.updateOne(
+    { key: ROSTER_SOURCE_KEY },
+    { $set: { key: ROSTER_SOURCE_KEY, value: next, updatedAt: new Date() } },
+    { upsert: true },
+  );
+  return next;
+}
 
 // Same normalizations the CRM uses — keep byte-for-byte in sync with
 // utils/fieldTrackerImport.js (deriveCompanyKey / matchKey).
@@ -360,6 +398,80 @@ async function fetchRoster(state, { sourceUrlOverride } = {}) {
   throw e;
 }
 
+// ── Roster source health ─────────────────────────────────────────────────────
+//
+// Is a roster URL still alive? Nearly every state's roster (and every state's
+// LAST-RESORT fallback) is one community aggregate, so a single dead host can
+// silently take the whole national map OSM-only — the failure mode is invisible
+// from the map itself, which just looks like "no dispensaries here". This gives
+// a direct answer instead of a guess.
+//
+// HEAD first (free — we only want liveness, not a 100MB body); some CDNs refuse
+// HEAD, so fall back to a 2KB ranged GET.
+async function probeSource(url, { timeout = 15_000 } = {}) {
+  if (!url) return { ok: false, status: 0, error: 'no url configured' };
+  try {
+    const res = await axios.head(url, { timeout, maxRedirects: 5, validateStatus: () => true });
+    if (res.status >= 200 && res.status < 300) {
+      const len = parseInt(res.headers['content-length'] || '', 10);
+      return { ok: true, status: res.status, bytes: isFinite(len) ? len : null };
+    }
+    // 405/501 = HEAD unsupported; anything else is a real answer.
+    if (res.status !== 405 && res.status !== 501) {
+      return { ok: false, status: res.status, error: `HTTP ${res.status}` };
+    }
+  } catch { /* fall through to the ranged GET */ }
+  try {
+    const res = await axios.get(url, {
+      timeout, maxRedirects: 5, responseType: 'text',
+      headers: { Range: 'bytes=0-2047' }, validateStatus: () => true,
+    });
+    if (res.status >= 200 && res.status < 400) {
+      // A roster that answers 200 with an HTML error page is still broken —
+      // surface the first line so that's obvious rather than "ok".
+      const sample = String(res.data || '').slice(0, 160).replace(/\s+/g, ' ').trim();
+      return { ok: true, status: res.status, sample, looksHtml: /^\s*<(!doctype|html)/i.test(String(res.data || '')) };
+    }
+    return { ok: false, status: res.status, error: `HTTP ${res.status}` };
+  } catch (err) {
+    return { ok: false, status: 0, error: err.message };
+  }
+}
+
+/** Probe the configured roster source for each state (respecting saved
+ *  overrides), a few at a time so we never fan out dozens of requests at once. */
+async function rosterSourceHealth(states = null, { concurrency = 4 } = {}) {
+  const overrides = await getRosterOverrides();
+  const codes = (states && states.length ? states : Object.keys(ROSTER_STATES))
+    .map((s) => String(s).toUpperCase())
+    .filter((s) => ROSTER_STATES[s]);
+  const out = [];
+  for (let i = 0; i < codes.length; i += concurrency) {
+    const batch = codes.slice(i, i + concurrency);
+    // eslint-disable-next-line no-await-in-loop
+    const probed = await Promise.all(batch.map(async (code) => {
+      const cfg = ROSTER_STATES[code];
+      const url = overrides[code] || cfg.roster.url || '';
+      const kind = overrides[code] ? 'override' : cfg.roster.kind;
+      if (!url) return { state: code, name: cfg.name, kind, url: '', ok: false, error: 'no machine-readable roster configured (sweep-seeded)' };
+      return { state: code, name: cfg.name, kind, url, ...(await probeSource(url)) };
+    }));
+    out.push(...probed);
+  }
+  // The shared last-resort aggregate: if THIS is dead, every fallback is dead.
+  const aggregateUrl = 'https://huggingface.co/datasets/cannlytics/cannabis_licenses/resolve/main/data/all/licenses-all-latest.csv';
+  const aggregate = { url: aggregateUrl, ...(await probeSource(aggregateUrl)) };
+  const dead = out.filter((r) => !r.ok);
+  return {
+    checkedAt: new Date(),
+    total: out.length,
+    alive: out.length - dead.length,
+    deadCount: dead.length,
+    aggregate,
+    states: out,
+  };
+}
+
 // Does an all-states aggregate row belong to `state`? Matched on the sniffed
 // state column against the 2-letter code or the state's full name; a row with
 // NO state column never matches (better to import nothing than the whole
@@ -426,7 +538,15 @@ async function rechainState(state) {
 
 async function ingestState(state, opts = {}) {
   const startedAt = new Date();
-  const { rows, sourceUrl, sourceKind, errors } = await fetchRoster(state, opts);
+  // A per-request override still wins; otherwise fall back to a persisted one
+  // so a repaired source survives every later autopilot tick.
+  let { sourceUrlOverride = null } = opts;
+  let overrideSource = sourceUrlOverride ? 'request' : null;
+  if (!sourceUrlOverride) {
+    const saved = (await getRosterOverrides())[String(state).toUpperCase()];
+    if (saved) { sourceUrlOverride = saved; overrideSource = 'saved'; }
+  }
+  const { rows, sourceUrl, sourceKind, errors } = await fetchRoster(state, { ...opts, sourceUrlOverride });
   const cfg = ROSTER_STATES[state];
   const medicalMarket = !!MED_STATES[state];
 
@@ -488,7 +608,7 @@ async function ingestState(state, opts = {}) {
   const total = await Dispensary.countDocuments({ state, active: true, hidden: false });
 
   return {
-    state, sourceKind, sourceUrl,
+    state, sourceKind, sourceUrl, overrideSource,
     fetchedRows: rows.length,
     filteredOut: filtered,
     imported: unique.length,
@@ -583,6 +703,8 @@ module.exports = {
   rechainState,
   geocodeMissing,
   upsertOsmCandidates,
+  getRosterOverrides, setRosterOverride, ROSTER_SOURCE_KEY,
+  probeSource, rosterSourceHealth,
   // exported for tests:
   parseCsv, sniffHeaders, normalizeRow, rowPasses, deriveCompanyKey, matchKey, stateFromAddress,
   rosterAttempts, rowMatchesState, csvStreamParser, collectAggregateRowsForState,

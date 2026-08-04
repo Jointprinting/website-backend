@@ -19,7 +19,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
-  deriveSegment, SEGMENTS, MED_STATES, MEDICAL_ONLY, ROSTER_STATES, REC_STATES,
+  deriveSegment, SEGMENTS, MED_STATES, MEDICAL_ONLY, ROSTER_STATES, REC_STATES, NO_RETAIL_YET,
 } = require('../../services/dispensaryStates');
 
 test('rec states derive rec for every source', () => {
@@ -61,6 +61,43 @@ test('no-marijuana-retail states derive hemp ("bodega THC")', () => {
   for (const st of ['TX', 'NC', 'SC', 'TN', 'GA']) {
     assert.equal(deriveSegment(st, 'osm'), 'hemp');
     assert.equal(deriveSegment(st, 'roster'), 'hemp');
+  }
+});
+
+test('TX and GA stay hemp on purpose despite token medical programs', () => {
+  // Both license a handful of medical outlets (TX Compassionate Use; GA
+  // low-THC oil through pharmacies) against thousands of hemp/THCA shops.
+  // Classing them 'med' would mislabel that entire retail universe.
+  assert.ok(!MED_STATES.TX && !MED_STATES.GA);
+  assert.equal(deriveSegment('TX', 'osm', { medical: true }), 'hemp');
+});
+
+test('VA and DC are med markets — real licensed storefronts, not hemp', () => {
+  // Both were excluded over their missing ADULT-USE retail, which made their
+  // live medical dispensaries derive as 'hemp' (or never load at all).
+  for (const st of ['VA', 'DC']) {
+    assert.ok(MED_STATES[st], `${st} must be a med roster state`);
+    for (const source of ['roster', 'google', 'manual']) {
+      assert.equal(deriveSegment(st, source), 'med');
+    }
+    // Same med-state OSM rule as PA/FL: tagged medical → med, name-net → hemp.
+    assert.equal(deriveSegment(st, 'osm', { medical: true }), 'med');
+    assert.equal(deriveSegment(st, 'osm'), 'hemp');
+  }
+});
+
+test('Puerto Rico is a med roster state seeded by sweep (no license roll)', () => {
+  assert.ok(MED_STATES.PR, 'PR must be a med roster state');
+  assert.equal(deriveSegment('PR', 'roster'), 'med');
+  assert.equal(deriveSegment('PR', 'google'), 'med');
+  // kind 'google' → the autopilot skips it rather than wedging on an
+  // impossible ingest (the Delaware rule).
+  assert.equal(MED_STATES.PR.roster.kind, 'google');
+});
+
+test('NO_RETAIL_YET no longer hides states that have operating dispensaries', () => {
+  for (const st of NO_RETAIL_YET) {
+    assert.ok(!ROSTER_STATES[st], `${st} cannot be both "no retail yet" and a roster state`);
   }
 });
 

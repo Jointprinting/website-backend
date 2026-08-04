@@ -12,7 +12,10 @@ const Client = require('../models/Client');
 const DispensaryDenylist = require('../models/DispensaryDenylist');
 const OsmScanTile = require('../models/OsmScanTile');
 const { ROSTER_STATES, MEDICAL_ONLY, NO_RETAIL_YET, deriveSegment, SEGMENTS } = require('../services/dispensaryStates');
-const { ingestState, rechainState, geocodeMissing, deriveCompanyKey, matchKey, upsertOsmCandidates } = require('../services/dispensaryIngest');
+const {
+  ingestState, rechainState, geocodeMissing, deriveCompanyKey, matchKey, upsertOsmCandidates,
+  rosterSourceHealth, getRosterOverrides, setRosterOverride,
+} = require('../services/dispensaryIngest');
 const { enrichBatch } = require('../services/dispensaryEnrich');
 const { detectKnownChain } = require('../services/dispensaryChains');
 const { fetchDispensariesForBbox, fetchDispensariesForBboxes, REGIONS } = require('../services/dispensaryFinder');
@@ -73,22 +76,39 @@ function tilesExtent(tiles) {
 }
 
 // Which STATE is the viewport looking at? Resolved from the lead finder's
-// per-state region bboxes: the SMALLEST region box containing the viewport
-// center wins (boxes bleed over borders by design; the smallest container is
-// the state actually under the cursor in practice). '' when nothing contains
-// the point (ocean, Canada). Drives the on-demand roster seeding — hovering
-// Cleveland with zero OH roster rows kicks the OH license ingest right then.
-// Pure (exported for tests).
-function stateForViewportCenter(bbox, regions = REGIONS) {
+// per-state region bboxes. Boxes are plain rectangles that bleed over borders,
+// so a point can sit in several; candidates are ranked:
+//
+//   1. a state we can actually LOAD A ROSTER for beats one we can't, then
+//   2. the smallest containing box wins.
+//
+// Rule 1 exists because rule 2 alone silently mis-resolved real ground: the
+// Nebraska box (39.99..43 × -104.05..-95.31) is fractionally smaller than
+// Colorado's and covers northeastern CO (Sterling, Fort Morgan), so panning
+// there reported state NE — a state with no roster — and the CO license ingest
+// never fired. Preferring the roster state is both more often right and
+// exactly what this resolver is FOR: deciding which roster to seed.
+//
+// '' when nothing contains the point (ocean, Canada). Pure (exported for tests).
+function stateForViewportCenter(bbox, regions = REGIONS, rosterStates = ROSTER_STATES) {
   const lat = (bbox.minLat + bbox.maxLat) / 2;
   const lng = (bbox.minLng + bbox.maxLng) / 2;
   let best = '';
   let bestArea = Infinity;
+  let bestRosterable = false;
   for (const [id, region] of Object.entries(regions || {})) {
     const [s, w, n, e] = region.bbox || [];
     if (!(lat >= s && lat <= n && lng >= w && lng <= e)) continue;
+    const code = id.toUpperCase();
+    const rosterable = !!(rosterStates || {})[code];
     const area = (n - s) * (e - w);
-    if (area < bestArea) { bestArea = area; best = id.toUpperCase(); }
+    // Rank: rosterable first, then smaller box.
+    let wins;
+    if (!best) wins = true;
+    else if (rosterable !== bestRosterable) wins = rosterable;
+    else wins = area < bestArea;
+    if (!wins) continue;
+    bestArea = area; best = code; bestRosterable = rosterable;
   }
   return best;
 }
@@ -457,6 +477,34 @@ async function corridor(req, res) {
   }
 }
 
+// Why does this state look the way it does on the map? One word, so the
+// coverage panel can say what's actually wrong instead of just showing a count.
+// Ordered most-severe first; `independents` is the number the DEFAULT map view
+// renders (mapped + non-chain), which is the whole point — a state can be
+// "full" by row count and still show the owner an empty screen.
+//
+//   'empty'       — nothing at all for this state
+//   'ungeocoded'  — rows exist but none carry coordinates (geocoding failed)
+//   'chains-only' — every mappable store is an MSO; the CHAINS clicker is off,
+//                   so the default view is blank while the data is fine
+//   'osm-only'    — no license-roll rows landed; riding on community OSM data
+//                   (this is what a dead roster source looks like)
+//   'thin'        — under half the market's expected size
+//   'ok'          — nothing to flag
+//
+// PURE (exported for tests).
+function stateHealth(a = {}, approxRetail = 0) {
+  const total = a.total || 0;
+  if (!total) return 'empty';
+  const mapped = a.mapped || 0;
+  if (!mapped) return 'ungeocoded';
+  const independents = a.independents || 0;
+  if (!independents) return 'chains-only';
+  if (!(a.fromRoster > 0)) return 'osm-only';
+  if (approxRetail > 0 && total < approxRetail * 0.5) return 'thin';
+  return 'ok';
+}
+
 // ── GET /api/roadtrip/dispensaries/coverage ──────────────────────────────────
 // Per-state ingest/enrichment status for the coverage panel: which of the 24
 // rec states have data, how fresh, how enriched — plus the medical-only list
@@ -473,6 +521,22 @@ async function coverage(_req, res) {
           enriched: { $sum: { $cond: [{ $and: ['$active', { $ne: ['$enrichedAt', null] }] }, 1, 0] } },
           mapped: { $sum: { $cond: [{ $and: ['$active', { $ne: ['$lat', null] }] }, 1, 0] } },
           chains: { $addToSet: '$chainName' },
+          // What the map ACTUALLY renders by default: mapped, non-chain stores.
+          // A state can hold 600 licensed pins and still look empty if they're
+          // all chains (CHAINS clicker off) or all un-geocoded (no lat) — those
+          // are completely different failures and used to be indistinguishable.
+          independents: {
+            $sum: {
+              $cond: [{ $and: ['$active', { $ne: ['$lat', null] }, { $ne: ['$isChain', true] }] }, 1, 0],
+            },
+          },
+          chainStores: { $sum: { $cond: [{ $and: ['$active', { $eq: ['$isChain', true] }] }, 1, 0] } },
+          // Where the rows came from — the fastest read on whether a state's
+          // license roll actually loaded or the map is riding on OSM alone.
+          fromRoster: { $sum: { $cond: [{ $and: ['$active', { $eq: ['$source', 'roster'] }] }, 1, 0] } },
+          fromOsm:    { $sum: { $cond: [{ $and: ['$active', { $eq: ['$source', 'osm'] }] }, 1, 0] } },
+          fromGoogle: { $sum: { $cond: [{ $and: ['$active', { $eq: ['$source', 'google'] }] }, 1, 0] } },
+          fromManual: { $sum: { $cond: [{ $and: ['$active', { $eq: ['$source', 'manual'] }] }, 1, 0] } },
           lastVerifiedAt: { $max: '$lastVerifiedAt' },
         },
       },
@@ -494,14 +558,59 @@ async function coverage(_req, res) {
         verified: a?.verified || 0,
         enriched: a?.enriched || 0,
         mapped: a?.mapped || 0,
+        independents: a?.independents || 0,
+        chainStores: a?.chainStores || 0,
+        bySource: {
+          roster: a?.fromRoster || 0,
+          osm: a?.fromOsm || 0,
+          google: a?.fromGoogle || 0,
+          manual: a?.fromManual || 0,
+        },
         chainCount: a ? a.chains.filter(Boolean).length : 0,
         lastVerifiedAt: a?.lastVerifiedAt || null,
+        health: stateHealth(a || {}, cfg.approxRetail),
       };
     });
     res.json({ states, medicalOnly: MEDICAL_ONLY, noRetailYet: NO_RETAIL_YET });
   } catch (err) {
     console.error('[dispensary] coverage error:', err.message);
     res.status(500).json({ message: 'Coverage lookup failed.' });
+  }
+}
+
+// ── GET /api/roadtrip/dispensaries/source-health[?state=CO,PA] ───────────────
+// Live liveness check of every state's roster URL plus the shared last-resort
+// aggregate. This is the "is the data pipe actually broken, or is this state
+// genuinely empty?" answer — the one thing the map itself can never tell you.
+async function sourceHealth(req, res) {
+  try {
+    const states = String(req.query.state || '')
+      .split(',').map((s) => s.trim()).filter(Boolean);
+    res.json(await rosterSourceHealth(states));
+  } catch (err) {
+    console.error('[dispensary] source-health error:', err.message);
+    res.status(500).json({ message: 'Source health check failed.' });
+  }
+}
+
+// ── GET/POST /api/roadtrip/dispensaries/roster-source ────────────────────────
+// Read or re-point a state's roster URL WITHOUT a deploy. POST {state, url};
+// an empty/absent url clears the override and restores the built-in source.
+async function rosterSource(req, res) {
+  try {
+    if (req.method === 'GET') return res.json({ overrides: await getRosterOverrides() });
+    const state = String(req.body?.state || '').toUpperCase();
+    if (!ROSTER_STATES[state]) {
+      return res.status(400).json({ message: `"${state}" is not a roster state.` });
+    }
+    const url = String(req.body?.url || '').trim();
+    if (url && !/^https:\/\//i.test(url)) {
+      return res.status(400).json({ message: 'Roster URL must be https.' });
+    }
+    res.json({ overrides: await setRosterOverride(state, url) });
+  } catch (err) {
+    console.error('[dispensary] roster-source error:', err.message);
+    res.status(err.statusCode || 500).json({ message: err.message });
   }
 }
 
@@ -824,7 +933,8 @@ async function scanOsm(req, res) {
 
 module.exports = {
   listDispensaries, findDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, scanOsm, corridor,
+  sourceHealth, rosterSource,
   // pure — unit-tested
   tileKeyFor, tilesForBbox, tilesExtent, bboxTooLarge, stateFromAddress, corridorPrune, corridorChunks,
-  stateForViewportCenter, shouldGapFill,
+  stateForViewportCenter, shouldGapFill, stateHealth,
 };

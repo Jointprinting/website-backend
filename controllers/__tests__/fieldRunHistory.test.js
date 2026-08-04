@@ -125,6 +125,21 @@ test('stateForViewportCenter: open ocean resolves to nothing', () => {
   assert.equal(stateForViewportCenter({ minLat: 30, maxLat: 31, minLng: -60, maxLng: -59 }), '');
 });
 
+test('stateForViewportCenter: a roster state beats a smaller non-roster box', () => {
+  // Northeastern Colorado (Sterling / Fort Morgan) sits inside BOTH the CO box
+  // and the fractionally-smaller Nebraska box. Smallest-box-wins reported NE —
+  // a state with no roster — so the CO license ingest never fired for anyone
+  // panning that ground. The roster state has to win.
+  assert.equal(stateForViewportCenter({ minLat: 40.4, maxLat: 40.6, minLng: -103.6, maxLng: -103.4 }), 'CO');
+  // Denver was never ambiguous and must not regress.
+  assert.equal(stateForViewportCenter({ minLat: 39.6, maxLat: 39.9, minLng: -105.1, maxLng: -104.9 }), 'CO');
+});
+
+test('stateForViewportCenter: Puerto Rico resolves now that it has a region box', () => {
+  // San Juan — previously '' (no box), so its med market could never seed.
+  assert.equal(stateForViewportCenter({ minLat: 18.4, maxLat: 18.5, minLng: -66.1, maxLng: -66.0 }), 'PR');
+});
+
 // ── OSM statewide fallback (no dispos fall through the cracks) ───────────────
 
 const { needsOsmFallback } = require('../../services/rosterAutopilot');
