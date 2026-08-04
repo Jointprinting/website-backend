@@ -11,6 +11,7 @@ const AdminUser = require('../models/AdminUser');
 const Order = require('../models/Order');
 const Client = require('../models/Client');
 const { PLACED_STATUSES } = require('../models/Order');
+const { normalizeConfig } = require('../services/commission');
 
 const USERNAME_RE = /^[a-z0-9][a-z0-9._-]{1,29}$/; // 2–30 chars, starts alnum
 const MIN_PASSWORD = 8;
@@ -33,6 +34,10 @@ function publicAgent(a) {
     lastLoginAt: a.lastLoginAt || null,
     createdAt: a.createdAt || null,
     createdBy: a.createdBy || '',
+    // Always normalized, so the Team tab renders the effective deal (defaults
+    // included) rather than an empty sub-doc on an agent onboarded before
+    // commission existed.
+    commission: normalizeConfig(a.commission),
   };
 }
 
@@ -173,6 +178,12 @@ async function updateAgent(req, res) {
     if ('goalMonth' in body && /^\d{4}-\d{2}$/.test(String(body.goalMonth))) agent.goalMonth = String(body.goalMonth);
     // Setting a goal with no month yet → default it to the current month.
     if ('monthlyGoal' in body && !agent.goalMonth) agent.goalMonth = currentMonth();
+    // Commission deal. Normalized on the way in (percentages clamped, tiers
+    // sorted) so a bad payload can't store a 250% rate or an unsorted ladder
+    // that would then be read back as the agent's live terms.
+    if ('commission' in body && body.commission && typeof body.commission === 'object') {
+      agent.commission = normalizeConfig({ ...normalizeConfig(agent.commission), ...body.commission });
+    }
     await agent.save();
     res.json({ agent: { ...publicAgent(agent), stats: await computeAgentStats(agent) } });
   } catch (e) {
@@ -229,8 +240,62 @@ async function listAgentLeads(req, res) {
   } catch (e) { res.status(500).json({ message: e.message }); }
 }
 
+// POST /api/admin/agents/:id/reassign { to } — hand a departed agent's WHOLE
+// book (leads + orders) to someone else in one action.
+//
+// `to` is '' for the owner, or another agent's AdminUser id. This moves
+// `agentId` — who works it now — and deliberately does NOT touch
+// `originAgentId`, the immutable record of who sourced each company and sold
+// each order. That separation is the whole point: the owner can hand the book
+// over without rewriting the history his commission statements were computed
+// from, so a departed rep's earned pay stays correct and the new rep doesn't
+// inherit credit for sales they didn't make.
+//
+// Idempotent (re-running moves nothing further) and reported by count, so the
+// owner sees exactly what happened. Deliberately NOT automatic on disable —
+// pausing someone for a week shouldn't scatter their pipeline.
+async function reassignAgentBook(req, res) {
+  try {
+    const from = await AdminUser.findOne({ _id: req.params.id, role: 'agent' });
+    if (!from) return res.status(404).json({ message: 'Agent not found.' });
+
+    const rawTo = (req.body || {}).to;
+    const to = rawTo == null ? '' : String(rawTo).trim();
+    if (to === String(from._id)) {
+      return res.status(400).json({ message: 'That is the same agent — pick the owner or a different agent.' });
+    }
+    // '' = the owner. Anything else must be a real, active agent, or the book
+    // would vanish into an id nobody can sign in as.
+    let toLabel = 'you';
+    if (to) {
+      const target = await AdminUser.findOne({ _id: to, role: 'agent' }).catch(() => null);
+      if (!target) return res.status(400).json({ message: 'Pick the owner or an existing agent to receive the book.' });
+      if (target.active === false) return res.status(400).json({ message: `${target.displayName || target.username} is paused — reactivate them first, or move the book to yourself.` });
+      toLabel = target.displayName || target.username;
+    }
+
+    const fromId = String(from._id);
+    const [leads, orders] = await Promise.all([
+      Client.updateMany({ agentId: fromId }, { $set: { agentId: to } }),
+      Order.updateMany({ agentId: fromId }, { $set: { agentId: to } }),
+    ]);
+
+    res.json({
+      ok: true,
+      movedTo: to || 'owner',
+      movedToLabel: toLabel,
+      leads: leads.modifiedCount || 0,
+      orders: orders.modifiedCount || 0,
+      // Say it back explicitly — this is the reassurance the owner asked for.
+      attributionPreserved: true,
+    });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+}
+
 module.exports = {
   listAgents, agentCount, createAgent, updateAgent, resetAgentPassword,
-  listAgentOrders, listAgentLeads,
+  listAgentOrders, listAgentLeads, reassignAgentBook,
   computeAgentStats, publicAgent, currentMonth, // exported for P4 + tests
 };

@@ -15,11 +15,16 @@
 
 const Order = require('../models/Order');
 const Client = require('../models/Client');
+const Transaction = require('../models/Transaction');
 const { deriveCompanyKey } = require('../models/Order');
 const AdminUser = require('../models/AdminUser');
 const { nextNumber } = require('../utils/sequence');
-const { visibleFilter, stampFor, canAccessDoc } = require('../middleware/scope');
+const { visibleFilter, stampFor, ownershipStamp, canAccessDoc } = require('../middleware/scope');
 const { computeAgentStats, currentMonth } = require('./admin');
+const { orderRevenueCost, normalizeOrderNumber } = require('./finances');
+const {
+  normalizeConfig, tierFor, nextTierFor, originKind, earnedState, commissionForOrder,
+} = require('../services/commission');
 
 const CRM_STAGES = Client.CRM_STAGES;
 
@@ -122,7 +127,7 @@ async function createMyOrder(req, res) {
       totalValue: Math.max(0, Number(b.totalValue) || 0),
       notes: String(b.notes || '').trim(),
       orderDate: b.orderDate ? new Date(b.orderDate) : new Date(),
-      agentId: stampFor(req),
+      ...ownershipStamp(req),
     });
 
     // Keep the agent's CRM coherent: if NO company card exists for this key yet,
@@ -135,7 +140,7 @@ async function createMyOrder(req, res) {
         await Client.create({
           companyKey, companyName, clientName,
           stage: 'customer', source: 'agent', leadSource: 'Referral',
-          agentId: stampFor(req),
+          ...ownershipStamp(req),
         });
       }
     } catch (_) { /* best-effort — a lead race just means the card already exists */ }
@@ -205,7 +210,7 @@ async function createMyLead(req, res) {
       source: 'agent',
       leadSource: 'Referral', // agent-brought — closest structured source
       contacts,
-      agentId: stampFor(req),
+      ...ownershipStamp(req),
     });
     res.status(201).json({ lead: agentLeadShape(lead.toObject()) });
   } catch (e) { res.status(400).json({ message: e.message }); }
@@ -237,8 +242,165 @@ async function updateMyLead(req, res) {
   } catch (e) { res.status(400).json({ message: e.message }); }
 }
 
+// ── My Earnings ──────────────────────────────────────────────────────────────
+//
+// The agent is paid on a number the portal deliberately hides from them — every
+// other read here strips cost. That is a trust problem on day one, so this
+// endpoint opens exactly one window: for THEIR OWN orders, the single figure
+// "what this job cost" alongside the profit and their cut. Never the vendor
+// breakdown — they can verify their own pay without learning what the owner
+// pays Heritage, which is the confidential asset the rep agreement protects.
+//
+// Profit is computed with `orderRevenueCost` — the SAME canonical rule the
+// owner's Finances tab uses — so the agent's statement and the owner's P&L
+// reconcile to the cent. Where the owner hasn't booked receipts yet the row
+// falls back to the order's stored quote/confirmation estimate and says so,
+// rather than reporting a job as pure profit.
+
+// One earnings row's money, actual-first with an honest estimate fallback.
+function orderMoney(order, ledgerRows) {
+  const actual = orderRevenueCost(ledgerRows || []);
+  const estRevenue = Math.max(0, Number(order.totalValue) || 0);
+  const estCost = Math.max(0, Number(order.cogs) || 0);
+  // Revenue: the ledger is truth when a sale is booked; otherwise the order's
+  // own total (the owner invoices in QuickBooks and doesn't always enter a
+  // Client Sales row, so requiring the ledger would read $0 on real jobs).
+  const revenue = actual.revenue !== 0 ? actual.revenue : estRevenue;
+  // Cost: same idea. `costIsEstimate` is what the UI badges — an earned order
+  // whose receipts aren't in yet still shows a number, just a provisional one.
+  const costIsEstimate = actual.cost <= 0 && estCost > 0;
+  const cost = actual.cost > 0 ? actual.cost : estCost;
+  return {
+    revenue: Math.round(revenue * 100) / 100,
+    cost: Math.round(cost * 100) / 100,
+    profit: Math.round((revenue - cost) * 100) / 100,
+    costIsEstimate,
+    // True when we have neither a booked cost nor a quote estimate — the job
+    // would otherwise read as 100% profit, which is never real for a broker.
+    costUnknown: actual.cost <= 0 && estCost <= 0,
+  };
+}
+
+// GET /api/agent/earnings — the agent's own statement.
+async function myEarnings(req, res) {
+  try {
+    const uid = String((req.user && req.user.userId) || '');
+    const user = uid ? await AdminUser.findById(uid) : null;
+    if (!user || user.role !== 'agent') {
+      return res.json({ enabled: false, orders: [], rollup: null });
+    }
+    const config = normalizeConfig(user.commission);
+    if (!config.enabled) {
+      // Terms not agreed yet — say so plainly instead of showing $0 everywhere,
+      // which would read as "you've earned nothing".
+      return res.json({ enabled: false, orders: [], rollup: null });
+    }
+
+    // Their book for pay purposes: anything they SOURCED (commission follows
+    // origination, so a reassigned book still pays the person who sold it) plus
+    // anything currently on their desk (a house lead the owner handed them).
+    const orders = await Order.find({
+      $or: [{ agentId: uid }, { originAgentId: uid }],
+      archived: { $ne: true },
+    })
+      .select('orderNumber projectNumber companyName clientName companyKey status totalValue cogs orderDate deliveredDate paid createdAt agentId originAgentId')
+      .sort({ orderDate: 1, createdAt: 1 })   // chronological: reorder detection needs order
+      .lean();
+
+    // One ledger read, narrowed to THIS agent's orders and bucketed by canonical
+    // order number. The stored orderNumber may be zero-padded ("0000021") or not
+    // ("21"), so match on every spelling of each number rather than scanning the
+    // whole ledger. `isCredit` must be selected — it is what makes a supplier
+    // credit subtract instead of add.
+    const numbers = [...new Set(orders.map((o) => normalizeOrderNumber(o.orderNumber)).filter(Boolean))];
+    const rowsByOrder = {};
+    if (numbers.length) {
+      const spellings = numbers.flatMap((n) => [n, n.padStart(6, '0'), n.padStart(7, '0')]);
+      const txns = await Transaction.find({ orderNumber: { $in: [...new Set(spellings)] } })
+        .select('orderNumber type category amount isCredit').lean();
+      for (const t of txns) {
+        const k = normalizeOrderNumber(t.orderNumber);
+        if (k) (rowsByOrder[k] ||= []).push(t);
+      }
+    }
+
+    // Walk chronologically, accumulating the ladder as we go, so an order is
+    // rated at the tier the agent had WHEN it landed — not retroactively at
+    // today's tier. That is what makes the ladder feel earned rather than
+    // recalculated, and it stops a statement changing after it was paid.
+    let lifetimeProfit = 0;      // sourced profit banked so far (earned orders only)
+    let selfOrdersCompleted = 0; // spent fast-start credits
+    const seenByCompany = {};    // companyKey → this agent's earlier order count
+    const rows = [];
+
+    for (const o of orders) {
+      const money = orderMoney(o, rowsByOrder[normalizeOrderNumber(o.orderNumber)]);
+      const sourcedByAgent = String(o.originAgentId || '') === uid;
+      const ck = o.companyKey || '';
+      const kind = originKind({ sourcedByAgent, priorOrdersForCompany: ck ? (seenByCompany[ck] || 0) : 0 });
+      const state = earnedState(o);
+      const calc = commissionForOrder({
+        profit: money.profit, kind, lifetimeProfit, selfOrdersCompleted, config, state,
+      });
+
+      rows.push({
+        id: String(o._id),
+        orderNumber: o.orderNumber || '',
+        projectNumber: o.projectNumber || '',
+        companyName: o.companyName || o.clientName || '',
+        companyKey: ck,
+        status: o.status || 'quoted',
+        orderDate: o.orderDate || o.createdAt || null,
+        revenue: money.revenue,
+        cost: money.cost,                    // ONE figure — never the vendor lines
+        profit: money.profit,
+        costIsEstimate: money.costIsEstimate,
+        costUnknown: money.costUnknown,
+        ...calc,
+      });
+
+      if (ck) seenByCompany[ck] = (seenByCompany[ck] || 0) + 1;
+      // Only EARNED orders move the ladder and spend fast-start credits — a
+      // pending forecast must not promote someone to a higher rate.
+      if (state === 'earned') {
+        if (sourcedByAgent) { lifetimeProfit += Math.max(0, money.profit); selfOrdersCompleted += 1; }
+      }
+    }
+
+    const month = currentMonth();
+    const inMonth = (d) => {
+      if (!d) return false;
+      const t = new Date(d);
+      return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, '0')}` === month;
+    };
+    const earned = rows.filter((r) => r.state === 'earned');
+    const pending = rows.filter((r) => r.state === 'pending');
+    const sum = (arr, k) => Math.round(arr.reduce((s, r) => s + (Number(r[k]) || 0), 0) * 100) / 100;
+
+    res.json({
+      enabled: true,
+      month,
+      rollup: {
+        earnedAllTime: sum(earned, 'commission'),
+        earnedThisMonth: sum(earned.filter((r) => inMonth(r.orderDate)), 'commission'),
+        pendingForecast: sum(pending, 'commission'),
+        ordersEarned: earned.length,
+        ordersPending: pending.length,
+        lifetimeProfit: Math.round(lifetimeProfit * 100) / 100,
+        tier: tierFor(lifetimeProfit, config),
+        nextTier: nextTierFor(lifetimeProfit, config),
+        fastStartRemaining: Math.max(0, config.fastStartOrders - selfOrdersCompleted),
+        // Any row still on an estimate is worth surfacing once, not per row —
+        // it explains why a total might shift when the owner books receipts.
+        estimatedRows: rows.filter((r) => r.costIsEstimate || r.costUnknown).length,
+      },
+      orders: rows.reverse(),   // newest first for display
+    });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+}
+
 module.exports = {
   me, listMyOrders, createMyOrder, updateMyOrder,
-  listMyLeads, createMyLead, updateMyLead,
-  agentOrderShape, agentLeadShape, AGENT_ORDER_STATUSES, // exported for tests
+  listMyLeads, createMyLead, updateMyLead, myEarnings,
+  agentOrderShape, agentLeadShape, orderMoney, AGENT_ORDER_STATUSES, // exported for tests
 };

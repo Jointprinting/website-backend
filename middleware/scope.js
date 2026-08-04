@@ -33,6 +33,15 @@ function stampFor(req) {
   return user.role === 'agent' ? String(user.userId || '') : '';
 }
 
+// The pair to stamp on a NEW Client/Order: who owns it now, and who sourced it.
+// Identical at creation — they only diverge later, when a book is reassigned
+// (agentId moves, originAgentId never does). Spread this into the create() call
+// so no write path can set one and forget the other.
+function ownershipStamp(req) {
+  const id = stampFor(req);
+  return { agentId: id, originAgentId: id };
+}
+
 // May the caller read/write this specific doc? Owner (or a legacy owner token):
 // always. Agent: only their own record — never the owner's or another agent's.
 function canAccessDoc(req, doc) {
@@ -47,4 +56,4 @@ function isAgent(req) {
   return !!(req && req.user && req.user.role === 'agent');
 }
 
-module.exports = { visibleFilter, stampFor, canAccessDoc, isAgent };
+module.exports = { visibleFilter, stampFor, ownershipStamp, canAccessDoc, isAgent };
