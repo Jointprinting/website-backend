@@ -23,7 +23,7 @@ const {
   REC_STATES, MED_STATES, ROSTER_STATES, MEDICAL_ONLY, NO_RETAIL_YET,
 } = require('../../services/dispensaryStates');
 const { REGIONS, NATIONAL_ROLLOUT } = require('../../services/dispensaryFinder');
-const { rosterAttempts } = require('../../services/dispensaryIngest');
+const { rosterAttempts, rowPasses } = require('../../services/dispensaryIngest');
 
 // ── Every pitchable market must be sweepable + reachable ─────────────────────
 
@@ -113,6 +113,56 @@ test('a kind:"google" state (PR/DE) falls through to the aggregate, never throws
   // No primary URL to try, but the shared aggregate is still attempted.
   assert.equal(attempts[attempts.length - 1].kind, 'cannlytics-all');
   assert.ok(attempts.every((a) => a.kind !== 'google'));
+});
+
+// ── The Colorado row gate ────────────────────────────────────────────────────
+// Colorado names EVERY adult-use license class "Retail Marijuana <something>",
+// which breaks the naive "contains the word retail" test in both directions.
+
+const CO_MAP = { licenseType: 'license_type', licenseStatus: 'status' };
+const coRow = (type, status = 'Active') => ({ license_type: type, status });
+
+test('CO: only the storefront class passes; grows/kitchens/labs do not', () => {
+  assert.ok(rowPasses(coRow('Retail Marijuana Store'), CO_MAP, null, {}));
+  // Each of these carries the word "Retail" and would have been imported as a
+  // dispensary under the old NON_RETAIL && !RETAILISH guard.
+  for (const type of [
+    'Retail Marijuana Cultivation Facility',
+    'Retail Marijuana Products Manufacturer',
+    'Retail Marijuana Testing Facility',
+    'Retail Marijuana Transporter',
+  ]) {
+    assert.equal(rowPasses(coRow(type), CO_MAP, null, {}), false, `${type} must not pass`);
+  }
+});
+
+test('a dual-licensed storefront keeps its storefront noun and survives', () => {
+  // Excluding on the non-retail word alone would drop real dispensaries that
+  // are co-located with a grow.
+  assert.ok(rowPasses(coRow('Medical Marijuana Dispensary and Cultivation'), CO_MAP, null, { medicalMarket: true }));
+  assert.ok(rowPasses(coRow('Dispensary / Processor'), CO_MAP, null, { medicalMarket: true }));
+});
+
+test('dead licenses are excluded regardless of gate', () => {
+  for (const relaxed of [false, true]) {
+    assert.equal(rowPasses(coRow('Retail Marijuana Store', 'Expired'), CO_MAP, null, { relaxed }), false);
+    assert.equal(rowPasses(coRow('Retail Marijuana Store', 'Revoked'), CO_MAP, null, { relaxed }), false);
+  }
+});
+
+test('the relaxed gate rescues an unrecognized type column but still drops grows', () => {
+  // The failure mode that leaves a whole state empty: the sniffed "type" column
+  // holds an opaque code, so nothing looks retail-ish and every row is dropped.
+  const opaque = coRow('RMS-01');
+  assert.equal(rowPasses(opaque, CO_MAP, null, {}), false, 'strict gate rejects it');
+  assert.ok(rowPasses(opaque, CO_MAP, null, { relaxed: true }), 'relaxed gate keeps it');
+  // Relaxed is not "no gate" — clear non-retail is still excluded.
+  assert.equal(rowPasses(coRow('Marijuana Cultivation Facility'), CO_MAP, null, { relaxed: true }), false);
+  assert.equal(rowPasses(coRow('Marijuana Testing Laboratory'), CO_MAP, null, { relaxed: true }), false);
+});
+
+test('rows with no type column at all still pass (nothing to judge on)', () => {
+  assert.ok(rowPasses({ name: 'Somewhere' }, { licenseType: '' }, null, {}));
 });
 
 test('an explicit override short-circuits every built-in source', () => {
