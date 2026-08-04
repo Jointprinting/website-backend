@@ -17,6 +17,7 @@ const {
 
 const {
   listDispensaries, findDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, scanOsm, corridor,
+  sourceHealth, rosterSource,
 } = require('../controllers/dispensary');
 
 const {
@@ -33,6 +34,9 @@ router.use(requireAdmin);
 router.get   ('/dispensaries',              listDispensaries);
 router.get   ('/dispensaries/find',         findDispensaries); // name/city typeahead
 router.get   ('/dispensaries/coverage',     coverage);
+router.get   ('/dispensaries/source-health', sourceHealth);  // are the roster URLs alive?
+router.get   ('/dispensaries/roster-source', rosterSource);  // read saved source overrides
+router.post  ('/dispensaries/roster-source', rosterSource);  // re-point a state, no deploy
 router.post  ('/dispensaries/scan-osm',     scanOsm);   // free OSM viewport sweep
 router.post  ('/dispensaries/corridor',     corridor);  // route-band scan for the day planner
 router.post  ('/dispensaries/ingest/:state', ingest);

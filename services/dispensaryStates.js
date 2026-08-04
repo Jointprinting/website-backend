@@ -28,7 +28,10 @@
 const cannlyticsUrl = (st) =>
   `https://huggingface.co/datasets/cannlytics/cannabis_licenses/resolve/main/data/${st}/licenses-${st}-latest.csv`;
 
-// ── Adult-use states with OPERATING retail (mid-2026: 24 states) ────────────
+// ── Adult-use states with OPERATING retail (mid-2026: 23 states) ────────────
+// 24 states have legalized adult use; VA is the 24th and has NO adult-use
+// retail yet (~mid-2027), so it is not listed here. VA's *medical* market is
+// live and rosters below with the other med states.
 // approxRetail = rough open-store count (for the coverage panel's sanity
 // check — an ingest that lands wildly below this gets flagged in the report).
 const REC_STATES = {
@@ -86,6 +89,10 @@ const REC_STATES = {
 const MED_STATES = {
   AL: { name: 'Alabama',       approxRetail: 5,    roster: { kind: 'cannlytics', url: cannlyticsUrl('al'), homepage: 'https://amcc.alabama.gov/' } },
   AR: { name: 'Arkansas',      approxRetail: 38,   roster: { kind: 'cannlytics', url: cannlyticsUrl('ar'), homepage: 'https://www.healthy.arkansas.gov/programs-services/topics/medical-marijuana' } },
+  // DC: adult-use retail is still unlicensed, but the medical program is real
+  // and licensed (ABCA converted most I-71 "gifting" shops into licensed
+  // medical retailers) — pitchable storefronts, so it rosters like any med state.
+  DC: { name: 'Washington DC', approxRetail: 40,   roster: { kind: 'cannlytics', url: cannlyticsUrl('dc'), homepage: 'https://abca.dc.gov/' } },
   FL: { name: 'Florida',       approxRetail: 650,  roster: { kind: 'cannlytics', url: cannlyticsUrl('fl'), homepage: 'https://knowthefactsmmj.com/mmtc/' } },
   HI: { name: 'Hawaii',        approxRetail: 35,   roster: { kind: 'cannlytics', url: cannlyticsUrl('hi'), homepage: 'https://health.hawaii.gov/medicalcannabis/' } },
   KY: { name: 'Kentucky',      approxRetail: 60,   roster: { kind: 'cannlytics', url: cannlyticsUrl('ky'), homepage: 'https://kymedcan.ky.gov/' } },
@@ -95,16 +102,37 @@ const MED_STATES = {
   NH: { name: 'New Hampshire', approxRetail: 7,    roster: { kind: 'cannlytics', url: cannlyticsUrl('nh'), homepage: 'https://www.dhhs.nh.gov/programs-services/health-care/therapeutic-cannabis-program' } },
   OK: { name: 'Oklahoma',      approxRetail: 2000, roster: { kind: 'cannlytics', url: cannlyticsUrl('ok'), homepage: 'https://oklahoma.gov/omma.html' } },
   PA: { name: 'Pennsylvania',  approxRetail: 190,  roster: { kind: 'cannlytics', url: cannlyticsUrl('pa'), homepage: 'https://www.pa.gov/agencies/health/programs/medical-marijuana.html' } },
+  // Puerto Rico: a large, long-running licensed medical market (~100 storefronts)
+  // and a US territory — same shipping, same merch pitch. No machine-readable
+  // license roll we can point at, so it seeds from the OSM/Places sweep like
+  // Delaware does (kind 'google' → the autopilot skips its impossible ingest).
+  PR: { name: 'Puerto Rico',   approxRetail: 100,  roster: { kind: 'google' } },
   SD: { name: 'South Dakota',  approxRetail: 80,   roster: { kind: 'cannlytics', url: cannlyticsUrl('sd'), homepage: 'https://medcannabis.sd.gov/' } },
   UT: { name: 'Utah',          approxRetail: 15,   roster: { kind: 'cannlytics', url: cannlyticsUrl('ut'), homepage: 'https://medicalcannabis.utah.gov/' } },
+  // VA: adult-use retail is not open yet (~mid-2027), but the MEDICAL program
+  // has been dispensing since 2020 (~25 storefronts — Cannabist, Beyond/Hello,
+  // gLeaf). Listing it here is what puts those pins on the map and stops them
+  // deriving as 'hemp'.
+  VA: { name: 'Virginia',      approxRetail: 25,   roster: { kind: 'cannlytics', url: cannlyticsUrl('va'), homepage: 'https://cca.virginia.gov/' } },
   WV: { name: 'West Virginia', approxRetail: 50,   roster: { kind: 'cannlytics', url: cannlyticsUrl('wv'), homepage: 'https://omc.wv.gov/' } },
 };
 
 // Codes-only view kept for every existing consumer (coverage rollup, segment
 // derivation, frontend mirror). Derived from MED_STATES so the two can't drift.
 const MEDICAL_ONLY = Object.keys(MED_STATES);
-// Possession legal but no stores to pitch (VA retail expected ~mid-2027).
-const NO_RETAIL_YET = ['VA', 'DC'];
+// Legal but NO storefronts to pitch yet. NE approved medical by ballot in 2024
+// and is still stuck in rule-making/litigation with nothing dispensing.
+// (VA and DC used to sit here, which was the bug: both were excluded from the
+// roster registry over their missing ADULT-USE retail while their licensed
+// MEDICAL storefronts — real, pitchable, ~65 between them — rendered as 'hemp'
+// or not at all.)
+const NO_RETAIL_YET = ['NE'];
+
+// Deliberately NOT med states: TX (Compassionate Use — 3 dispensing orgs) and
+// GA (low-THC oil dispensed through pharmacies) license a token number of
+// medical outlets while their REAL retail universe is thousands of hemp/THCA
+// shops. Classing them 'med' would mislabel that whole universe, so they stay
+// 'hemp' and the hemp clicker covers them correctly.
 
 const REC_STATE_CODES = Object.keys(REC_STATES);
 

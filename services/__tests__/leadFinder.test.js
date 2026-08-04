@@ -431,11 +431,14 @@ test('NATIONAL_ROLLOUT starts at NJ and every id is a real region', () => {
   for (const id of NATIONAL_ROLLOUT) assert.equal(isRegion(id), true, `unknown region "${id}"`);
 });
 
-test('the state map covers all 50 states + DC, each exactly once in the rollout', () => {
-  // 50 states + DC = 51 regions; the frontier must be able to reach every one.
-  assert.equal(Object.keys(REGIONS).length, 51);
-  assert.equal(NATIONAL_ROLLOUT.length, 51);
-  assert.equal(new Set(NATIONAL_ROLLOUT).size, 51, 'no region repeats in the rollout');
+test('the state map covers all 50 states + DC + PR, each exactly once in the rollout', () => {
+  // 50 states + DC + Puerto Rico = 52 regions; the frontier must reach every
+  // one. PR is a US territory with a ~100-storefront licensed medical market —
+  // same shipping, same merch pitch — and had no bbox at all, so it could
+  // never be swept.
+  assert.equal(Object.keys(REGIONS).length, 52);
+  assert.equal(NATIONAL_ROLLOUT.length, 52);
+  assert.equal(new Set(NATIONAL_ROLLOUT).size, 52, 'no region repeats in the rollout');
   // Every bbox is a real [south, west, north, east] rectangle.
   for (const [id, r] of Object.entries(REGIONS)) {
     const [s, w, n, e] = r.bbox;
