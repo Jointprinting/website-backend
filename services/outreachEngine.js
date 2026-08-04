@@ -52,6 +52,8 @@ const { getSenders } = require('./senderPool');
 const { getAuthStatus, recommendedRecords } = require('../utils/dnsAuth');
 const { replyPathStatus, normalizeAddress } = require('../utils/replyPath');
 const { isNeverSend, scoreEmail } = require('../utils/emailQuality');
+const { sendFitReason } = require('./leadFit');
+const Dispensary = require('../models/Dispensary');
 const { BUSINESS_TZ, etStartOfToday, etToday, etDaysSince } = require('../utils/time');
 
 // Hold cold sends when the sender domain is missing SPF/DMARC (the Gmail/Yahoo
@@ -1311,6 +1313,29 @@ async function sendOne(enr, campaign, now = new Date(), sender = null) {
     enr.stopReason = 'duplicate-email';
     enr.nextSendAt = null;
     await enr.save();
+    return 'skipped';
+  }
+
+  // FIT, checked at the send and not only at enrollment. Enrollment screens out
+  // chains and non-retail shops using the Field Map's own read of them — but
+  // every lead enrolled BEFORE that screen existed stayed in the sequence and
+  // kept getting mail, which is how "Your CBD Store" and a glass shop ended up
+  // in the queue. The irreversible act is the send, so the gate belongs here
+  // too. Silent when the map holds nothing on the company: absence of evidence
+  // is not evidence of a chain, and a referral or hand-added prospect must not
+  // be blocked by a map that never saw it.
+  const fitRows = await Dispensary.find({ companyKey: enr.companyKey })
+    .select('companyKey isChain segment state').lean().catch(() => []);
+  const unfit = sendFitReason(fitRows, {
+    includeChains: !!campaign.includeChains,
+    includeNonRetail: !!campaign.includeNonRetail,
+  });
+  if (unfit) {
+    enr.status = 'stopped';
+    enr.stopReason = `not-a-target:${unfit}`;
+    enr.nextSendAt = null;
+    await enr.save();
+    console.log(`[outreach] holding ${enr.companyName || enr.companyKey} — ${unfit === 'chain' ? 'chain/MSO' : 'not a licensed retail market'}`);
     return 'skipped';
   }
 

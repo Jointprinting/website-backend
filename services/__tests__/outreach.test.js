@@ -757,3 +757,52 @@ test('absence of harm does NOT excuse actual harm, or a fresh quarantine', () =>
   // The 12h floor still wins over everything.
   assert.equal(shouldLiftQuarantine({ sent: 0, bounced: 0 }, { quarantinedAt: new Date(Date.now() - 3600000) }), false);
 });
+
+// ── Fit is checked at the SEND, not only at enrollment ───────────────────────
+//
+// Enrollment screens out chains and non-retail shops using the Field Map's read
+// of them. But every lead enrolled BEFORE that screen existed stayed in the
+// sequence and kept getting mail — which is how "Your CBD Store" and a glass
+// shop ended up in the live send queue. A gate on the door does nothing about
+// who is already inside, and the irreversible act is the send.
+
+const { sendFitReason } = require('../leadFit');
+
+const rowsFor = (o) => [{ companyKey: 'greenleaf', state: 'NJ', segment: 'rec', isChain: false, ...o }];
+
+test('sendFitReason holds chains and non-retail shops, passes real dispensaries', () => {
+  assert.equal(sendFitReason(rowsFor({})), '', 'an independent licensed rec shop sends');
+  assert.equal(sendFitReason(rowsFor({ segment: 'med' })), '', 'medical markets are real customers');
+  assert.equal(sendFitReason(rowsFor({ isChain: true })), 'chain');
+  assert.equal(sendFitReason(rowsFor({ segment: 'hemp' })), 'non-retail', 'a CBD/hemp shop cannot buy dispensary merch');
+  assert.equal(sendFitReason(rowsFor({ state: 'ID' })), 'non-retail', 'no licensed retail market');
+});
+
+test('sendFitReason stays silent when the Field Map has never seen the company', () => {
+  // Absence of evidence is not evidence of a chain. A referral, a hand-added
+  // prospect or a non-cannabis vertical must not be blocked by a map that never
+  // covered it.
+  assert.equal(sendFitReason([]), '');
+  assert.equal(sendFitReason(null), '');
+  assert.equal(sendFitReason(undefined), '');
+  assert.equal(sendFitReason([{ companyKey: '' }]), '');
+});
+
+test('sendFitReason honors the campaign opt-ins', () => {
+  assert.equal(sendFitReason(rowsFor({ isChain: true }), { includeChains: true }), '');
+  assert.equal(sendFitReason(rowsFor({ segment: 'hemp' }), { includeNonRetail: true }), '');
+});
+
+test('sendFitReason takes the generous read across a company’s several map rows', () => {
+  // Roster + Google sweep + OSM can all describe one shop. One row proving a
+  // licensed retail market is enough to keep them…
+  assert.equal(sendFitReason([
+    { companyKey: 'x', state: 'ID', segment: 'hemp' },
+    { companyKey: 'x', state: 'NJ', segment: 'rec' },
+  ]), '');
+  // …but chain-ness is a brand fact, so any row flagging it wins.
+  assert.equal(sendFitReason([
+    { companyKey: 'x', state: 'NJ', segment: 'rec' },
+    { companyKey: 'x', state: 'NJ', segment: 'rec', isChain: true },
+  ]), 'chain');
+});

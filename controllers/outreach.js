@@ -1192,29 +1192,10 @@ function interleaveByCity(rows = [], cityOf = (r) => r && r.city) {
 // A company with NO Dispensary row is never excluded: other verticals (breweries)
 // simply aren't in this collection, and an unknown shop gets the benefit of the
 // doubt. PURE + unit-tested; the caller supplies the joined rows.
-const LEGAL_RETAIL_STATES = new Set(Object.keys(ROSTER_STATES));
-function fieldMapExclusions(rows = [], { includeChains = false, includeNonRetail = false } = {}) {
-  // One shop can have several Dispensary rows (roster + Google sweep). Chain-ness
-  // is a brand fact, so ANY row flagging it wins; "real retail" is the generous
-  // read — one row in a licensed retail market with a non-hemp segment is enough.
-  const byKey = new Map();
-  for (const r of rows || []) {
-    const key = r && String(r.companyKey || '').trim();
-    if (!key) continue;
-    if (!byKey.has(key)) byKey.set(key, { chain: false, retail: false });
-    const v = byKey.get(key);
-    if (r.isChain) v.chain = true;
-    if (LEGAL_RETAIL_STATES.has(String(r.state || '').toUpperCase()) && r.segment !== 'hemp') v.retail = true;
-  }
-  const excluded = new Map(); // companyKey → 'chain' | 'non-retail'
-  let chains = 0;
-  let nonRetail = 0;
-  for (const [key, v] of byKey) {
-    if (v.chain) { if (!includeChains) { excluded.set(key, 'chain'); chains += 1; } continue; }
-    if (!v.retail && !includeNonRetail) { excluded.set(key, 'non-retail'); nonRetail += 1; }
-  }
-  return { excluded, chains, nonRetail };
-}
+// The chain / non-retail verdict now lives in services/leadFit so the SEND path
+// applies the identical rule — a gate on the door alone did nothing about the
+// leads already inside the sequence.
+const { fieldMapExclusions } = require('../services/leadFit');
 
 // Discover cold candidates and enroll up to `limit` of them into `campaign`,
 // best-lead-first with a per-city spread — the same cold-only + suppression +
