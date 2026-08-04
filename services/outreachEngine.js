@@ -759,14 +759,33 @@ function recentBounceSignal(rows = [], { sinceMs = 0, now = Date.now() } = {}) {
 const UNQUARANTINE_MIN_SENT = 25;      // enough recent sends to trust the rate
 const UNQUARANTINE_RATE = 0.04;        // a third of the 0.12 trip rate
 const UNQUARANTINE_MIN_HOURS = 12;     // let the hygiene/suppression passes land first
+const UNQUARANTINE_STALE_DAYS = 7;     // after this, absence of harm is enough
 function shouldLiftQuarantine(recent = {}, { quarantinedAt = null, now = Date.now() } = {}) {
   const sent = Number((recent || {}).sent) || 0;
   const bounced = Number((recent || {}).bounced) || 0;
-  if (sent < UNQUARANTINE_MIN_SENT) return false;
-  if (bounced / sent >= UNQUARANTINE_RATE) return false;
   const at = quarantinedAt ? new Date(quarantinedAt).getTime() : 0;
   if (!Number.isFinite(at) || !at) return false;        // unknown stamp → leave it alone
-  return (now - at) >= UNQUARANTINE_MIN_HOURS * 60 * 60 * 1000;
+  const age = now - at;
+  if (age < UNQUARANTINE_MIN_HOURS * 60 * 60 * 1000) return false;
+
+  // Proof of health: enough recent sends, and few enough of them bounced.
+  if (sent >= UNQUARANTINE_MIN_SENT) return bounced / sent < UNQUARANTINE_RATE;
+
+  // ABSENCE OF HARM. Requiring proof of health alone was a trap: while a campaign
+  // is quarantined only its follow-ups send, and those drain as the sequence runs
+  // out — so recent volume decays toward zero and eventually falls under the
+  // threshold the lift itself demands. A healthy campaign with zero bounces then
+  // sits paused forever, which is the same dead end as the lifetime-rate bug this
+  // was written to fix, just reached more slowly.
+  //
+  // So once a quarantine is genuinely stale and NOTHING has bounced since, resume.
+  // The downside is bounded: send-time suppression still blocks every known-bad
+  // address, the trailing circuit breaker still watches the rate, and the very
+  // next tick can re-quarantine if the list really is bad. The upside is a
+  // pipeline that doesn't idle indefinitely waiting for evidence it has stopped
+  // being able to produce.
+  if (bounced > 0) return false;
+  return age >= UNQUARANTINE_STALE_DAYS * 24 * 60 * 60 * 1000;
 }
 
 // Should the hygiene pass run for a campaign with this bounce signal right now?
