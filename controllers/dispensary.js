@@ -15,6 +15,7 @@ const { ROSTER_STATES, MEDICAL_ONLY, NO_RETAIL_YET, deriveSegment, SEGMENTS } = 
 const {
   ingestState, rechainState, geocodeMissing, deriveCompanyKey, matchKey, upsertOsmCandidates,
   rosterSourceHealth, getRosterOverrides, setRosterOverride,
+  getIngestStatus, ingestStateTracked,
 } = require('../services/dispensaryIngest');
 const { enrichBatch } = require('../services/dispensaryEnrich');
 const { detectKnownChain } = require('../services/dispensaryChains');
@@ -593,6 +594,85 @@ async function sourceHealth(req, res) {
   }
 }
 
+// ── GET /api/roadtrip/dispensaries/diagnose?state=CO ─────────────────────────
+// The whole story for one state in ONE call: what's actually in the DB, what
+// the LAST ingest attempt did, and whether the source is reachable right now.
+//
+// Built because the three failure modes are indistinguishable from the map:
+// a state nobody has loaded, a state whose source is down, and a state that
+// fetched thousands of rows and filtered every one of them out all render as
+// the same empty screen. `verdict` names which one you're looking at.
+async function diagnose(req, res) {
+  try {
+    const state = String(req.query.state || '').toUpperCase();
+    if (!ROSTER_STATES[state]) {
+      return res.status(400).json({ message: `"${state}" is not a roster state.` });
+    }
+    const cfg = ROSTER_STATES[state];
+
+    const [counts, lastIngest, health] = await Promise.all([
+      Dispensary.aggregate([
+        { $match: { state, hidden: false } },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: { $cond: ['$active', 1, 0] } },
+            mapped: { $sum: { $cond: [{ $and: ['$active', { $ne: ['$lat', null] }] }, 1, 0] } },
+            independents: { $sum: { $cond: [{ $and: ['$active', { $ne: ['$lat', null] }, { $ne: ['$isChain', true] }] }, 1, 0] } },
+            chainStores: { $sum: { $cond: [{ $and: ['$active', { $eq: ['$isChain', true] }] }, 1, 0] } },
+            fromRoster: { $sum: { $cond: [{ $and: ['$active', { $eq: ['$source', 'roster'] }] }, 1, 0] } },
+            fromOsm: { $sum: { $cond: [{ $and: ['$active', { $eq: ['$source', 'osm'] }] }, 1, 0] } },
+          },
+        },
+      ]).then((r) => r[0] || {}),
+      getIngestStatus().then((all) => all[state] || null),
+      rosterSourceHealth([state]),
+    ]);
+
+    // Name the failure. Order matters: the most actionable cause wins.
+    const li = lastIngest;
+    let verdict;
+    if (li && li.ok && li.fetchedRows > 0 && li.imported === 0) {
+      verdict = 'filtered-out';   // the roster loaded and every row was rejected
+    } else if (li && li.ok === false) {
+      verdict = 'ingest-failed';
+    } else if (!li) {
+      verdict = 'never-loaded';
+    } else if ((counts.fromRoster || 0) > 0 && (counts.mapped || 0) === 0) {
+      verdict = 'ungeocoded';
+    } else if ((counts.mapped || 0) > 0 && (counts.independents || 0) === 0) {
+      verdict = 'chains-only';
+    } else if ((counts.fromRoster || 0) === 0) {
+      verdict = 'osm-only';
+    } else {
+      verdict = 'ok';
+    }
+
+    res.json({
+      state,
+      name: cfg.name,
+      approxRetail: cfg.approxRetail,
+      rosterKind: cfg.roster.kind,
+      rosterHomepage: cfg.roster.homepage || '',
+      counts: {
+        total: counts.total || 0,
+        mapped: counts.mapped || 0,
+        independents: counts.independents || 0,
+        chainStores: counts.chainStores || 0,
+        fromRoster: counts.fromRoster || 0,
+        fromOsm: counts.fromOsm || 0,
+      },
+      lastIngest,
+      source: (health.states || [])[0] || null,
+      aggregate: health.aggregate || null,
+      verdict,
+    });
+  } catch (err) {
+    console.error('[dispensary] diagnose error:', err.message);
+    res.status(500).json({ message: 'Diagnose failed.' });
+  }
+}
+
 // ── GET/POST /api/roadtrip/dispensaries/roster-source ────────────────────────
 // Read or re-point a state's roster URL WITHOUT a deploy. POST {state, url};
 // an empty/absent url clears the override and restores the built-in source.
@@ -618,7 +698,7 @@ async function rosterSource(req, res) {
 async function ingest(req, res) {
   try {
     const state = String(req.params.state || '').toUpperCase();
-    const report = await ingestState(state, {
+    const report = await ingestStateTracked(state, {
       sourceUrlOverride: req.body?.sourceUrlOverride || null,
     });
     res.json(report);
@@ -872,7 +952,19 @@ async function scanOsm(req, res) {
       const rosterRows = await Dispensary.countDocuments({ state: viewState, source: 'roster', active: true }).catch(() => 0);
       const cfg = ROSTER_STATES[viewState];
       const loadable = !!(cfg && cfg.roster && cfg.roster.kind !== 'google');
-      coverage = { state: viewState, rosterRows, rosterState: loadable };
+      // Carry the LAST ingest outcome so the map can distinguish "loading" from
+      // "tried and got nothing". Without it the header read "LOADING ROSTER"
+      // indefinitely for a state whose ingest had already run and imported 0.
+      const li = (await getIngestStatus().catch(() => ({})))[viewState] || null;
+      coverage = {
+        state: viewState,
+        rosterRows,
+        rosterState: loadable,
+        lastIngest: li && {
+          at: li.at, ok: li.ok, imported: li.imported,
+          fetchedRows: li.fetchedRows, error: li.error || '',
+        },
+      };
       if (rosterRows === 0 && loadable) {
         ensureStateRoster(viewState, { reason: 'viewport' }); // deliberately not awaited
         seeding = viewState;
@@ -933,7 +1025,7 @@ async function scanOsm(req, res) {
 
 module.exports = {
   listDispensaries, findDispensaries, coverage, ingest, enrich, geocode, sweep, hide, rechain, scanOsm, corridor,
-  sourceHealth, rosterSource,
+  sourceHealth, rosterSource, diagnose,
   // pure — unit-tested
   tileKeyFor, tilesForBbox, tilesExtent, bboxTooLarge, stateFromAddress, corridorPrune, corridorChunks,
   stateForViewportCenter, shouldGapFill, stateHealth,

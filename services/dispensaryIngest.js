@@ -37,6 +37,82 @@ const { assignChains, detectKnownChain } = require('./dispensaryChains');
 // header has always claimed). Shape: { CO: 'https://…', PA: '…' }.
 const ROSTER_SOURCE_KEY = 'dispensaryRosterSources';
 
+// ── Last ingest attempt, per state ───────────────────────────────────────────
+//
+// The ingest report already knew everything needed to explain an empty state
+// (rows fetched, rows filtered out, which columns were sniffed, source errors)
+// — and threw it all away into a console line nobody reads. So a state that
+// fetched 2,400 licenses and filtered out 2,400 of them looked, from every
+// surface the owner can see, identical to a state nobody had loaded yet.
+// Persisting the last attempt is what makes that diagnosable from the road.
+const INGEST_STATUS_KEY = 'dispensaryIngestStatus';
+
+async function getIngestStatus() {
+  try {
+    const row = await SiteSetting.findOne({ key: INGEST_STATUS_KEY }).lean();
+    const val = row && row.value;
+    return val && typeof val === 'object' ? val : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Record one state's attempt. Never throws — bookkeeping must not break an ingest. */
+async function recordIngestAttempt(state, entry) {
+  try {
+    const st = String(state || '').toUpperCase();
+    if (!st) return;
+    const current = await getIngestStatus();
+    await SiteSetting.updateOne(
+      { key: INGEST_STATUS_KEY },
+      {
+        $set: {
+          key: INGEST_STATUS_KEY,
+          value: { ...current, [st]: { at: new Date(), ...entry } },
+          updatedAt: new Date(),
+        },
+      },
+      { upsert: true },
+    );
+  } catch { /* best effort */ }
+}
+
+/**
+ * ingestState + durable bookkeeping. Every automatic and manual path goes
+ * through this so the "why is this state empty" trail is always written.
+ * Re-throws on failure (callers decide) after recording the error.
+ */
+async function ingestStateTracked(state, opts = {}) {
+  try {
+    const report = await ingestState(state, opts);
+    await recordIngestAttempt(state, {
+      ok: true,
+      sourceKind: report.sourceKind,
+      sourceUrl: report.sourceUrl,
+      fetchedRows: report.fetchedRows,
+      stateRows: report.stateRows,
+      filteredOut: report.filteredOut,
+      relaxedFallback: report.relaxedFallback,
+      imported: report.imported,
+      created: report.created,
+      totalActive: report.totalActive,
+      lowCoverage: report.lowCoverage,
+      headerMap: report.headerMap,
+      geocoded: report.geocoding && report.geocoding.geocoded,
+      geocodeNote: (report.geocoding && report.geocoding.message) || '',
+      sourceErrors: report.sourceErrors || [],
+    });
+    return report;
+  } catch (err) {
+    await recordIngestAttempt(state, {
+      ok: false,
+      error: err.message,
+      attempts: err.attempts || [],
+    });
+    throw err;
+  }
+}
+
 async function getRosterOverrides() {
   try {
     const row = await SiteSetting.findOne({ key: ROSTER_SOURCE_KEY }).lean();
@@ -211,16 +287,39 @@ const NON_RETAIL = /cultivat|grow|process|manufactur|transport|distribut|lab(ora
 const MEDICAL_ONLY_TYPE = /^med(ical)?[\s-]*(marijuana|cannabis)?[\s-]*(dispensary|treatment|only)?$/i;
 const DEAD_STATUS = /inactive|expired|revoked|surrender|cancel|denied|withdraw|closed|terminated/i;
 
-function rowPasses(row, map, typeFilter, { medicalMarket = false } = {}) {
+// An ACTUAL storefront noun, as opposed to the generic word "retail". Colorado
+// names EVERY adult-use license class "Retail Marijuana <something>" — Retail
+// Marijuana Cultivation Facility, Retail Marijuana Products Manufacturer,
+// Retail Marijuana Testing Facility — so the old
+// `NON_RETAIL && !RETAILISH` guard let grows, kitchens and labs through on the
+// strength of the word "Retail" alone, and they'd have landed on the map as
+// dispensaries. A dual-licensed row ("Dispensary and Cultivation") still keeps
+// its storefront noun and is correctly kept.
+const STOREFRONT = /dispensar|store(front)?|microbusiness|hybrid|provisioning|retailer/i;
+const MED_STOREFRONT = /dispensar|store(front)?|pharmacy|treatment[\s-]*center|mmtc|provisioning/i;
+
+/**
+ * Does this roster row look like a retail location for its market?
+ *
+ * `relaxed` drops the "must look retail-ish" requirement while STILL excluding
+ * clear non-retail classes. It is the second pass used when the strict gate
+ * rejected literally everything — see ingestState. That happens when the
+ * sniffed "type" column isn't really a license class (an opaque code, a
+ * business-entity type), in which case demanding retail words filters out an
+ * entire state's roster and reports a perfectly "successful" empty ingest.
+ */
+function rowPasses(row, map, typeFilter, { medicalMarket = false, relaxed = false } = {}) {
   const type = map.licenseType ? String(row[map.licenseType] || '') : '';
   const status = map.licenseStatus ? String(row[map.licenseStatus] || '') : '';
   if (status && DEAD_STATUS.test(status)) return false;
   if (typeFilter) return typeFilter.test(type);
   if (type) {
     const retailish = medicalMarket ? MED_RETAILISH : RETAILISH;
-    if (NON_RETAIL.test(type) && !retailish.test(type)) return false;
+    const storefront = medicalMarket ? MED_STOREFRONT : STOREFRONT;
+    // Non-retail activity disqualifies unless the row also names a storefront.
+    if (NON_RETAIL.test(type) && !storefront.test(type)) return false;
     if (!medicalMarket && MEDICAL_ONLY_TYPE.test(type.trim())) return false;
-    if (!retailish.test(type)) return false;
+    if (!relaxed && !retailish.test(type)) return false;
   }
   return true;
 }
@@ -414,7 +513,13 @@ async function probeSource(url, { timeout = 15_000 } = {}) {
     const res = await axios.head(url, { timeout, maxRedirects: 5, validateStatus: () => true });
     if (res.status >= 200 && res.status < 300) {
       const len = parseInt(res.headers['content-length'] || '', 10);
-      return { ok: true, status: res.status, bytes: isFinite(len) ? len : null };
+      const ctype = String(res.headers['content-type'] || '');
+      // A 200 serving HTML is a portal error/login page, not a roster. Reporting
+      // that as "ALIVE" is worse than reporting nothing — it sends you looking
+      // in the wrong place. Fall through to the ranged GET to see the body.
+      if (!/text\/html/i.test(ctype)) {
+        return { ok: true, status: res.status, contentType: ctype, bytes: isFinite(len) ? len : null };
+      }
     }
     // 405/501 = HEAD unsupported; anything else is a real answer.
     if (res.status !== 405 && res.status !== 501) {
@@ -427,10 +532,16 @@ async function probeSource(url, { timeout = 15_000 } = {}) {
       headers: { Range: 'bytes=0-2047' }, validateStatus: () => true,
     });
     if (res.status >= 200 && res.status < 400) {
-      // A roster that answers 200 with an HTML error page is still broken —
-      // surface the first line so that's obvious rather than "ok".
-      const sample = String(res.data || '').slice(0, 160).replace(/\s+/g, ' ').trim();
-      return { ok: true, status: res.status, sample, looksHtml: /^\s*<(!doctype|html)/i.test(String(res.data || '')) };
+      const body = String(res.data || '');
+      const looksHtml = /^\s*<(!doctype|html)/i.test(body) || /text\/html/i.test(String(res.headers['content-type'] || ''));
+      // A roster that answers 200 with an HTML error page is still broken.
+      return {
+        ok: !looksHtml,
+        status: res.status,
+        looksHtml,
+        sample: body.slice(0, 160).replace(/\s+/g, ' ').trim(),
+        ...(looksHtml ? { error: `HTTP ${res.status} but served HTML, not data` } : {}),
+      };
     }
     return { ok: false, status: res.status, error: `HTTP ${res.status}` };
   } catch (err) {
@@ -485,7 +596,13 @@ function rowMatchesState(row, map, state, stateName = '') {
 
 // ── Mapbox geocoding for rows missing coordinates ────────────────────────────
 
-async function geocodeMissing(state, { limit = 300 } = {}) {
+// `budgetMs` bounds the whole pass. Geocoding is sequential with a 10s
+// per-request timeout, so an unbounded 300-row batch can run for the better
+// part of an hour — fine for the background autopilot, but the ingest is also
+// reachable from a button on the Field Map, and that request has to come back
+// while the owner is still looking at it. Rows left over are reported in
+// `remaining` and picked up by the next pass.
+async function geocodeMissing(state, { limit = 300, budgetMs = 45_000 } = {}) {
   const token = process.env.MAPBOX_TOKEN || process.env.REACT_APP_MAPBOX_TOKEN;
   if (!token) return { geocoded: 0, skipped: 0, message: 'MAPBOX_TOKEN not set — skipped geocoding.' };
   const docs = await Dispensary.find({
@@ -493,8 +610,10 @@ async function geocodeMissing(state, { limit = 300 } = {}) {
     $or: [{ lat: null }, { lng: null }],
     address: { $ne: '' },
   }).limit(limit);
-  let geocoded = 0, failed = 0;
+  const deadline = Date.now() + budgetMs;
+  let geocoded = 0, failed = 0, skipped = 0;
   for (const doc of docs) {
+    if (Date.now() > deadline) { skipped++; continue; }
     try {
       const q = encodeURIComponent(`${doc.address}, ${doc.city} ${doc.state} ${doc.zip}`.trim());
       const { data } = await axios.get(
@@ -510,7 +629,11 @@ async function geocodeMissing(state, { limit = 300 } = {}) {
       } else failed++;
     } catch { failed++; }
   }
-  return { geocoded, failed, remaining: Math.max(0, docs.length === limit ? 1 : 0) };
+  return {
+    geocoded, failed, skipped,
+    remaining: skipped + (docs.length === limit ? 1 : 0),
+    ...(skipped ? { message: `geocoding budget reached — ${skipped} rows deferred to the next pass` } : {}),
+  };
 }
 
 // ── Chain pass over one state (or all) ───────────────────────────────────────
@@ -554,15 +677,36 @@ async function ingestState(state, opts = {}) {
   const map = sniffHeaders(headers);
   const typeFilter = cfg.roster.typeFilter || null;
 
-  const normalized = [];
-  let filtered = 0;
-  for (const row of rows) {
-    // The all-states aggregate carries every state's licenses — keep only ours.
-    if (sourceKind === 'cannlytics-all' && !rowMatchesState(row, map, state, cfg.name)) { filtered++; continue; }
-    if (!rowPasses(row, map, typeFilter, { medicalMarket })) { filtered++; continue; }
-    const n = normalizeRow(row, map, state, sourceUrl);
-    if (n) normalized.push(n);
+  // Rows for THIS state (the all-states aggregate carries the whole country).
+  const stateRows = sourceKind === 'cannlytics-all'
+    ? rows.filter((row) => rowMatchesState(row, map, state, cfg.name))
+    : rows;
+
+  const collect = (relaxed) => {
+    const out = [];
+    for (const row of stateRows) {
+      if (!rowPasses(row, map, typeFilter, { medicalMarket, relaxed })) continue;
+      const n = normalizeRow(row, map, state, sourceUrl);
+      if (n) out.push(n);
+    }
+    return out;
+  };
+
+  let normalized = collect(false);
+
+  // SAFETY NET: a roster that yielded rows but matched ZERO retail locations is
+  // almost never an empty market — it's the type gate reading a column that
+  // isn't a license class. That produced a "successful" ingest reporting 0
+  // imported, which meant no error, no failure cooldown, and a state that
+  // retried forever and stayed permanently empty while the map cheerfully said
+  // "LOADING ROSTER" (exactly how Colorado sat at zero with a live source).
+  // Retry once with the relaxed gate, which still drops grows/labs/transport.
+  let relaxedFallback = false;
+  if (!normalized.length && stateRows.length >= 20) {
+    normalized = collect(true);
+    relaxedFallback = normalized.length > 0;
   }
+  const filtered = stateRows.length - normalized.length + (rows.length - stateRows.length);
 
   // Dedupe within the batch (rosters sometimes repeat a license per endorsement)
   const byKey = new Map();
@@ -610,7 +754,9 @@ async function ingestState(state, opts = {}) {
   return {
     state, sourceKind, sourceUrl, overrideSource,
     fetchedRows: rows.length,
+    stateRows: stateRows.length,
     filteredOut: filtered,
+    relaxedFallback,
     imported: unique.length,
     created, updated, deactivated,
     geocoding: geo,
@@ -704,6 +850,7 @@ module.exports = {
   geocodeMissing,
   upsertOsmCandidates,
   getRosterOverrides, setRosterOverride, ROSTER_SOURCE_KEY,
+  getIngestStatus, recordIngestAttempt, ingestStateTracked, INGEST_STATUS_KEY,
   probeSource, rosterSourceHealth,
   // exported for tests:
   parseCsv, sniffHeaders, normalizeRow, rowPasses, deriveCompanyKey, matchKey, stateFromAddress,

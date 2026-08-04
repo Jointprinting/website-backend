@@ -28,7 +28,7 @@
 const cron = require('node-cron');
 const Dispensary = require('../models/Dispensary');
 const { ROSTER_STATES } = require('./dispensaryStates');
-const { ingestState, upsertOsmCandidates } = require('./dispensaryIngest');
+const { ingestStateTracked, upsertOsmCandidates } = require('./dispensaryIngest');
 const { NATIONAL_ROLLOUT, REGIONS, fetchDispensariesForBbox } = require('./dispensaryFinder');
 const { fieldMap: FIELD_MAP_VERTICAL } = require('./leadVerticals');
 
@@ -121,14 +121,26 @@ async function ensureStateRoster(state, { reason = 'on-demand' } = {}) {
   if (failed && Date.now() - failed < FAIL_COOLDOWN_MS) return null;
   _inflight.add(st);
   try {
-    const report = await ingestState(st);
+    const report = await ingestStateTracked(st);
     _failedAt.delete(st);
     console.log(
       `[rosterAutopilot] ${st} (${reason}): +${report.created} new, ${report.updated} refreshed, `
       + `${report.deactivated} lapsed, ${report.totalActive} active (${report.sourceKind})`
+      + (report.relaxedFallback ? ' [relaxed type gate]' : '')
     );
-    if (needsOsmFallback({ lowCoverage: !!report.lowCoverage, lastSweptAt: _sweptAt.get(st) })) {
-      await sweepStateOsm(st, { reason: 'low-coverage' });
+    // A roster that fetched rows and imported NOTHING is a broken read, not an
+    // empty market — treat it like a failure so the state cools down and the
+    // OSM sweep fills in, instead of silently re-importing zero every tick.
+    const importedNothing = report.fetchedRows > 0 && report.imported === 0;
+    if (importedNothing) {
+      console.warn(`[rosterAutopilot] ${st}: fetched ${report.fetchedRows} rows but imported 0 — check the type/status columns (headerMap: ${JSON.stringify(report.headerMap)})`);
+    }
+    if (needsOsmFallback({
+      failed: importedNothing,
+      lowCoverage: !!report.lowCoverage,
+      lastSweptAt: _sweptAt.get(st),
+    })) {
+      await sweepStateOsm(st, { reason: importedNothing ? 'imported-zero' : 'low-coverage' });
     }
     return report;
   } catch (err) {
