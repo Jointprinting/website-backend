@@ -720,3 +720,40 @@ test('shouldLiftQuarantine will not flap on thin data or a fresh quarantine', ()
   assert.equal(shouldLiftQuarantine({ sent: 65, bounced: 0 }, { quarantinedAt: null }), false);
   assert.doesNotThrow(() => shouldLiftQuarantine(null, {}));
 });
+
+// ── The lift rule must not starve itself ─────────────────────────────────────
+//
+// Requiring PROOF OF HEALTH alone was a trap. While a campaign is quarantined
+// only its follow-ups send, and those drain as the sequence runs out — so recent
+// volume decays toward zero and eventually falls under the very threshold the
+// lift demands. A healthy campaign with zero bounces then sits paused forever:
+// the same dead end as the lifetime-rate bug, reached more slowly.
+
+test('a drained-but-healthy campaign can still resume (the volume catch-22)', () => {
+  const d = (n) => new Date(Date.now() - n * 86400000);
+  // Quarantined 3 weeks ago: the bulk of the sequence finished long ago and only
+  // a handful of stragglers have sent recently — well under the 25-send bar.
+  const drained = [
+    ...Array.from({ length: 90 }, () => ({ stopReason: '', sends: [{ at: d(21) }] })),
+    ...Array.from({ length: 8 }, () => ({ stopReason: '', sends: [{ at: d(2) }] })),
+  ];
+  const recent = recentBounceSignal(drained);
+  assert.equal(recent.sent, 8, 'volume has decayed below the proof-of-health bar');
+  assert.equal(recent.bounced, 0);
+  assert.equal(shouldLiftQuarantine(recent, { quarantinedAt: d(21) }), true,
+    'zero bounces + a stale quarantine is absence of harm — resume rather than idle forever');
+});
+
+test('absence of harm does NOT excuse actual harm, or a fresh quarantine', () => {
+  const d = (n) => new Date(Date.now() - n * 86400000);
+  // Thin data but something DID bounce → stay paused, however old.
+  assert.equal(shouldLiftQuarantine({ sent: 8, bounced: 1 }, { quarantinedAt: d(30) }), false);
+  // Zero bounces but the quarantine is recent → not stale yet, stay paused.
+  assert.equal(shouldLiftQuarantine({ sent: 8, bounced: 0 }, { quarantinedAt: d(2) }), false);
+  // Plenty of volume and it's still bouncing → the proof-of-health path refuses.
+  assert.equal(shouldLiftQuarantine({ sent: 65, bounced: 9 }, { quarantinedAt: d(21) }), false);
+  // Nothing sent at all, long stale, nothing bounced → resume.
+  assert.equal(shouldLiftQuarantine({ sent: 0, bounced: 0 }, { quarantinedAt: d(21) }), true);
+  // The 12h floor still wins over everything.
+  assert.equal(shouldLiftQuarantine({ sent: 0, bounced: 0 }, { quarantinedAt: new Date(Date.now() - 3600000) }), false);
+});
