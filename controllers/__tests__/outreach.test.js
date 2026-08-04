@@ -743,3 +743,44 @@ test('sanitizeEnrollFilters: both filters default ON (flags off) and only true o
   assert.deepEqual(sanitizeEnrollFilters({ includeChains: 'true', includeNonRetail: 1 }),
     { includeChains: true, includeNonRetail: false });
 });
+
+// ── A projection that omits a field its reader needs doesn't fail — it lies ──
+//
+// getOverview's enrollment query was trimmed to save bytes and dropped the
+// enrollment's own `stepIndex` while keeping `sends.stepIndex`. Those are
+// different fields. everFollowedUp reads the former, so it silently pinned to
+// false and every active campaign that had ever sent claimed "No lead has ever
+// reached touch 2" — a red alarm on healthy campaigns, produced by the
+// optimization rather than by the data.
+
+test('everFollowedUp is false only when nobody has actually advanced', () => {
+  // The reducer getOverview uses, kept in step with it deliberately.
+  const everFollowedUp = (rows) => rows.some((e) => e && (e.stepIndex || 0) > 0);
+
+  assert.equal(everFollowedUp([{ stepIndex: 0 }, { stepIndex: 0 }]), false, 'genuinely no follow-ups');
+  assert.equal(everFollowedUp([{ stepIndex: 0 }, { stepIndex: 2 }]), true, 'someone reached touch 3');
+  assert.equal(everFollowedUp([]), false);
+
+  // The regression: rows projected WITHOUT stepIndex look identical to rows that
+  // never advanced. Any consumer of this signal must be fed the field.
+  const advanced = [{ stepIndex: 0 }, { stepIndex: 2 }, { stepIndex: 1 }];
+  const dropped = advanced.map(({ stepIndex, ...rest }) => rest);
+  assert.equal(everFollowedUp(advanced), true);
+  assert.equal(everFollowedUp(dropped), false, 'this is the shape that produced the false alarm');
+});
+
+test("getOverview's projection still carries every field its readers use", () => {
+  const src = require('fs').readFileSync(require.resolve('../outreach.js'), 'utf8');
+  const m = src.match(/\.select\('campaignId status stopReason([^']*)'\s*\n?\s*\+\s*'([^']*)'\)/);
+  assert.ok(m, 'the overview projection should still be a single .select(...)');
+  const projected = `campaignId status stopReason${m[1]} ${m[2]}`.split(/\s+/).filter(Boolean);
+  for (const field of [
+    'stepIndex',          // everFollowedUp
+    'status', 'stopReason',   // summarizeEnrollments
+    'openCount', 'lastOpenedAt', 'repliedAt',  // warm ranking
+    'companyKey', 'companyName', 'campaignId', // row identity
+    'sends.at', 'sends.subject', 'sends.openedAt', 'sends.variant', // recent + A/B
+  ]) {
+    assert.ok(projected.includes(field), `projection is missing ${field}`);
+  }
+});
