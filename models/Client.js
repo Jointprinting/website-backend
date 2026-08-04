@@ -70,10 +70,20 @@ const ClientSchema = new mongoose.Schema({
   // duplicate-finder/merge tooling — NOT identity. companyKey stays the identity
   // that lines up with Orders. Indexed so /duplicates can group by it cheaply.
   matchKey:        { type: String, default: '', index: true },
-  // Which account owns this lead — an AdminUser _id (string). '' = the owner's
-  // (all legacy/owner leads). A sales agent's leads carry their id so agents see
-  // only their own CRM and the owner's isn't mixed with theirs.
+  // Which account CURRENTLY owns this lead — an AdminUser _id (string). '' = the
+  // owner's (all legacy/owner leads). A sales agent's leads carry their id so
+  // agents see only their own CRM and the owner's isn't mixed with theirs.
+  // MUTABLE: reassignment (an agent leaving) moves this field.
   agentId:         { type: String, default: '', index: true },
+  // Who SOURCED this company — stamped once at creation and never moved again,
+  // not even by a reassignment. `agentId` answers "whose desk is this on now";
+  // this answers "who found them", which is the question commission is paid on
+  // and the one that decides self-sourced vs house rate. Keeping the two apart
+  // is what lets the owner hand a departed agent's whole book to someone else
+  // without rewriting the history his statements were computed from.
+  // '' = the owner sourced it (also the backfilled value for every pre-existing
+  // row — see scripts/backfillOriginAgent.js).
+  originAgentId:   { type: String, default: '', index: true },
   companyName:     { type: String, default: '' },
   clientName:      { type: String, default: '' },
   email:           { type: String, default: '' },

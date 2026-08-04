@@ -49,3 +49,66 @@ test('AGENT_ORDER_STATUSES is the coarse sales lifecycle, no owner-only steps', 
   // Every value is a non-empty string; no dupes.
   assert.equal(new Set(AGENT_ORDER_STATUSES).size, AGENT_ORDER_STATUSES.length);
 });
+
+// ── orderMoney: actual-first, honest estimate fallback ───────────────────────
+//
+// The earnings tab is the ONE place the portal shows an agent a cost figure, so
+// its fallback rules are worth pinning: a job with no booked receipts must not
+// read as pure profit, and a booked ledger must always beat the quote estimate.
+
+const { orderMoney } = require('../agentPortal');
+
+test('orderMoney prefers the booked ledger over the quote estimate', () => {
+  const m = orderMoney(
+    { totalValue: 2000, cogs: 1500 },
+    [
+      { type: 'income',  category: 'Client Sales',  amount: 1906.34 },
+      { type: 'expense', category: 'Blank COGS',    amount: 639.50 },
+      { type: 'expense', category: 'Printer COGS',  amount: 825.55 },
+      { type: 'expense', category: 'Shipping',      amount: 93.07 },
+      { type: 'expense', category: 'Processing Fee', amount: 57.00 },
+    ],
+  );
+  // The real order #000031 (Cannapi) — reconciles to the owner's P&L exactly.
+  assert.equal(m.revenue, 1906.34);
+  assert.equal(m.cost, 1615.12);
+  assert.equal(m.profit, 291.22);
+  assert.equal(m.costIsEstimate, false);
+  assert.equal(m.costUnknown, false);
+});
+
+test('orderMoney falls back to the quote estimate and SAYS it is an estimate', () => {
+  const m = orderMoney({ totalValue: 1200, cogs: 900 }, []);
+  assert.equal(m.revenue, 1200);
+  assert.equal(m.cost, 900);
+  assert.equal(m.profit, 300);
+  assert.equal(m.costIsEstimate, true, 'the UI must be able to badge this');
+});
+
+test('orderMoney flags a job with NO cost information at all', () => {
+  // Without this flag the row would read as 100% profit, which is never real
+  // for a broker and would inflate the agent's forecast.
+  const m = orderMoney({ totalValue: 800, cogs: 0 }, []);
+  assert.equal(m.costUnknown, true);
+  assert.equal(m.cost, 0);
+});
+
+test('orderMoney nets a supplier credit down instead of adding it', () => {
+  const m = orderMoney({ totalValue: 0, cogs: 0 }, [
+    { type: 'income',  category: 'Client Sales', amount: 1000 },
+    { type: 'expense', category: 'Printer COGS', amount: 400 },
+    { type: 'expense', category: 'Printer COGS', amount: 100, isCredit: true },
+  ]);
+  assert.equal(m.cost, 300, 'a credit subtracts');
+  assert.equal(m.profit, 700);
+});
+
+test('orderMoney treats a refund as contra-revenue', () => {
+  const m = orderMoney({ totalValue: 0, cogs: 0 }, [
+    { type: 'income',  category: 'Client Sales', amount: 1000 },
+    { type: 'income',  category: 'Refund',       amount: 250 },
+    { type: 'expense', category: 'Blank COGS',   amount: 300 },
+  ]);
+  assert.equal(m.revenue, 750);
+  assert.equal(m.profit, 450);
+});

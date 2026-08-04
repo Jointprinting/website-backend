@@ -9,7 +9,7 @@ const express = require('express');
 const router = express.Router();
 const { requireOwner } = require('../middleware/auth');
 const {
-  listAgents, agentCount, createAgent, updateAgent, resetAgentPassword,
+  listAgents, agentCount, createAgent, updateAgent, resetAgentPassword, reassignAgentBook,
   listAgentOrders, listAgentLeads,
 } = require('../controllers/admin');
 
@@ -24,5 +24,8 @@ router.post('/agents/:id/password', resetAgentPassword);
 // Owner drill-in: view one agent's book (read-only).
 router.get('/agents/:id/orders', listAgentOrders);
 router.get('/agents/:id/leads', listAgentLeads);
+// Hand a whole book to the owner or another agent (an agent leaving). Moves
+// who WORKS each record; never who SOURCED it, so commission history survives.
+router.post('/agents/:id/reassign', reassignAgentBook);
 
 module.exports = router;

@@ -57,3 +57,51 @@ test('isAgent: true only for the agent role', () => {
   assert.equal(isAgent(owner()), false);
   assert.equal(isAgent({}), false);
 });
+
+// ── ownershipStamp: agentId and originAgentId start life identical ───────────
+//
+// They only diverge when a book is reassigned — reassignment moves agentId and
+// never touches originAgentId, which is what lets the owner hand a departed
+// agent's whole book to someone else without rewriting the commission history
+// his statements were computed from.
+
+const { ownershipStamp } = require('../scope');
+
+test('ownershipStamp stamps BOTH fields for an agent', () => {
+  const s = ownershipStamp({ user: { role: 'agent', userId: 'agent-1' } });
+  assert.deepEqual(s, { agentId: 'agent-1', originAgentId: 'agent-1' });
+});
+
+test('ownershipStamp leaves owner-created records on the legacy empty convention', () => {
+  const s = ownershipStamp({ user: { role: 'owner', userId: 'owner-9' } });
+  assert.deepEqual(s, { agentId: '', originAgentId: '' });
+});
+
+test('ownershipStamp is safe on a malformed request', () => {
+  assert.deepEqual(ownershipStamp(), { agentId: '', originAgentId: '' });
+  assert.deepEqual(ownershipStamp({}), { agentId: '', originAgentId: '' });
+});
+
+test('a reassignment moves agentId but NEVER originAgentId', () => {
+  // Models the updateMany in reassignAgentBook: only agentId is in the $set.
+  const book = [
+    { companyKey: 'happyleaf', agentId: 'agent-1', originAgentId: 'agent-1' },
+    { companyKey: 'bleuleaf',  agentId: 'agent-1', originAgentId: '' },        // a house lead he was handed
+  ];
+  const reassigned = book.map((r) => ({ ...r, agentId: '' }));  // to the owner
+
+  assert.equal(reassigned[0].agentId, '', 'the owner works it now');
+  assert.equal(reassigned[0].originAgentId, 'agent-1', 'but agent-1 still sourced it');
+  assert.equal(reassigned[1].originAgentId, '', 'a house lead stays house');
+
+  // The agent is still visible as the source, so their earned statements stand.
+  const stillCredited = reassigned.filter((r) => r.originAgentId === 'agent-1');
+  assert.equal(stillCredited.length, 1);
+});
+
+test('visibleFilter after a reassignment shows the book to its NEW owner', () => {
+  // The owner's default filter matches '' (their own) — so a book reassigned to
+  // them appears in their CRM immediately, without a second migration step.
+  const f = visibleFilter({ user: { role: 'owner', userId: 'owner-9' } });
+  assert.ok(f.agentId.$in.includes(''), 'reassigned-to-owner rows are visible');
+});

@@ -295,10 +295,17 @@ const OrderSchema = new mongoose.Schema({
   clientName:    { type: String, default: '', index: true },
   companyName:   { type: String, default: '', index: true },
   companyKey:    { type: String, default: '', index: true },
-  // Which account owns this order — an AdminUser _id (string). '' = the owner's
-  // (all legacy/owner-created orders). A sales agent's orders carry their id, so
-  // agents see only their own and the owner's board isn't cluttered with theirs.
+  // Which account CURRENTLY owns this order — an AdminUser _id (string).
+  // '' = the owner's (all legacy/owner-created orders). A sales agent's orders
+  // carry their id, so agents see only their own.
+  // MUTABLE: reassignment (an agent leaving) moves this field.
   agentId:       { type: String, default: '', index: true },
+  // Who SOURCED the sale — stamped once at creation and never moved again, not
+  // even by a reassignment. Commission is computed off THIS field, so a book
+  // handed to a new rep doesn't silently re-point the departed rep's earned
+  // statements. '' = the owner sold it (also the backfilled value for every
+  // pre-existing row — see scripts/backfillOriginAgent.js).
+  originAgentId: { type: String, default: '', index: true },
   status: {
     type: String,
     enum: ['quoted', 'approved', 'placed', 'in_production', 'shipped', 'delivered', 'cancelled'],

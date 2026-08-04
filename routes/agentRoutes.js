@@ -11,7 +11,7 @@ const router = express.Router();
 const { requireActiveAgent } = require('../middleware/auth');
 const {
   me, listMyOrders, createMyOrder, updateMyOrder,
-  listMyLeads, createMyLead, updateMyLead,
+  listMyLeads, createMyLead, updateMyLead, myEarnings,
 } = require('../controllers/agentPortal');
 
 // requireActiveAgent = requireAuth + a live account re-check for agents, so a
@@ -27,5 +27,9 @@ router.put('/orders/:id', updateMyOrder);
 router.get('/leads', listMyLeads);
 router.post('/leads', createMyLead);
 router.patch('/leads/:companyKey', updateMyLead);
+
+// The agent's own commission statement. The one place the portal shows cost —
+// as a single per-order figure on their OWN orders, never the vendor breakdown.
+router.get('/earnings', myEarnings);
 
 module.exports = router;

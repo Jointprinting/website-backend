@@ -17,6 +17,10 @@
 
 const Client = require('../models/Client');
 const Order  = require('../models/Order');
+// Ownership scoping: the owner's CRM shows their OWN book by default so an
+// agent's pipeline doesn't bulk out the board; ?agentId=<id>|all widens it.
+// Agents are hard-locked to their own records and can never widen.
+const { visibleFilter } = require('../middleware/scope');
 const OutreachCampaign = require('../models/OutreachCampaign');
 const OutreachEnrollment = require('../models/OutreachEnrollment');
 // REUSE canonical key normalization + the single source of truth for which order
@@ -894,7 +898,11 @@ async function listCrm(req, res) {
     const { stage, area, q, tag, archived, leadSource } = req.query;
     // Default list EXCLUDES archived; ?archived=1 shows only archived, =all shows
     // everything (for an "Archived" tab / restore surface).
-    const filter = {};
+    // WHOSE book: the owner sees their OWN companies by default so an agent's
+    // pipeline doesn't silently bulk out the board they work every day.
+    // ?agentId=<id> views one agent's; ?agentId=all shows everyone's. (Agents
+    // are hard-locked to their own and cannot widen it — see middleware/scope.)
+    const filter = { ...visibleFilter(req) };
     if (archived === '1' || archived === 'true') filter.archived = true;
     else if (archived === 'all') { /* no archived constraint */ }
     else Object.assign(filter, NOT_ARCHIVED);
@@ -959,6 +967,7 @@ async function getToday(req, res) {
     const cutoff = new Date(Date.parse(`${etToday()}T00:00:00Z`) + 86400000);
 
     const docs = await Client.find({
+      ...visibleFilter(req),   // the owner's own call queue by default; ?agentId= widens
       ...NOT_ARCHIVED,
       nextFollowUp: { $ne: null, $lt: cutoff },
       // Snoozed cards stay out of the call list until their snooze passes, then
@@ -1024,6 +1033,7 @@ async function getCalendar(req, res) {
       return res.status(400).json({ message: 'from/to must be valid YYYY-MM-DD dates' });
     }
     const docs = await Client.find({
+      ...visibleFilter(req),   // the owner's own calendar by default; ?agentId= widens
       ...NOT_ARCHIVED,
       nextFollowUp: { $ne: null, $gte: start, $lte: end },
     })
@@ -1064,7 +1074,13 @@ async function getCalendar(req, res) {
 async function getPipeline(req, res) {
   try {
     const { area, q, tag, leadSource } = req.query;
-    const filter = { ...NOT_ARCHIVED };
+    // WHOSE board — the owner's own deals by default (?agentId=<id>|all widens).
+    // Applied to the ORDER queries below as well, so a scoped board can't show
+    // an agent's order card sitting above a company the owner can't see. The
+    // production surface (Order Tracker) is deliberately NOT scoped: the owner
+    // has to see every order to quote, cut POs and ship it, whoever sold it.
+    const scope = visibleFilter(req);
+    const filter = { ...scope, ...NOT_ARCHIVED };
     if (area) filter.area = area;
     // Structured lead-source filter — same enum the list endpoint uses, so the
     // board narrows by where the deals came from (?leadSource=Referral).
@@ -1096,12 +1112,12 @@ async function getPipeline(req, res) {
     let orders;
     if (filtered) {
       orders = clientKeys.length
-        ? await Order.find({ companyKey: { $in: clientKeys }, archived: { $ne: true } })
+        ? await Order.find({ ...scope, companyKey: { $in: clientKeys }, archived: { $ne: true } })
             .select('companyKey companyName clientName projectNumber status totalValue archived orderDate createdAt updatedAt')
             .lean()
         : [];
     } else {
-      orders = await Order.find({ archived: { $ne: true } })
+      orders = await Order.find({ ...scope, archived: { $ne: true } })
         .select('companyKey companyName clientName projectNumber status totalValue archived orderDate createdAt updatedAt')
         .lean();
     }
@@ -1151,7 +1167,10 @@ async function getPipeline(req, res) {
 async function getDashboard(req, res) {
   try {
     const { area } = req.query;
-    const filter = { ...NOT_ARCHIVED };
+    // The owner's own book by default, matching every other CRM view — a
+    // dashboard counting an agent's leads would make "my pipeline" a number the
+    // owner can't act on. ?agentId=<id>|all widens.
+    const filter = { ...visibleFilter(req), ...NOT_ARCHIVED };
     if (area) filter.area = area;
 
     // One read; we only need the CRM fields (+ timestamps for staleness, + tags
