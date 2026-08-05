@@ -668,3 +668,27 @@ test('retryableFailedRegions goes least-tried first, so one bad state cannot hog
   assert.deepEqual(retryableFailedRegions({ ca: 2, ny: 1, ma: 1 }, { maxAttempts: 3 })[0] === 'ca', false);
   assert.equal(retryableFailedRegions({ ca: 2, ny: 1 }, { maxAttempts: 3 }).pop(), 'ca');
 });
+
+// ── The supply gate has to actually open ─────────────────────────────────────
+//
+// The live engine reported "queue healthy — 42 cold dispensaries ready to
+// enroll; coverage current" for days while the low watermark was 40. Forty-two
+// is ONE lead above the line, so no sweep ever ran and every improvement to
+// lead sourcing sat dormant behind a threshold nobody could see.
+
+test('the sweep triggers before the reserve runs dry, and refills well above it', () => {
+  const src = require('fs').readFileSync(require.resolve('../leadFinderScheduler.js'), 'utf8');
+  const low = Number(src.match(/LOW_WATERMARK = parseInt\(process\.env\.\w+ \|\| '(\d+)'/)[1]);
+  const target = Number(src.match(/REFILL_TARGET = parseInt\(process\.env\.\w+ \|\| '(\d+)'/)[1]);
+
+  // Inverting these would make the engine refill to below its own trigger and
+  // sweep on every single tick.
+  assert.ok(low < target, `low watermark (${low}) must sit under the refill target (${target})`);
+
+  // At the engine's 40/day ceiling, the reserve has to be worth more than a
+  // couple of days or a sweep can never work THROUGH a state — it stops almost
+  // as soon as it starts and a market with hundreds of licensees stays untouched.
+  const DAILY_CEILING = 40;
+  assert.ok(target / DAILY_CEILING >= 5, `refill target ${target} is under 5 days of supply`);
+  assert.ok(low / DAILY_CEILING >= 2, `watermark ${low} leaves under 2 days of warning before dry`);
+});

@@ -35,10 +35,22 @@ const { nextRegionAfter, isRegion, DEFAULT_REGION, REGIONS } = require('./dispen
 const { getVertical, isVertical, frontierStateKey, DEFAULT_VERTICAL_ID } = require('./leadVerticals');
 
 // Refill when the enrollable-cold-lead pool drops below this…
-const LOW_WATERMARK = parseInt(process.env.LEAD_FINDER_LOW_WATERMARK || '40', 10);
+// Sweep when the emailable reserve falls below this. It was 40 — and the live
+// reserve sat at 42, ONE lead above the line, so the engine reported "queue
+// healthy, coverage current" and never swept at all. Everything the roster
+// sourcing added was therefore dormant. A watermark this tight also means the
+// engine only ever looks for leads once it is nearly dry, which is the opposite
+// of keeping a pipeline fed.
+const LOW_WATERMARK = parseInt(process.env.LEAD_FINDER_LOW_WATERMARK || '200', 10);
 // …and keep sweeping states until we've added this many new (emailable) leads.
 // Every finder lead has an email — it's a mail-merge engine — so new == sendable.
-const REFILL_TARGET = parseInt(process.env.LEAD_FINDER_REFILL_TARGET || '75', 10);
+// …and refill to here. At 75, a 40/day sender held under two days of supply, so
+// a sweep could never work THROUGH a state — it stopped almost as soon as it
+// started, and a market with hundreds of licensed shops was left mostly
+// untouched. 400 is roughly ten days of runway and lets a state actually get
+// finished. The loop still exits the moment it hits this, so a dense state ends
+// the run early rather than sweeping six.
+const REFILL_TARGET = parseInt(process.env.LEAD_FINDER_REFILL_TARGET || '400', 10);
 // …but never more than this many states in a single run (politeness cap).
 const MAX_REGIONS_PER_RUN = parseInt(process.env.LEAD_FINDER_MAX_REGIONS || '6', 10);
 // When the pool is HEALTHY but the finder has since improved, re-milk at most
