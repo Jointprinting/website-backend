@@ -806,3 +806,48 @@ test('sendFitReason takes the generous read across a company’s several map row
     { companyKey: 'x', state: 'NJ', segment: 'rec', isChain: true },
   ]), 'chain');
 });
+
+// ── Trip and lift must judge the SAME evidence ───────────────────────────────
+//
+// The lift was moved to a trailing window; the trip was left on lifetime counts.
+// That made them contradict each other on identical data — the lift resumed a
+// campaign whose recent sends were clean, and the next tick's lifetime rate
+// (which still carries every bounce the campaign ever had) re-quarantined it.
+// Live: 14 of 109 bounced, all weeks ago on addresses long since suppressed,
+// two clean sends since, card back to "List quarantined". Old bounces cannot be
+// un-bounced, so a lifetime rate is a ratchet that eventually locks everything.
+
+test('a healed list is not re-quarantined by bounces it can never undo', () => {
+  const d = (n) => new Date(Date.now() - n * 86400000);
+  // The owner's live campaign, exactly: 109 sent, 14 bounced (12.8% — over the
+  // 12% trip line), every bounce weeks old on an address already suppressed,
+  // and two clean sends since.
+  const rows = [
+    ...Array.from({ length: 14 }, () => ({ stopReason: 'bounced', sends: [{ at: d(24) }] })),
+    ...Array.from({ length: 93 }, () => ({ stopReason: '', sends: [{ at: d(24) }] })),
+    ...Array.from({ length: 2 }, () => ({ stopReason: '', sends: [{ at: d(1) }] })),
+  ];
+  const lifetime = campaignBounceSignal(rows);
+  const recent = recentBounceSignal(rows);
+
+  // The exact shape that produced the loop.
+  assert.ok(lifetime.bounced / lifetime.sent >= 0.12, 'lifetime rate is still over the trip line');
+  assert.equal(recent.bounced, 0, 'nothing recent has bounced');
+  assert.equal(shouldQuarantineList(lifetime, { lastHygieneAt: d(1) }), true, 'lifetime would re-lock it');
+  assert.equal(shouldQuarantineList(recent, { lastHygieneAt: d(1) }), false, 'the window lets it run');
+  // And the lift agrees, which is the whole point — one verdict, not two.
+  assert.equal(shouldLiftQuarantine(recent, { quarantinedAt: d(9) }), true);
+});
+
+test('a genuine fresh spike still trips the quarantine', () => {
+  const d = (n) => new Date(Date.now() - n * 86400000);
+  const spiking = [
+    ...Array.from({ length: 60 }, () => ({ stopReason: '', sends: [{ at: d(1) }] })),
+    ...Array.from({ length: 12 }, () => ({ stopReason: 'bounced', sends: [{ at: d(1) }] })),
+  ];
+  const recent = recentBounceSignal(spiking);
+  assert.ok(recent.bounced / recent.sent >= 0.12);
+  assert.equal(shouldQuarantineList(recent, { lastHygieneAt: d(1) }), true, 'protection still works');
+  // …and it must NOT immediately lift back out on the same bad data.
+  assert.equal(shouldLiftQuarantine(recent, { quarantinedAt: d(9) }), false);
+});
