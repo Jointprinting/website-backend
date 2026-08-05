@@ -893,9 +893,22 @@ async function runListQuarantine(campaigns = [], now = new Date()) {
         continue;
       }
 
-      const signal = campaignBounceSignal(rows);
+      // TRIP on the same trailing window the LIFT uses. Judging this on lifetime
+      // counts made the two tests contradict each other on identical data: the
+      // lift would resume a campaign whose recent sends were clean, and the very
+      // next tick the lifetime rate — which still carries every bounce the
+      // campaign ever had — would re-quarantine it. The owner watched exactly
+      // that: 14 of 109 bounced, all of them weeks ago on addresses long since
+      // suppressed, two clean sends since, and the card back to "List
+      // quarantined". Old bounces cannot be un-bounced, so a lifetime rate is a
+      // one-way ratchet that eventually locks every campaign forever.
+      //
+      // A trailing window is also the better spike detector on its own terms:
+      // a spike is recent by definition, and burying it in months of history is
+      // exactly how you fail to notice one.
+      const signal = recentBounceSignal(rows, { now: now.getTime() });
       if (!shouldQuarantineList(signal, { lastHygieneAt: campaign.lastHygieneAt })) continue;
-      const reason = `${signal.bounced} of ${signal.sent} sent bounced or complained even after auto-cleaning`;
+      const reason = `${signal.bounced} of the last ${signal.sent} sent bounced or complained even after auto-cleaning`;
       const r = await OutreachCampaign.updateOne(
         { _id: campaign._id, firstTouchQuarantinedAt: null },
         { $set: { firstTouchQuarantinedAt: now, quarantineReason: reason } },
