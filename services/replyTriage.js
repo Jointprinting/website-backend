@@ -594,14 +594,64 @@ const _ts = (d) => { const t = new Date(d).getTime(); return Number.isFinite(t) 
 //   followUp        — owner tagged "follow up later"
 // (do-not-contact / not-interested / ignored / handled / OOO drop out — done or
 // auto-handled.)
-function worklistFromReplies(replies = []) {
-  const buckets = { needsResponse: [], quoteRequested: [], mockupRequested: [], followUp: [] };
-  for (const r of replies) {
-    if (r.status === 'quote_requested') buckets.quoteRequested.push(r);
-    else if (r.status === 'mockup_requested') buckets.mockupRequested.push(r);
-    else if (r.status === 'follow_up') buckets.followUp.push(r);
-    else if (r.status === 'new' && ACTIONABLE_CATEGORIES.has(r.category)) buckets.needsResponse.push(r);
+// One SHOP is one thing to do, however many times they wrote.
+//
+// A buyer who sends "could you send pricing?" and then "I'll get you the details
+// tomorrow" produced two cards — in two different buckets, under the same
+// company name — which reads as the tool double-counting rather than as one
+// conversation. Worse, acting on one leaves the other sitting there implying
+// work that's already done.
+//
+// So a company appears ONCE, on its most actionable message, carrying a count of
+// the others. Nothing is hidden: every message is still its own row in All
+// replies, and the card links to the same company either way. Ranked by what the
+// owner should do about it, not by which bucket it happened to land in.
+const BUCKET_RANK = { quoteRequested: 3, mockupRequested: 2, needsResponse: 1, followUp: 0 };
+
+function collapseByCompany(buckets) {
+  // Best row per company across ALL buckets: hotter bucket wins, then the most
+  // recent message. Rows with no companyKey (unmatched) are never collapsed —
+  // two unknown senders are two different people.
+  const best = new Map();
+  for (const [name, rows] of Object.entries(buckets)) {
+    for (const r of rows) {
+      const key = String((r && r.companyKey) || '').trim();
+      if (!key) continue;
+      const cur = best.get(key);
+      const rank = BUCKET_RANK[name] || 0;
+      if (!cur || rank > cur.rank || (rank === cur.rank && _ts(r.receivedAt) > _ts(cur.row.receivedAt))) {
+        best.set(key, { rank, row: r, bucket: name, count: (cur ? cur.count : 0) + 1 });
+      } else {
+        cur.count += 1;
+      }
+    }
   }
+  const out = {};
+  for (const [name, rows] of Object.entries(buckets)) {
+    out[name] = rows.filter((r) => {
+      const key = String((r && r.companyKey) || '').trim();
+      if (!key) return true;                       // unmatched: always its own row
+      const pick = best.get(key);
+      return pick && pick.row === r;
+    }).map((r) => {
+      const pick = best.get(String((r && r.companyKey) || '').trim());
+      // How many OTHER messages from this shop are folded into this card.
+      const alsoWaiting = pick && pick.count > 1 ? pick.count - 1 : 0;
+      return alsoWaiting ? { ...r, alsoWaiting } : r;
+    });
+  }
+  return out;
+}
+
+function worklistFromReplies(replies = []) {
+  const raw = { needsResponse: [], quoteRequested: [], mockupRequested: [], followUp: [] };
+  for (const r of replies) {
+    if (r.status === 'quote_requested') raw.quoteRequested.push(r);
+    else if (r.status === 'mockup_requested') raw.mockupRequested.push(r);
+    else if (r.status === 'follow_up') raw.followUp.push(r);
+    else if (r.status === 'new' && ACTIONABLE_CATEGORIES.has(r.category)) raw.needsResponse.push(r);
+  }
+  const buckets = collapseByCompany(raw);
   // Buying signals first, then most-recent first.
   buckets.needsResponse.sort((a, b) =>
     (HOT_CATEGORIES.has(b.category) ? 1 : 0) - (HOT_CATEGORIES.has(a.category) ? 1 : 0)
@@ -678,6 +728,7 @@ module.exports = {
   STRONG_MATCHES,
   isGmailConfigured,
   worklistFromReplies,
+  collapseByCompany,
   ACTIONABLE_CATEGORIES,
   HOT_CATEGORIES,
 };
