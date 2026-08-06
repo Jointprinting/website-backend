@@ -51,7 +51,7 @@ const { applySpintax, hashStr } = require('./outreachContent');
 const { getSenders } = require('./senderPool');
 const { getAuthStatus, recommendedRecords } = require('../utils/dnsAuth');
 const { replyPathStatus, normalizeAddress } = require('../utils/replyPath');
-const { isNeverSend, scoreEmail } = require('../utils/emailQuality');
+const { isNeverSend, scoreEmail, looksLikeHumanName, nameShaped, isRoleInbox } = require('../utils/emailQuality');
 const { sendFitReason } = require('./leadFit');
 const { tzForState, zoneLabel, US_ZONES } = require('../utils/usTimezones');
 const Dispensary = require('../models/Dispensary');
@@ -585,6 +585,8 @@ function isRoleEmail(email) {
 // Returning '' matters as much as the ranking: addresses harvested under the old
 // rule are already on file, and this is what stops them being mailed at all
 // without needing to rewrite a single stored record.
+const localPartOf = (e) => String(e || '').split('@')[0].toLowerCase();
+
 function pickEmail(client = {}) {
   const cands = [];
   const own = String(client.email || '').trim();
@@ -595,9 +597,23 @@ function pickEmail(client = {}) {
   }
   const usable = cands.filter((c) => !isNeverSend(c.email));
   if (!usable.length) return '';
-  // A candidate we hold a real contact NAME for still wins the tie — that name
-  // is what makes the greeting personal.
-  const score = (c) => scoreEmail(c.email) + (c.name ? 1 : 0);
+  // A contact NAME we actually HOLD is the evidence the address itself can't
+  // give us. "jane@" and "feedback@" are the same shape — a record saying the
+  // contact is Jane Rivera settles which one is a person, where guessing from
+  // the local-part got us mailing feedback@ and cbd@ and hard-bouncing on them.
+  // So a named human lifts the address above a role inbox (which a bare +1 tie-
+  // break could never do), while an unnamed one is ranked on the address alone.
+  // …but the ADDRESS still has to be able to belong to a person. A contact name
+  // must never promote a random alias blob (xq7zplt@) over the shop's published
+  // front door, and it never promotes across the never-send line at all.
+  const NAMED_HUMAN = 20;   // enough to clear a role inbox, never a 'never'
+  // A real person can sit behind a ROLE inbox too ("Sam" at sales@) — that's
+  // still a name to greet. What must never be promoted is an alias BLOB
+  // (xq7zplt@): no name attached to that makes it a better bet than the shop's
+  // published front door.
+  const named = (c) => looksLikeHumanName(c.name)
+    && (nameShaped(localPartOf(c.email)) || isRoleInbox(c.email));
+  const score = (c) => scoreEmail(c.email) + (named(c) ? NAMED_HUMAN : 0);
   usable.sort((a, b) => score(b) - score(a));
   return usable[0].email;
 }

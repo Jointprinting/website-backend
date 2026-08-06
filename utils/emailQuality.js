@@ -111,7 +111,7 @@ function isRoleInbox(email) {
 // Does this local-part look like a human's name? Deliberately conservative —
 // a false "person" here outranks a good role inbox, which is the exact mistake
 // this module exists to prevent.
-function looksLikePerson(local) {
+function nameShaped(local) {
   const l = String(local || '').toLowerCase().split('+')[0];
   if (!l || l.length < 2 || l.length > 32) return false;
   if (NEVER_LOCALS.has(l) || ROLE_SET.has(l)) return false;
@@ -124,9 +124,45 @@ function looksLikePerson(local) {
     if (NON_NAME_WORDS.test(part)) return false;
     if (NEVER_LOCALS.has(part) || ROLE_SET.has(part)) return false;
   }
-  // jane.doe / j.doe / jdoe / jane — a single all-consonant blob is more likely
-  // an abbreviation than a name, but we still allow it as a weak person.
   return true;
+}
+
+// Could this local-part BE a person's, structurally? `jane` and `jane.doe` both
+// pass; `xq7zplt` and `order12345` don't. On its own this is not enough to call
+// something a person (see below) — but it's the guard that stops a contact name
+// promoting a random alias blob.
+function looksLikePerson(local) {
+  if (!nameShaped(local)) return false;
+  const parts = String(local || '').toLowerCase().split('+')[0].split(/[._-]/).filter(Boolean);
+  // A MULTI-PART local-part is the only strong evidence of a human: jane.doe,
+  // j.doe, jane_doe. Nobody names a functional mailbox that way.
+  //
+  // A SINGLE unrecognized word is not. It used to count as a person — the top
+  // tier, 40 points, above a published info@ — which is how the engine came to
+  // prefer feedback@ and cbd@ over the real contact address and then hard-bounce
+  // on them, because "feedback" and "cbd" are simply words nobody had blacklisted
+  // yet. No blacklist finishes that job; the inference was wrong.
+  //
+  // Demoting the single-word case to 'unknown' also happens to be the better
+  // deliverability bet in its own right. A lone first name is often a former
+  // employee whose mailbox was deleted when they left — exactly the stale address
+  // that hard-bounces — while a shop's published info@ outlives its staff.
+  return parts.length > 1;
+}
+
+// Does a CONTACT NAME we hold read as a human being?
+//
+// This is evidence the local-part can never give us: "jane@" and "feedback@"
+// are the same shape, but a record that says the contact is named Jane Rivera
+// settles it. Departments are excluded — plenty of CRM rows are named "Front
+// Desk" or "Sales Team", which are not people. Pure.
+const DEPARTMENT_NAME = /^(front ?desk|reception|sales|info|office|admin|support|help|service|team|staff|management|store|shop|owner|manager|buyer|purchasing|wholesale|marketing|orders?|billing|accounts?|hr|contact)\b/i;
+function looksLikeHumanName(name) {
+  const n = String(name || '').trim();
+  if (n.length < 2 || n.length > 60) return false;
+  if (!/[a-z]/i.test(n)) return false;
+  if (DEPARTMENT_NAME.test(n)) return false;
+  return /^[a-z][a-z'’.-]*(\s+[a-z][a-z'’.-]*){0,3}$/i.test(n);
 }
 
 /** 'never' | 'person' | 'role' | 'unknown'. Pure. */
@@ -177,6 +213,8 @@ function bestEmail(emails, { siteHost = '' } = {}) {
 }
 
 module.exports = {
+  looksLikeHumanName,
+  nameShaped,
   parseEmail, localOf, domainOf, localHead,
   isNeverSend, isRoleInbox, looksLikePerson,
   emailTier, scoreEmail, bestEmail,

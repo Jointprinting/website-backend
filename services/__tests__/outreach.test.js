@@ -427,8 +427,15 @@ test('isRoleEmail flags shared aliases, not named people', () => {
 });
 
 test('pickEmail prefers a named person over a role inbox', () => {
-  // role top-level email, but a named contact exists → pick the person
+  // role top-level email, but a contact we hold a real NAME for exists → pick
+  // the person. The name is the evidence; the address shape alone can't be,
+  // since jane@ and feedback@ look identical (and preferring the latter is what
+  // produced hard bounces).
   assert.equal(pickEmail({ email: 'info@shop.com', contacts: [{ email: 'jane@shop.com', name: 'Jane Doe' }] }), 'jane@shop.com');
+  // Same address with NO name on the record loses to the published front door.
+  assert.equal(pickEmail({ email: 'info@shop.com', contacts: [{ email: 'jane@shop.com' }] }), 'info@shop.com');
+  // A department is not a person, however it's stored.
+  assert.equal(pickEmail({ email: 'info@shop.com', contacts: [{ email: 'x@shop.com', name: 'Front Desk' }] }), 'info@shop.com');
   // only a role inbox → still return it (better than nothing)
   assert.equal(pickEmail({ email: 'info@shop.com' }), 'info@shop.com');
   // a non-role top-level email wins over an unnamed contact

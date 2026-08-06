@@ -324,10 +324,18 @@ test('extractEmails pulls mailto links ahead of body text, deduped', () => {
 // ── Email ranking ────────────────────────────────────────────────────────────
 test('pickBestEmail prefers a named person on the shop’s own domain, role inbox as fallback', () => {
   // A named person ON the shop's domain beats a role inbox on the same domain —
-  // the change that aligns the enricher with send-time pickEmail.
+  // the change that aligns the enricher with send-time pickEmail. "Named" now
+  // means a name-SHAPED local-part (jane.doe), because a single bare word is
+  // indistinguishable from feedback@ or cbd@ — both of which outranked info@
+  // under the old rule and hard-bounced.
   assert.equal(
-    pickBestEmail(['info@greenleaf.com', 'jane@greenleaf.com'], 'greenleaf.com'),
-    'jane@greenleaf.com',
+    pickBestEmail(['info@greenleaf.com', 'jane.doe@greenleaf.com'], 'greenleaf.com'),
+    'jane.doe@greenleaf.com',
+  );
+  // …and a bare word now loses to the shop's published front door.
+  assert.equal(
+    pickBestEmail(['info@greenleaf.com', 'feedback@greenleaf.com'], 'greenleaf.com'),
+    'info@greenleaf.com',
   );
   // On-domain still beats off-domain: a role inbox on the shop's domain beats a
   // personal gmail (an off-domain personal address isn't a better outreach target).
