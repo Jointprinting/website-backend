@@ -391,3 +391,27 @@ test('a bottom-posted "not interested" also stops the sequence', () => {
   const out = classifyReply({ subject: 'Re: Merch', from: 'info@shop.com', snippet: body });
   assert.equal(out.category, 'not_interested');
 });
+
+// ── Recognizing a row that was stored before the reader could decode MIME ─────
+// Those rows hold boundary markers and base64 instead of words, so they were
+// classified on gibberish. They can't be rescued by re-classifying (there is
+// nothing to read), so they have to be RECOGNIZABLE to be repaired.
+
+const { looksUndecoded } = require('../replyTriage');
+
+test('looksUndecoded spots raw MIME that reached the classifier as a body', () => {
+  const base64Body = 'VGhhbmtzIGZvciByZWFjaGluZyBvdXQuIFdoYXQgd291bGQgMTAwIGhvb2RpZXMgcnVuIHVzPyBXZSdkIHdhbnQgb3VyIGxvZ28gb24gdGhlIGJhY2su'.repeat(2);
+  assert.equal(looksUndecoded(`Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${base64Body}`), true);
+  assert.equal(looksUndecoded('--000000000000abcdef1234\r\nContent-Type: text/plain; charset="UTF-8"\r\n\r\nhi'), true);
+  assert.equal(looksUndecoded('Hi =E2=80=94 what=E2=80=99s the pricing on 100 hoodies? We=E2=80=99d want ou=\r\nr logo.'), true);
+});
+
+test('looksUndecoded leaves a real reply alone', () => {
+  assert.equal(looksUndecoded('Thanks — what would 100 hoodies run us? We’d want our logo on the back.'), false);
+  assert.equal(looksUndecoded(''), false);
+  assert.equal(looksUndecoded(null), false);
+  // A person quoting ONE header line is not a raw message.
+  assert.equal(looksUndecoded('You wrote:\n> Content-Type: whatever\nAnyway, send pricing.'), false);
+  // Nor is a long URL or a signature block.
+  assert.equal(looksUndecoded('See https://example.com/some/fairly/long/path?with=query&more=params\n\nSam Rivera\nGreen Leaf'), false);
+});

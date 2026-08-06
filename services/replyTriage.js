@@ -201,6 +201,29 @@ function stripQuotedReply(text) {
   return head.slice(0, cut).trim();
 }
 
+// Does this stored text look like RAW MIME rather than what a person wrote?
+//
+// The reader used to hand the classifier `BODY[TEXT]` — the undecoded body —
+// so rows synced before that fix hold boundary markers, transfer-encoding
+// headers and base64 instead of words. Those rows can't be rescued by
+// re-classifying (there is nothing to read) and can't be re-ingested (the
+// dedupe sees the message-id and skips), so they need to be recognizable in
+// order to be repaired. Deliberately narrow: a real reply that happens to quote
+// one header line stays below the bar, and even a false positive only costs a
+// re-decode that lands on the same words. PURE.
+function looksUndecoded(text) {
+  const s = String(text || '');
+  if (!s.trim()) return false;
+  let score = 0;
+  if (/^Content-(?:Type|Transfer-Encoding|Disposition):/im.test(s)) score += 1;
+  if (/^--[-_A-Za-z0-9]{8,}/m.test(s)) score += 1;                 // MIME boundary
+  if (/\b(?:boundary|charset)=["']?[-_A-Za-z0-9]/i.test(s)) score += 1;
+  if (/=[0-9A-F]{2}(?:=[0-9A-F]{2})/.test(s)) score += 1;          // quoted-printable runs
+  if (/=\r?\n/.test(s)) score += 1;                                // QP soft line break
+  if (/[A-Za-z0-9+/]{120,}={0,2}/.test(s)) score += 2;             // a base64 body
+  return score >= 2;
+}
+
 // The only strings in OUR outbound mail that can trip a kill-signal: the CAN-SPAM
 // footer (which literally instructs the reader to reply "unsubscribe") and the
 // signature. Redacted — not truncated at — so nothing the human typed is lost.
@@ -635,6 +658,7 @@ module.exports = {
   classifyReply,
   stripQuotedReply,
   senderWords,
+  looksUndecoded,
   hasHumanSignal,
   headerSaysAuto,
   isVendorNoiseSender,

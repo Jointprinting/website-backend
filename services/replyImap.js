@@ -327,16 +327,26 @@ async function fetchFolder(client, folder, since, ingest, stats, seen) {
 }
 
 /**
- * Which of these RFC Message-IDs are already stored? Used to skip a download.
- * Defaults to the triage collection; injectable so the reader stays testable.
+ * Which of these RFC Message-IDs are already stored AND readable? Used to skip a
+ * download.
+ *
+ * A row whose stored text is raw MIME does NOT count as seen: those were filed
+ * on gibberish by the pre-decode reader, and letting them count would mean the
+ * one mailbox that can repair them never fetches them again. Fetching such a
+ * message a second time hands ingestOne a decoded copy, which rewrites the row
+ * in place. Defaults to the triage collection; injectable so the reader stays
+ * testable.
  */
 async function seenMessageIds(ids = []) {
   if (!ids.length) return new Set();
   try {
     const TriageReply = require('../models/TriageReply');
+    const { looksUndecoded } = require('./replyTriage');
     const rows = await TriageReply.find({ gmailMessageId: { $in: ids.map((id) => `imap:${id}`) } })
-      .select('gmailMessageId').lean();
-    return new Set(rows.map((r) => String(r.gmailMessageId).replace(/^imap:/, '')));
+      .select('gmailMessageId snippet').lean();
+    return new Set(rows
+      .filter((r) => !looksUndecoded(r.snippet))
+      .map((r) => String(r.gmailMessageId).replace(/^imap:/, '')));
   } catch {
     return new Set();                          // never block a sync on a lookup
   }
