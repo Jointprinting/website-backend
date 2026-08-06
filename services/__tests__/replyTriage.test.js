@@ -415,3 +415,63 @@ test('looksUndecoded leaves a real reply alone', () => {
   // Nor is a long URL or a signature block.
   assert.equal(looksUndecoded('See https://example.com/some/fairly/long/path?with=query&more=params\n\nSam Rivera\nGreen Leaf'), false);
 });
+
+// ── One shop is one thing to do ──────────────────────────────────────────────
+// A buyer who writes twice ("could you send pricing?" then "I'll get you the
+// details tomorrow") produced TWO cards under the same company name, in two
+// different buckets — which reads as the tool double-counting rather than as one
+// conversation, and acting on one leaves the other implying work already done.
+
+const { worklistFromReplies: buildWorklist } = require('../replyTriage');
+
+const reply = (over = {}) => ({
+  _id: Math.random().toString(36).slice(2),
+  companyKey: 'apothecare', category: 'needs_response', status: 'new',
+  receivedAt: '2026-08-06T09:00:00Z', ...over,
+});
+
+test('two messages from one shop collapse to one card', () => {
+  const w = buildWorklist([
+    reply({ _id: 'later', receivedAt: '2026-08-06T14:00:00Z' }),
+    reply({ _id: 'pricing', category: 'asked_pricing', status: 'quote_requested' }),
+  ]);
+  const all = Object.values(w).flat();
+  assert.equal(all.length, 1);
+  // The more actionable message wins the card, not merely the newest one.
+  assert.equal(all[0]._id, 'pricing');
+  assert.equal(all[0].alsoWaiting, 1);            // the other one is accounted for
+  assert.equal(w.needsResponse.length, 0);
+});
+
+test('the newest message wins inside the same bucket', () => {
+  const w = buildWorklist([
+    reply({ _id: 'old', receivedAt: '2026-08-01T09:00:00Z' }),
+    reply({ _id: 'new', receivedAt: '2026-08-06T09:00:00Z' }),
+  ]);
+  assert.equal(w.needsResponse[0]._id, 'new');
+  assert.equal(w.needsResponse[0].alsoWaiting, 1);
+});
+
+test('different shops are never merged', () => {
+  const w = buildWorklist([
+    reply({ _id: 'a', companyKey: 'apothecare' }),
+    reply({ _id: 'b', companyKey: 'greenleaf' }),
+  ]);
+  assert.equal(w.needsResponse.length, 2);
+  assert.equal(w.needsResponse.every((r) => !r.alsoWaiting), true);
+});
+
+test('unmatched senders are never collapsed into each other', () => {
+  // Two unknown senders are two different people, not one shop writing twice.
+  const w = buildWorklist([
+    reply({ _id: 'x', companyKey: '' }),
+    reply({ _id: 'y', companyKey: '' }),
+    reply({ _id: 'z', companyKey: null }),
+  ]);
+  assert.equal(w.needsResponse.length, 3);
+});
+
+test('a single message carries no "+N more" noise', () => {
+  const w = buildWorklist([reply({ _id: 'solo' })]);
+  assert.equal(w.needsResponse[0].alsoWaiting, undefined);
+});

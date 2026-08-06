@@ -199,3 +199,21 @@ test('runImapSync is a silent no-op when unconfigured', async () => {
   assert.equal(r.reason, 'not-configured');
   assert.equal(r.imported, 0);
 });
+
+// ── HTML entities, decoded on EVERY path ─────────────────────────────────────
+// Plenty of clients send a text/plain alternative generated from the HTML that
+// still carries the escapes, so decoding only the HTML branch let "Yes I'll get
+// all the information over to you" reach the Studio as "Yes I&#39;ll get all the
+// information over to you" — the card renders text, so it showed through.
+
+test('entities are decoded even when the plain part carries them', () => {
+  assert.equal(bodyTextOf({ text: 'Yes I&#39;ll send it &amp; the pricing' }), "Yes I'll send it & the pricing");
+  assert.equal(bodyTextOf({ text: 'quantities &#8212; and fabrics' }), 'quantities — and fabrics');
+  assert.equal(bodyTextOf({ text: '&#x27;hex&#x27; form too' }), "'hex' form too");
+});
+
+test('entity decoding leaves ordinary text and unknown entities alone', () => {
+  assert.equal(bodyTextOf({ text: 'Costs $5 & up — no entities here' }), 'Costs $5 & up — no entities here');
+  assert.equal(bodyTextOf({ text: 'a &notarealentity; b' }), 'a &notarealentity; b');
+  assert.equal(bodyTextOf({ text: 'AT&T pricing' }), 'AT&T pricing');   // bare & is safe
+});

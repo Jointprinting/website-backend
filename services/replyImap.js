@@ -86,9 +86,27 @@ function imapConfig(env = process.env) {
   return { host, port, secure: port === 993, auth: { user, pass } };
 }
 
-// Gmail keeps spam out of INBOX and cold-email replies land there routinely, so
-// both are read. Names differ by provider; a mailbox that isn't there is skipped.
-const FOLDERS = ['INBOX', '[Gmail]/Spam', 'Junk', 'Junk Email'];
+// Where a reply can actually be sitting. Names differ by provider; a mailbox
+// that isn't there is skipped.
+//
+// INBOX and Spam are the obvious ones (cold-email replies land in Spam
+// routinely). The others exist because a message that has been ARCHIVED or
+// deleted has LEFT the inbox — a filter, a phone swipe, or a quick tidy is
+// enough — and a reply we never saw is indistinguishable from a reply that was
+// never sent. All Mail also holds every message we SEND, and at 40/day that
+// would swamp the window, so those folders are scanned with our own outbound
+// excluded.
+const FOLDERS = [
+  { name: 'INBOX' },
+  { name: '[Gmail]/Spam' },
+  { name: 'Junk' },
+  { name: 'Junk Email' },
+  { name: '[Gmail]/Trash' },
+  { name: 'Trash' },
+  { name: 'Deleted Items' },
+  { name: '[Gmail]/All Mail', excludeSelf: true },
+  { name: 'Archive', excludeSelf: true },
+];
 
 // How far back into a folder each tick looks. This used to be 60, chosen when
 // every message in the window was fully downloaded on every run — and 60 is not
@@ -169,15 +187,39 @@ function toRaw(msg) {
   };
 }
 
+// HTML entities, decoded once for every path.
+//
+// This has to run on the PLAIN part too, not just on HTML. Plenty of clients
+// send a text/plain alternative that was generated from the HTML and still
+// carries the escapes, which is how "Yes I'll get all the information over to
+// you" reached the Studio as "Yes I&#39;ll get all the information over to you".
+// The card renders text, so the entity showed through verbatim.
+const NAMED_ENTITIES = {
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ',
+  ldquo: '“', rdquo: '”', lsquo: '‘', rsquo: '’', mdash: '—', ndash: '–',
+  hellip: '…', middot: '·', bull: '•', trade: '™', copy: '©', reg: '®', deg: '°',
+};
+function decodeEntities(text) {
+  return String(text || '')
+    .replace(/&#x([0-9a-f]+);/gi, (_m, hex) => safeCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_m, dec) => safeCodePoint(parseInt(dec, 10)))
+    .replace(/&([a-z]+);/gi, (m, name) => {
+      const hit = NAMED_ENTITIES[String(name).toLowerCase()];
+      return hit === undefined ? m : hit;                 // unknown → leave as-is
+    });
+}
+function safeCodePoint(n) {
+  if (!Number.isFinite(n) || n < 0 || n > 0x10ffff) return '';
+  try { return String.fromCodePoint(n); } catch { return ''; }
+}
+
 /** Crude HTML → text, for the minority of replies sent as HTML only. Pure. */
 function htmlToText(html) {
-  return String(html || '')
+  return decodeEntities(String(html || '')
     .replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
     .replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n')
     .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/&#39;/gi, "'")
+    .replace(/<[^>]+>/g, ' '))
     .replace(/[ \t]+/g, ' ')
     .replace(/ *\n */g, '\n')      // tags left spaces around every line break
     .replace(/\n{3,}/g, '\n\n')
@@ -194,7 +236,7 @@ function htmlToText(html) {
 function bodyTextOf(parsed) {
   if (!parsed) return '';
   const plain = String(parsed.text || '').trim();
-  if (plain) return plain;
+  if (plain) return decodeEntities(plain);
   return htmlToText(parsed.html || parsed.textAsHtml || '');
 }
 
@@ -237,14 +279,19 @@ async function downloadPart(client, uid, part) {
 const MAX_SOURCE_BYTES = 2 * 1024 * 1024;   // above this, pull only the text part
 
 async function fetchFolder(client, folder, since, ingest, stats, seen) {
+  const name = typeof folder === 'string' ? folder : folder.name;
   let lock;
   try {
-    lock = await client.getMailboxLock(folder);
+    lock = await client.getMailboxLock(name);
   } catch {
     return;                                    // folder doesn't exist here
   }
   try {
-    const uids = await client.search({ since }, { uid: true });
+    // In the everything-folders, skip our own outbound — otherwise 40 sends a
+    // day fill the window and push the actual replies out of it.
+    const query = { since };
+    if (folder && folder.excludeSelf && stats.mailbox) query.not = { from: stats.mailbox };
+    const uids = await client.search(query, { uid: true });
     if (!uids || !uids.length) return;
     const recent = uids.slice(-MAX_PER_FOLDER);
 
