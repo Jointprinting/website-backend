@@ -17,6 +17,7 @@ const {
   senderKey,
   senderRampDays,
   isWithinSendWindow,
+  isWithinSendWindowFor,
   renderTemplate,
   buildMergeContext,
   cityFromAddress,
@@ -151,10 +152,16 @@ test('senderRampDays counts ET calendar days, not elapsed 24h blocks', () => {
 });
 
 // ── Catch-up pacing (tickBudget / windowMinutesLeft) ─────────────────────────
-test('windowMinutesLeft: minutes to 5pm ET inside the window, 0 outside', () => {
-  assert.equal(windowMinutesLeft(new Date('2026-07-22T13:00:00Z')), 480); // Wed 9:00a EDT
-  assert.equal(windowMinutesLeft(new Date('2026-07-22T20:45:00Z')), 15);  // Wed 4:45p EDT
-  assert.equal(windowMinutesLeft(new Date('2026-07-22T22:40:00Z')), 0);   // Wed 6:40p — closed
+test('windowMinutesLeft measures to the LAST open market, not to Eastern 5pm', () => {
+  // 9:00a EDT — Eastern has 8 hours, but Pacific has not opened, so the day's
+  // real remaining runway is measured against whoever is furthest from closing.
+  assert.equal(windowMinutesLeft(new Date('2026-07-22T13:00:00Z')), 480); // 9:00a ET = 6:00a PT
+  // 4:45p ET: Eastern has 15 minutes left, Pacific has 3h15. Pacing off the
+  // Eastern number crammed the day's cap into the morning and then idled while
+  // the West Coast was still at work.
+  assert.equal(windowMinutesLeft(new Date('2026-07-22T20:45:00Z')), 195); // 1:45p PT
+  assert.equal(windowMinutesLeft(new Date('2026-07-22T22:40:00Z')), 80);  // 6:40p ET / 3:40p PT
+  assert.equal(windowMinutesLeft(new Date('2026-07-23T06:00:00Z')), 0);   // 11pm PT — night
   assert.equal(windowMinutesLeft(new Date('2026-07-25T15:00:00Z')), 0);   // Saturday
 });
 
@@ -173,18 +180,32 @@ test('tickBudget: on-pace days keep the plain batch; behind days catch up, bound
   assert.equal(tickBudget(0, 5, 480), 0);
 });
 
-// ── Send window (business timezone, DST-proof) ───────────────────────────────
-// July = EDT (UTC-4); January = EST (UTC-5). The window is Mon–Fri 9a–5p ET.
-test('send window opens 9am ET and closes 5pm ET (summer/EDT)', () => {
-  assert.equal(isWithinSendWindow(new Date('2026-07-07T12:59:00Z')), false); // Tue 8:59a
-  assert.equal(isWithinSendWindow(new Date('2026-07-07T13:00:00Z')), true);  // Tue 9:00a
-  assert.equal(isWithinSendWindow(new Date('2026-07-07T20:59:00Z')), true);  // Tue 4:59p
-  assert.equal(isWithinSendWindow(new Date('2026-07-07T21:00:00Z')), false); // Tue 5:00p
+// ── Send window (per-lead local hours, DST-proof) ────────────────────────────
+// July = EDT (UTC-4); January = EST (UTC-5). Each lead's window is Mon–Fri
+// 9a–5p WHERE THAT LEAD IS; isWithinSendWindow is now the coarse engine gate,
+// true whenever any market is inside its own business hours.
+test('an Eastern lead opens 9am ET and closes 5pm ET (summer/EDT)', () => {
+  assert.equal(isWithinSendWindowFor('NY', new Date('2026-07-07T12:59:00Z')), false); // Tue 8:59a
+  assert.equal(isWithinSendWindowFor('NY', new Date('2026-07-07T13:00:00Z')), true);  // Tue 9:00a
+  assert.equal(isWithinSendWindowFor('NY', new Date('2026-07-07T20:59:00Z')), true);  // Tue 4:59p
+  assert.equal(isWithinSendWindowFor('NY', new Date('2026-07-07T21:00:00Z')), false); // Tue 5:00p
 });
 
-test('send window respects EST in winter', () => {
-  assert.equal(isWithinSendWindow(new Date('2026-01-12T13:59:00Z')), false); // Mon 8:59a EST
-  assert.equal(isWithinSendWindow(new Date('2026-01-12T14:00:00Z')), true);  // Mon 9:00a EST
+test('an Eastern lead respects EST in winter', () => {
+  assert.equal(isWithinSendWindowFor('NY', new Date('2026-01-12T13:59:00Z')), false); // Mon 8:59a EST
+  assert.equal(isWithinSendWindowFor('NY', new Date('2026-01-12T14:00:00Z')), true);  // Mon 9:00a EST
+});
+
+test('the engine gate opens with the first market and closes with the last', () => {
+  // 9am ET — Eastern is at work, so the engine runs even though the West is not.
+  assert.equal(isWithinSendWindow(new Date('2026-07-07T13:00:00Z')), true);
+  // 5pm ET — Eastern is done, but Pacific has three hours left. The old
+  // Eastern-only gate stopped the whole country here.
+  assert.equal(isWithinSendWindow(new Date('2026-07-07T21:00:00Z')), true);
+  assert.equal(isWithinSendWindowFor('NY', new Date('2026-07-07T21:00:00Z')), false);
+  assert.equal(isWithinSendWindowFor('CA', new Date('2026-07-07T21:00:00Z')), true);
+  // 1am ET / 10pm PT — everyone is closed.
+  assert.equal(isWithinSendWindow(new Date('2026-07-08T05:00:00Z')), false);
 });
 
 test('send window is closed on weekends', () => {
