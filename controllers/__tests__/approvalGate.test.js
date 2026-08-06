@@ -195,3 +195,93 @@ test('share guard: a STALE allocation key (deleted shipTo) does not over-block',
   };
   assert.deepEqual(confirmationShareIssues(conf), []);
 });
+
+// ── Link liveness: the one rule both the public gate and the hub read ────────
+// approvalLinkState was lifted out of _loadProjectByToken so the Studio hub can
+// report "this link is dead" using the exact predicate that serves the client a
+// 410 — rather than inferring it from quote validity, which is a different (and
+// drifting) clock. These pin the behaviour that used to be inline.
+const { approvalLinkState } = require('../approval');
+
+const NOW = new Date('2026-07-17T15:00:00Z').getTime();
+const at = (days) => new Date(NOW + days * 86400000);
+const approvedEvent = (days) => ({ kind: 'approved', at: at(days), by: 'client@x.com' });
+
+test('approvalLinkState: no token is never live, and is distinguishable from expired', () => {
+  const s = approvalLinkState({ approvalTokenExpiresAt: at(-1) }, NOW);
+  assert.equal(s.live, false);
+  assert.equal(s.reason, 'no_token'); // never shared ≠ shared-then-lapsed
+});
+
+test('approvalLinkState: a future expiry is live, a past one is expired', () => {
+  const live = approvalLinkState({ approvalToken: 't', approvalTokenExpiresAt: at(3) }, NOW);
+  assert.equal(live.live, true);
+  assert.equal(live.reason, 'ok');
+  assert.equal(live.closesAt.getTime(), at(3).getTime());
+
+  const gone = approvalLinkState({ approvalToken: 't', approvalTokenExpiresAt: at(-3) }, NOW);
+  assert.equal(gone.live, false);
+  assert.equal(gone.reason, 'expired');
+});
+
+test('approvalLinkState: a legacy link with no recorded expiry stays open-ended', () => {
+  const s = approvalLinkState({ approvalToken: 't', approvalTokenExpiresAt: null }, NOW);
+  assert.equal(s.live, true);
+  assert.equal(s.closesAt, null); // no invented death date
+});
+
+test('approvalLinkState: an approved client keeps the link past the share TTL', () => {
+  // Approved, never arrived → alive on the 180-day backstop.
+  const backstop = approvalLinkState({
+    approvalToken: 't', approvalTokenExpiresAt: at(-30), approvalEvents: [approvedEvent(-31)],
+  }, NOW);
+  assert.equal(backstop.live, true);
+  assert.equal(backstop.reason, 'grace');
+  assert.equal(backstop.closesAt.getTime(), at(-30 + 180).getTime());
+
+  // Past the backstop → finally closed, so no link stays public forever.
+  const lapsed = approvalLinkState({
+    approvalToken: 't', approvalTokenExpiresAt: at(-200), approvalEvents: [approvedEvent(-201)],
+  }, NOW);
+  assert.equal(lapsed.live, false);
+
+  // Arrived → the grace window is a week past arrival, not the backstop.
+  const arrived = approvalLinkState({
+    approvalToken: 't', approvalTokenExpiresAt: at(-30), approvalEvents: [approvedEvent(-31)],
+    tracking: { steps: [{ id: 'arrived', completedAt: at(-2) }] },
+  }, NOW);
+  assert.equal(arrived.live, true);
+  assert.equal(arrived.closesAt.getTime(), at(5).getTime());
+
+  const arrivedLongAgo = approvalLinkState({
+    approvalToken: 't', approvalTokenExpiresAt: at(-30), approvalEvents: [approvedEvent(-31)],
+    tracking: { steps: [{ id: 'arrived', completedAt: at(-20) }] },
+  }, NOW);
+  assert.equal(arrivedLongAgo.live, false);
+});
+
+test('approvalLinkState: an unapproved lapsed link gets no grace, cancelled dies at once', () => {
+  const unapproved = approvalLinkState({
+    approvalToken: 't', approvalTokenExpiresAt: at(-1), approvalEvents: [],
+  }, NOW);
+  assert.equal(unapproved.live, false);
+
+  const cancelled = approvalLinkState({
+    approvalToken: 't', approvalTokenExpiresAt: at(-1), status: 'cancelled',
+    approvalEvents: [approvedEvent(-2)], // approved, but the job is cancelled
+  }, NOW);
+  assert.equal(cancelled.live, false);
+  assert.equal(cancelled.reason, 'cancelled');
+});
+
+test('approvalLinkState: a superseded approval does not grant grace', () => {
+  // Re-sharing bumps approvalSupersededAt; the old cycle's approval must not keep
+  // the new (lapsed) link alive — same cutoff _currentApprovalStatus applies.
+  const s = approvalLinkState({
+    approvalToken: 't', approvalTokenExpiresAt: at(-1),
+    approvalEvents: [approvedEvent(-10)],
+    approvalSupersededAt: at(-5),
+  }, NOW);
+  assert.equal(s.live, false);
+  assert.equal(s.reason, 'expired');
+});

@@ -17,6 +17,7 @@ const Client = require('../models/Client');
 const TriageReply = require('../models/TriageReply');
 
 const { orderPlacedAt, etAgeDays } = require('../controllers/orders');
+const { approvalLinkState, QUOTE_VALID_DAYS } = require('../controllers/approval');
 const { HOT_CATEGORIES, ACTIONABLE_CATEGORIES } = require('./replyTriage');
 const { dayDiffFromToday } = require('../utils/time');
 
@@ -32,11 +33,18 @@ const ATTENTION_OPEN_STATUSES = ['placed', 'in_production', 'shipped'];
 // the CRM Today list. (nextFollowUp is never auto-set on a closed card.)
 // A follow-up on a deal at/above this value shows its dollar amount.
 const BIG_DEAL = 2000;
-// Quote validity — MIRROR of controllers/approval.js QUOTE_VALID_DAYS (keep in sync):
-// a pushed quote is good for this many days. Surface it on the hub once it's within
-// QUOTE_EXPIRY_WARN_DAYS of lapsing (or already lapsed) and still unapproved — an
-// unanswered quote is money on the table to chase before the window closes.
-const QUOTE_VALID_DAYS = 7;
+// Quote validity (QUOTE_VALID_DAYS) is imported from controllers/approval rather
+// than mirrored here — it used to be a hand-kept copy, and one clock the owner
+// reads should not have two definitions. A pushed quote is good for that many days;
+// surface it on the hub once it's within QUOTE_EXPIRY_WARN_DAYS of lapsing (or
+// already lapsed) and still unapproved — an unanswered quote is money on the table.
+//
+// Note this is the SOFT clock: quote validity is informational pricing staleness
+// and never blocks anyone. The HARD clock is approvalTokenExpiresAt — past it the
+// client gets a 410 and cannot open the page at all — and the two genuinely drift
+// (merely opening the share dialog re-pushes the snapshot, resetting quotePushedAt,
+// without touching the token's expiry). So the hub judges urgency on the link state
+// FIRST and treats quote validity as the secondary number.
 const QUOTE_EXPIRY_WARN_DAYS = 2;
 // Cap the per-group item list; the group count still reflects the true total.
 const ITEM_CAP = 25;
@@ -159,36 +167,96 @@ function toGroups(signalGroups = []) {
 const cap = (arr) => arr.slice(0, ITEM_CAP);
 const nameOf = (o) => (o && (o.companyName || o.clientName)) ? String(o.companyName || o.clientName).trim() : '';
 
+// Whole days (ceil) from `now` until `when`. <= 0 means already past; null when
+// there's no usable date. Pure.
+function daysUntil(when, now = new Date()) {
+  if (!when) return null;
+  const t = new Date(when).getTime();
+  if (Number.isNaN(t)) return null;
+  return Math.ceil((t - now.getTime()) / 86400000);
+}
+
 // A pushed quote's remaining validity in whole days (ceil) from quotePushedAt +
 // QUOTE_VALID_DAYS. <= 0 means already lapsed. null when never pushed. Pure.
 function quoteDaysLeft(quotePushedAt, now = new Date()) {
   if (!quotePushedAt) return null;
-  const expiresAt = new Date(quotePushedAt).getTime() + QUOTE_VALID_DAYS * 86400000;
-  if (Number.isNaN(expiresAt)) return null;
-  return Math.ceil((expiresAt - now.getTime()) / 86400000);
+  const pushed = new Date(quotePushedAt).getTime();
+  if (Number.isNaN(pushed)) return null;
+  return daysUntil(new Date(pushed + QUOTE_VALID_DAYS * 86400000), now);
 }
 
-// Quotes OUT to the client and still unapproved (the caller passes only status:
-// 'quoted' orders with a quotePushedAt) that are within QUOTE_EXPIRY_WARN_DAYS of
-// lapsing — or already lapsed — the "nudge before it dies" list, most-lapsed/soonest
-// first. A quote with real runway left is NOT surfaced (no noise). Pure.
-function bucketQuotesAwaiting(orders = [], now = new Date()) {
-  const out = [];
+// Split the quotes that are out to a client into the two states the owner needs to
+// tell apart at a glance:
+//
+//   dead     — the approval LINK no longer resolves. The client hits a 410 and
+//              literally cannot open the page, so waiting accomplishes nothing;
+//              it has to be re-shared. The old feed could not express this state
+//              at all — it only ever measured pricing validity.
+//   expiring — the link still opens, but a clock is about to run out (or the
+//              pricing already lapsed). A nudge, not a breakage.
+//
+// Most-urgent first within each bucket. A quote with real runway on BOTH clocks is
+// not surfaced at all (no noise). A quote that was pushed but never link-shared is
+// skipped entirely — it isn't waiting on the client, it's sitting in the shop, and
+// reporting it as "expired" would be a false alarm.
+//
+// Pure: `orders` are lean docs and `linkStateOf` is injected so the whole thing is
+// unit-testable without a DB.
+function bucketQuotesAwaiting(orders = [], now = new Date(), linkStateOf = approvalLinkState) {
+  const dead = [];
+  const expiring = [];
   for (const o of orders) {
     if (!o || !o.quotePushedAt) continue;
-    const daysLeft = quoteDaysLeft(o.quotePushedAt, now);
-    if (daysLeft == null || daysLeft > QUOTE_EXPIRY_WARN_DAYS) continue; // still has runway
-    out.push({
+    const qLeft = quoteDaysLeft(o.quotePushedAt, now);
+    if (qLeft == null) continue;
+
+    const link = linkStateOf(o, now.getTime()) || {};
+    if (link.reason === 'no_token') continue; // pushed but never shared — not the client's move
+    // closesAt is the REAL death date (approved-client grace / backstop included),
+    // which is why we read it instead of the raw token expiry.
+    const lLeft = daysUntil(link.closesAt, now);
+
+    const base = {
       _id: String(o._id || ''),
       projectNumber: o.projectNumber || '',
       orderNumber: o.orderNumber || '',
       name: nameOf(o) || (o.projectNumber ? `#${o.projectNumber}` : 'Quote'),
-      metric: daysLeft < 0 ? `${-daysLeft}d ago` : daysLeft === 0 ? 'today' : `${daysLeft}d left`,
-      daysLeft,
+      quoteDaysLeft: qLeft,
+      linkDaysLeft: lLeft,
+      linkLive: !!link.live,
+    };
+
+    if (!link.live) {
+      const gone = lLeft == null ? null : -lLeft; // whole days since the link closed
+      dead.push({
+        ...base,
+        daysLeft: lLeft == null ? qLeft : lLeft,
+        metric: gone == null ? 'link expired'
+          : gone <= 0 ? 'expired today'
+          : `expired ${gone}d ago`,
+        metricLevel: 'danger',
+      });
+      continue;
+    }
+
+    // Link still opens. Urgency is whichever clock closes first; a link with no
+    // recorded expiry (legacy, open-ended) leaves the quote clock in charge.
+    const soonest = lLeft == null ? qLeft : Math.min(qLeft, lLeft);
+    if (soonest > QUOTE_EXPIRY_WARN_DAYS) continue; // real runway on both → stay quiet
+    expiring.push({
+      ...base,
+      daysLeft: soonest,
+      // Say which clock is talking. "11d ago" used to render here for a lapsed
+      // quote and read like "quoted 11 days ago" — the opposite of the truth.
+      metric: qLeft < 0 ? `quote lapsed ${-qLeft}d ago`
+        : soonest === 0 ? 'expires today'
+        : `${soonest}d left`,
+      metricLevel: (qLeft < 0 || soonest <= 0) ? 'danger' : 'warn',
     });
   }
-  out.sort((a, b) => a.daysLeft - b.daysLeft); // most-lapsed / soonest-to-lapse first
-  return out;
+  dead.sort((a, b) => a.daysLeft - b.daysLeft);     // longest-dead first
+  expiring.sort((a, b) => a.daysLeft - b.daysLeft); // soonest-to-close first
+  return { dead, expiring };
 }
 
 // ── Composition (hits the DB; each source isolated) ──────────────────────────
@@ -245,20 +313,31 @@ async function followUps(now) {
   ];
 }
 
-// Quotes sent to the client and sitting unapproved as they near/pass their validity
-// window — the owner's "chase this before it lapses" nudge. status:'quoted' means
-// not-yet-approved (approving flips it to 'approved'); only quotes actually pushed to
-// the client are considered. kind:'order' → the hub row deep-links straight to the
-// order (reuses the existing order nav). Not in ATTENTION_OPEN_STATUSES, so it never
-// double-counts with the order-aging groups.
+// Quotes sent to the client and sitting unapproved — the owner's "chase this before
+// it dies" nudge, split by whether the client can still open the link at all.
+// status:'quoted' means not-yet-approved (approving flips it to 'approved'); only
+// quotes actually pushed to the client are considered. kind:'order' → the hub row
+// deep-links straight to the order (reuses the existing order nav), which is where
+// the Share button lives to re-issue a dead link. Not in ATTENTION_OPEN_STATUSES,
+// so it never double-counts with the order-aging groups.
+//
+// A dead link is CRITICAL, not a warning: it isn't a job aging, it's a broken path
+// — the client may well have tried to approve and been shown a 410. The token
+// fields are selected because approvalLinkState needs them to apply the same
+// grace/backstop rules the public gate enforces.
 async function quotesAwaiting(now) {
   const quoted = await Order.find({ status: 'quoted', archived: { $ne: true }, quotePushedAt: { $ne: null } })
-    .select('projectNumber orderNumber companyName clientName quotePushedAt status').lean();
-  const items = bucketQuotesAwaiting(quoted, now);
+    .select('projectNumber orderNumber companyName clientName quotePushedAt status '
+          + 'approvalToken approvalTokenExpiresAt approvalSupersededAt approvalEvents tracking')
+    .lean();
+  const { dead, expiring } = bucketQuotesAwaiting(quoted, now);
   return [
+    { id: 'quote_link_dead', severity: 'critical', kind: 'order',
+      label: `${dead.length} quote link${dead.length === 1 ? '' : 's'} expired · client can't open ${dead.length === 1 ? 'it' : 'them'}`,
+      count: dead.length, items: cap(dead) },
     { id: 'quote_expiring', severity: 'warning', kind: 'order',
-      label: `${items.length} quote${items.length === 1 ? '' : 's'} awaiting approval · expiring`,
-      count: items.length, items: cap(items) },
+      label: `${expiring.length} quote${expiring.length === 1 ? '' : 's'} awaiting approval · expiring`,
+      count: expiring.length, items: cap(expiring) },
   ];
 }
 
@@ -638,6 +717,7 @@ module.exports = {
   bucketInquiries,
   bucketQuotesAwaiting,
   quoteDaysLeft,
+  daysUntil,
   bucketSiteEdits,
   bucketAwaitingConfirmation,
   bucketPreorderDrops,

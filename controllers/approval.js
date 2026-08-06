@@ -207,6 +207,55 @@ async function backfillConfirmationPublished() {
   return r.modifiedCount != null ? r.modifiedCount : (r.nModified || 0);
 }
 
+// ── Link liveness — one rule, one place ───────────────────────────────────────
+// Whether an order's approval link would actually resolve RIGHT NOW, and when it
+// finally closes. This is the HARD gate: past it the client gets a 410 and cannot
+// open the page at all. Do not confuse it with QUOTE_VALID_DAYS above, which is
+// only informational pricing validity and never blocks anyone.
+//
+// The nuance a bare approvalTokenExpiresAt can't express:
+//   • Once the client has APPROVED in the current cycle the link becomes their
+//     order-tracking page, so it outlives the share TTL — staying up until a week
+//     after 'arrived' is ticked, or a finite 180-day backstop if it never is (a
+//     link must never stay public forever).
+//   • A cancelled project's link closes immediately — no reason to keep its
+//     pricing page public.
+// Pure and lean-doc friendly, so the token gate below and the Studio hub's
+// Signals feed both answer "is this link dead?" the same way instead of each
+// re-deriving it. Returns { live, expiresAt, closesAt, reason }, where reason is
+// 'no_token' | 'ok' | 'grace' | 'cancelled' | 'expired' and closesAt is the real
+// death date (grace/backstop included), which may be later than expiresAt.
+const APPROVAL_BACKSTOP_MS = 180 * 24 * 60 * 60 * 1000;
+const APPROVAL_ARRIVED_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function approvalLinkState(order, now = Date.now()) {
+  if (!order || !order.approvalToken) {
+    return { live: false, expiresAt: null, closesAt: null, reason: 'no_token' };
+  }
+  const raw = order.approvalTokenExpiresAt ? new Date(order.approvalTokenExpiresAt) : null;
+  // No expiry recorded = legacy link minted before expiry existed. expireLegacy-
+  // ApprovalTokens() backfills these on boot; until it does, treat the link as
+  // open-ended rather than inventing a death date it doesn't have.
+  if (!raw || Number.isNaN(raw.getTime())) {
+    return { live: true, expiresAt: null, closesAt: null, reason: 'ok' };
+  }
+  if (raw.getTime() >= now) return { live: true, expiresAt: raw, closesAt: raw, reason: 'ok' };
+
+  // Past the share TTL — the approved-client grace window is the only way back.
+  if (order.status === 'cancelled') return { live: false, expiresAt: raw, closesAt: raw, reason: 'cancelled' };
+  if (_currentApprovalStatus(order).status !== 'approved') {
+    return { live: false, expiresAt: raw, closesAt: raw, reason: 'expired' };
+  }
+  const arrived = ((order.tracking && order.tracking.steps) || [])
+    .find(st => st.id === 'arrived' && st.completedAt);
+  const graceEnd = arrived
+    ? new Date(arrived.completedAt).getTime() + APPROVAL_ARRIVED_GRACE_MS
+    : raw.getTime() + APPROVAL_BACKSTOP_MS;
+  return now < graceEnd
+    ? { live: true, expiresAt: raw, closesAt: new Date(graceEnd), reason: 'grace' }
+    : { live: false, expiresAt: raw, closesAt: new Date(graceEnd), reason: 'expired' };
+}
+
 // ── Public approval surface (no auth — token-gated) ───────────────────────────
 // Returns one of:
 //   { ok: true, order }          — valid, not expired
@@ -217,25 +266,8 @@ async function _loadProjectByToken(projectId, token) {
   const order = await Order.findById(projectId).lean();
   if (!order) return { ok: false, reason: 'invalid' };
   if (!order.approvalToken || order.approvalToken !== token) return { ok: false, reason: 'invalid' };
-  if (order.approvalTokenExpiresAt && order.approvalTokenExpiresAt.getTime() < Date.now()) {
-    // Exception: once the client has APPROVED in the current cycle, this link
-    // becomes their order-tracking page — it must stay alive until a week
-    // after the order ARRIVES (tracking 'arrived' step), not the share TTL.
-    const approved = _currentApprovalStatus(order).status === 'approved';
-    const arrived = ((order.tracking && order.tracking.steps) || [])
-      .find(st => st.id === 'arrived' && st.completedAt);
-    // Cancelled projects close immediately — no reason to keep their pricing
-    // page public. Otherwise the link lives until a week after 'arrived'; if
-    // 'arrived' is never ticked, a finite backstop (180 days past the share
-    // expiry) still closes it, so a link never stays public forever.
-    const BACKSTOP_MS = 180 * 24 * 60 * 60 * 1000;
-    const graceEnd = arrived
-      ? new Date(arrived.completedAt).getTime() + 7 * 24 * 60 * 60 * 1000
-      : order.approvalTokenExpiresAt.getTime() + BACKSTOP_MS;
-    if (order.status === 'cancelled' || !(approved && Date.now() < graceEnd)) {
-      return { ok: false, reason: 'expired', expiresAt: order.approvalTokenExpiresAt };
-    }
-  }
+  const link = approvalLinkState(order);
+  if (!link.live) return { ok: false, reason: 'expired', expiresAt: link.expiresAt };
   return { ok: true, order };
 }
 
@@ -1267,6 +1299,11 @@ module.exports = {
   _confPublished, _hasConfContent,
   _latestPerColour,   // exported for tests
   DEFAULT_TRACKING_STEPS,
+  // Link liveness — the single source of truth for "is this approval link dead?".
+  // Shared with services/signals so the hub reports the same answer the public
+  // token gate enforces.
+  approvalLinkState,
+  QUOTE_VALID_DAYS,
   // Exported for unit tests (pure helpers).
   _pickedAtForCycle, _currentApprovalStatus, _safeConfirmation,
   _esc,  // notification-email escaping, reused by lookbooks
