@@ -16,6 +16,7 @@ const Client = require('../models/Client');
 const {
   classifyReply,
   stripQuotedReply,
+  looksUndecoded,
   finalizeCategory,
   classifyBounceNdr,
   matchReply,
@@ -57,6 +58,39 @@ function messageIdsFromRaw(raw = {}) {
 
 const escapeRegex = (s) => String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+// Rewrite a row that was stored as raw MIME with the decoded text, and re-file
+// it on what the person actually wrote.
+//
+// The status rule is the careful part. A row the MACHINE filed away (auto-ignore
+// + 'new'/'ignored') goes back to 'new' so a real question resurfaces in the
+// worklist — that is the entire point. A row the OWNER triaged keeps his
+// decision: if he read it and said "not a lead", a better decode does not get to
+// overrule him. Never touches matching or the enrollment; only the text, the
+// category, and — when the machine was the one that was wrong — the status.
+const MACHINE_FILED = new Set(['new', 'ignored']);
+// Worth putting back in front of the owner. An out-of-office is a real mailbox
+// that decoded fine — but it's still a machine and there is nothing to answer,
+// so a repair doesn't resurface it (the sequence's own snooze handles it).
+const PROMOTABLE = (category) => category !== IGNORE_CATEGORY && category !== 'auto_reply_ooo';
+async function repairStoredReply(dup, { subject, body, snippet, fromEmail, fromName, headers }) {
+  const cls = classifyReply({ subject, snippet: body, fromEmail, fromName, headers });
+  const fin = finalizeCategory({ category: cls.category, matched: !!dup.matched, subject, snippet: body });
+  const category = fin.category;
+
+  const set = { snippet, category, suggestedAction: suggestedActionFor(category) };
+  const wasMachineFiled = dup.category === IGNORE_CATEGORY && MACHINE_FILED.has(dup.status);
+  if (wasMachineFiled && PROMOTABLE(category)) {
+    set.status = 'new';
+    set.handledAt = null;
+  }
+  await TriageReply.updateOne({ _id: dup._id }, { $set: set });
+  const promoted = !!set.status;
+  if (promoted) {
+    console.log(`[triage] repaired a mis-decoded reply from ${fromEmail || '(no sender)'} → ${category}`);
+  }
+  return { repaired: true, promoted, category };
+}
+
 // Classify + match one raw reply and persist it. Own sent mail is dropped (not a
 // reply); everything else — including bounces/auto-replies and unmatched senders —
 // is stored so nothing silently disappears. Returns { saved, skip }.
@@ -74,11 +108,22 @@ async function ingestOne(raw = {}) {
 
   if (!fromEmail && !subject && !snippet) return { skip: 'empty' };
 
-  // Dedupe a re-synced Gmail message (manual rows carry no id).
+  // Dedupe a re-synced message (manual rows carry no id) — EXCEPT when the row
+  // we already have is unreadable. Replies synced before the reader learned to
+  // decode MIME were stored as raw boundary markers and base64, so they were
+  // filed on gibberish: the buyer asking for pricing is sitting in the database
+  // as machine noise, and nothing could rescue it. Re-classifying can't (there
+  // are no words to read) and re-ingesting couldn't (this check skipped it).
+  // Now a properly decoded copy of a message we hold in raw form REPAIRS the row
+  // in place instead of being thrown away.
   const gmailMessageId = raw.gmailMessageId ? String(raw.gmailMessageId) : null;
   if (gmailMessageId) {
-    const dup = await TriageReply.findOne({ gmailMessageId }).select('_id').lean();
-    if (dup) return { skip: 'duplicate' };
+    const dup = await TriageReply.findOne({ gmailMessageId })
+      .select('_id snippet category status matched').lean();
+    if (dup && !(looksUndecoded(dup.snippet) && body && !looksUndecoded(body))) {
+      return { skip: 'duplicate' };
+    }
+    if (dup) return repairStoredReply(dup, { subject, body, snippet, fromEmail, fromName, headers: raw.headers || null });
   }
 
   // Pass the raw header map through so classifyReply can use the RFC-standard
@@ -1025,7 +1070,7 @@ async function getWorklist(_req, res) {
 
 module.exports = {
   listReplies, addReplies, updateStatus, startJobFromReply, syncGmail, getSyncStatus, getWorklist,
-  ingestOne, applyStatusSideEffects, runGmailSync, startGmailIngest, retriageStoredReplies,
+  ingestOne, repairStoredReply, applyStatusSideEffects, runGmailSync, startGmailIngest, retriageStoredReplies,
   resweepStoredNdrs, auditQuotedFooterOptOuts,
   // Shared contract: which mailbox the reply sync is authenticated as (read by
   // the outreach overview to detect a reply black hole).
