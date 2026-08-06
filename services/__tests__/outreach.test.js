@@ -851,3 +851,46 @@ test('a genuine fresh spike still trips the quarantine', () => {
   // …and it must NOT immediately lift back out on the same bad data.
   assert.equal(shouldLiftQuarantine(recent, { quarantinedAt: d(9) }), false);
 });
+
+// ── The breaker must not steer on readings from a broken meter ────────────────
+// Until the opt-out link was split (GET asks, POST acts), every mail-security
+// layer that prefetches links — SafeLinks, Proofpoint, corporate AV — opted the
+// recipient out on delivery. That posted a 13.7% opt-out rate and auto-paused
+// sending, and the trailing 7-day window would have held the engine down for
+// another week on numbers a bug invented. So the opt-out leg judges only the
+// window since the meter was fixed — BOTH halves of the ratio.
+
+test('opt-outs are judged over the same window they were counted in', () => {
+  // 20 clean sends, 1 real opt-out. Rate is 5% — over the 4% line — but the
+  // clean sample is below the floor, so there is nothing trustworthy to judge.
+  const r = evaluateDeliverability({ sent7d: 150, unsub7d: 1, unsubSent: 20 });
+  assert.equal(r.tripped, false);
+  assert.equal(r.unsubSent, 20);
+  // Judging that 1 opt-out against all 150 sends would ALSO read as fine, but
+  // for the wrong reason — the point is the denominator matches the numerator.
+  assert.equal(Number(r.unsubRate.toFixed(3)), 0.05);
+});
+
+test('a REAL opt-out rate still trips once clean data accumulates', () => {
+  const r = evaluateDeliverability({ sent7d: 300, unsub7d: 12, unsubSent: 120 });
+  assert.equal(r.tripped, true);
+  assert.match(r.reason, /unsubscribe rate/);
+});
+
+test('narrowing the opt-out window leaves bounce and complaint alone', () => {
+  // Both still judge the full 7 days — the prefetch bug never touched them.
+  const bounce = evaluateDeliverability({ sent7d: 150, bounced7d: 12, unsub7d: 1, unsubSent: 20 });
+  assert.equal(bounce.tripped, true);
+  assert.match(bounce.reason, /bounce rate/);
+  const complaint = evaluateDeliverability({ sent7d: 150, complaints7d: 3, unsub7d: 1, unsubSent: 20 });
+  assert.equal(complaint.tripped, true);
+  assert.match(complaint.reason, /complaint rate/);
+});
+
+test('with no clean-window override the breaker behaves exactly as before', () => {
+  const a = evaluateDeliverability({ sent7d: 150, unsub7d: 20 });
+  const b = evaluateDeliverability({ sent7d: 150, unsub7d: 20, unsubSent: null });
+  assert.equal(a.tripped, true);
+  assert.equal(b.tripped, true);
+  assert.equal(a.unsubSent, 150);
+});
