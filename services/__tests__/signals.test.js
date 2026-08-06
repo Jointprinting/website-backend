@@ -148,24 +148,122 @@ test('quoteDaysLeft counts whole days from quotePushedAt + QUOTE_VALID_DAYS', ()
   assert.equal(quoteDaysLeft(null, now), null);
 });
 
-test('bucketQuotesAwaiting surfaces only quotes near/past lapse, most-lapsed first', () => {
+const { daysUntil } = require('../signals');
+test('daysUntil counts whole days ahead, negative once past', () => {
+  const now = new Date('2026-07-17T15:00:00Z');
+  const at = (days) => new Date(now.getTime() + days * 86400000);
+  assert.equal(daysUntil(at(3), now), 3);
+  assert.equal(daysUntil(at(0), now), 0);
+  assert.equal(daysUntil(at(-2), now), -2);
+  assert.equal(daysUntil(null, now), null);
+  assert.equal(daysUntil('not-a-date', now), null);
+});
+
+// The whole point of the split: a quote whose LINK is dead is a broken path (the
+// client gets a 410), not a job aging. It must land in its own bucket regardless of
+// where the softer quote-validity clock sits.
+test('bucketQuotesAwaiting splits dead links from merely-expiring quotes', () => {
   const now = new Date('2026-07-17T15:00:00Z');
   const pushed = (days) => new Date(now.getTime() - days * 86400000);
+  // Injected link oracle keyed by _id, so this stays a pure unit test.
+  const links = {
+    fresh:   { live: true,  closesAt: new Date(now.getTime() + 30 * 86400000) },
+    soon:    { live: true,  closesAt: new Date(now.getTime() + 30 * 86400000) },
+    today:   { live: true,  closesAt: new Date(now.getTime() + 30 * 86400000) },
+    lapsed:  { live: true,  closesAt: new Date(now.getTime() + 30 * 86400000) },
+    deadold: { live: false, closesAt: new Date(now.getTime() - 11 * 86400000), reason: 'expired' },
+    deadnew: { live: false, closesAt: new Date(now.getTime() - 1 * 86400000),  reason: 'expired' },
+    nolink:  { live: false, closesAt: null, reason: 'no_token' },
+  };
   const orders = [
     { _id: 'fresh',   projectNumber: '10', companyName: 'Fresh Co',  quotePushedAt: pushed(1) },                    // 6d left → runway, excluded
-    { _id: 'soon',    projectNumber: '11', companyName: 'Soon Co',   quotePushedAt: pushed(QUOTE_VALID_DAYS - 1) }, // 1d left → surfaced
-    { _id: 'today',   projectNumber: '12', companyName: 'Edge Co',   quotePushedAt: pushed(QUOTE_VALID_DAYS) },     // 0d → surfaced
-    { _id: 'lapsed',  projectNumber: '13', companyName: 'Lapsed Co', quotePushedAt: pushed(QUOTE_VALID_DAYS + 4) }, // -4d → surfaced, leads
-    { _id: 'nopush',  projectNumber: '14', companyName: 'No Push',   quotePushedAt: null },                         // never pushed → excluded
+    { _id: 'soon',    projectNumber: '11', companyName: 'Soon Co',   quotePushedAt: pushed(QUOTE_VALID_DAYS - 1) }, // 1d left → expiring
+    { _id: 'today',   projectNumber: '12', companyName: 'Edge Co',   quotePushedAt: pushed(QUOTE_VALID_DAYS) },     // 0d → expiring
+    { _id: 'lapsed',  projectNumber: '13', companyName: 'Lapsed Co', quotePushedAt: pushed(QUOTE_VALID_DAYS + 4) }, // -4d, link alive → expiring
+    { _id: 'deadold', projectNumber: '14', companyName: 'Dead Old',  quotePushedAt: pushed(2) },                    // link dead 11d → dead
+    { _id: 'deadnew', projectNumber: '15', companyName: 'Dead New',  quotePushedAt: pushed(2) },                    // link dead 1d → dead
+    { _id: 'nolink',  projectNumber: '16', companyName: 'Never Sent', quotePushedAt: pushed(20) },                  // pushed, never shared → excluded
+    { _id: 'nopush',  projectNumber: '17', companyName: 'No Push',   quotePushedAt: null },                         // never pushed → excluded
   ];
-  const items = bucketQuotesAwaiting(orders, now);
-  assert.deepStrictEqual(items.map((i) => i._id), ['lapsed', 'today', 'soon']); // by daysLeft asc: -4, 0, 1
-  assert.equal(items[0].metric, '4d ago');
-  assert.equal(items.find((i) => i._id === 'today').metric, 'today');
-  assert.ok(items.every((i) => i.projectNumber));   // deep-link fields carried
-  // Everything with real runway or no push is kept off the feed.
-  assert.equal(items.some((i) => i._id === 'fresh' || i._id === 'nopush'), false);
+  const { dead, expiring } = bucketQuotesAwaiting(orders, now, (o) => links[o._id] || {});
+
+  // Dead links lead with the longest-dead first, and say so unambiguously.
+  assert.deepStrictEqual(dead.map((i) => i._id), ['deadold', 'deadnew']);
+  assert.equal(dead[0].metric, 'expired 11d ago');
+  assert.equal(dead[1].metric, 'expired 1d ago');
+  assert.ok(dead.every((i) => i.metricLevel === 'danger' && i.linkLive === false));
+
+  // Still-openable links, soonest-to-close first.
+  assert.deepStrictEqual(expiring.map((i) => i._id), ['lapsed', 'today', 'soon']); // -4, 0, 1
+  // The old feed rendered these as "4d ago" / "today" — which read as the quote's
+  // AGE. Each now names the clock it's talking about.
+  assert.equal(expiring[0].metric, 'quote lapsed 4d ago');
+  assert.equal(expiring[1].metric, 'expires today');
+  assert.equal(expiring[2].metric, '1d left');
+  assert.equal(expiring[2].metricLevel, 'warn');
+
+  // Runway on both clocks, never shared, or never pushed → all kept off the feed.
+  const ids = [...dead, ...expiring].map((i) => i._id);
+  assert.equal(ids.includes('fresh'), false);
+  assert.equal(ids.includes('nolink'), false);
+  assert.equal(ids.includes('nopush'), false);
+  assert.ok([...dead, ...expiring].every((i) => i.projectNumber)); // deep-link fields carried
   assert.ok(QUOTE_EXPIRY_WARN_DAYS >= 0);
+});
+
+// The drift that motivated all of this: opening the share dialog re-pushes the
+// snapshot (resetting quotePushedAt to a full window) without touching the token's
+// expiry — so the quote clock can read healthy while the link is about to die. The
+// row must be governed by whichever closes FIRST.
+test('bucketQuotesAwaiting lets the link clock override a healthy quote clock', () => {
+  const now = new Date('2026-07-17T15:00:00Z');
+  const orders = [{
+    _id: 'drifted', projectNumber: '20', companyName: 'Drifted Co',
+    quotePushedAt: new Date(now.getTime() - 1 * 86400000), // 6d left on the soft clock
+  }];
+  const { dead, expiring } = bucketQuotesAwaiting(orders, now, () => ({
+    live: true, closesAt: new Date(now.getTime() + 1 * 86400000), // link dies tomorrow
+  }));
+  assert.equal(dead.length, 0);
+  assert.equal(expiring.length, 1);        // surfaced despite 6d of quote validity left
+  assert.equal(expiring[0].metric, '1d left');
+  assert.equal(expiring[0].quoteDaysLeft, 6);
+  assert.equal(expiring[0].linkDaysLeft, 1);
+});
+
+// A legacy link with no recorded expiry is open-ended, so the quote clock stays in
+// charge rather than the row inventing a death date.
+test('bucketQuotesAwaiting falls back to the quote clock for open-ended links', () => {
+  const now = new Date('2026-07-17T15:00:00Z');
+  const orders = [{
+    _id: 'legacy', projectNumber: '21', companyName: 'Legacy Co',
+    quotePushedAt: new Date(now.getTime() - (QUOTE_VALID_DAYS + 2) * 86400000),
+  }];
+  const { dead, expiring } = bucketQuotesAwaiting(orders, now, () => ({
+    live: true, closesAt: null, reason: 'ok',
+  }));
+  assert.equal(dead.length, 0);
+  assert.equal(expiring[0].metric, 'quote lapsed 2d ago');
+  assert.equal(expiring[0].linkDaysLeft, null);
+});
+
+// End-to-end against the REAL approvalLinkState, so the hub and the public token
+// gate can't drift apart in what "dead" means.
+test('bucketQuotesAwaiting agrees with the real approvalLinkState', () => {
+  const now = new Date('2026-07-17T15:00:00Z');
+  const orders = [
+    { _id: 'live', projectNumber: '30', companyName: 'Live Co',
+      quotePushedAt: new Date(now.getTime() - QUOTE_VALID_DAYS * 86400000),
+      approvalToken: 'tok-a', approvalTokenExpiresAt: new Date(now.getTime() + 5 * 86400000) },
+    { _id: 'gone', projectNumber: '31', companyName: 'Gone Co',
+      quotePushedAt: new Date(now.getTime() - 2 * 86400000),
+      approvalToken: 'tok-b', approvalTokenExpiresAt: new Date(now.getTime() - 3 * 86400000) },
+  ];
+  const { dead, expiring } = bucketQuotesAwaiting(orders, now);
+  assert.deepStrictEqual(dead.map((i) => i._id), ['gone']);
+  assert.equal(dead[0].metric, 'expired 3d ago');
+  assert.deepStrictEqual(expiring.map((i) => i._id), ['live']);
+  assert.equal(expiring[0].metric, 'expires today'); // quote lapses today, link fine
 });
 
 // ── Webworks client-site edits waiting ────────────────────────────────────────
