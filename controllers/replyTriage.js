@@ -31,7 +31,7 @@ const {
   isGmailConfigured,
   worklistFromReplies,
 } = require('../services/replyTriage');
-const { warmFromEnrollment } = require('../services/warmHandoff');
+const { warmFromEnrollment, closeWarm } = require('../services/warmHandoff');
 const { suppress } = require('../services/suppression');
 const { getSenders } = require('../services/senderPool');
 
@@ -63,7 +63,13 @@ const escapeRegex = (s) => String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'
 async function ingestOne(raw = {}) {
   const fromEmail = normEmail(raw.fromEmail);
   const subject = String(raw.subject || '').trim();
-  const snippet = String(raw.snippet || raw.body || '').trim().slice(0, 600);
+  // CLASSIFY on the whole body, STORE a card-sized excerpt. Truncating first cut
+  // the message at 600 chars — which lands mid-quote on any threaded reply, so a
+  // bottom-posted "please take us off your list" or a pricing question below a
+  // signature was cut off before the classifier ever saw it. The stored snippet
+  // is only what the Studio card shows.
+  const body = String(raw.snippet || raw.body || '').trim();
+  const snippet = body.slice(0, 600);
   const fromName = String(raw.fromName || '').trim();
 
   if (!fromEmail && !subject && !snippet) return { skip: 'empty' };
@@ -78,7 +84,7 @@ async function ingestOne(raw = {}) {
   // Pass the raw header map through so classifyReply can use the RFC-standard
   // auto/bulk signals (Auto-Submitted / Precedence / X-Auto* / List-*), which are
   // far more reliable than subject/body wording for catching auto-responders.
-  let cls = classifyReply({ subject, snippet, fromEmail, fromName, headers: raw.headers || null });
+  let cls = classifyReply({ subject, snippet: body, fromEmail, fromName, headers: raw.headers || null });
   if (cls.self) return { skip: 'self' }; // our own outbound mail is never a reply
 
   // Candidate matches (loaded here; matchReply itself is pure/testable). Beyond
@@ -127,7 +133,7 @@ async function ingestOne(raw = {}) {
   // human/buying line in the sender's own (unquoted) words to flip it.
   if (cls.auto && cls.bulkHeader && match.matched) {
     const second = classifyReply({
-      subject, snippet, fromEmail, fromName,
+      subject, snippet: body, fromEmail, fromName,
       headers: raw.headers || null,
       matched: true, matchBy: match.matchBy,
     });
@@ -140,7 +146,7 @@ async function ingestOne(raw = {}) {
   // Post-match final say: unmatched + no buying signal + promotional shape is
   // machine mail (the Google Workspace "free trial is ending" class), never a
   // lead. Matched replies and anything with real intent pass through untouched.
-  const fin = finalizeCategory({ category: cls.category, matched: match.matched, subject, snippet });
+  const fin = finalizeCategory({ category: cls.category, matched: match.matched, subject, snippet: body });
   const category = fin.category;
   if (fin.downgraded) { cls.category = category; cls.ignore = true; }
 
@@ -457,10 +463,10 @@ async function applyStatusSideEffects(reply, status, { companyLevel = true } = {
         $push: { log: { at: now, text: 'Do-not-contact set from reply triage', kind: 'email', dedupKey: `triage-dnc:${reply._id}` } },
       },
     );
-    await OutreachEnrollment.updateMany(
-      { companyKey: reply.companyKey, status: 'active' },
-      { $set: { status: 'stopped', stopReason: 'triage-do-not-contact', nextSendAt: null } },
-    );
+    // closeWarm, not a status:'active' filter — a lead that REPLIED sits at
+    // 'replied', which that filter can never match, so the enrollment (and the
+    // warm card it renders) survived every attempt to close it.
+    await closeWarm({ companyKey: reply.companyKey, reason: 'triage-do-not-contact' });
   } else if (status === 'not_interested') {
     // A human told us no — "we already design our own merch", "we use another
     // printer". That is a real answer, so it has to end the relationship in
@@ -473,10 +479,7 @@ async function applyStatusSideEffects(reply, status, { companyLevel = true } = {
     // its history stay, and clearing doNotEmail re-opens them if that changes.
     // Deliberately NOT suppressed globally: suppression is for opt-outs and dead
     // addresses, and a polite "not right now" is neither.
-    await OutreachEnrollment.updateMany(
-      { companyKey: reply.companyKey, status: 'active' },
-      { $set: { status: 'stopped', stopReason: 'triage-not-interested', nextSendAt: null } },
-    );
+    await closeWarm({ companyKey: reply.companyKey, reason: 'triage-not-interested' });
     await Client.updateOne(
       { companyKey: reply.companyKey },
       {
@@ -536,6 +539,50 @@ async function updateStatus(req, res) {
     res.json({ ok: true, reply: reply.toObject(), sideEffectWarning });
   } catch (e) {
     res.status(400).json({ message: e.message });
+  }
+}
+
+// POST /api/triage/replies/:id/start-job { title?, value?, reuse? }
+// The one-tap "this is a real customer now" — from the reply that earned it.
+//
+// Everything downstream already existed (project, deal card, CRM promotion); what
+// was missing was the bridge, so converting a lead meant retyping the shop's name
+// into the CRM and hoping the sequence noticed. This runs the SAME handoff the
+// CRM's "Start new job" runs, stops the drip, carries the person who actually
+// wrote to us onto the project as its contact, and hands the frontend the project
+// number so it can drop the owner straight into building the quote.
+async function startJobFromReply(req, res) {
+  try {
+    const reply = await TriageReply.findById(req.params.id);
+    if (!reply) return res.status(404).json({ message: 'Reply not found.' });
+    if (!reply.companyKey) {
+      // An unmatched reply has no company to attach a project to. Say which one,
+      // so the fix ("link this reply to a company first") is obvious.
+      return res.status(400).json({ message: 'This reply isn’t matched to a company yet — link it to a lead first.' });
+    }
+
+    const body = req.body || {};
+    const out = await require('../services/warmHandoff').convertToJob({
+      companyKey: reply.companyKey,
+      enrollmentId: reply.enrollmentId || null,
+      contactEmail: reply.fromEmail || '',
+      contactName: reply.fromName || '',
+      title: body.title || '',
+      value: Number(body.value) || 0,
+      reuse: body.reuse !== false,      // default: attach to the live project
+      reason: `Replied to outreach and converted to a job (${reply.category || 'reply'})`,
+    });
+    if (!out.ok) return res.status(400).json({ message: out.reason || 'could not start the job' });
+
+    // The reply is dealt with — it produced a job. Keep the row (history) but
+    // take it out of the worklist.
+    reply.status = 'handled';
+    reply.handledAt = new Date();
+    await reply.save();
+
+    res.status(out.created ? 201 : 200).json({ ok: true, ...out, reply: reply.toObject() });
+  } catch (e) {
+    res.status(e.status || 400).json({ message: e.message });
   }
 }
 
@@ -977,7 +1024,7 @@ async function getWorklist(_req, res) {
 }
 
 module.exports = {
-  listReplies, addReplies, updateStatus, syncGmail, getSyncStatus, getWorklist,
+  listReplies, addReplies, updateStatus, startJobFromReply, syncGmail, getSyncStatus, getWorklist,
   ingestOne, applyStatusSideEffects, runGmailSync, startGmailIngest, retriageStoredReplies,
   resweepStoredNdrs, auditQuotedFooterOptOuts,
   // Shared contract: which mailbox the reply sync is authenticated as (read by

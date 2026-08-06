@@ -122,6 +122,26 @@ test('a REAL opt-out typed by the human IS still honored (both directions pinned
   assert.equal(classifyReply({ fromEmail: 'a@shop.com', subject: 'unsubscribe' }).category, 'unsubscribe');
 });
 
+test('an opt-out written in the PLURAL is an opt-out', () => {
+  // A buyer answers for the shop, not for themselves — "take US off", "remove
+  // OUR email". Matching only the singular kept these people enrolled and
+  // mailing, which is a compliance failure and not merely a mis-filed row.
+  for (const s of [
+    'Please take us off your list.',
+    'remove us from your mailing list',
+    'Please remove our email from your database.',
+    'delete us from this list please',
+    'no more emails please',
+    'stop reaching out',
+  ]) {
+    assert.equal(classifyReply({ fromEmail: 'a@shop.com', snippet: s }).category, 'unsubscribe', s);
+  }
+  // …and the phrasing stays specific: ordinary replies must not trip it.
+  for (const s of ['Can you take a look at our logo?', 'We removed that item from the order.']) {
+    assert.notEqual(classifyReply({ fromEmail: 'a@shop.com', snippet: s }).category, 'unsubscribe', s);
+  }
+});
+
 test('"not interested" from the human sticks; from our quoted pitch it does not', () => {
   assert.equal(classifyReply({ fromEmail: 'a@shop.com', snippet: 'Not interested, thanks.' }).category, 'not_interested');
   const quoted = classifyReply({

@@ -23,6 +23,7 @@ const {
   markReplied,
   notARealReply,
   stopEnrollment,
+  startJobFromEnrollment,
   unenrollAll,
   resetCampaign,
   deleteCampaign,
@@ -32,6 +33,7 @@ const {
   recheckAuthNow,
   trackOpen,
   unsubscribe,
+  unsubscribePage,
   getFinderStatus,
   findLeads,
   runAutoNow,
@@ -44,7 +46,10 @@ const {
 
 // ── Public (token-keyed, embedded in the emails themselves) ──
 router.get('/t/:token/open.png', trackOpen);
-router.get('/u/:token', unsubscribe);
+// GET asks, POST acts. A link-prefetching mail scanner (SafeLinks, Proofpoint,
+// corporate AV) hits the GET on every cold email it inspects — opting people out
+// there unsubscribed leads who never even opened the message.
+router.get('/u/:token', unsubscribePage);
 router.post('/u/:token', unsubscribe);   // one-click List-Unsubscribe (RFC 8058)
 // Provider bounce/complaint webhook — self-guarded by OUTREACH_BOUNCE_SECRET.
 router.post('/bounce', bounceWebhook);
@@ -85,5 +90,6 @@ router.post('/campaigns/:id/auto-enroll', setAutoEnroll);
 router.post('/enrollments/:id/replied', markReplied);
 router.post('/enrollments/:id/not-a-reply', notARealReply); // false-warm correction
 router.post('/enrollments/:id/stop',    stopEnrollment);
+router.post('/enrollments/:id/start-job', startJobFromEnrollment);  // lead → project + deal card
 
 module.exports = router;

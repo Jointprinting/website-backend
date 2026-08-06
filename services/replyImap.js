@@ -27,6 +27,7 @@
 // hiccuped).
 
 const { ImapFlow } = require('imapflow');
+const { simpleParser } = require('mailparser');
 
 // Host is derived from the SMTP host so a provider swap doesn't need a second
 // env var; IMAP_HOST overrides when a provider's names don't pair up.
@@ -89,15 +90,52 @@ function imapConfig(env = process.env) {
 // both are read. Names differ by provider; a mailbox that isn't there is skipped.
 const FOLDERS = ['INBOX', '[Gmail]/Spam', 'Junk', 'Junk Email'];
 
-const MAX_PER_FOLDER = 60;      // bounded work per tick
+// How far back into a folder each tick looks. This used to be 60, chosen when
+// every message in the window was fully downloaded on every run — and 60 is not
+// two weeks of a cold-sending mailbox. That box collects bounces and
+// autoresponders by the dozen, so a real reply could be pushed past the window
+// by machine mail before a sync ran and then never be looked at again, which is
+// exactly the "I got an email that isn't showing up here" case. Now that the
+// metadata pass drops already-stored messages BEFORE downloading a body, a wider
+// window costs one cheap fetch and nothing else in steady state.
+const MAX_PER_FOLDER = 300;
 const LOOKBACK_DAYS = 14;
 
-/** Flatten imapflow's header map into the plain {name: value} ingestOne wants. */
-function flattenHeaders(map) {
+/**
+ * Flatten a header collection into the plain { name: value } ingestOne wants.
+ *
+ * Accepts a real Map (what mailparser returns) OR a raw RFC-822 header Buffer,
+ * which is what imapflow actually hands back — its own typedef says
+ * `{Buffer} [headers]`. A Buffer is a Uint8Array, so it HAS .forEach and the
+ * previous version iterated BYTES: 112 entries keyed '0','1','2'… and every
+ * real lookup undefined. That silently killed thread matching (In-Reply-To /
+ * References were always '') and every RFC auto/bulk signal on the primary
+ * reader, and the unit test passed only because it fed a Map, which production
+ * never sees. Continuation lines are unfolded per RFC 5322. Pure.
+ */
+function flattenHeaders(src) {
   const out = {};
-  if (!map || typeof map.forEach !== 'function') return out;
-  map.forEach((value, key) => {
-    out[String(key)] = Array.isArray(value) ? value.join(', ') : String(value == null ? '' : value);
+  if (!src) return out;
+  if (Buffer.isBuffer(src) || typeof src === 'string') {
+    const lines = String(src).replace(/\r\n/g, '\n').split('\n');
+    let name = '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      if (/^[ \t]/.test(line) && name) {            // folded continuation
+        out[name] += ` ${line.trim()}`;
+        continue;
+      }
+      const idx = line.indexOf(':');
+      if (idx <= 0) continue;
+      name = line.slice(0, idx).trim().toLowerCase();
+      const value = line.slice(idx + 1).trim();
+      out[name] = out[name] ? `${out[name]}, ${value}` : value;
+    }
+    return out;
+  }
+  if (typeof src.forEach !== 'function') return out;
+  src.forEach((value, key) => {
+    out[String(key).toLowerCase()] = Array.isArray(value) ? value.join(', ') : String(value == null ? '' : value);
   });
   return out;
 }
@@ -131,9 +169,74 @@ function toRaw(msg) {
   };
 }
 
-// Only the plain-text part is needed — the classifier reads words, and pulling
-// full HTML bodies off a mail server every 10 minutes is wasted bandwidth.
-async function fetchFolder(client, folder, since, ingest, stats) {
+/** Crude HTML → text, for the minority of replies sent as HTML only. Pure. */
+function htmlToText(html) {
+  return String(html || '')
+    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/&#39;/gi, "'")
+    .replace(/[ \t]+/g, ' ')
+    .replace(/ *\n */g, '\n')      // tags left spaces around every line break
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * The readable body of a parsed message: what the person typed, decoded.
+ *
+ * mailparser hands back `text` when a text/plain part exists and `html`
+ * otherwise; a couple of senders give us neither, in which case textAsHtml is
+ * all there is. Pure.
+ */
+function bodyTextOf(parsed) {
+  if (!parsed) return '';
+  const plain = String(parsed.text || '').trim();
+  if (plain) return plain;
+  return htmlToText(parsed.html || parsed.textAsHtml || '');
+}
+
+/** First text/plain (else text/html) leaf in a bodyStructure tree, or ''. Pure. */
+function textPartPath(node) {
+  if (!node) return '';
+  const walk = (n, want) => {
+    if (!n) return '';
+    const type = String(n.type || '').toLowerCase();
+    if (Array.isArray(n.childNodes) && n.childNodes.length) {
+      for (const child of n.childNodes) {
+        const hit = walk(child, want);
+        if (hit) return hit;
+      }
+      return '';
+    }
+    // A leaf. Attachments announce themselves; never mistake one for the body.
+    if (String(n.disposition || '').toLowerCase() === 'attachment') return '';
+    return type === want ? String(n.part || '1') : '';
+  };
+  return walk(node, 'text/plain') || walk(node, 'text/html');
+}
+
+/** Read a decoded single part off the server (imapflow undoes base64/QP). */
+async function downloadPart(client, uid, part) {
+  const dl = await client.download(uid, part, { uid: true });
+  if (!dl || !dl.content) return '';
+  const chunks = [];
+  for await (const chunk of dl.content) chunks.push(chunk);
+  const text = Buffer.concat(chunks).toString('utf8');
+  const isHtml = /html/i.test(String((dl.meta && dl.meta.contentType) || ''));
+  return isHtml ? htmlToText(text) : text;
+}
+
+// Messages are pulled in two passes. The first asks only for metadata — cheap,
+// no bodies — so we can drop the ones already stored WITHOUT paying to download
+// them again. That matters: the folder scan looks back two weeks on a ten-minute
+// cron, so the same replies were being re-fetched ~140 times each before the
+// dedupe in ingestOne threw them away.
+const MAX_SOURCE_BYTES = 2 * 1024 * 1024;   // above this, pull only the text part
+
+async function fetchFolder(client, folder, since, ingest, stats, seen) {
   let lock;
   try {
     lock = await client.getMailboxLock(folder);
@@ -144,16 +247,61 @@ async function fetchFolder(client, folder, since, ingest, stats) {
     const uids = await client.search({ since }, { uid: true });
     if (!uids || !uids.length) return;
     const recent = uids.slice(-MAX_PER_FOLDER);
+
+    // Pass 1 — metadata only. Deliberately WITHOUT headers: the envelope already
+    // carries the message-id we dedupe on, and full headers on 300 messages is
+    // real bandwidth for data we'd throw away. Messages we go on to ingest get
+    // their headers from the parsed source; the rare fallback path fetches them.
+    const heads = [];
     for await (const msg of client.fetch(
       recent,
-      { uid: true, envelope: true, headers: true, bodyParts: ['text'], internalDate: true },
+      { uid: true, envelope: true, bodyStructure: true, size: true, internalDate: true },
       { uid: true },
-    )) {
-      stats.scanned++;
+    )) heads.push(msg);
+    if (!heads.length) return;
+
+    const already = await seen(heads.map((m) => String((m.envelope && m.envelope.messageId) || '').trim()).filter(Boolean));
+    stats.scanned += heads.length;
+
+    const fresh = heads.filter((m) => {
+      const id = String((m.envelope && m.envelope.messageId) || '').trim();
+      if (id && already.has(id)) { stats.skipped++; return false; }
+      return true;
+    });
+    if (!fresh.length) return;
+
+    // One message at a time, so peak memory is one message and not the folder.
+    const handle = async (meta, source) => {
       try {
-        const part = msg.bodyParts && msg.bodyParts.get('text');
-        const raw = toRaw({ ...msg, bodyText: part ? part.toString('utf8') : '' });
-        const res = await ingest(raw);
+        let bodyText = '';
+        let headers = meta.headers;
+        if (source) {
+          // Whole message → mailparser. It undoes MIME: multipart boundaries,
+          // base64 / quoted-printable, charsets. Feeding the classifier the RAW
+          // body instead (which is all BODY[TEXT] returns) meant an ordinary
+          // quoted-printable reply arrived as boundary markers and "=E2=80=99"
+          // escapes — so a buyer asking for pricing read as noise, got filed
+          // bounce_auto_ignore, and never reached the worklist.
+          const parsed = await simpleParser(source, { skipImageLinks: true });
+          bodyText = bodyTextOf(parsed);
+          if (Array.isArray(parsed.headerLines) && parsed.headerLines.length) {
+            headers = parsed.headerLines.map((h) => h.line).join('\r\n');
+          }
+        }
+        if (!bodyText) {
+          // Oversized (someone attached their whole logo pack), or a message
+          // mailparser found no body in: pull just the text part, decoded, and
+          // leave the attachments on the server. A text-only read beats a
+          // missed lead. Headers come along on this path — thread matching and
+          // the RFC auto/bulk signals are read off them.
+          const part = textPartPath(meta.bodyStructure);
+          if (part) bodyText = await downloadPart(client, meta.uid, part).catch(() => '');
+          if (!headers) {
+            const one = await client.fetchOne(meta.uid, { headers: true }, { uid: true }).catch(() => null);
+            if (one && one.headers) headers = one.headers;
+          }
+        }
+        const res = await ingest(toRaw({ ...meta, headers, bodyText }));
         if (res && res.skip) stats.skipped++;
         else stats.imported++;
       } catch (e) {
@@ -162,9 +310,35 @@ async function fetchFolder(client, folder, since, ingest, stats) {
         stats.errors++;
         if (stats.errors <= 3) console.warn('[reply-imap] message failed:', e.message);
       }
+    };
+
+    const byUid = new Map(fresh.map((m) => [m.uid, m]));
+    const normal = fresh.filter((m) => Number(m.size || 0) <= MAX_SOURCE_BYTES).map((m) => m.uid);
+    if (normal.length) {
+      for await (const msg of client.fetch(normal, { uid: true, source: true }, { uid: true })) {
+        await handle(byUid.get(msg.uid) || msg, msg.source);
+        byUid.delete(msg.uid);
+      }
     }
+    for (const meta of byUid.values()) await handle(meta, null);   // oversized / not returned
   } finally {
     try { lock.release(); } catch { /* already released */ }
+  }
+}
+
+/**
+ * Which of these RFC Message-IDs are already stored? Used to skip a download.
+ * Defaults to the triage collection; injectable so the reader stays testable.
+ */
+async function seenMessageIds(ids = []) {
+  if (!ids.length) return new Set();
+  try {
+    const TriageReply = require('../models/TriageReply');
+    const rows = await TriageReply.find({ gmailMessageId: { $in: ids.map((id) => `imap:${id}`) } })
+      .select('gmailMessageId').lean();
+    return new Set(rows.map((r) => String(r.gmailMessageId).replace(/^imap:/, '')));
+  } catch {
+    return new Set();                          // never block a sync on a lookup
   }
 }
 
@@ -172,7 +346,7 @@ async function fetchFolder(client, folder, since, ingest, stats) {
  * Pull recent mail from the sending mailbox and run it through triage.
  * Returns a stats object; never throws.
  */
-async function runImapSync({ env = process.env, ingestOne, lookbackDays = LOOKBACK_DAYS } = {}) {
+async function runImapSync({ env = process.env, ingestOne, lookbackDays = LOOKBACK_DAYS, seen = seenMessageIds } = {}) {
   const cfg = imapConfig(env);
   if (!cfg) return { ok: false, reason: 'not-configured', scanned: 0, imported: 0, skipped: 0, errors: 0 };
   const ingest = ingestOne || require('../controllers/replyTriage').ingestOne;
@@ -183,7 +357,7 @@ async function runImapSync({ env = process.env, ingestOne, lookbackDays = LOOKBA
 
   try {
     await client.connect();
-    for (const folder of FOLDERS) await fetchFolder(client, folder, since, ingest, stats);
+    for (const folder of FOLDERS) await fetchFolder(client, folder, since, ingest, stats, seen);
   } catch (e) {
     console.warn('[reply-imap] sync failed:', e.message);
     return { ...stats, ok: false, reason: e.message };
@@ -200,4 +374,7 @@ function imapMailbox(env = process.env) {
   return cfg ? cfg.auth.user : '';
 }
 
-module.exports = { runImapSync, imapConfig, imapHostFor, imapMailbox, toRaw, flattenHeaders, addressOf };
+module.exports = {
+  runImapSync, imapConfig, imapHostFor, imapMailbox, toRaw, flattenHeaders, addressOf,
+  htmlToText, bodyTextOf, textPartPath, seenMessageIds,
+};
