@@ -1077,6 +1077,33 @@ async function stopEnrollment(req, res) {
   }
 }
 
+// POST /api/outreach/enrollments/:id/start-job { title?, value?, reuse? }
+// The same lead → job conversion the triage inbox offers, reached from the
+// ENROLLMENT. The worklist's bridge bucket (companies marked replied before the
+// triage inbox existed) is keyed by enrollment, not by a stored reply, so
+// without this the one row type most likely to be a real customer was the one
+// row type with no way to convert.
+async function startJobFromEnrollment(req, res) {
+  try {
+    const enr = await OutreachEnrollment.findById(req.params.id).lean();
+    if (!enr) return res.status(404).json({ message: 'enrollment not found' });
+    const body = req.body || {};
+    const out = await require('../services/warmHandoff').convertToJob({
+      companyKey: enr.companyKey,
+      enrollmentId: enr._id,
+      contactEmail: enr.toEmail || '',
+      title: body.title || '',
+      value: Number(body.value) || 0,
+      reuse: body.reuse !== false,
+      reason: 'Replied to outreach and converted to a job',
+    });
+    if (!out.ok) return res.status(400).json({ message: out.reason || 'could not start the job' });
+    res.status(out.created ? 201 : 200).json({ ok: true, ...out });
+  } catch (e) {
+    res.status(e.status || 400).json({ message: e.message });
+  }
+}
+
 // POST /api/outreach/campaigns/:id/unenroll-all — clear the whole roster off a
 // campaign so it can be re-enrolled fresh (e.g. after enrolling leads that turned
 // out to have no email). Deletes the enrollment rows; the companies stay in the
@@ -1892,6 +1919,42 @@ async function trackOpen(req, res) {
 // enrollment AND the company's hard doNotEmail flag, and logs the touch so the
 // timeline shows why the sequence went quiet. GET serves humans (link click),
 // POST serves one-click List-Unsubscribe.
+// The page a human sees. GET no longer unsubscribes: it ASKS.
+//
+// Every layer between us and the reader fetches the links in a cold email —
+// Outlook SafeLinks, Gmail's proxy, Proofpoint/Mimecast/Barracuda URL rewriting,
+// corporate AV, plain link prefetch. A GET that opted someone out on sight meant
+// a scanner could unsubscribe a lead who never saw the message, which both loses
+// the lead and inflates the unsubscribe rate we steer the whole engine by. The
+// newsletter already split this correctly; outreach now matches it.
+const unsubShell = (inner) => `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unsubscribe</title></head>
+<body style="margin:0;background:#f4f4f1;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+  <div style="max-width:420px;margin:80px auto;padding:32px;background:#fff;border:1px solid rgba(15,26,19,0.1);border-radius:16px;text-align:center;color:#111a14;">
+    <div style="font-size:12px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:#15803d;margin-bottom:14px;">Joint Printing</div>
+    ${inner}
+  </div></body></html>`;
+
+const UNSUB_DONE = '<p><b>You&#39;re unsubscribed.</b><br>We won&#39;t email you again.</p>';
+const UNSUB_GONE = '<p>This link has expired — if you got an email from us, reply &ldquo;unsubscribe&rdquo; and we&#39;ll take care of it.</p>';
+
+// GET /api/outreach/u/:token — confirm page, writes nothing.
+async function unsubscribePage(req, res) {
+  try {
+    const enr = await OutreachEnrollment.findOne({ token: String(req.params.token || '') })
+      .select('status').lean();
+    if (!enr) return res.status(404).set('Content-Type', 'text/html').send(unsubShell(UNSUB_GONE));
+    if (enr.status === 'unsubscribed') return res.set('Content-Type', 'text/html').send(unsubShell(UNSUB_DONE));
+    return res.set('Content-Type', 'text/html').send(unsubShell(`
+      <p style="margin:0 0 18px;">Stop getting emails from Joint Printing?</p>
+      <form method="POST"><button type="submit" style="background:#15803d;color:#fff;border:none;border-radius:10px;padding:12px 22px;font-weight:700;font-size:14px;cursor:pointer;">Unsubscribe</button></form>`));
+  } catch (e) {
+    console.warn('[outreach] unsubscribe page failed:', e.message);
+    res.status(500).set('Content-Type', 'text/html').send(unsubShell(UNSUB_GONE));
+  }
+}
+
+// POST /api/outreach/u/:token — the RFC 8058 one-click target AND the confirm
+// button above. This is the only path that actually opts someone out.
 async function unsubscribe(req, res) {
   let ok = false;
   try {
@@ -1919,15 +1982,13 @@ async function unsubscribe(req, res) {
   } catch (e) {
     console.warn('[outreach] unsubscribe failed:', e.message);
   }
-  if (req.method === 'POST') return res.status(ok ? 200 : 404).json({ ok });
-  res.status(200).set('Content-Type', 'text/html').send(
-    `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unsubscribed</title></head>
-<body style="font-family:Arial,Helvetica,sans-serif;background:#f6f6f6;margin:0;padding:48px 16px;text-align:center;color:#333;">
-<div style="max-width:420px;margin:0 auto;background:#fff;border-radius:8px;padding:32px;">
-<h2 style="margin:0 0 8px 0;">You're unsubscribed</h2>
-<p style="margin:0;color:#666;">${ok ? "We won't email you again." : 'This link has expired, but if you got an email from us, reply “unsubscribe” and we’ll take care of it.'}</p>
-</div></body></html>`,
-  );
+  // A mail client posting the RFC 8058 one-click only needs the status; a human
+  // arriving from the confirm button gets the page.
+  const wantsJson = String(req.get('accept') || '').includes('application/json')
+    || !String(req.get('accept') || '').includes('text/html');
+  if (wantsJson) return res.status(ok ? 200 : 404).json({ ok });
+  res.status(ok ? 200 : 404).set('Content-Type', 'text/html')
+    .send(unsubShell(ok ? UNSUB_DONE : UNSUB_GONE));
 }
 
 // ── AI drafting (AI drafts, owner sends — nothing here sends mail) ───────────
@@ -2069,6 +2130,7 @@ module.exports = {
   getQueue,
   markReplied,
   stopEnrollment,
+  startJobFromEnrollment,
   unenrollAll,
   resetCampaign,
   deleteCampaign,
@@ -2080,6 +2142,7 @@ module.exports = {
   recheckAuthNow,
   trackOpen,
   unsubscribe,
+  unsubscribePage,
   getFinderStatus,
   findLeads,
   runAutoNow,

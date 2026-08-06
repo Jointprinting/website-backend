@@ -90,6 +90,114 @@ async function warmFromEnrollment(enr, opts = {}) {
   return { ok: true, companyKey: enr.companyKey, ...res };
 }
 
+// The mirror of warmFromEnrollment: the lead answered, and the answer was NO.
+//
+// warmFromEnrollment moves an enrollment to 'replied', and that status is the
+// ONLY thing that renders a card under "Warm leads". So a warm card can only be
+// cleared by something that moves the enrollment OUT of 'replied' — and the
+// triage side-effects scoped their write to `{ status: 'active' }`, which
+// matches zero rows once the lead has replied. Marking a reply "Not a lead" was
+// therefore a no-op on the one record the card is built from: the owner told the
+// system a shop wasn't interested, replied to them by hand, and the card sat
+// there anyway with no button that could remove it.
+//
+// Terminates from any NON-TERMINAL status so it works whether the lead replied
+// (the case that was broken), is mid-sequence, or already finished it.
+// Idempotent — a row already stopped/unsubscribed/failed is left exactly as is,
+// so this can never overwrite a truer terminal reason with a vaguer one.
+const CLOSEABLE = ['active', 'replied', 'completed'];
+async function closeWarm({ enrollmentId = null, companyKey = '', reason = 'triage-not-interested' } = {}) {
+  const OutreachEnrollment = require('../models/OutreachEnrollment');
+  const filter = { status: { $in: CLOSEABLE } };
+  if (enrollmentId) filter._id = enrollmentId;
+  else if (companyKey) filter.companyKey = companyKey;
+  else return { closed: 0 };
+  const res = await OutreachEnrollment.updateMany(
+    filter,
+    { $set: { status: 'stopped', stopReason: reason, nextSendAt: null } },
+  ).catch(() => ({ modifiedCount: 0 }));
+  return { closed: res.modifiedCount || 0 };
+}
+
+// The END of the outreach relationship in the good direction: this lead said
+// yes, so turn it into a real job.
+//
+// The pieces already existed — ensureProjectForCompany mints the project and
+// promotes the CRM record, ensureDealForProject opens the pipeline card, and the
+// CRM's "Start new job" button wires them together — but nothing connected them
+// to a REPLY. Converting a warm lead meant reading the reply in the Outreach tab,
+// remembering the shop's name, finding it in the CRM, and pressing Start new job
+// there, with the enrollment left running in the background the whole time.
+//
+// So this is that same handoff, reachable from the reply itself, with the two
+// things the manual route forgot: the drip STOPS (a lead you're now quoting must
+// never get touch 3), and the contact who actually wrote to us is carried onto
+// the project instead of whatever generic address the campaign mailed.
+//
+// Idempotent by construction: ensureProjectForCompany reuses the company's live
+// project unless the caller forces a new one, ensureDealForProject reuses the
+// deal, and the log line is dedupKey'd — so a double-tap opens one job.
+async function convertToJob({
+  companyKey = '', enrollmentId = null, contactEmail = '', contactName = '',
+  title = '', value = 0, reuse = true, reason = '',
+} = {}, opts = {}) {
+  const key = String(companyKey || '').trim();
+  if (!key) return { ok: false, reason: 'no-company' };
+  const now = opts.now instanceof Date ? opts.now : new Date();
+
+  const client = await Client.findOne({ companyKey: key })
+    .select('companyKey companyName clientName dealValue log').lean();
+  const { ensureProjectForCompany, ensureDealForProject } = require('../controllers/orders');
+
+  const { order, created } = await ensureProjectForCompany({
+    companyKey: key,
+    companyName: String((client && client.companyName) || '').trim(),
+    clientName: String((client && client.clientName) || '').trim(),
+    contactName: String(contactName || '').trim(),
+    contactEmail: String(contactEmail || '').trim(),
+    dealValue: Number(value) || Number((client && client.dealValue) || 0) || 0,
+  }, { forceNew: !reuse });
+
+  const deal = await ensureDealForProject(order, {
+    title: String(title || '').trim().slice(0, 200),
+    value: Number(value) || 0,
+  }).catch((e) => { console.warn('[warm] deal card skipped:', e.message); return null; });
+
+  // The drip is over for this company — they're a job now, not a prospect.
+  const closed = await closeWarm({ enrollmentId, companyKey: key, reason: 'converted-to-job' });
+
+  // One durable line in the CRM history tying the project back to the reply that
+  // produced it, so the funnel stays readable months later.
+  const projectNumber = String(order.projectNumber || '');
+  const dedupKey = `outreach-job:${projectNumber || order._id}`;
+  if (client && !(client.log || []).some((l) => l && l.dedupKey === dedupKey)) {
+    await Client.updateOne(
+      { companyKey: key },
+      {
+        $push: {
+          log: {
+            at: now,
+            text: reason || `Outreach reply converted to project #${projectNumber} — quoting`,
+            kind: 'email',
+            dedupKey,
+          },
+        },
+      },
+    ).catch(() => {});
+  }
+
+  return {
+    ok: true,
+    companyKey: key,
+    projectNumber,
+    orderNumber: String(order.orderNumber || ''),
+    orderId: String(order._id || ''),
+    dealId: deal ? String(deal._id || '') : '',
+    created,
+    stoppedSequences: closed.closed || 0,
+  };
+}
+
 // The CORRECTION for a false warm: an auto-responder slipped past the
 // classifier, warmed the company, and stopped the drip — the owner (or the
 // re-triage healer) says "that wasn't a real reply". Undo exactly what the
@@ -140,4 +248,5 @@ async function unwarmFromReply({ enrollmentId = null, companyKey = '' } = {}, op
   return { ok: true, unwarmed: true };
 }
 
-module.exports = { warmCompany, warmFromEnrollment, unwarmFromReply };
+module.exports = {
+  closeWarm, convertToJob, warmCompany, warmFromEnrollment, unwarmFromReply };

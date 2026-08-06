@@ -258,7 +258,11 @@ function hasHumanSignal(subject = '', newText = '') {
 const CHANGED_EMAIL = /\b(we(?:'ve| have) (?:changed|updated|switched) (?:our )?e-?mail|(?:our )?e-?mail (?:address )?has (?:changed|moved)|new e-?mail address is|this (?:address|inbox|mailbox) is no longer (?:in use|active|used)|please (?:direct|send) (?:all )?(?:future )?(?:e-?mails?|correspondence|inquiries|messages) to)\b/i;
 
 // Content signals. Order below encodes precedence.
-const RE_UNSUB = /\b(unsubscribe|remove me|take me off|stop (?:emailing|contacting|sending)|opt[ -]?out|do not (?:contact|email)|quit emailing)\b/i;
+// Opt-outs come in the plural far more often than the singular — a buyer writes
+// on behalf of the shop ("take US off your list", "remove OUR email"). Matching
+// only "remove me" / "take me off" filed those as ordinary replies and kept
+// mailing them, which is a CAN-SPAM problem, not just a missed category.
+const RE_UNSUB = /\b(unsubscribe|(?:remove|delete|drop)\s+(?:me|us|our\s+(?:e-?mail|address|info|company|shop|store)|this\s+(?:e-?mail|address))|take\s+(?:me|us|our\s+\w+)\s+off|(?:me|us)\s+off\s+(?:your|the|this)\s+(?:list|mailing)|stop (?:emailing|contacting|sending|reaching out)|opt[ -]?out|do not (?:contact|email)|quit emailing|no (?:more|further) (?:e-?mails?|contact))\b/i;
 const RE_NOT_INTERESTED = /\b(not interested|no,? thank|no thanks|we'?re all set|already (?:have|use|using|work with|got)|not (?:at this time|right now|looking|a fit|for us)|no need|please stop|not needed)\b/i;
 const RE_WRONG_PERSON = /\b(wrong (?:person|department|contact|email)|not the right|you'?ll want to (?:talk|speak|reach)|reach out to|please (?:contact|email)|forward(?:ing|ed)? (?:this|you|it) to|our (?:buyer|manager|owner|purchaser) (?:is|handles)|i'?m not (?:the|who)|no longer (?:with|here|at))\b/i;
 const RE_PRICING = /(\bpric|\bquote|\bcost\b|how much|rate card|\brates?\b|\bbudget\b|\bestimate\b|per (?:unit|shirt|piece|item)|minimum order|\bMOQ\b)/i;

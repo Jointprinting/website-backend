@@ -16,7 +16,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { imapConfig, imapHostFor, imapMailbox, toRaw, flattenHeaders, addressOf } = require('../replyImap');
+const {
+  imapConfig, imapHostFor, imapMailbox, toRaw, flattenHeaders, addressOf,
+  htmlToText, bodyTextOf, textPartPath,
+} = require('../replyImap');
 
 // ── Host derivation ──────────────────────────────────────────────────────────
 
@@ -120,6 +123,71 @@ test('flattenHeaders and addressOf handle the shapes imapflow returns', () => {
   assert.deepEqual(addressOf([{ address: 'A@B.com', name: 'N' }]), { email: 'a@b.com', name: 'N' });
   assert.deepEqual(addressOf([]), { email: '', name: '' });
   assert.deepEqual(addressOf(null), { email: '', name: '' });
+});
+
+test('flattenHeaders reads the raw header BUFFER imapflow actually returns', () => {
+  // A Buffer is a Uint8Array, so it has .forEach — the Map-only version iterated
+  // BYTES and produced { '0': 82, '1': 101, … }. Every lookup came back
+  // undefined, which silently killed thread matching (In-Reply-To/References
+  // were always empty) and every RFC auto/bulk signal on this reader.
+  const buf = Buffer.from([
+    'Message-ID: <abc@x.com>',
+    'In-Reply-To: <sent-1@x.com>',
+    'Subject: hi',
+    '\tthere',                                   // folded continuation, RFC 5322
+    'List-Unsubscribe: <mailto:u@x>',
+    '',
+  ].join('\r\n'), 'utf8');
+  const h = flattenHeaders(buf);
+  assert.equal(h['in-reply-to'], '<sent-1@x.com>');
+  assert.equal(h['message-id'], '<abc@x.com>');
+  assert.equal(h.subject, 'hi there');          // unfolded
+  assert.equal(h['list-unsubscribe'], '<mailto:u@x>');
+});
+
+// ── Body decoding ────────────────────────────────────────────────────────────
+// BODY[TEXT] returns the RAW message body: MIME boundaries, base64 and
+// quoted-printable escapes, attachments and all. Handing that to the classifier
+// meant an ordinary reply read as gibberish — a buyer asking for pricing was
+// filed as noise and never reached the worklist.
+
+test('bodyTextOf prefers the plain-text part the sender typed', () => {
+  assert.equal(bodyTextOf({ text: 'Send pricing for 50 hoodies.', html: '<p>ignored</p>' }),
+    'Send pricing for 50 hoodies.');
+});
+
+test('bodyTextOf falls back to the HTML body when that is all there is', () => {
+  const parsed = { text: '', html: '<div>What would <b>100 tees</b> cost?</div><p>Thanks</p>' };
+  assert.equal(bodyTextOf(parsed), 'What would 100 tees cost?\nThanks');
+});
+
+test('bodyTextOf never throws on an empty or missing parse', () => {
+  assert.equal(bodyTextOf(null), '');
+  assert.equal(bodyTextOf({}), '');
+});
+
+test('htmlToText drops markup and scripts, keeps the words', () => {
+  assert.equal(htmlToText('<style>a{}</style><p>Hi&nbsp;&amp; thanks</p><br>Sam'), 'Hi & thanks\n\nSam');
+});
+
+test('textPartPath finds the body part without pulling attachments', () => {
+  // multipart/mixed → [ multipart/alternative → [text/plain, text/html], image ]
+  const structure = {
+    type: 'multipart/mixed',
+    childNodes: [
+      {
+        type: 'multipart/alternative',
+        childNodes: [{ type: 'text/plain', part: '1.1' }, { type: 'text/html', part: '1.2' }],
+      },
+      { type: 'image/png', part: '2', disposition: 'attachment' },
+    ],
+  };
+  assert.equal(textPartPath(structure), '1.1');
+  // HTML-only sender: take the HTML part rather than nothing.
+  assert.equal(textPartPath({ type: 'multipart/alternative', childNodes: [{ type: 'text/html', part: '1' }] }), '1');
+  // An attached text file is not the body.
+  assert.equal(textPartPath({ type: 'text/plain', part: '1', disposition: 'attachment' }), '');
+  assert.equal(textPartPath(null), '');
 });
 
 // ── Never explodes a cron tick ───────────────────────────────────────────────
