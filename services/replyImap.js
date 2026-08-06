@@ -90,7 +90,15 @@ function imapConfig(env = process.env) {
 // both are read. Names differ by provider; a mailbox that isn't there is skipped.
 const FOLDERS = ['INBOX', '[Gmail]/Spam', 'Junk', 'Junk Email'];
 
-const MAX_PER_FOLDER = 60;      // bounded work per tick
+// How far back into a folder each tick looks. This used to be 60, chosen when
+// every message in the window was fully downloaded on every run — and 60 is not
+// two weeks of a cold-sending mailbox. That box collects bounces and
+// autoresponders by the dozen, so a real reply could be pushed past the window
+// by machine mail before a sync ran and then never be looked at again, which is
+// exactly the "I got an email that isn't showing up here" case. Now that the
+// metadata pass drops already-stored messages BEFORE downloading a body, a wider
+// window costs one cheap fetch and nothing else in steady state.
+const MAX_PER_FOLDER = 300;
 const LOOKBACK_DAYS = 14;
 
 /**
@@ -240,11 +248,14 @@ async function fetchFolder(client, folder, since, ingest, stats, seen) {
     if (!uids || !uids.length) return;
     const recent = uids.slice(-MAX_PER_FOLDER);
 
-    // Pass 1 — metadata only.
+    // Pass 1 — metadata only. Deliberately WITHOUT headers: the envelope already
+    // carries the message-id we dedupe on, and full headers on 300 messages is
+    // real bandwidth for data we'd throw away. Messages we go on to ingest get
+    // their headers from the parsed source; the rare fallback path fetches them.
     const heads = [];
     for await (const msg of client.fetch(
       recent,
-      { uid: true, envelope: true, headers: true, bodyStructure: true, size: true, internalDate: true },
+      { uid: true, envelope: true, bodyStructure: true, size: true, internalDate: true },
       { uid: true },
     )) heads.push(msg);
     if (!heads.length) return;
@@ -281,9 +292,14 @@ async function fetchFolder(client, folder, since, ingest, stats, seen) {
           // Oversized (someone attached their whole logo pack), or a message
           // mailparser found no body in: pull just the text part, decoded, and
           // leave the attachments on the server. A text-only read beats a
-          // missed lead.
+          // missed lead. Headers come along on this path — thread matching and
+          // the RFC auto/bulk signals are read off them.
           const part = textPartPath(meta.bodyStructure);
           if (part) bodyText = await downloadPart(client, meta.uid, part).catch(() => '');
+          if (!headers) {
+            const one = await client.fetchOne(meta.uid, { headers: true }, { uid: true }).catch(() => null);
+            if (one && one.headers) headers = one.headers;
+          }
         }
         const res = await ingest(toRaw({ ...meta, headers, bodyText }));
         if (res && res.skip) stats.skipped++;
