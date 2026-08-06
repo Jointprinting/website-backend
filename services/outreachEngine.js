@@ -53,6 +53,7 @@ const { getAuthStatus, recommendedRecords } = require('../utils/dnsAuth');
 const { replyPathStatus, normalizeAddress } = require('../utils/replyPath');
 const { isNeverSend, scoreEmail } = require('../utils/emailQuality');
 const { sendFitReason } = require('./leadFit');
+const { tzForState, zoneLabel, US_ZONES } = require('../utils/usTimezones');
 const Dispensary = require('../models/Dispensary');
 const { BUSINESS_TZ, etStartOfToday, etToday, etDaysSince } = require('../utils/time');
 
@@ -247,15 +248,33 @@ function variableBatch(base = BATCH_PER_TICK, rand = 0.5) {
 
 // Minutes of send window left after `now` (to 17:00 ET); 0 outside the window.
 // Feeds tickBudget so the engine knows how many 15-min ticks remain today.
+// Measured against the LAST zone still open, not Eastern. The sending day now
+// runs from 9am Eastern to 5pm Pacific — about eleven hours, not eight — and
+// pacing the daily cap against an Eastern 5pm close would cram the whole cap
+// into the morning and then sit idle while the West Coast is still at work.
+// Paced against the CONTIGUOUS zones only. Hawaii and Alaska are real markets
+// and their leads are still mailed in their own local morning — but they're a
+// sliver of the list, and letting Honolulu's 5pm define "minutes left" would
+// stretch the day by five hours and starve the mainland of sends all afternoon.
+const PACING_ZONES = new Set([
+  'America/New_York', 'America/Chicago', 'America/Denver',
+  'America/Boise', 'America/Phoenix', 'America/Los_Angeles',
+]);
+
 function windowMinutesLeft(now = new Date()) {
-  if (!isWithinSendWindow(now)) return 0;
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: BUSINESS_TZ, hour: 'numeric', minute: 'numeric', hourCycle: 'h23',
-  });
-  const parts = {};
-  for (const p of fmt.formatToParts(now)) parts[p.type] = p.value;
-  const mins = parseInt(parts.hour, 10) * 60 + parseInt(parts.minute, 10);
-  return Math.max(0, 17 * 60 - mins);
+  const open = openZones(now).filter((tz) => PACING_ZONES.has(tz));
+  if (!open.length) return 0;
+  let most = 0;
+  for (const tz of open) {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, hour: 'numeric', minute: 'numeric', hourCycle: 'h23',
+    });
+    const parts = {};
+    for (const p of fmt.formatToParts(now)) parts[p.type] = p.value;
+    const mins = parseInt(parts.hour, 10) * 60 + parseInt(parts.minute, 10);
+    most = Math.max(most, Math.max(0, 17 * 60 - mins));
+  }
+  return most;
 }
 
 // The tick's send budget, with CATCH-UP: normally the small varied batch, but
@@ -275,11 +294,17 @@ function tickBudget(totalRemaining, batch, minutesLeft, maxPerTick = CATCHUP_MAX
   return Math.min(remaining, Math.min(cap, Math.max(b, needed)));
 }
 
-// Send window: Mon–Fri, 9:00–16:59 in the business timezone. Emails that land
-// during a workday morning read human; 3am blasts read like a bot.
-function isWithinSendWindow(now = new Date()) {
+// Send window: Mon–Fri, 9:00–16:59 — in the RECIPIENT's timezone, not ours.
+//
+// This used to be one Eastern block for the whole country, which is wrong in
+// both directions on a national list: 9am Eastern reaches a Colorado shop at 7am
+// and a California shop at 6am, before anyone is at the counter, and closing at
+// 5pm Eastern abandons the entire West Coast afternoon while it's still
+// mid-morning there. Every dispensary already carries its state, so each lead
+// gets its own local morning.
+function isWithinSendWindowTz(tz, now = new Date()) {
   const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: BUSINESS_TZ, weekday: 'short', hour: 'numeric', hourCycle: 'h23',
+    timeZone: tz || BUSINESS_TZ, weekday: 'short', hour: 'numeric', hourCycle: 'h23',
   });
   const parts = {};
   for (const p of fmt.formatToParts(now)) parts[p.type] = p.value;
@@ -287,6 +312,37 @@ function isWithinSendWindow(now = new Date()) {
   const hour = parseInt(parts.hour, 10);
   if (weekday === 'Sat' || weekday === 'Sun') return false;
   return hour >= 9 && hour < 17;
+}
+
+/** Is it a workday morning/afternoon where THIS lead is? PURE. */
+function isWithinSendWindowFor(state, now = new Date()) {
+  return isWithinSendWindowTz(tzForState(state), now);
+}
+
+/** Which zones are inside their business hours right now. PURE. */
+function openZones(now = new Date()) {
+  return US_ZONES.filter((tz) => isWithinSendWindowTz(tz, now));
+}
+
+// The engine-level gate: run the tick whenever ANYONE's business hours are
+// happening. Per-lead checks below decide who actually gets mail. Keeping a
+// coarse gate means the engine still sleeps overnight and on weekends instead of
+// spinning through a due query it can't act on.
+function isWithinSendWindow(now = new Date()) {
+  return openZones(now).length > 0;
+}
+
+// When does this lead's next local send window open? Used to park a lead until
+// its own morning instead of re-examining it every 15 minutes all day.
+function nextWindowOpen(state, now = new Date()) {
+  const tz = tzForState(state);
+  // Walk forward in hours — cheap (at most ~72 steps), and it sidesteps every
+  // DST and weekend edge case by asking Intl what the local time actually is.
+  for (let i = 1; i <= 24 * 4; i += 1) {
+    const t = new Date(now.getTime() + i * 3600000);
+    if (isWithinSendWindowTz(tz, t)) return t;
+  }
+  return new Date(now.getTime() + 3600000);
 }
 
 // {{field}} / {{field|fallback}} merge rendering. Unknown/empty fields render
@@ -1177,6 +1233,10 @@ async function engineStatus(nowOrOpts = new Date(), opts = {}) {
     authGate: authGateEnabled(),
     deliverability,
     withinWindow: isWithinSendWindow(now),
+    // Which markets are inside their own business hours right now. The Studio
+    // shows these so "open"/"closed" is legible from any timezone the owner
+    // happens to be in — a single Eastern pill read as broken from the road.
+    openZones: openZones(now).map(zoneLabel).filter((v, i, a) => a.indexOf(v) === i),
     firstSendAt,
     rampWeek: firstSendAt ? Math.floor(days / 7) + 1 : 1,
     dailyCap: cap,
@@ -1388,6 +1448,18 @@ async function sendOne(enr, campaign, now = new Date(), sender = null) {
     enr.nextSendAt = null;
     await enr.save();
     console.log(`[outreach] holding ${enr.companyName || enr.companyKey} — ${unfit === 'chain' ? 'chain/MSO' : 'not a licensed retail market'}`);
+    return 'skipped';
+  }
+
+  // LOCAL business hours, using the state we just loaded for the fit check — no
+  // extra query. A shop in Michigan and a shop in California do not share a
+  // morning, and a single Eastern window meant the West Coast got mail at 6am or
+  // not at all. Outside its own window the lead is PARKED until its next local
+  // open rather than stopped: nothing is wrong with it, it's just night there.
+  const leadState = (fitRows.find((r) => r && r.state) || {}).state || '';
+  if (!isWithinSendWindowFor(leadState, now)) {
+    enr.nextSendAt = nextWindowOpen(leadState, now);
+    await enr.save();
     return 'skipped';
   }
 
@@ -1810,6 +1882,10 @@ module.exports = {
   senderKey,
   senderRampDays,
   isWithinSendWindow,
+  isWithinSendWindowFor,
+  isWithinSendWindowTz,
+  openZones,
+  nextWindowOpen,
   renderTemplate,
   buildMergeContext,
   cityFromAddress,
