@@ -639,17 +639,49 @@ const BREAKER_MIN_COMPLAINTS = parseInt(process.env.OUTREACH_BREAKER_MIN_COMPLAI
 const MAX_UNSUB_RATE = parseFloat(process.env.OUTREACH_MAX_UNSUB_RATE || '0.04');            // 4%
 const BREAKER_MIN_UNSUBS = parseInt(process.env.OUTREACH_BREAKER_MIN_UNSUBS || '5', 10);
 
+// When the unsubscribe counter started telling the truth.
+//
+// Until this timestamp a bare GET on the opt-out link opted the recipient out —
+// and every mail-security layer that rewrites and PREFETCHES links (SafeLinks,
+// Proofpoint, Mimecast, corporate AV) fetches that URL on delivery. So a share
+// of "unsubscribes" were robots opening an email nobody had read yet, which is
+// how a cold campaign posts a 13.7% opt-out rate: several times what even badly
+// targeted mail produces, and the wrong shape entirely (it tracks SENDS, not
+// sentiment). GET now asks and only POST acts, but the trailing 7-day window
+// still holds the bad readings, so the engine would sit paused for another week
+// on numbers a bug invented.
+//
+// The breaker therefore judges opt-outs ONLY on data collected after the meter
+// was fixed — numerator AND denominator both — and keeps its sample floor, so a
+// handful of fresh sends can't trip it either. This is not a mute button: real
+// opt-outs land in the clean window immediately, and if the true rate is over
+// the line the breaker trips again within a day or two of sending. That
+// re-trip IS the measurement.
+//
+// Self-expiring: once this is more than 7 days old, the clean window and the
+// trailing window are the same thing and this constant stops mattering.
+const UNSUB_EPOCH = new Date(process.env.OUTREACH_UNSUB_EPOCH || '2026-08-06T18:00:00Z');
+
 // Pure breaker evaluation (unit-tested). Trips ONLY when the sample is real AND the
 // bad-event COUNT clears its floor AND the rate is over threshold — so a couple of
 // dead addresses in a small test batch can't pause (and then strand) the whole engine.
-function evaluateDeliverability({ sent7d = 0, bounced7d = 0, complaints7d = 0, unsub7d = 0 } = {}) {
+// `unsubSent` is the send count over the SAME window the opt-outs were counted
+// over — normally the full 7 days, but narrower while the pre-fix readings are
+// still aging out (see UNSUB_EPOCH). Defaults to sent7d so every existing caller
+// and test behaves exactly as before.
+function evaluateDeliverability({ sent7d = 0, bounced7d = 0, complaints7d = 0, unsub7d = 0, unsubSent = null } = {}) {
+  const unsubDenom = unsubSent == null ? sent7d : unsubSent;
   const bounceRate = sent7d > 0 ? bounced7d / sent7d : 0;
   const complaintRate = sent7d > 0 ? complaints7d / sent7d : 0;
-  const unsubRate = sent7d > 0 ? unsub7d / sent7d : 0;
+  const unsubRate = unsubDenom > 0 ? unsub7d / unsubDenom : 0;
   const enoughData = sent7d >= BREAKER_MIN_SAMPLE;
   const bounceTrips = enoughData && bounceRate > MAX_BOUNCE_RATE && bounced7d >= BREAKER_MIN_BOUNCES;
   const complaintTrips = enoughData && complaintRate > MAX_COMPLAINT_RATE && complaints7d >= BREAKER_MIN_COMPLAINTS;
-  const unsubTrips = enoughData && unsubRate > MAX_UNSUB_RATE && unsub7d >= BREAKER_MIN_UNSUBS;
+  // The opt-out leg carries its own sample floor, against its own denominator:
+  // right after the meter was fixed there aren't 50 clean sends yet, and "not
+  // enough trustworthy data" must mean "don't pause", not "pause on the old
+  // numbers".
+  const unsubTrips = unsubDenom >= BREAKER_MIN_SAMPLE && unsubRate > MAX_UNSUB_RATE && unsub7d >= BREAKER_MIN_UNSUBS;
   const tripped = bounceTrips || complaintTrips || unsubTrips;
   // Bounce/complaint hurt reputation hardest, so report them first on a tie.
   const reason = !tripped ? ''
@@ -658,7 +690,8 @@ function evaluateDeliverability({ sent7d = 0, bounced7d = 0, complaints7d = 0, u
       : complaintTrips
         ? `${(complaintRate * 100).toFixed(2)}% complaint rate (7d) is over ${(MAX_COMPLAINT_RATE * 100).toFixed(2)}% — paused to protect your sender reputation. Resumes on its own.`
         : `${(unsubRate * 100).toFixed(1)}% unsubscribe rate (7d) is over ${(MAX_UNSUB_RATE * 100).toFixed(0)}% — paused: the list or the pitch is off-target. Tighten the targeting/copy; sending resumes as the window clears.`;
-  return { sent7d, bounced7d, complaints7d, unsub7d, bounceRate, complaintRate, unsubRate, tripped, reason,
+  return { sent7d, bounced7d, complaints7d, unsub7d, unsubSent: unsubDenom,
+    bounceRate, complaintRate, unsubRate, tripped, reason,
     maxBounceRate: MAX_BOUNCE_RATE, maxComplaintRate: MAX_COMPLAINT_RATE, maxUnsubRate: MAX_UNSUB_RATE };
 }
 
@@ -669,7 +702,12 @@ async function deliverabilityStats(now = new Date(), { force = false } = {}) {
   const nowMs = now.getTime();
   if (!force && _dstatsCache.val && (nowMs - _dstatsCache.at) < DSTATS_TTL) return _dstatsCache.val;
   const since = new Date(nowMs - 7 * 86400000);
-  const [sent7d, bounced7d, complaints7d, unsub7d] = await Promise.all([
+  // Opt-outs are judged over the later of "7 days ago" and "when the counter
+  // started telling the truth" — both halves of the ratio, so narrowing the
+  // window can't understate the rate.
+  const unsubSince = UNSUB_EPOCH > since ? UNSUB_EPOCH : since;
+  const cleanWindow = unsubSince > since;
+  const [sent7d, bounced7d, complaints7d, unsub7d, unsubSent] = await Promise.all([
     countSentSince(since),
     // Count only AUTHORITATIVE hard bounces (provider webhook + Gmail NDR). The
     // inline SMTP path also writes reason:'hard-bounce' but with source:'smtp-bounce'
@@ -681,12 +719,13 @@ async function deliverabilityStats(now = new Date(), { force = false } = {}) {
     Suppression.countDocuments({ reason: 'complaint', createdAt: { $gte: since } }).catch(() => 0),
     // Opt-outs in the same trailing window — an OutreachEnrollment flips to
     // 'unsubscribed' with a stamp when a recipient opts out (link or reply).
-    OutreachEnrollment.countDocuments({ status: 'unsubscribed', unsubscribedAt: { $gte: since } }).catch(() => 0),
+    OutreachEnrollment.countDocuments({ status: 'unsubscribed', unsubscribedAt: { $gte: unsubSince } }).catch(() => 0),
+    cleanWindow ? countSentSince(unsubSince).catch(() => 0) : Promise.resolve(null),
   ]);
   // Reassure, don't command: the list self-cleans (every bounce auto-suppresses,
   // dead cold prospects auto-archive daily) and sending auto-resumes as the bad
   // batch ages out of the trailing 7-day window — no manual step needed.
-  const val = evaluateDeliverability({ sent7d, bounced7d, complaints7d, unsub7d });
+  const val = evaluateDeliverability({ sent7d, bounced7d, complaints7d, unsub7d, unsubSent });
   _dstatsCache = { at: nowMs, val };
   return val;
 }
