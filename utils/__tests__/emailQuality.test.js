@@ -16,7 +16,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
-  isNeverSend, isRoleInbox, looksLikePerson, emailTier, scoreEmail, bestEmail, localHead,
+  isNeverSend, isRoleInbox, looksLikePerson, looksLikeHumanName, nameShaped, emailTier, scoreEmail, bestEmail, localHead,
 } = require('../emailQuality');
 
 // ── The exact regression ─────────────────────────────────────────────────────
@@ -90,13 +90,33 @@ test('separators and plus-tags classify by their head', () => {
 
 // ── looksLikePerson is deliberately conservative ─────────────────────────────
 
-test('looksLikePerson accepts real name shapes and rejects function words', () => {
-  for (const ok of ['jane', 'jane.doe', 'j.doe', 'jdoe', 'jane_doe', 'mary-beth']) {
+test('only a MULTI-PART local-part is evidence of a person', () => {
+  // jane.doe / j.doe / jane_doe / mary-beth — nobody names a functional mailbox
+  // that way, so the shape itself is the evidence.
+  for (const ok of ['jane.doe', 'j.doe', 'jane_doe', 'mary-beth', 'sam.rivera']) {
     assert.equal(looksLikePerson(ok), true, `${ok} should read as a person`);
   }
-  for (const no of ['info', 'careers', 'shop', 'store', 'deals', 'specials', 'budtenders',
+  // A SINGLE word is not. This is a deliberate change: 'jane' and 'feedback' are
+  // the same shape, and treating unrecognized singles as people put them in the
+  // TOP tier — above a published info@ — which is how the engine came to prefer
+  // feedback@ and cbd@ and then hard-bounce on both. No blacklist ever finishes
+  // that job, so the inference goes rather than growing forever.
+  for (const no of ['jane', 'jdoe', 'feedback', 'cbd', 'thc', 'hemp', 'wellness',
+    'info', 'careers', 'shop', 'store', 'deals', 'specials', 'budtenders',
     'order12345', '', 'a', '2024sale', 'x'.repeat(40)]) {
     assert.equal(looksLikePerson(no), false, `${no} should NOT read as a person`);
+  }
+});
+
+test('a contact NAME we hold is the evidence the address cannot give', () => {
+  // The signal that survives: we can't tell jane@ from feedback@, but a record
+  // saying the contact is Jane Rivera settles it.
+  for (const ok of ['Jane Doe', 'Rebecca Pool', 'Mary-Beth O’Brien', 'Sam']) {
+    assert.equal(looksLikeHumanName(ok), true, ok);
+  }
+  // Departments are not people, however they're stored.
+  for (const no of ['Front Desk', 'Sales Team', 'info', 'Purchasing', '', '   ', '12345']) {
+    assert.equal(looksLikeHumanName(no), false, JSON.stringify(no));
   }
 });
 
@@ -116,4 +136,37 @@ test('junk input degrades safely instead of throwing', () => {
 test('case and whitespace do not change the verdict', () => {
   assert.equal(isNeverSend('  CAREERS@GreenLeaf.COM '), true);
   assert.equal(bestEmail(['  INFO@GreenLeaf.com  '], { siteHost: 'GreenLeaf.com' }), 'info@greenleaf.com');
+});
+
+// ── The addresses that actually hard-bounced ─────────────────────────────────
+// Three "Address not found" NDRs arrived in fifteen minutes. Two of the three
+// addresses had been CHOSEN over a better one on the same domain, because a
+// single unrecognized word scored as a person (40) and beat a published info@
+// (25). "feedback" and "cbd" are simply words nobody had blacklisted yet — the
+// list was never going to catch up, so the inference had to go.
+
+test('the real bounce cases rank below a published role inbox', () => {
+  for (const bad of ['feedback@krystaleaves.com', 'cbd@cbdandoils.com']) {
+    assert.equal(emailTier(bad), 'unknown', bad);
+    assert.ok(scoreEmail(bad) < scoreEmail('info@krystaleaves.com'), bad);
+  }
+  assert.equal(bestEmail(['feedback@krystaleaves.com', 'info@krystaleaves.com'], 'krystaleaves.com'),
+    'info@krystaleaves.com');
+  assert.equal(bestEmail(['cbd@cbdandoils.com', 'contact@cbdandoils.com'], 'cbdandoils.com'),
+    'contact@cbdandoils.com');
+});
+
+test('a genuinely named human still outranks the front door', () => {
+  // The good half of the old behavior has to survive: this is not a retreat to
+  // "always mail info@".
+  assert.ok(scoreEmail('sam.rivera@greenleaf.com') > scoreEmail('info@greenleaf.com'));
+  assert.equal(bestEmail(['info@greenleaf.com', 'sam.rivera@greenleaf.com'], 'greenleaf.com'),
+    'sam.rivera@greenleaf.com');
+});
+
+test('nameShaped separates a plausible name from an alias blob', () => {
+  for (const ok of ['jane', 'jane.doe', 'j.doe', 'mary-beth']) assert.equal(nameShaped(ok), true, ok);
+  for (const no of ['xq7zplt', 'order12345', 'a1b2c3d4', 'info', 'careers']) {
+    assert.equal(nameShaped(no), false, no);
+  }
 });
