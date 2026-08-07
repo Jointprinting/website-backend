@@ -17,6 +17,7 @@ const {
   classifyReply,
   stripQuotedReply,
   looksUndecoded,
+  needsTextRepair,
   finalizeCategory,
   classifyBounceNdr,
   matchReply,
@@ -120,9 +121,7 @@ async function ingestOne(raw = {}) {
   if (gmailMessageId) {
     const dup = await TriageReply.findOne({ gmailMessageId })
       .select('_id snippet category status matched').lean();
-    if (dup && !(looksUndecoded(dup.snippet) && body && !looksUndecoded(body))) {
-      return { skip: 'duplicate' };
-    }
+    if (dup && !needsTextRepair(dup.snippet, body)) return { skip: 'duplicate' };
     if (dup) return repairStoredReply(dup, { subject, body, snippet, fromEmail, fromName, headers: raw.headers || null });
   }
 
