@@ -19,7 +19,7 @@ const { PLACED_STATUSES } = require('../models/Order');
 const { warmFromEnrollment } = require('../services/warmHandoff');
 const { suppress, isSuppressed, suppressedSet, removeBySource } = require('../services/suppression');
 const { lintSteps } = require('../services/outreachContent');
-const { verifyDomainsMx, emailDomain } = require('../services/emailVerify');
+const { verifyDomainsMx, verifyMailboxes, emailDomain } = require('../services/emailVerify');
 
 // The tag stamped on every company the moment it's enrolled in a campaign, so a
 // reply (which also gets 'warm') is unmistakably traceable to the cold merge —
@@ -943,6 +943,30 @@ async function enrollCompanies(req, res) {
       }
       eligible.length = 0;
       eligible.push(...kept);
+    }
+
+    // Gate 3: does the MAILBOX exist? MX only proves the DOMAIN takes mail, and
+    // the hard bounces come from addresses a shop really did publish whose
+    // mailbox has since been deleted — the domain still answers, the person is
+    // gone. Ask the receiving server and hang up before sending anything.
+    // Only an explicit refusal drops a lead: catch-all domains, timeouts,
+    // greylists and blocked ports all read 'unknown' and still get mailed, so
+    // this can only ever prevent a bounce, never block a real lead on a guess.
+    if (!dryRun && eligible.length) {
+      const verdicts = await verifyMailboxes(eligible.map((c) => pickEmail(c))).catch(() => new Map());
+      const alive = [];
+      for (const c of eligible) {
+        const email = String(pickEmail(c) || '').toLowerCase();
+        if (verdicts.get(email) === 'dead') {
+          skipped.push({ companyKey: c.companyKey, reason: 'mailbox-not-found' });
+          continue;
+        }
+        alive.push(c);
+      }
+      const droppedCount = eligible.length - alive.length;
+      if (droppedCount) console.log(`[outreach] enroll: ${droppedCount} address${droppedCount === 1 ? '' : 'es'} refused by the receiving server — dropped before sending`);
+      eligible.length = 0;
+      eligible.push(...alive);
     }
 
     if (!dryRun && eligible.length) {
