@@ -922,3 +922,33 @@ test('with no clean-window override the breaker behaves exactly as before', () =
   assert.equal(b.tripped, true);
   assert.equal(a.unsubSent, 150);
 });
+
+// ── The hygiene re-pick must actually be able to run ─────────────────────────
+// It shipped as a silent no-op: runRosterHygiene's projection didn't select
+// companyKey, so every waiting row had companyKey undefined, the join set was
+// empty, and the pass returned 0 before issuing a query. It reported nothing and
+// did nothing — the exact "fails toward silence" shape this codebase keeps
+// getting bitten by. Pin the projection itself, since that is what broke.
+
+test('roster hygiene selects the field its re-pick joins on', () => {
+  const src = require('fs').readFileSync(require.resolve('../outreachEngine'), 'utf8');
+  const projection = src.match(/\.select\('([^']*status stopReason toEmail[^']*)'\)/);
+  assert.ok(projection, 'hygiene enrollment projection not found');
+  assert.match(projection[1], /\bcompanyKey\b/,
+    'repickWaitingAddresses joins on companyKey — omitting it makes the pass a silent no-op');
+});
+
+// ── A resolver hiccup must never be read as "this domain has no mail server" ──
+// Hygiene PERMANENTLY suppresses an address it is told is undeliverable, so the
+// transient case has to stay distinguishable rather than collapsing to false.
+
+test('an unresolvable domain is absent from the MX map, not marked dead', () => {
+  const mx = new Map([['dead.com', false], ['good.com', true]]);   // timed-out domain omitted
+  const rows = [
+    { toEmail: 'a@dead.com' },        // definitive: no mail server
+    { toEmail: 'b@good.com' },
+    { toEmail: 'c@transient.com' },   // we simply could not tell
+  ];
+  const bad = pickInvalidEnrollments(rows, mx).map((r) => r.toEmail);
+  assert.deepEqual(bad, ['a@dead.com'], 'only a definitive false may condemn an address');
+});

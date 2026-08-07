@@ -74,7 +74,19 @@ const MACHINE_FILED = new Set(['new', 'ignored']);
 // so a repair doesn't resurface it (the sequence's own snooze handles it).
 const PROMOTABLE = (category) => category !== IGNORE_CATEGORY && category !== 'auto_reply_ooo';
 async function repairStoredReply(dup, { subject, body, snippet, fromEmail, fromName, headers }) {
-  const cls = classifyReply({ subject, snippet: body, fromEmail, fromName, headers });
+  // Re-classify WITH the match we already stored. The fresh-ingest path
+  // deliberately runs the classifier a second time carrying match context,
+  // because shops hosted on Shopify/Dutchie/Square stamp List-Unsubscribe and
+  // friends on ordinary 1:1 mail — and that second pass is the only thing that
+  // rescues a genuine buyer reply from the bulk-header veto. Repairing without
+  // it re-ran the veto with nothing to overrule it, so a reply that had already
+  // been rescued got re-buried as machine noise on its way through a text fix.
+  // Those HTML-sending clients are exactly the ones producing the entity rows
+  // this repair path targets, so it was the common case, not the corner.
+  const cls = classifyReply({
+    subject, snippet: body, fromEmail, fromName, headers,
+    matched: !!dup.matched, matchBy: dup.matchBy || '',
+  });
   const fin = finalizeCategory({ category: cls.category, matched: !!dup.matched, subject, snippet: body });
   const category = fin.category;
 
@@ -88,6 +100,31 @@ async function repairStoredReply(dup, { subject, body, snippet, fromEmail, fromN
   const promoted = !!set.status;
   if (promoted) {
     console.log(`[triage] repaired a mis-decoded reply from ${fromEmail || '(no sender)'} → ${category}`);
+  }
+
+  // Close the loop the repair just opened. Decoding a row can reveal an opt-out
+  // that nobody could read before — and rewriting the category alone left it
+  // filed as 'unsubscribe' with the address never suppressed and the company
+  // never flagged, so the next campaign would mail them again. Reading a stated
+  // opt-out and then not honoring it is worse than never having decoded it.
+  // Only the KILL categories act here: a repaired lead is surfaced for the owner
+  // rather than auto-warmed, since the warm handoff already ran (or didn't) when
+  // the row was first ingested.
+  if (category === 'unsubscribe' || category === 'not_interested') {
+    try {
+      await applyReplyAutoActions(
+        { ...dup, ...set, fromEmail, companyKey: dup.companyKey, enrollmentId: dup.enrollmentId },
+        cls,
+        {
+          matched: !!dup.matched,
+          matchBy: dup.matchBy || '',
+          companyKey: dup.companyKey || '',
+          enrollmentId: dup.enrollmentId || null,
+        },
+      );
+    } catch (e) {
+      console.warn('[triage] repair auto-action failed:', e.message);
+    }
   }
   return { repaired: true, promoted, category };
 }
@@ -120,7 +157,7 @@ async function ingestOne(raw = {}) {
   const gmailMessageId = raw.gmailMessageId ? String(raw.gmailMessageId) : null;
   if (gmailMessageId) {
     const dup = await TriageReply.findOne({ gmailMessageId })
-      .select('_id snippet category status matched').lean();
+      .select('_id snippet category status matched matchBy companyKey enrollmentId').lean();
     if (dup && !needsTextRepair(dup.snippet, body)) return { skip: 'duplicate' };
     if (dup) return repairStoredReply(dup, { subject, body, snippet, fromEmail, fromName, headers: raw.headers || null });
   }
@@ -366,10 +403,28 @@ async function ingestNdrBounce(reply) {
         ).catch(() => {});
       }
     }
+    // Retire the ADDRESS, never the company.
+    //
+    // This used to set doNotEmail on every company the dead address touched —
+    // permanently retiring a real, licensed dispensary because one alias had
+    // been deleted. A shop that publishes info@ and careers@ is one bad alias
+    // away from being struck off the list forever, and since the write left no
+    // log line the release healer could never undo it. The send path already
+    // settled this policy: kill the address, keep the business. So the address
+    // comes off the Client record instead, which also frees the enricher to go
+    // find a working one on the next sweep.
     if (keys.size) {
-      await Client.updateMany({ companyKey: { $in: [...keys] } }, { $set: { doNotEmail: true } }).catch(() => {});
+      const rxEmail = new RegExp(`^${escapeRegex(email)}$`, 'i');
+      await Client.updateMany(
+        { companyKey: { $in: [...keys] }, email: rxEmail },
+        { $unset: { email: '' } },
+      ).catch(() => {});
+      await Client.updateMany(
+        { companyKey: { $in: [...keys] } },
+        { $pull: { contacts: { email: rxEmail } } },
+      ).catch(() => {});
     }
-    console.log(`[triage] NDR hard bounce → suppressed ${email} (${keys.size} compan${keys.size === 1 ? 'y' : 'ies'})`);
+    console.log(`[triage] NDR hard bounce → retired ${email} across ${keys.size} compan${keys.size === 1 ? 'y' : 'ies'} (company kept)`);
   }
 }
 
