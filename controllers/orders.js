@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const Order = require('../models/Order');
+const Client = require('../models/Client');
 const Transaction = require('../models/Transaction');
 const ContactSubmission = require('../models/ContactSubmission');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
@@ -1301,8 +1302,20 @@ async function ensureProjectForCompany(body = {}, { forceNew = false } = {}) {
   // moment it's quoting — not just once some other path creates a Client row.
   // Best-effort + idempotent + UP-only (never regresses an owner-advanced or
   // closed stage); a CRM hiccup must never block minting the project.
+  // …but the CRM card is keyed by the company's FROZEN identity when the caller
+  // named one that really exists. companyKey is frozen on a Client precisely so
+  // a rename doesn't re-identify the business — while deriveCompanyKey() reads
+  // the CURRENT name, so after "Happy Leaf" becomes "Happy Leaf Dispensary" the
+  // derived key no longer matches the record. Upserting on the derived key then
+  // minted a SECOND CRM card for a company that already existed, splitting its
+  // history in two. Look the caller's key up first and honor it when it's real.
+  let crmKey = key;
+  if (bodyKey && bodyKey !== key) {
+    const existing = await Client.findOne({ companyKey: bodyKey }).select('_id').lean().catch(() => null);
+    if (existing) crmKey = bodyKey;
+  }
   try {
-    await ensureCompanyForQuoting(key, { companyName, clientName, dealValue: Number(body.dealValue) || 0 });
+    await ensureCompanyForQuoting(crmKey, { companyName, clientName, dealValue: Number(body.dealValue) || 0 });
   } catch (e) {
     console.warn('[orders] ensureCompanyForQuoting skipped:', e.message);
   }

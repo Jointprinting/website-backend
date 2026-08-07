@@ -63,7 +63,10 @@ async function domainAcceptsMail(domain) {
     if (Array.isArray(mx) && mx.length > 0) { _mxCache.set(d, true); return true; }
     // Resolved but empty → no MX; fall through to the A-record fallback.
   } catch (e) {
-    if (isTransientDnsError(e)) return false; // do NOT cache — retry next run
+    // null, NOT false: hygiene PERMANENTLY suppresses an address it is told has
+    // no mail server, so a resolver timeout must never be able to say that. Not
+    // cached either — retry next run.
+    if (isTransientDnsError(e)) return null;
     // else definitive "no MX" → try the A-record fallback below.
   }
   // A/AAAA fallback (implicit MX).
@@ -73,7 +76,7 @@ async function domainAcceptsMail(domain) {
     _mxCache.set(d, ok);
     return ok;
   } catch (e2) {
-    if (isTransientDnsError(e2)) return false;   // transient — do NOT cache
+    if (isTransientDnsError(e2)) return null;    // transient — do NOT cache, do NOT condemn
     _mxCache.set(d, false);                        // definitive: no mail server
     return false;
   }
@@ -103,7 +106,11 @@ async function verifyDomainsMx(domains, { concurrency = 6 } = {}) {
   const runners = Array.from({ length: Math.min(concurrency, uniq.length) }, async () => {
     while (i < uniq.length) {
       const d = uniq[i++];
-      out.set(d, await domainAcceptsMail(d));
+      // A domain we could not resolve is OMITTED rather than recorded false —
+      // callers act on `=== false` and must not read "we could not tell" as
+      // "this domain has no mail server".
+      const verdict = await domainAcceptsMail(d);
+      if (verdict !== null) out.set(d, verdict);
     }
   });
   await Promise.all(runners);

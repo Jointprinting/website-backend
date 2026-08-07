@@ -1093,7 +1093,9 @@ async function runRosterHygiene(campaigns = [], now = new Date()) {
       if (campaign.lastHygieneAt
         && now.getTime() - new Date(campaign.lastHygieneAt).getTime() < HYGIENE_COOLDOWN_MS) continue;
       const rows = await OutreachEnrollment.find({ campaignId: campaign._id })
-        .select('status stopReason toEmail sends.at').lean();
+        // companyKey is what the re-pick joins on — omitting it made that pass a
+        // silent no-op that reported nothing and did nothing.
+        .select('companyKey status stopReason toEmail sends.at').lean();
       if (!shouldRunHygiene(campaignBounceSignal(rows), campaign.lastHygieneAt, now)) continue;
 
       // ATOMIC stamp claim — only wins while the stamp is still stale, so two
@@ -1143,7 +1145,7 @@ async function runRosterHygiene(campaigns = [], now = new Date()) {
           dropped += 1;
         }
       }
-      out.push({ campaignId: String(campaign._id), checked: waiting.length, dropped });
+      out.push({ campaignId: String(campaign._id), checked: waiting.length, dropped, repicked });
       console.log(`[outreach] hygiene: "${campaign.name}" bounce spike — re-verified ${waiting.length} waiting lead${waiting.length === 1 ? '' : 's'}, dropped ${dropped} dead address${dropped === 1 ? '' : 'es'}`);
     } catch (e) {
       console.warn(`[outreach] hygiene pass failed for campaign ${campaign && campaign._id}:`, e.message);
