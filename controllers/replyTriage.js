@@ -276,6 +276,26 @@ async function applyReplyAutoActions(reply, cls, match) {
   if (HUMAN_WARM.has(category) && strong && match.enrollmentId) {
     const enr = await OutreachEnrollment.findById(match.enrollmentId);
     if (enr) await warmFromEnrollment(enr, { source: 'triage' });
+    return;
+  }
+
+  // SOFT match — someone at the company wrote to us from an address we didn't
+  // mail, with a subject that doesn't thread back. We won't warm the CRM off
+  // that (a shared or franchise inbox shouldn't move a whole shop's stage), but
+  // we must not keep DRIPPING at them either: the reply is sitting in the
+  // worklist while touch 2 goes out to the same business. Pausing is safe and
+  // reversible in a way doNotEmail is not, so the two decisions are separated —
+  // the sequence pauses, and the owner still decides what the reply means.
+  if (HUMAN_WARM.has(category) && match.matched && match.companyKey) {
+    const PAUSE_DAYS = 14;
+    const until = new Date(Date.now() + PAUSE_DAYS * 86400000);
+    const res = await OutreachEnrollment.updateMany(
+      { companyKey: match.companyKey, status: 'active' },
+      { $set: { nextSendAt: until } },
+    ).catch(() => ({ modifiedCount: 0 }));
+    if (res.modifiedCount) {
+      console.log(`[triage] someone at ${match.companyKey} replied from another address — paused ${res.modifiedCount} sequence(s) pending triage`);
+    }
   }
 }
 
