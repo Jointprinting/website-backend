@@ -18,7 +18,7 @@ const {
 } = require('../controllers/jpwLead');
 const {
   listSites, createSite, getSite, updateSite, deleteSite, generateCopy, getAiUsage, getPublicSite, getPublicSiteByDomain,
-  listEdits, addEdit, updateEdit, healthCheck,
+  listEdits, addEdit, updateEdit, healthCheck, uploadPhoto,
 } = require('../controllers/jpwSites');
 
 // PUBLIC site reads — the ONLY unauthenticated routes here, so they must
@@ -40,6 +40,7 @@ router.get('/sites/:id',    getSite);
 router.put('/sites/:id',    updateSite);
 router.delete('/sites/:id', deleteSite);
 router.post('/sites/:id/generate', generateCopy); // AI: write the whole site from a brief
+router.post('/sites/:id/photo',    uploadPhoto);  // a photo file in, a URL back out
 // Ops: the edits queue (client change requests) + a lightweight live-site health probe.
 router.get('/sites/:id/edits',            listEdits);
 router.post('/sites/:id/edits',           addEdit);

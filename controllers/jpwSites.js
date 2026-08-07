@@ -15,6 +15,7 @@ const Subscription = require('../models/Subscription');
 const { recordStatusFor } = require('./subscriptions');
 const jpwCopywriter = require('../services/jpwCopywriter');
 const aiBudget = require('../services/aiBudget');
+const r2 = require('../services/r2');
 
 // ── Pure helpers (unit-tested in controllers/__tests__/jpwSites.test.js) ─────
 
@@ -484,9 +485,53 @@ async function getPublicSiteByDomain(req, res) {
   }
 }
 
+// A site photo can be up to ~8 MB as a data URL (~6 MB of image): these are
+// camera shots of artwork straight off a phone, not logos.
+const MAX_PHOTO_DATA_URL = 8 * 1024 * 1024;
+
+// POST /api/jpw/sites/:id/photo { dataUrl } → { url }
+//
+// The photo fields take a URL, which until now meant the owner had to host the
+// image somewhere himself before he could put a client's work on their site.
+// This is the missing step: hand it the file, get back a URL to paste in.
+//
+// Same shape as clientLogos — R2 when it's configured, and the inline data URL
+// when it isn't, so the feature works (heavier, but works) on a server with no
+// bucket. The site doc is NOT written here; the caller puts the returned URL in
+// whichever slot it was filling and the normal autosave persists it.
+async function uploadPhoto(req, res) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: 'Bad site id' });
+    }
+    const site = await JpwSite.findById(req.params.id);
+    if (!site || site.archived) return res.status(404).json({ message: 'Site not found' });
+
+    const dataUrl = req.body && req.body.dataUrl;
+    if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
+      return res.status(400).json({ message: 'dataUrl (data:image/…) is required' });
+    }
+    if (dataUrl.length > MAX_PHOTO_DATA_URL) {
+      return res.status(413).json({
+        message: `That photo is too big — keep it under ${Math.round(MAX_PHOTO_DATA_URL / 1024 / 1024)} MB.`,
+      });
+    }
+
+    if (!r2.isR2Configured()) {
+      // Honest about what happened: the URL works, but it is the image itself,
+      // so it rides inside the site document rather than being hosted.
+      return res.json({ url: dataUrl, hosted: false });
+    }
+    const url = await r2.uploadDataUrl(dataUrl, `webworks/${site.slug || 'site'}`);
+    res.json({ url, hosted: true });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
 module.exports = {
   listSites, createSite, getSite, updateSite, deleteSite, generateCopy, getAiUsage, getPublicSite, getPublicSiteByDomain,
-  listEdits, addEdit, updateEdit, healthCheck,
+  listEdits, addEdit, updateEdit, healthCheck, uploadPhoto,
   // pure helpers (unit-tested)
   slugifySiteName, sanitizeSiteUpdate, sanitizeEditUpdate, publicSiteView, normalizeHost, healthFromHttpStatus, SITE_STATUSES,
   attachPlans,
