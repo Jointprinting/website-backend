@@ -11,7 +11,8 @@ const path = require('path');
 const Order = require('../models/Order');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
 const { resolveImageBuffer } = require('../utils/pdfImage');
-const { mockupScopeFor } = require('../utils/mockupScope');
+const { clientLibraryScopeFor } = require('../utils/mockupScope');
+const { mockupViewList } = require('../utils/mockupViews');
 
 // The green "JP" logo box, embedded at the top of every confirmation PDF.
 const JP_LOGO_PATH = path.join(__dirname, '..', 'assets', 'jp-logo.png');
@@ -45,10 +46,18 @@ const confirmationPdf = async (req, res) => {
     items.forEach((it) => { if (it && it.mockupNum) referenced.add(norm(it.mockupNum)); });
     const thumbByNorm = {};
     if (referenced.size > 0) {
-      const libs = await StudioLibraryItem.find(mockupScopeFor(order))
-        .select('name thumbnail data extraViews pageState.mockupNum').lean();
+      // Same client ∪ project slice the approval page loads — the PDF is the
+      // document that page asks the client to approve, so a mockup one of them
+      // can resolve and the other can't is a divergence by construction.
+      const libs = await StudioLibraryItem.find(clientLibraryScopeFor(order))
+        .select('name thumbnail data extraViews extraBackViews pageState.mockupNum').lean();
       libs.forEach((m) => {
-        const entry = (m.thumbnail || m.data) ? { front: m.thumbnail, back: m.data, extraViews: Array.isArray(m.extraViews) ? m.extraViews : [] } : null;
+        const entry = (m.thumbnail || m.data) ? {
+          front: m.thumbnail,
+          back: m.data,
+          extraViews: Array.isArray(m.extraViews) ? m.extraViews : [],
+          extraBackViews: Array.isArray(m.extraBackViews) ? m.extraBackViews : [],
+        } : null;
         if (!entry) return;
         const k = norm(m.pageState && m.pageState.mockupNum);
         if (k && referenced.has(k)) thumbByNorm[k] = entry;
@@ -222,14 +231,13 @@ const confirmationPdf = async (req, res) => {
       const snaps  = (await Promise.all((it.mockupSnapshots || []).map(s => resolveImageBuffer(s && s.dataUrl)))).filter(Boolean);
       const legacy = await resolveImageBuffer(it.customMockupDataUrl);
       const lib = it.mockupNum ? thumbByNorm[norm(it.mockupNum)] : null;
-      // The back composite only ships when the admin opted in (showBack) —
-      // unconditionally embedding it put plain blank garment backs on client
-      // docs that the builder preview never showed. Extra views (sleeve, extra
-      // designs, alternate angles) always ride along, matching the on-screen
-      // builder doc + the client ApprovalView so all three surfaces agree.
-      const libSides = lib
-        ? [lib.front, it.showBack ? lib.back : null, ...(lib.extraViews || [])].filter(Boolean)
-        : [];
+      // Backs only ship when the admin opted in (showBack) — unconditionally
+      // embedding them put plain blank garment backs on client docs that the
+      // builder preview never showed. Extra pages' fronts (sleeve, extra
+      // designs, alternate angles) always ride along. One shared list builder,
+      // so the on-screen builder doc, the client ApprovalView and this PDF
+      // agree image-for-image.
+      const libSides = lib ? mockupViewList(lib, { includeBack: !!it.showBack }) : [];
       const libBufs = (await Promise.all(libSides.map(v => resolveImageBuffer(v)))).filter(Boolean);
       const imgs   = snaps.length ? snaps : (legacy ? [legacy] : libBufs);
       if (imgs.length) {

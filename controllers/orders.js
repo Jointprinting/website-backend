@@ -1477,7 +1477,9 @@ const mockupHealth = async (req, res) => {
 // number to letter against; null when the order doesn't exist.
 async function _reserveMockupNumber(orderId) {
   for (let attempt = 0; attempt < 6; attempt++) {
-    const order = await Order.findById(orderId).select('projectNumber mockupNumbers');
+    // companyKey rides along so callers that CREATE a library doc from the
+    // reservation (the variation clone) can stamp the client link too.
+    const order = await Order.findById(orderId).select('projectNumber companyKey mockupNumbers');
     if (!order) return null;
 
     const next = nextColorLetter(order.projectNumber, order.mockupNumbers || []);
@@ -1562,11 +1564,37 @@ const versionMockupNumber = async (req, res) => {
 // off the letter so two variations never share a display name, and the
 // remoteId is fresh so the studio treats it as its own file. PURE — exported
 // for tests.
-function buildMockupVariation(src, newNum, remoteId) {
+//
+// The PROJECT + CLIENT links are stamped exactly as buildCarriedMockup stamps
+// them. They were the one thing this clone left off, and because it writes
+// straight to the collection (no saveItem, which is where every other creation
+// path derives them) a variation landed with BOTH keys empty. The Studio's
+// project panel didn't notice — it falls back to pageState.projectNumber, which
+// rides along in the spread — but every client-facing surface queries the real
+// fields, so each variation was invisible to the client until the next boot's
+// backfill promoted it. That is a design the owner can see and the client can't.
+//
+// `target` is the order being varied ON; a variation always lives on the same
+// project as its source, so with no target the source's own links carry over.
+function buildMockupVariation(src, newNum, remoteId, target) {
   const s = src || {};
+  const t = target || {};
   const pdfName = newNum ? `${String(newNum).replace(/^#/, '')}.pdf` : '';
+  const projectNumber = String(
+    (t.projectNumber != null && String(t.projectNumber) !== '' ? t.projectNumber : '')
+    || s.projectNumber
+    || (s.pageState && s.pageState.projectNumber)
+    || '',
+  );
   const restamp = (ps) => (ps && typeof ps === 'object'
-    ? { ...ps, mockupNum: newNum, ...(pdfName ? { pdfName } : {}) }
+    ? {
+      ...ps,
+      mockupNum: newNum,
+      // Keep the blob's copy of the project in step with the real field, so a
+      // legacy reader and an indexed query can never disagree.
+      ...(projectNumber ? { projectNumber } : {}),
+      ...(pdfName ? { pdfName } : {}),
+    }
     : ps);
   const letter = String(newNum || '').replace(/^#?\d*/, '');
   return {
@@ -1575,6 +1603,8 @@ function buildMockupVariation(src, newNum, remoteId) {
     data: s.data || '',
     thumbnail: s.thumbnail || '',
     client: s.client || '',
+    companyKey: String(t.companyKey || s.companyKey || ''),
+    projectNumber,
     pageState: restamp(s.pageState),
     pages: Array.isArray(s.pages) ? s.pages.map(restamp) : s.pages || null,
     extraViews: Array.isArray(s.extraViews) ? [...s.extraViews] : [],
@@ -1749,7 +1779,9 @@ const duplicateMockup = async (req, res) => {
     const newRemoteId = `var-${crypto.randomUUID()}`;
     let item;
     try {
-      item = await StudioLibraryItem.create(buildMockupVariation(src, newNum, newRemoteId));
+      // `got.order` is the project being varied on — it carries the authoritative
+      // projectNumber/companyKey the clone links itself to.
+      item = await StudioLibraryItem.create(buildMockupVariation(src, newNum, newRemoteId, got.order));
     } catch (e) {
       // Don't leave a dangling number linked to the project if the clone failed.
       await Order.updateOne({ _id: req.params.id }, { $pull: { mockupNumbers: newNum } }).catch(() => {});

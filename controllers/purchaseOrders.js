@@ -18,7 +18,8 @@ const sendEmail = require('../utils/sendEmail');
 const { resolveImageBuffer } = require('../utils/pdfImage');
 const { nextNumber, bumpCounterTo, peekNumber } = require('../utils/sequence');
 const { normalizeOrderNumber } = require('./finances');
-const { mockupScopeFor } = require('../utils/mockupScope');
+const { clientLibraryScopeFor } = require('../utils/mockupScope');
+const { mockupViewList } = require('../utils/mockupViews');
 const { blanksModeForItems } = require('../utils/apparel');
 const {
   vendorKey, findPoNumberClash, lineKey, chosenQuoteLines, costLineFromQuoteLine, costLineFromConfItem, buildPoLines,
@@ -972,13 +973,17 @@ async function gatherOrderMockupBuffers(order, cap = 12) {
   if (!out.length) {
     const nums = new Set(items.map((it) => it && norm(it.mockupNum)).filter(Boolean));
     if (nums.size) {
-      const libs = await StudioLibraryItem.find(mockupScopeFor(order))
-        .select('thumbnail data extraViews pageState.mockupNum').lean();
+      // Same client ∪ project slice the client-facing surfaces load, so a design
+      // the owner can see on the project can't go missing from the printer's pack.
+      const libs = await StudioLibraryItem.find(clientLibraryScopeFor(order))
+        .select('thumbnail data extraViews extraBackViews pageState.mockupNum').lean();
       for (const m of libs) {
         if (!nums.has(norm(m.pageState && m.pageState.mockupNum))) continue;
-        await add(m.thumbnail, `mockup-${n++}.png`);
-        await add(m.data, `mockup-${n++}.png`);
-        for (const v of m.extraViews || []) await add(v, `mockup-${n++}.png`);
+        // EVERY side of every page — no showBack gating here. That opt-in is
+        // about what a client wants to look at; the printer has to print it.
+        // Page-2+ backs were stored and never attached, so a shoulder print on
+        // the reverse of the sideways garment reached nobody.
+        for (const v of mockupViewList(m)) await add(v, `mockup-${n++}.png`);
       }
     }
   }
