@@ -224,6 +224,28 @@ function looksUndecoded(text) {
   return score >= 2;
 }
 
+// Is this stored text carrying undecoded HTML entities?
+//
+// A second way a row can be stored wrong, and one looksUndecoded misses entirely
+// because there is no MIME scaffolding to see: a client sends a text/plain part
+// generated from HTML that still holds the escapes, and the card renders
+// "I&#39;m actually interested" at the owner. Narrow on purpose — a bare "&" or
+// a stray "&amp" is not enough; it must be a complete entity. PURE.
+const HTML_ENTITY_RE = /&(?:#\d{2,5}|#x[0-9a-f]{2,4}|amp|lt|gt|quot|apos|nbsp|rsquo|lsquo|ldquo|rdquo|mdash|ndash|hellip);/i;
+function hasHtmlEntities(text) {
+  return HTML_ENTITY_RE.test(String(text || ''));
+}
+
+// Should a stored row be rewritten from a freshly-fetched copy? True when what
+// we hold is unreadable in a way the fresh copy is not — raw MIME, or entity
+// escapes the decoder now handles. PURE.
+function needsTextRepair(stored, fresh) {
+  const f = String(fresh || '');
+  if (!f.trim()) return false;                       // never overwrite with nothing
+  if (looksUndecoded(stored) && !looksUndecoded(f)) return true;
+  return hasHtmlEntities(stored) && !hasHtmlEntities(f);
+}
+
 // The only strings in OUR outbound mail that can trip a kill-signal: the CAN-SPAM
 // footer (which literally instructs the reader to reply "unsubscribe") and the
 // signature. Redacted — not truncated at — so nothing the human typed is lost.
@@ -709,6 +731,8 @@ module.exports = {
   stripQuotedReply,
   senderWords,
   looksUndecoded,
+  hasHtmlEntities,
+  needsTextRepair,
   hasHumanSignal,
   headerSaysAuto,
   isVendorNoiseSender,

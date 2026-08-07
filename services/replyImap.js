@@ -388,11 +388,11 @@ async function seenMessageIds(ids = []) {
   if (!ids.length) return new Set();
   try {
     const TriageReply = require('../models/TriageReply');
-    const { looksUndecoded } = require('./replyTriage');
+    const { looksUndecoded, hasHtmlEntities } = require('./replyTriage');
     const rows = await TriageReply.find({ gmailMessageId: { $in: ids.map((id) => `imap:${id}`) } })
       .select('gmailMessageId snippet').lean();
     return new Set(rows
-      .filter((r) => !looksUndecoded(r.snippet))
+      .filter((r) => !looksUndecoded(r.snippet) && !hasHtmlEntities(r.snippet))
       .map((r) => String(r.gmailMessageId).replace(/^imap:/, '')));
   } catch {
     return new Set();                          // never block a sync on a lookup

@@ -1044,6 +1044,47 @@ async function runListQuarantine(campaigns = [], now = new Date()) {
 // company is deliberately NOT doNotEmail'd — a better address may be found
 // later. Returns [{ campaignId, checked, dropped }] for the tick result.
 // NEVER throws — hygiene is a bonus pass and must not break sending.
+// Swap a not-yet-contacted lead onto the best address the company has NOW.
+//
+// Mutates the passed rows in place so the MX pass that follows verifies the
+// address we'd actually send to. Every write is guarded on "still active, still
+// never sent", so a lead that got mailed or replied while we worked is left
+// alone. Returns how many were moved.
+async function repickWaitingAddresses(waiting = [], campaignName = '') {
+  const keys = [...new Set(waiting.map((e) => e.companyKey).filter(Boolean))];
+  if (!keys.length) return 0;
+  const clients = await Client.find({ companyKey: { $in: keys } })
+    .select('companyKey email contacts clientName').lean().catch(() => []);
+  const byKey = new Map(clients.map((c) => [c.companyKey, c]));
+
+  // Never move a lead ONTO an address that's suppressed or already queued
+  // somewhere else — the one-address-one-lead rule still holds.
+  const taken = new Set(waiting.map((e) => String(e.toEmail || '').toLowerCase()));
+  let moved = 0;
+  for (const e of waiting) {
+    const client = byKey.get(e.companyKey);
+    if (!client) continue;
+    const current = String(e.toEmail || '').toLowerCase();
+    const best = String(pickEmail(client) || '').toLowerCase();
+    if (!best || best === current) continue;
+    if (taken.has(best)) continue;
+    if (await isSuppressed(best).catch(() => false)) continue;
+    const r = await OutreachEnrollment.updateOne(
+      { _id: e._id, status: 'active', 'sends.0': { $exists: false } },
+      { $set: { toEmail: best } },
+    ).catch(() => ({ modifiedCount: 0 }));
+    if (!r.modifiedCount) continue;
+    taken.delete(current);
+    taken.add(best);
+    e.toEmail = best;                       // the MX pass below checks the NEW one
+    moved += 1;
+  }
+  if (moved) {
+    console.log(`[outreach] hygiene: "${campaignName}" — re-picked ${moved} queued lead${moved === 1 ? '' : 's'} onto a better address on the same company`);
+  }
+  return moved;
+}
+
 async function runRosterHygiene(campaigns = [], now = new Date()) {
   const out = [];
   for (const campaign of campaigns || []) {
@@ -1068,6 +1109,17 @@ async function runRosterHygiene(campaigns = [], now = new Date()) {
       // Target set: leads still WAITING for touch 1 ('active', zero sends).
       const waiting = rows.filter((e) => e.status === 'active' && !(e.sends || []).length);
       let dropped = 0;
+      // RE-PICK before verifying. Every address on this roster was chosen by
+      // whatever ranking was in force when the lead was enrolled — and the old
+      // ranking scored any single unrecognized word as a person, so it preferred
+      // feedback@ and cbd@ over a published info@ on the same domain and then
+      // hard-bounced on them. Those leads are still queued, still holding the bad
+      // pick, still about to bounce. Re-running the CURRENT ranker over the
+      // not-yet-contacted roster swaps them to the better address on the same
+      // company before the send happens, instead of waiting to learn it the
+      // expensive way. Cheap: only leads that never received a touch, and only
+      // where the company actually has a better address on file.
+      const repicked = waiting.length ? await repickWaitingAddresses(waiting, campaign.name) : 0;
       if (waiting.length) {
         const domains = waiting.map((e) => emailDomain(String(e.toEmail || '').toLowerCase()));
         const mxMap = await verifyDomainsMx(domains).catch(() => new Map()); // deduped per domain
@@ -1077,7 +1129,7 @@ async function runRosterHygiene(campaigns = [], now = new Date()) {
         // tomorrow's pass retries with healthy DNS) rather than mass-suppress.
         if (looksLikeDnsOutage(bad.length, waiting.length)) {
           console.warn(`[outreach] hygiene: "${campaign.name}" — ${bad.length}/${waiting.length} waiting domains look dead at once; treating it as a DNS outage, dropping nothing`);
-          out.push({ campaignId: String(campaign._id), checked: waiting.length, dropped: 0, held: bad.length });
+          out.push({ campaignId: String(campaign._id), checked: waiting.length, dropped: 0, held: bad.length, repicked });
           continue;
         }
         for (const e of bad) {

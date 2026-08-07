@@ -475,3 +475,33 @@ test('a single message carries no "+N more" noise', () => {
   const w = buildWorklist([reply({ _id: 'solo' })]);
   assert.equal(w.needsResponse[0].alsoWaiting, undefined);
 });
+
+// ── The second way a stored row can be unreadable ────────────────────────────
+// looksUndecoded catches raw MIME. It does NOT catch a text/plain part that was
+// generated from HTML and still carries the escapes — there's no scaffolding to
+// see — so a real reply sat on the card as "I&#39;m actually interested".
+
+const { hasHtmlEntities, needsTextRepair } = require('../replyTriage');
+
+test('hasHtmlEntities spots escapes, not bare ampersands', () => {
+  assert.equal(hasHtmlEntities("I&#39;m actually interested"), true);
+  assert.equal(hasHtmlEntities('quantities &amp; fabrics'), true);
+  assert.equal(hasHtmlEntities('&#x27;hex&#x27;'), true);
+  assert.equal(hasHtmlEntities('AT&T pricing & terms'), false);
+  assert.equal(hasHtmlEntities("I'm actually interested"), false);
+  assert.equal(hasHtmlEntities(''), false);
+});
+
+test('needsTextRepair covers both kinds of unreadable, and neither false-fires', () => {
+  const RAW = 'Content-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\r\n'
+    + 'VGhhbmtzIGZvciByZWFjaGluZyBvdXQu'.repeat(6);
+  assert.equal(needsTextRepair(RAW, 'Thanks for reaching out.'), true);
+  assert.equal(needsTextRepair("I&#39;m interested", "I'm interested"), true);
+  // A clean row is left alone — repair must not churn every message every sync.
+  assert.equal(needsTextRepair("I'm interested", "I'm interested"), false);
+  // Never overwrite something readable with nothing.
+  assert.equal(needsTextRepair("I&#39;m interested", ''), false);
+  assert.equal(needsTextRepair(RAW, ''), false);
+  // And never "repair" toward a copy that is just as broken.
+  assert.equal(needsTextRepair("I&#39;m interested", "I&#39;m interested"), false);
+});
