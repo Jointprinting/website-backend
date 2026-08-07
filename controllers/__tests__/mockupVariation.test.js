@@ -57,3 +57,55 @@ test('single-page mockups (pages: null) and missing fields survive', () => {
   assert.equal(v.extraBackViews.length, 0);
   assert.ok(v.savedAt > 0);
 });
+
+// ── The project + client links ───────────────────────────────────────────────
+//
+// This clone writes STRAIGHT to the collection — no saveItem, which is where
+// every other creation path derives companyKey/projectNumber. It stamped
+// neither, so a variation landed with both keys empty. The Studio's project
+// panel didn't notice (it falls back to pageState.projectNumber, which rides
+// along in the spread), but every client-facing surface queries the real
+// fields — so each variation was invisible on the client's approval link until
+// the next boot's backfill promoted it. Four mockups on the link, eight on the
+// project. buildCarriedMockup had always stamped both; this is the parity.
+
+test('stamps the project + client links from the order being varied on', () => {
+  const target = { projectNumber: '145', companyKey: 'longislandsoundcustomboatworks' };
+  const v = buildMockupVariation(SRC, '#000145F', 'var-1', target);
+  assert.equal(v.projectNumber, '145');
+  assert.equal(v.companyKey, 'longislandsoundcustomboatworks');
+  // …and the blob's copy stays in step with the real field, so a legacy reader
+  // and an indexed query can never disagree about which project this is on.
+  assert.equal(v.pageState.projectNumber, '145');
+});
+
+test('with no target, a variation inherits its SOURCE\'s links', () => {
+  // A variation always lives on the same project as the design it varies.
+  const src = { ...SRC, projectNumber: '148', companyKey: 'easterngreen' };
+  const v = buildMockupVariation(src, '#000148F', 'var-2');
+  assert.equal(v.projectNumber, '148');
+  assert.equal(v.companyKey, 'easterngreen');
+  assert.equal(v.pageState.projectNumber, '148');
+});
+
+test('falls back to the source\'s pageState blob when the field is unstamped', () => {
+  // Varying a variation made before this fix: the field is empty, the blob isn't.
+  const src = { ...SRC, pageState: { ...SRC.pageState, projectNumber: '148' } };
+  const v = buildMockupVariation(src, '#000148G', 'var-3');
+  assert.equal(v.projectNumber, '148');
+});
+
+test('the target outranks the source', () => {
+  const src = { ...SRC, projectNumber: '148', companyKey: 'easterngreen' };
+  const v = buildMockupVariation(src, '#000145F', 'var-4', { projectNumber: '145', companyKey: 'lis' });
+  assert.equal(v.projectNumber, '145');
+  assert.equal(v.companyKey, 'lis');
+});
+
+test('an unlinkable source stays unlinked rather than inventing a project', () => {
+  const v = buildMockupVariation({ name: 'Tee', pageState: { mockupNum: '#000001A' } }, '#000001B', 'z');
+  assert.equal(v.projectNumber, '');
+  assert.equal(v.companyKey, '');
+  // Nothing to stamp → the blob is left exactly as it was, not blanked.
+  assert.equal(v.pageState.projectNumber, undefined);
+});

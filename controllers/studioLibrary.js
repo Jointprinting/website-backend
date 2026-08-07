@@ -61,11 +61,14 @@ async function listItems(req, res) {
     // Studio-side consumers (Confirmation, Quoter, Lookbook) can only ever show
     // the front + back; the public Approval page already gets them via its own
     // payload. Shipping them here lets every surface render every view.
-    // Note: extraBackViews is deliberately NOT in the summary. It's index-aligned
-    // with '' placeholders (not URL-filtered like extraViews), so exposing it in the
-    // light payload would tempt a consumer to read misaligned data — the editor's
-    // rehydrate reads it from the FULL doc instead. Keep it full-doc-only.
-    if (summary) q.select('store name thumbnail data client companyKey projectNumber carriedFrom savedAt remoteId extraViews pageState.mockupNum pageState.projectNumber');
+    // `extraBackViews` (pages 2+ BACK composites) rides along too, and is
+    // re-aligned to extraViews on the way out — see the trim below. It used to be
+    // held back precisely BECAUSE it couldn't be trusted to line up here, which
+    // left the owner's confirmation preview unable to show a back the client's
+    // page and the PDF both show. Zipping the two while filtering removes the
+    // hazard instead of routing around it: in the summary payload,
+    // extraBackViews[i] is page i+2's back or ''.
+    if (summary) q.select('store name thumbnail data client companyKey projectNumber carriedFrom savedAt remoteId extraViews extraBackViews pageState.mockupNum pageState.projectNumber');
     const items = await q.lean();
     if (summary) {
       // Keep the summary payload light: R2-hosted backs ship as URLs, but a
@@ -83,8 +86,29 @@ async function listItems(req, res) {
         // inline-base64 view (multi-MB, pre-R2) would blow up the summary —
         // drop those, keeping only the URL-backed ones. Full-doc surfaces
         // (PDF/approval) still render every view from the un-stripped document.
+        //
+        // Fronts and BACKS are filtered as PAIRS, so what ships is aligned by
+        // construction: drop a page and its back goes with it. As stored the two
+        // arrays only line up when nothing was compacted (extraViews is written
+        // with .filter(Boolean), extraBackViews with '' placeholders), so pairing
+        // is attempted only on equal lengths — the same guard the editor's
+        // rehydrate applies. Anything else ships fronts with empty backs rather
+        // than printing one page's back under another page's front.
         if (Array.isArray(it.extraViews)) {
-          it.extraViews = it.extraViews.filter(v => typeof v === 'string' && /^https?:\/\//i.test(v));
+          const isUrl = (v) => typeof v === 'string' && /^https?:\/\//i.test(v);
+          const backs = Array.isArray(it.extraBackViews) ? it.extraBackViews : [];
+          const aligned = backs.length === it.extraViews.length;
+          const fronts = [];
+          const keptBacks = [];
+          it.extraViews.forEach((v, i) => {
+            if (!isUrl(v)) return;
+            fronts.push(v);
+            keptBacks.push(aligned && isUrl(backs[i]) ? backs[i] : '');
+          });
+          it.extraViews = fronts;
+          it.extraBackViews = keptBacks;
+        } else if (it.extraBackViews) {
+          it.extraBackViews = [];
         }
       });
     }

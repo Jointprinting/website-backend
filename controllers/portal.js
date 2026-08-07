@@ -19,6 +19,7 @@ const Client = require('../models/Client');
 const Order = require('../models/Order');
 const ClientLogo = require('../models/ClientLogo');
 const StudioLibraryItem = require('../models/StudioLibraryItem');
+const { mockupProjectNumber } = require('../utils/mockupScope');
 
 const norm = (n) => String(n || '').replace(/^#/, '').replace(/^0+/, '').toUpperCase();
 
@@ -59,7 +60,7 @@ async function getPortal(req, res) {
     // which is also all this handler could ever legitimately show.
     const mockupItems = await StudioLibraryItem
       .find({ store: 'mockups', companyKey: client.companyKey })
-      .select('name pageState.mockupNum projectNumber thumbnail').lean();
+      .select('name pageState.mockupNum pageState.projectNumber projectNumber thumbnail').lean();
     const byNorm = {};
     const byProject = new Map();
     for (const m of mockupItems) {
@@ -67,7 +68,10 @@ async function getPortal(req, res) {
       if (k && !byNorm[k]) byNorm[k] = m;
       const nk = norm(m.name);
       if (nk && !byNorm[nk]) byNorm[nk] = m;
-      const pn = String(m.projectNumber || '');
+      // Read the project link the same way every other surface does (field, else
+      // the pageState blob it gets promoted from) — otherwise an order whose only
+      // designs came in unpromoted shows a card with no thumbnail at all.
+      const pn = mockupProjectNumber(m);
       if (pn && !byProject.has(pn)) byProject.set(pn, m);
     }
 

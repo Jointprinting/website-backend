@@ -6,6 +6,7 @@ const sendEmail = require('../utils/sendEmail');
 const { nextNumber } = require('../utils/sequence');
 const { appendClientLog } = require('../services/clientLog');
 const { compareMockupNums, parseMockupNum } = require('../utils/mockupNumbers');
+const { clientLibraryScopeFor, mockupProjectNumber, belongsToProject } = require('../utils/mockupScope');
 
 // One tile per COLOUR, showing its latest edit — the client's view of a
 // project's designs.
@@ -33,6 +34,79 @@ function _latestPerColour(nums) {
     if (!cur || p.version > cur.version) best.set(lane, { num: n, version: p.version });
   }
   return [...[...best.values()].map((v) => v.num), ...passthrough].sort(compareMockupNums);
+}
+
+// A mockup number reduced to its comparable key: '#000145A', '000145a' and
+// '145A' are the same design. Shared by every index in this file.
+const norm = (n) => String(n || '').replace(/^#/, '').replace(/^0+/, '').toUpperCase();
+
+// WHICH DESIGNS A CLIENT SEES ON A PROJECT, and how to resolve a reference to
+// the right library document. PURE, exported for tests.
+//
+// `scoped` is this order's slice of the mockup library (clientLibraryScopeFor:
+// this client ∪ this project). Returns:
+//
+//   byNorm       normalized number/name → the library item, for resolving a
+//                confirmation's references and a quote line's preview image
+//   projectRefs  the pre-confirmation gallery: this project's designs, ordered,
+//                one tile per colour
+//
+// projectRefs is the SAME union the Studio's project panel draws, and for one
+// reason: the client's "your mockups" list and the owner's project panel are two
+// views of one thing, so any rule that makes one stricter than the other surfaces
+// as "the link shows four, the project has eight". The union is
+//
+//   (a) every library item linked to this project — by the indexed field, or by
+//       the pageState blob the boot backfill promotes from (mockupProjectNumber),
+//       because a doc written straight to the collection carries only the blob;
+//   (b) the numbers the ORDER ITSELF lists — the owner's explicit link, written
+//       by the picker, the lab, the promo upload, the carry and the variation.
+//
+// (b) is guarded, and the guard is the whole point of this boundary: a number is
+// honoured only when its library item belongs to NO OTHER project. This path used
+// to take order.mockupNumbers wholesale, which the Order Tracker's fuzzy
+// client-name matcher had been quietly stuffing with every mockup the client had
+// ever had — so a brand-new project's link showed years of previous work. The
+// matcher is gone and its residue is what mockupHealth reports as `conflicting`;
+// refusing a number owned elsewhere keeps that residue out while still showing
+// the owner everything they linked.
+function _clientDesigns(order, scoped) {
+  const o = order || {};
+  const items = Array.isArray(scoped) ? scoped : [];
+  const mine = (m) => belongsToProject(m, o.projectNumber);
+
+  // Index by number, then by NAME as a fallback (the picker stores the mockup
+  // name when an item has no number — without this the builder shows an image
+  // while the client page and PDF silently drop it). A number always outranks a
+  // name, and within either kind THIS project's copy outranks another job's: a
+  // carried-over design keeps its name on both projects, so an arbitrary
+  // last-one-wins could hand the client the older job's file.
+  const byNorm = {};
+  const fromName = new Set();
+  const better = (k, m) => !byNorm[k] || (mine(m) && !mine(byNorm[k]));
+  items.forEach((m) => {
+    const k = norm(m && m.pageState && m.pageState.mockupNum);
+    if (k && better(k, m)) { byNorm[k] = m; fromName.delete(k); }
+  });
+  items.forEach((m) => {
+    const nk = norm(m && m.name);
+    if (!nk) return;
+    if (byNorm[nk] && !fromName.has(nk)) return;     // a real number owns this key
+    if (better(nk, m)) { byNorm[nk] = m; fromName.add(nk); }
+  });
+
+  const linkedRefs = items
+    .filter(mine)
+    .map((m) => (m.pageState && m.pageState.mockupNum) || m.name)
+    .filter(Boolean);
+  const explicitRefs = (o.mockupNumbers || []).filter((n) => {
+    const item = byNorm[norm(n)];
+    if (!item) return false;                          // nothing to show
+    const owner = mockupProjectNumber(item);
+    return !owner || owner === String(o.projectNumber || '');
+  });
+
+  return { byNorm, projectRefs: _latestPerColour([...linkedRefs, ...explicitRefs]) };
 }
 
 const DEFAULT_TTL_DAYS = 7;
@@ -352,58 +426,30 @@ const publicGetProject = async (req, res) => {
     }
     const order = lookup.order;
 
-    const norm = (n) => String(n || '').replace(/^#/, '').replace(/^0+/, '').toUpperCase();
-    // Only return mockups that are actually IN the confirmation page the client
-    // is reviewing — i.e. referenced by an item in order.confirmation.items.
-    // Previously this returned everything in order.mockupNumbers, which is the
-    // admin's full per-project library (early proofs, alternates, scrapped
-    // versions). Clients were seeing the unfiltered pile.
-    //
-    // Fall back to order.mockupNumbers when no confirmation has been built yet
-    // (legacy projects, pre-confirmation share links) so those keep working.
-    const confItems = (order.confirmation && order.confirmation.items) || [];
-    const confRefs = confItems
-      .map(it => it && it.mockupNum)
-      .filter(Boolean);
-
-    // Scope the lookup to THIS CLIENT with an indexed query rather than pulling
-    // the entire mockup library and indexing it in memory on every page view.
-    const scoped = await StudioLibraryItem
-      .find(order.companyKey
-        ? { store: 'mockups', companyKey: order.companyKey }
-        : { store: 'mockups', projectNumber: String(order.projectNumber || '') })
-      .select('name pageState.mockupNum projectNumber thumbnail data extraViews')
-      .lean();
-
-    const byNorm = {};
-    scoped.forEach(m => {
-      const k = norm(m.pageState && m.pageState.mockupNum);
-      if (k) byNorm[k] = m;
-      // Fallback key: the picker stores the mockup NAME when an item has no
-      // number — without this the builder shows an image but the client page
-      // and PDF silently drop it.
-      const nk = norm(m.name);
-      if (nk && !byNorm[nk]) byNorm[nk] = m;
-    });
-
     // WHAT THE CLIENT SEES. Two cases, and neither is "everything":
     //
     //   1. A confirmation exists → exactly the mockups its items reference. The
     //      owner curated that list; it's authoritative (and may legitimately
     //      include a design carried over from an earlier project).
     //   2. No confirmation yet (the mockup-review rounds, where a share link is
-    //      most often sent) → THIS PROJECT'S mockups, by the indexed project
-    //      link. This used to fall back to order.mockupNumbers, which the Order
-    //      Tracker's fuzzy client-name matcher had been quietly stuffing with
-    //      every mockup the client had ever had — so a brand-new project's link
-    //      showed years of previous work. That is the bug this closes.
-    const projectRefs = _latestPerColour(
-      scoped
-        .filter(m => String(m.projectNumber || '') === String(order.projectNumber || '')
-          && String(order.projectNumber || '') !== '')
-        .map(m => (m.pageState && m.pageState.mockupNum) || m.name)
-        .filter(Boolean),
-    );
+    //      most often sent) → this project's designs, per _clientDesigns above.
+    const confItems = (order.confirmation && order.confirmation.items) || [];
+    const confRefs = confItems
+      .map(it => it && it.mockupNum)
+      .filter(Boolean);
+
+    // Scope the lookup to THIS CLIENT ∪ THIS PROJECT with an indexed query rather
+    // than pulling the entire mockup library and indexing it in memory on every
+    // page view. Both halves matter: the client half resolves a confirmation
+    // reference to a design carried over from an earlier job, and the project
+    // half means a mockup that carries the project link but not the client one
+    // can't fall through the floor (see utils/mockupScope).
+    const scoped = await StudioLibraryItem
+      .find(clientLibraryScopeFor(order))
+      .select('name pageState.mockupNum pageState.projectNumber projectNumber thumbnail data extraViews extraBackViews')
+      .lean();
+
+    const { byNorm, projectRefs } = _clientDesigns(order, scoped);
     const mockupRefs = confRefs.length > 0 ? confRefs : projectRefs;
 
     // Preserve confirmation item order + dedupe (an item might be listed twice
@@ -415,9 +461,19 @@ const publicGetProject = async (req, res) => {
       .filter(k => { if (seen.has(k)) return false; seen.add(k); return true; })
       .map(k => byNorm[k])
       .filter(Boolean)
-      // extraViews = pages 2+ of a multi-page mockup (e.g. the sideways
-      // garment for shoulder prints) — the client sees every view.
-      .map(m => ({ name: m.name, thumbnail: m.thumbnail, back: m.data, mockupNum: m.pageState?.mockupNum, extraViews: m.extraViews || [] }));
+      // extraViews / extraBackViews = the fronts and BACKS of pages 2+ of a
+      // multi-page mockup (e.g. the sideways garment for shoulder prints) — the
+      // client sees every view. The backs have been stored since the page-2-back
+      // fix and were never sent, so a two-page design showed three of its four
+      // sides. utils/mockupViews owns how the two arrays pair up.
+      .map(m => ({
+        name: m.name,
+        thumbnail: m.thumbnail,
+        back: m.data,
+        mockupNum: m.pageState?.mockupNum,
+        extraViews: m.extraViews || [],
+        extraBackViews: m.extraBackViews || [],
+      }));
 
     const logo = await ClientLogo.findOne({ companyKey: order.companyKey }).select('imageDataUrl').lean();
 
@@ -1298,6 +1354,7 @@ module.exports = {
   // totals obey the exact same draft-hiding rules as the approval page.
   _confPublished, _hasConfContent,
   _latestPerColour,   // exported for tests
+  _clientDesigns,     // which designs a client sees on a project — exported for tests
   DEFAULT_TRACKING_STEPS,
   // Link liveness — the single source of truth for "is this approval link dead?".
   // Shared with services/signals so the hub reports the same answer the public

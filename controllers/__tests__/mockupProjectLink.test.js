@@ -12,7 +12,9 @@ const test = require('node:test');
 const assert = require('node:assert');
 
 const { resolveProjectFor } = require('../studioLibrary');
-const { mockupScopeFor, projectScopeFor } = require('../../utils/mockupScope');
+const {
+  projectScopeFor, clientLibraryScopeFor, mockupProjectNumber, belongsToProject,
+} = require('../../utils/mockupScope');
 const { compareMockupNums, baseForProject, parseMockupNum } = require('../../utils/mockupNumbers');
 
 const mk = (mockupNum) => ({ pageState: { mockupNum } });
@@ -64,23 +66,6 @@ test('resolveProjectFor: never matches on client name', () => {
   assert.strictEqual(got, '', 'no number match → unlinked, regardless of the client name');
 });
 
-test('mockupScopeFor: prefers the client, falls back to the project', () => {
-  assert.deepStrictEqual(
-    mockupScopeFor({ companyKey: 'happyleaf', projectNumber: '150' }),
-    { store: 'mockups', companyKey: 'happyleaf' },
-    'a confirmation may reference a design carried over from an earlier project of the same client',
-  );
-  assert.deepStrictEqual(
-    mockupScopeFor({ projectNumber: '150' }),
-    { store: 'mockups', projectNumber: '150' },
-  );
-});
-
-test('mockupScopeFor: a keyless legacy order keeps the old unscoped behaviour', () => {
-  assert.deepStrictEqual(mockupScopeFor({}), { store: 'mockups' });
-  assert.deepStrictEqual(mockupScopeFor(null), { store: 'mockups' });
-});
-
 test('projectScopeFor: the strict per-project slice, or null', () => {
   assert.deepStrictEqual(
     projectScopeFor({ projectNumber: 150 }),
@@ -90,6 +75,60 @@ test('projectScopeFor: the strict per-project slice, or null', () => {
   assert.strictEqual(projectScopeFor({ projectNumber: '' }), null);
   assert.strictEqual(projectScopeFor({}), null);
   assert.strictEqual(projectScopeFor(null), null);
+});
+
+test('clientLibraryScopeFor: neither key can hide the other', () => {
+  // Scoping by the client alone (what every surface used to do) loses a mockup
+  // carrying the PROJECT link and not the client one — and those exist, for as
+  // long as it takes the boot backfill to stamp them. The client's page showed
+  // fewer designs than the owner's project panel for exactly that window.
+  // A confirmation reference still resolves to a design carried over from an
+  // earlier project of the same client, which is why both halves are here.
+  assert.deepStrictEqual(
+    clientLibraryScopeFor({ companyKey: 'happyleaf', projectNumber: '150' }),
+    { store: 'mockups', $or: [{ companyKey: 'happyleaf' }, { projectNumber: '150' }] },
+  );
+});
+
+test('clientLibraryScopeFor: one key, one clause — never a redundant $or', () => {
+  assert.deepStrictEqual(
+    clientLibraryScopeFor({ companyKey: 'happyleaf' }),
+    { store: 'mockups', companyKey: 'happyleaf' },
+  );
+  assert.deepStrictEqual(
+    clientLibraryScopeFor({ projectNumber: 150 }),
+    { store: 'mockups', projectNumber: '150' },
+    'numeric project numbers are stringified to match the stored field',
+  );
+  assert.deepStrictEqual(clientLibraryScopeFor({}), { store: 'mockups' });
+  assert.deepStrictEqual(clientLibraryScopeFor(null), { store: 'mockups' });
+});
+
+test('mockupProjectNumber: the field first, the pageState blob as the fallback', () => {
+  // A doc written straight to the collection (the "Add a variation" clone) or
+  // synced by an older studio carries only the blob until backfillProjectNumbers
+  // promotes it. The Studio's Designs panel reads both — a client surface that
+  // reads only the field is stricter than the panel it mirrors.
+  assert.strictEqual(mockupProjectNumber({ projectNumber: '150' }), '150');
+  assert.strictEqual(mockupProjectNumber({ pageState: { projectNumber: '150' } }), '150');
+  assert.strictEqual(
+    mockupProjectNumber({ projectNumber: '150', pageState: { projectNumber: '22' } }),
+    '150',
+    'the real field wins — the blob is only ever the fallback',
+  );
+  assert.strictEqual(mockupProjectNumber({ projectNumber: '  ' }), '');
+  assert.strictEqual(mockupProjectNumber({}), '');
+  assert.strictEqual(mockupProjectNumber(null), '');
+});
+
+test('belongsToProject: an order with no project number owns nothing', () => {
+  assert.ok(belongsToProject({ projectNumber: '150' }, '150'));
+  assert.ok(belongsToProject({ pageState: { projectNumber: '150' } }, 150));
+  assert.ok(!belongsToProject({ projectNumber: '150' }, '22'));
+  // The dangerous case: '' must never match every unlinked mockup in the library.
+  assert.ok(!belongsToProject({ projectNumber: '' }, ''));
+  assert.ok(!belongsToProject({}, ''));
+  assert.ok(!belongsToProject({ projectNumber: '150' }, null));
 });
 
 test('compareMockupNums: colours and their edits sort adjacently, in sequence', () => {
