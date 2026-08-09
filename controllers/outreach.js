@@ -406,20 +406,31 @@ async function getOverview(req, res) {
     });
     // TRUE when an ACTIVE campaign can't ever send a second touch — the dead
     // sequence, stated as one boolean the Studio can badge.
-    const noFollowUpsPossible = campaignRows.some((c) => c.status === 'active' && c.stepCount < 2);
+    // EVERY active campaign, not any one of them. `some` meant a single
+    // one-touch campaign sitting alongside healthy ones replaced the real
+    // "Follow-ups due" number with a red NONE — telling the owner his whole
+    // engine was dead while it was in fact sending follow-ups. The per-campaign
+    // badge already flags the offender correctly on its own card.
+    const activeRows = campaignRows.filter((c) => c.status === 'active');
+    const noFollowUpsPossible = activeRows.length > 0 && activeRows.every((c) => c.stepCount < 2);
     const campaignName = new Map(campaigns.map((c) => [String(c._id), c.name]));
 
     // Warm = engaged: replied first (hottest), then multi-opens, then single
     // opens; newest engagement first within each rung.
+    // Counted BEFORE the display cap. The next-best-action line read
+    // warm.length — the length of a list already sliced to 50 — so a 60-lead
+    // warm pile reported "50 warm leads" and the number stopped moving.
+    const warmMatches = (e) => e.status === 'replied' || (e.openCount || 0) > 0;
+    const warmTotal = enrollments.filter(warmMatches).length;
     const warm = enrollments
-      .filter((e) => e.status === 'replied' || (e.openCount || 0) > 0)
+      .filter(warmMatches)
       .sort((a, b) => {
         const rank = (e) => (e.status === 'replied' ? 2 : ((e.openCount || 0) > 1 ? 1 : 0));
         if (rank(b) !== rank(a)) return rank(b) - rank(a);
         const at = (e) => new Date(e.repliedAt || e.lastOpenedAt || 0).getTime();
         return at(b) - at(a);
       })
-      .slice(0, 50)
+      .slice(0, 50)   // the CARD list is capped; warmTotal below is not
       .map((e) => ({
         enrollmentId: e._id,
         companyKey: e.companyKey,
@@ -463,9 +474,13 @@ async function getOverview(req, res) {
       ...(enrolledKeys.length ? { companyKey: { $nin: enrolledKeys } } : {}),
     }).catch(() => 0);
     const nextActions = buildNextActions({
-      engine, campaigns: campaignRows, warmCount: warm.length, coldReserve, autoEnrollOn,
-      // Reply auto-stop only works when Gmail sync is on — surface it loudly if not.
-      replySyncOn: isGmailConfigured(),
+      engine, campaigns: campaignRows, warmCount: warmTotal, coldReserve, autoEnrollOn,
+      // Either reader closes the loop. Reading the Gmail flag alone raised a red
+      // "replies are NOT being auto-detected" alarm on a system whose IMAP
+      // reader was running fine and had just surfaced a reply — the most
+      // corrosive kind of wrong, because it tells the owner to distrust
+      // something that works.
+      replySyncOn: isGmailConfigured() || !!(engine.replyPath && engine.replyPath.monitored),
       noFollowUpsPossible,
     });
 
@@ -1018,8 +1033,17 @@ async function getQueue(req, res) {
     // "due now" and misled the owner about what's going out.
     const campaigns = await OutreachCampaign.find({ status: 'active' }).lean();
     const byId = new Map(campaigns.map((c) => [String(c._id), c]));
-    const rows = await OutreachEnrollment.find({ status: 'active', campaignId: { $in: campaigns.map((c) => c._id) } })
+    const activeFilter = { status: 'active', campaignId: { $in: campaigns.map((c) => c._id) } };
+    const rows = await OutreachEnrollment.find(activeFilter)
       .sort({ nextSendAt: 1 }).limit(100).lean();
+    // The page is 100 rows; the PILLS must count the whole set. Deriving them
+    // from rows.length made "In sequences" read 100 next to an "In sequence"
+    // figure of 350 on the same screen — two numbers for one thing, one of them
+    // a page size wearing a total's label.
+    const [queueTotal, dueNowTotal] = await Promise.all([
+      OutreachEnrollment.countDocuments(activeFilter).catch(() => rows.length),
+      OutreachEnrollment.countDocuments({ ...activeFilter, nextSendAt: { $lte: new Date() } }).catch(() => 0),
+    ]);
     const queue = rows.map((e) => {
       const c = byId.get(String(e.campaignId));
       const step = c ? (c.steps || [])[e.stepIndex] : null;
@@ -1037,7 +1061,7 @@ async function getQueue(req, res) {
         sends: (e.sends || []).length,
       };
     });
-    res.json({ queue });
+    res.json({ queue, queueTotal, dueNowTotal, showing: queue.length });
   } catch (e) {
     res.status(400).json({ message: e.message });
   }

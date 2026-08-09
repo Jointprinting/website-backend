@@ -119,6 +119,20 @@ const FOLDERS = [
 const MAX_PER_FOLDER = 300;
 const LOOKBACK_DAYS = 14;
 
+// A ceiling on how many message BODIES one sync run will download and MIME-parse,
+// across all folders combined.
+//
+// Per-folder caps alone are not a memory bound. Nine folders at 300 apiece is
+// 2,700 candidates, and on the first run after a new folder is added (All Mail
+// especially, which holds every message the account has ever seen) essentially
+// none of them are stored yet — so every one is a full download plus a
+// simpleParser allocation, in a single burst, on a small instance. Steady state
+// is a handful of new messages a tick; only the catch-up burst is dangerous, and
+// this bounds it. Anything not reached this tick is reached on the next one ten
+// minutes later, so nothing is lost — it just arrives over a few ticks instead
+// of all at once.
+const MAX_BODIES_PER_RUN = 120;
+
 /**
  * Flatten a header collection into the plain { name: value } ingestOne wants.
  *
@@ -310,12 +324,22 @@ async function fetchFolder(client, folder, since, ingest, stats, seen) {
     const already = await seen(heads.map((m) => String((m.envelope && m.envelope.messageId) || '').trim()).filter(Boolean));
     stats.scanned += heads.length;
 
-    const fresh = heads.filter((m) => {
+    let fresh = heads.filter((m) => {
       const id = String((m.envelope && m.envelope.messageId) || '').trim();
       if (id && already.has(id)) { stats.skipped++; return false; }
       return true;
     });
     if (!fresh.length) return;
+
+    // Spend the run's body budget oldest-first, so a backlog drains in arrival
+    // order instead of the newest message starving the ones behind it.
+    const budget = Math.max(0, MAX_BODIES_PER_RUN - stats.bodies);
+    if (fresh.length > budget) {
+      stats.deferred += fresh.length - budget;
+      fresh = fresh.slice(0, budget);
+    }
+    if (!fresh.length) return;
+    stats.bodies += fresh.length;
 
     // One message at a time, so peak memory is one message and not the folder.
     const handle = async (meta, source) => {
@@ -408,7 +432,7 @@ async function runImapSync({ env = process.env, ingestOne, lookbackDays = LOOKBA
   if (!cfg) return { ok: false, reason: 'not-configured', scanned: 0, imported: 0, skipped: 0, errors: 0 };
   const ingest = ingestOne || require('../controllers/replyTriage').ingestOne;
 
-  const stats = { ok: true, mailbox: cfg.auth.user, scanned: 0, imported: 0, skipped: 0, errors: 0 };
+  const stats = { ok: true, mailbox: cfg.auth.user, scanned: 0, imported: 0, skipped: 0, errors: 0, bodies: 0, deferred: 0 };
   const since = new Date(Date.now() - Math.max(1, lookbackDays) * 86400000);
   const client = new ImapFlow({ ...cfg, logger: false, emitLogs: false });
 
@@ -422,6 +446,7 @@ async function runImapSync({ env = process.env, ingestOne, lookbackDays = LOOKBA
     try { await client.logout(); } catch { /* connection already gone */ }
   }
   if (stats.imported) console.log(`[reply-imap] ${stats.imported} new repl${stats.imported === 1 ? 'y' : 'ies'} from ${stats.mailbox} (${stats.scanned} scanned)`);
+  if (stats.deferred) console.log(`[reply-imap] ${stats.deferred} message(s) deferred to the next run (body budget ${MAX_BODIES_PER_RUN})`);
   return stats;
 }
 
