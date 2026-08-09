@@ -304,17 +304,27 @@ async function verifyMailbox(email, opts = {}) {
 }
 
 /** Verify many, bounded concurrency. Returns Map(email → verdict). Never throws. */
-async function verifyMailboxes(emails = [], { concurrency = 4, ...opts } = {}) {
+async function verifyMailboxes(emails = [], { concurrency = 4, budgetMs = 20_000, ...opts } = {}) {
   const list = [...new Set(emails.map((e) => String(e || '').trim().toLowerCase()).filter(Boolean))];
   const out = new Map();
+  // A wall-clock budget for the whole batch. This runs inside the enroll HTTP
+  // request, and each probe can sit on an 8s timeout: a 200-lead enrollment
+  // against slow servers would otherwise hold the request open for minutes and
+  // time out the whole enroll, losing work that had nothing to do with
+  // verification. Whatever the budget doesn't reach is simply not verified —
+  // absent from the map, which callers already read as "send it".
+  const deadline = Date.now() + Math.max(1000, budgetMs);
   let i = 0;
+  let unchecked = 0;
   const worker = async () => {
     while (i < list.length) {
       const email = list[i++];
+      if (Date.now() > deadline) { unchecked += 1; continue; }
       out.set(email, await verifyMailbox(email, opts).catch(() => 'unknown'));
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, list.length) }, worker));
+  if (unchecked) console.log(`[verify] ${unchecked} address(es) left unverified — batch budget reached (they are still sent)`);
   return out;
 }
 

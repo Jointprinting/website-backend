@@ -174,7 +174,12 @@ async function listDispensaries(req, res) {
 
     // Always tell the map how many chain stores sit in this viewport, so the
     // CHAINS clicker can show "+N" instead of hiding an MSO market silently.
-    const chainCount = await Dispensary.countDocuments({ ...geoFilter, isChain: true });
+    // Counted through the SAME filter the results use, with only the isChain
+    // swap. Counting on the bare geo filter meant "+N CHAINS" promised pins the
+    // clicker would then not reveal, because the audience segment filter still
+    // applied to what actually got drawn — a number that could only ever be an
+    // overpromise.
+    const chainCount = await Dispensary.countDocuments({ ...filter, isChain: true });
 
     for (const d of docs) d.segment = d.segment || deriveSegment(d.state, d.source);
     if (narrowed) {
