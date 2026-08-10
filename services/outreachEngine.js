@@ -741,13 +741,26 @@ const UNSUB_EPOCH = new Date(process.env.OUTREACH_UNSUB_EPOCH || '2026-08-06T18:
 // over — normally the full 7 days, but narrower while the pre-fix readings are
 // still aging out (see UNSUB_EPOCH). Defaults to sent7d so every existing caller
 // and test behaves exactly as before.
-function evaluateDeliverability({ sent7d = 0, bounced7d = 0, complaints7d = 0, unsub7d = 0, unsubSent = null } = {}) {
+function evaluateDeliverability({ sent7d = 0, bounced7d = 0, complaints7d = 0, unsub7d = 0, unsubSent = null, alreadyHeld = false } = {}) {
   const unsubDenom = unsubSent == null ? sent7d : unsubSent;
   const bounceRate = sent7d > 0 ? bounced7d / sent7d : 0;
   const complaintRate = sent7d > 0 ? complaints7d / sent7d : 0;
   const unsubRate = unsubDenom > 0 ? unsub7d / unsubDenom : 0;
   const enoughData = sent7d >= BREAKER_MIN_SAMPLE;
-  const bounceTrips = enoughData && bounceRate > MAX_BOUNCE_RATE && bounced7d >= BREAKER_MIN_BOUNCES;
+  // The sample floor is there so three bounces in a 30-send test can't pause the
+  // engine. But it also RELEASED the pause: once enough old sends aged out of the
+  // window, sent7d fell under 50, `enoughData` went false, and the breaker
+  // un-tripped while the measured bounce rate was still nearly double the
+  // threshold. The engine then sent into the same roster and re-tripped within a
+  // day. That is the oscillation the owner has been living with — it resumed on
+  // "not enough data to judge", never on "the problem is fixed".
+  //
+  // So the floor now only governs whether we may FIRST trip. Once tripped, the
+  // rate itself has to come down: a thin sample keeps the pause rather than
+  // ending it, and a genuinely clean thin sample is indistinguishable from a
+  // healthy one anyway (bounceRate 0 clears immediately).
+  const rateIsBad = bounceRate > MAX_BOUNCE_RATE && bounced7d >= BREAKER_MIN_BOUNCES;
+  const bounceTrips = rateIsBad && (enoughData || alreadyHeld);
   const complaintTrips = enoughData && complaintRate > MAX_COMPLAINT_RATE && complaints7d >= BREAKER_MIN_COMPLAINTS;
   // The opt-out leg carries its own sample floor, against its own denominator:
   // right after the meter was fixed there aren't 50 clean sends yet, and "not
@@ -797,7 +810,14 @@ async function deliverabilityStats(now = new Date(), { force = false } = {}) {
   // Reassure, don't command: the list self-cleans (every bounce auto-suppresses,
   // dead cold prospects auto-archive daily) and sending auto-resumes as the bad
   // batch ages out of the trailing 7-day window — no manual step needed.
-  const val = evaluateDeliverability({ sent7d, bounced7d, complaints7d, unsub7d, unsubSent });
+  // Is the engine ALREADY holding on this breaker? That decides whether a
+  // thinning sample keeps the pause or ends it — see evaluateDeliverability.
+  // Read from the engine's own last result, which recordRun writes in exactly
+  // one place, so the latch has a natural exit: the first tick that releases
+  // writes a different line and the flag clears itself.
+  const st = await OutreachState.findOne({ key: 'engine' }).select('last_result').lean().catch(() => null);
+  const alreadyHeld = /^held: circuit-breaker/.test(String((st && st.last_result) || ''));
+  const val = evaluateDeliverability({ sent7d, bounced7d, complaints7d, unsub7d, unsubSent, alreadyHeld });
   _dstatsCache = { at: nowMs, val };
   return val;
 }
@@ -1096,14 +1116,26 @@ async function runRosterHygiene(campaigns = [], now = new Date()) {
         // companyKey is what the re-pick joins on — omitting it made that pass a
         // silent no-op that reported nothing and did nothing.
         .select('companyKey status stopReason toEmail sends.at').lean();
-      if (!shouldRunHygiene(campaignBounceSignal(rows), campaign.lastHygieneAt, now)) continue;
+      // Two different bars, because the two halves of this pass carry different
+      // risk. RE-PICKING an address is free and always correct — it swaps a
+      // queued lead onto the best address its own company already has, and the
+      // bounces we are trying to stop are a bad-address-PICKING problem, not a
+      // mailbox-existence one. Gating that behind a bounce SPIKE meant the fix
+      // only ran once the damage had already been done. DROPPING an address is
+      // irreversible, so it keeps the spike bar it always had.
+      const signal = campaignBounceSignal(rows);
+      const mayDrop = shouldRunHygiene(signal, campaign.lastHygieneAt, now);
+      const cooling = campaign.lastRepickAt
+        && now.getTime() - new Date(campaign.lastRepickAt).getTime() < HYGIENE_COOLDOWN_MS;
+      if (!mayDrop && cooling) continue;
 
       // ATOMIC stamp claim — only wins while the stamp is still stale, so two
       // overlapping ticks can never both run the pass for one campaign.
       const cutoff = new Date(now.getTime() - HYGIENE_COOLDOWN_MS);
+      const stampField = mayDrop ? 'lastHygieneAt' : 'lastRepickAt';
       const claimed = await OutreachCampaign.findOneAndUpdate(
-        { _id: campaign._id, $or: [{ lastHygieneAt: null }, { lastHygieneAt: { $lte: cutoff } }] },
-        { $set: { lastHygieneAt: now } },
+        { _id: campaign._id, $or: [{ [stampField]: null }, { [stampField]: { $lte: cutoff } }] },
+        { $set: { [stampField]: now } },
         { new: true },
       );
       if (!claimed) continue; // another worker beat us to it
@@ -1134,7 +1166,7 @@ async function runRosterHygiene(campaigns = [], now = new Date()) {
           out.push({ campaignId: String(campaign._id), checked: waiting.length, dropped: 0, held: bad.length, repicked });
           continue;
         }
-        for (const e of bad) {
+        for (const e of (mayDrop ? bad : [])) {
           // Guarded write: a reply / opt-out / send that raced us wins.
           const r = await OutreachEnrollment.updateOne(
             { _id: e._id, status: 'active', 'sends.0': { $exists: false } },
@@ -1755,8 +1787,33 @@ async function runOutreachTick(now = new Date(), opts = {}) {
   // itself as the bad window ages out.
   const breaker = await deliverabilityStats(now).catch(() => null);
   if (breaker && breaker.tripped) {
-    await recordRun(`held: circuit-breaker — ${breaker.reason}`);
-    return { skipped: 'circuit-breaker', deliverability: breaker };
+    // HOLD SENDING — but keep cleaning the list.
+    //
+    // This used to return here, which put runListQuarantine and
+    // runRosterHygiene (both further down this function) out of reach. So the
+    // exact moment the engine decided the list was bad, the only two passes
+    // that FIX a bad list switched off — while the banner told the owner "the
+    // list is auto-cleaning; sending resumes on its own". Neither half was
+    // true, and the engine sat for days with a roster it was no longer allowed
+    // to repair, then resumed into the same addresses and re-tripped. That
+    // loop, not the threshold, is why it kept stopping.
+    //
+    // Neither pass sends anything: they re-pick better addresses on queued
+    // leads, re-verify domains, and drop dead ones. They are exactly what
+    // should run while sending is held.
+    const held = await OutreachCampaign.find({ status: 'active' }).lean().catch(() => []);
+    let cleaned = null;
+    if (held.length) {
+      await runListQuarantine(held, now).catch((e) => console.warn('[outreach] held-quarantine:', e.message));
+      cleaned = await runRosterHygiene(held, now).catch((e) => {
+        console.warn('[outreach] held-hygiene:', e.message);
+        return null;
+      });
+    }
+    const repicked = (cleaned || []).reduce((n, r) => n + (r.repicked || 0), 0);
+    const dropped = (cleaned || []).reduce((n, r) => n + (r.dropped || 0), 0);
+    await recordRun(`held: circuit-breaker — ${breaker.reason}${cleaned ? ` · cleaning: ${repicked} re-picked, ${dropped} dropped` : ''}`);
+    return { skipped: 'circuit-breaker', deliverability: breaker, cleaned: { repicked, dropped } };
   }
   if (_ticking) return { skipped: 'already-running' };
   _ticking = true;

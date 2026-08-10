@@ -53,6 +53,10 @@ const OutreachCampaignSchema = new mongoose.Schema({
   // most once per campaign per 24h, and lets campaignHealth say "re-verified
   // the waiting roster" only when that actually just happened.
   lastHygieneAt: { type: Date, default: null },
+  // Re-picking a queued lead onto a better address is free and always
+  // correct, so it runs on its own gentle cadence rather than waiting for a
+  // bounce spike the way the irreversible DROP half does.
+  lastRepickAt: { type: Date, default: null },
   // LIST QUARANTINE — the engine acting on its own "this list source is bad"
   // verdict instead of printing advice: when a campaign keeps bouncing hard
   // even AFTER roster hygiene ran (see shouldQuarantineList in
