@@ -170,3 +170,34 @@ test('nameShaped separates a plausible name from an alias blob', () => {
     assert.equal(nameShaped(no), false, no);
   }
 });
+
+// ── Cannabis-adjacent businesses that are not dispensaries ───────────────────
+// From the owner's own bounce log: merry.jane@hightimes.com went out and
+// bounced. High Times is a magazine. These rank for every cannabis search term
+// so scraping drags them in constantly, and none of them can buy dispensary
+// merch — the pitch was never going to land even if the address had worked.
+
+test('a magazine or a platform can never be a merch buyer', () => {
+  for (const bad of [
+    'merry.jane@hightimes.com',      // the real bounce
+    'editor@leafly.com',
+    'info@weedmaps.com',
+    'sales@dutchie.com',             // they sell TO dispensaries, not the reverse
+    'hello@iheartjane.com',
+    'contact@sub.hightimes.com',     // suffix match honors the dot boundary
+  ]) {
+    assert.equal(isNeverSend(bad), true, bad);
+    assert.equal(emailTier(bad), 'never', bad);
+    assert.ok(scoreEmail(bad) < 0, bad);
+  }
+});
+
+test('a real dispensary on a similar-looking domain is untouched', () => {
+  for (const ok of [
+    'info@greenleafdispensary.com',
+    'wholesale@thehighlifedispensary.com',   // contains "high", not hightimes.com
+    'sam.rivera@notweedmaps.com',            // not a suffix match
+  ]) {
+    assert.equal(isNeverSend(ok), false, ok);
+  }
+});

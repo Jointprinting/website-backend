@@ -69,6 +69,34 @@ const ROLE_SET = new Set(ROLE_LOCALS);
 // looksLikePerson from promoting things like `newsletter2024` or `shopnow`.
 const NON_NAME_WORDS = /^(shop|store|web|site|online|home|main|new|old|the|and|for|our|your|my|us|we|all|any|get|buy|now|here|click|link|page|form|mail|email|box|inbox|list|group|dept|department|division|branch|location|hours|menu|deals|specials|events|delivery|pickup|curbside|budtender|budtenders)$/i;
 
+// Cannabis-ADJACENT businesses that are not dispensaries and can never buy
+// dispensary merch: magazines, directories, delivery marketplaces, seed banks,
+// and the CBD/hemp e-commerce shops that a "cannabis" search inevitably drags
+// in. They surface constantly in scraping because they rank for every cannabis
+// term — and the owner's bounce log is full of them: merry.jane@hightimes.com
+// (a magazine) and cbd@cbdandoils.com both went out and bounced.
+//
+// Same reasoning as the never-send LOCALS above: the cost of skipping a real
+// buyer here is one lost lead; the cost of sending is a bounce that degrades
+// delivery for every other lead on the domain, plus a pitch that was never
+// going to land. Suffix-matched on the dot boundary.
+const NEVER_DOMAINS = [
+  // Media / publishers
+  'hightimes.com', 'merryjane.com', 'leafly.com', 'weedmaps.com', 'cannabisnow.com',
+  'mgretailer.com', 'mjbizdaily.com', 'ganjapreneur.com', 'thecannabist.co',
+  'civilized.life', 'hemp.com', 'marijuanamoment.net', 'benzinga.com',
+  // Directories / marketplaces / tech platforms (they sell TO dispensaries)
+  'dutchie.com', 'iheartjane.com', 'springbig.com', 'blaze.me', 'meadow.com',
+  'greenbits.com', 'flowhub.com', 'treez.io', 'alpineiq.com', 'leaflink.com',
+  // Seed banks / grow supply / lab — not retail merch buyers
+  'seedsman.com', 'ilgm.com', 'growersnetwork.org',
+];
+function isNeverDomain(domain) {
+  const d = String(domain || '').toLowerCase();
+  if (!d) return false;
+  return NEVER_DOMAINS.some((n) => d === n || d.endsWith(`.${n}`));
+}
+
 const RE_EMAIL = /^([a-z0-9._%+\-]+)@([a-z0-9.\-]+\.[a-z]{2,})$/;
 
 /** Normalize + split an address. Returns { local, domain } or null. Pure. */
@@ -94,6 +122,7 @@ function localHead(local) {
 function isNeverSend(email) {
   const p = parseEmail(email);
   if (!p) return true;                                  // unparseable is never sendable
+  if (isNeverDomain(p.domain)) return true;        // a magazine cannot buy merch
   if (NEVER_LOCALS.has(p.local)) return true;
   if (NEVER_LOCALS.has(localHead(p.local))) return true;
   // Hex-blob / tracking-hash locals are machine addresses, not inboxes.
@@ -214,6 +243,8 @@ function bestEmail(emails, { siteHost = '' } = {}) {
 
 module.exports = {
   looksLikeHumanName,
+  isNeverDomain,
+  NEVER_DOMAINS,
   nameShaped,
   parseEmail, localOf, domainOf, localHead,
   isNeverSend, isRoleInbox, looksLikePerson,
