@@ -17,7 +17,7 @@ const { fetchDispensaries, isRegion, DEFAULT_REGION, REGIONS, NATIONAL_ROLLOUT, 
 const { getVertical, verticalPoolFilter, verticalRunMatch, frontierStateKey, otherVerticalTags, DEFAULT_VERTICAL_ID } = require('./leadVerticals');
 const LeadFinderState = require('../models/LeadFinderState');
 const { cityFromAddress } = require('./outreachEngine');
-const { enrichWebsite } = require('./emailEnricher');
+const { enrichWebsiteDetailed } = require('./emailEnricher');
 const { upsertOsmCandidates } = require('./dispensaryIngest');
 const { verifyDomainsMx, partitionDeliverable, emailDomain } = require('./emailVerify');
 const LeadFinderRun = require('../models/LeadFinderRun');
@@ -115,7 +115,11 @@ async function discoverRegion(regionId, { maxEnrich = DEFAULT_MAX_ENRICH, vertic
   const needScrape = candidates.filter((c) => !c.email && c.website).slice(0, Math.max(0, maxEnrich));
   let enriched = 0;
   const scraped = await pool(needScrape, ENRICH_CONCURRENCY, async (c) => {
-    const email = await enrichWebsite(c.website);
+    // The OUTCOME rides along with the address, so markRosterAttempts can tell a
+    // shop that publishes nothing from one whose site we simply couldn't read.
+    const { email, outcome } = await enrichWebsiteDetailed(c.website)
+      .catch(() => ({ email: '', outcome: 'unreachable' }));
+    c._outcome = outcome;
     return { website: c.website, email };
   });
   const emailByWebsite = new Map();
@@ -240,19 +244,42 @@ const ROSTER_SEGMENTS = ['rec', 'med'];   // hemp/CBD shops are not merch buyers
  *  identical to before. */
 async function rosterCandidates(state, { limit = 250 } = {}) {
   const Dispensary = require('../models/Dispensary');
-  const rows = await Dispensary.find({
+  const common = {
     ...(state ? { state: String(state).toUpperCase() } : {}),
     active: true,
     hidden: false,
     isChain: false,                       // corporate handles merch, not the store
     segment: { $in: ROSTER_SEGMENTS },
     website: { $nin: ['', null] },        // no site, nothing to scrape (yet)
-    emailAttemptedAt: null,               // never tried — the frontier
-  })
-    .select('_id name address city state zip phone website companyKey')
-    .limit(Math.max(1, limit))
-    .lean()
-    .catch(() => []);
+  };
+  const fields = '_id name address city state zip phone website companyKey';
+
+  // THE FRONTIER — shops never tried. This is the majority of every batch, on
+  // purpose: retries must never crowd out new ground.
+  const frontierLimit = Math.max(1, Math.floor(limit * FRONTIER_SHARE));
+  const fresh = await Dispensary.find({ ...common, emailAttemptedAt: null })
+    .select(fields).limit(frontierLimit).lean().catch(() => []);
+
+  // RETRIES — shops we could NOT LOOK AT. A Cloudflare challenge, a timeout, a
+  // 502 and "this shop publishes no email" all used to produce the same
+  // permanent stamp, so one bad moment deleted a licensed dispensary from the
+  // sourcing universe for good. Only the outcomes that mean "we failed", never
+  // 'none-published', and on a backoff so a permanently-hostile site cannot
+  // consume the retry budget every sweep.
+  const retryLimit = Math.max(0, limit - fresh.length);
+  let retries = [];
+  if (retryLimit > 0) {
+    retries = await Dispensary.find({
+      ...common,
+      emailFound: { $ne: true },
+      emailAttemptOutcome: { $in: RETRYABLE_OUTCOMES },
+      emailAttemptCount: { $lt: MAX_EMAIL_ATTEMPTS },
+      emailAttemptedAt: { $lte: new Date(Date.now() - RETRY_AFTER_MS) },
+    })
+      .sort({ emailAttemptedAt: 1 })        // oldest failure first
+      .select(fields).limit(retryLimit).lean().catch(() => []);
+  }
+  const rows = [...fresh, ...retries];
 
   return rows.map((d) => ({
     _dispensaryId: d._id,
@@ -266,6 +293,15 @@ async function rosterCandidates(state, { limit = 250 } = {}) {
   }));
 }
 
+// How a sweep's scrape budget is split. The frontier gets the lion's share so
+// retrying old failures can never starve discovery of new ground.
+const FRONTIER_SHARE = 0.8;
+// Outcomes that mean "we could not look", as opposed to "we looked and this shop
+// publishes nothing". Only these are ever retried.
+const RETRYABLE_OUTCOMES = ['blocked', 'unreachable'];
+const RETRY_AFTER_MS = 21 * 86400000;   // three weeks — sites get fixed, not fast
+const MAX_EMAIL_ATTEMPTS = 3;           // then stop; a site that fails thrice is dead to us
+
 /** Stamp what we tried, so the next sweep starts where this one stopped. */
 async function markRosterAttempts(candidates, { now = new Date() } = {}) {
   const rows = (candidates || []).filter((c) => c && c._dispensaryId);
@@ -274,7 +310,14 @@ async function markRosterAttempts(candidates, { now = new Date() } = {}) {
   const ops = rows.map((c) => ({
     updateOne: {
       filter: { _id: c._dispensaryId },
-      update: { $set: { emailAttemptedAt: now, emailFound: !!c.email } },
+      update: {
+        $set: {
+          emailAttemptedAt: now,
+          emailFound: !!c.email,
+          emailAttemptOutcome: String(c._outcome || (c.email ? 'found' : 'none-published')),
+        },
+        $inc: { emailAttemptCount: 1 },
+      },
     },
   }));
   const res = await Dispensary.bulkWrite(ops, { ordered: false }).catch(() => ({ modifiedCount: 0 }));

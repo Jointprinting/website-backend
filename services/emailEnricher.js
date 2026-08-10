@@ -206,26 +206,45 @@ function rankContactLinks(html, baseUrl, max = 4) {
 // keyword-ranked internal pages (contact / wholesale / team / about) → a couple
 // of blind guesses, under a small page budget. Always resolves to a string
 // ('' on any failure) — enrichment must never throw and abort a whole finder run.
-async function enrichWebsite(url) {
+async function enrichWebsiteDetailed(url) {
   const start = String(url || '').trim();
-  if (!start) return '';
+  if (!start) return { email: '', outcome: 'no-site' };
   const host = hostOf(start);
   const seen = new Set();
+  // Why a page failed matters as much as whether it did. _get is configured with
+  // validateStatus:()=>true, so a Cloudflare challenge or a 404 arrives as
+  // ordinary `data` and gets scraped for emails like a real homepage — finding
+  // none, and reporting exactly what a shop that publishes no address reports.
+  // The caller then stamps the shop "tried, none found" forever. Statuses are
+  // captured here so a block can be told apart from an absence.
+  let homeStatus = 0;
+  let transportFailed = false;
   const tryPage = async (u) => {
-    if (!u || seen.has(u)) return '';
+    if (!u || seen.has(u)) return null;
     seen.add(u);
     try {
       const res = await _get(u);
+      if (!homeStatus) homeStatus = Number(res && res.status) || 0;
+      if (homeStatus >= 400) return null;           // challenge / 404 / 5xx, not content
       if (typeof res.data === 'string' && res.data) return { html: res.data, finalUrl: res.request?.res?.responseUrl || u };
-    } catch { /* dead/slow page — skip */ }
+    } catch {
+      transportFailed = true;                        // DNS, TLS, timeout, reset
+    }
     return null;
   };
   const PAGE_BUDGET = 5;
   try {
     const home = await tryPage(start);
-    if (!home) return '';
+    if (!home) {
+      // Nothing was read. That is NOT "this shop publishes no email" — it is
+      // "we could not look", and the two must never be stamped the same way.
+      if (transportFailed) return { email: '', outcome: 'unreachable' };
+      if (homeStatus === 403 || homeStatus === 429) return { email: '', outcome: 'blocked' };
+      if (homeStatus >= 400) return { email: '', outcome: 'unreachable' };
+      return { email: '', outcome: 'unreachable' };
+    }
     let best = pickBestEmail(extractEmails(home.html), host);
-    if (best) return best;
+    if (best) return { email: best, outcome: 'found' };
 
     // Ranked internal pages from the homepage, then blind guesses if none.
     let targets = rankContactLinks(home.html, home.finalUrl, PAGE_BUDGET - 1);
@@ -238,14 +257,23 @@ async function enrichWebsite(url) {
       const page = await tryPage(t);
       if (!page) continue;
       best = pickBestEmail(extractEmails(page.html), host);
-      if (best) return best;
+      if (best) return { email: best, outcome: 'found' };
     }
-  } catch { /* swallow — a dead site just yields no email */ }
-  return '';
+  } catch { /* swallow — enrichment must never abort a finder run */ }
+  // Read the site fine, found nothing. This is the only outcome that justifies
+  // never scraping the shop again.
+  return { email: '', outcome: 'none-published' };
+}
+
+/** Back-compat string form — every existing caller still gets just the email. */
+async function enrichWebsite(url) {
+  const { email } = await enrichWebsiteDetailed(url).catch(() => ({ email: '' }));
+  return email;
 }
 
 module.exports = {
   enrichWebsite,
+  enrichWebsiteDetailed,
   // pure — unit-tested
   sanitizeEmail,
   extractEmails,

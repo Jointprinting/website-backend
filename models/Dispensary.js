@@ -50,6 +50,12 @@ const DispensarySchema = new mongoose.Schema({
   // the licensed universe. Indexed because the sweep query sorts on it.
   emailAttemptedAt: { type: Date, default: null, index: true },
   emailFound:       { type: Boolean, default: false },
+  // WHY the last scrape found nothing. '' | 'found' | 'none-published' |
+  // 'blocked' | 'unreachable' | 'no-site'. Only 'none-published' means the shop
+  // genuinely publishes no address; the rest mean we could not look, and a shop
+  // we could not look at must not be retired from sourcing forever.
+  emailAttemptOutcome: { type: String, default: '' },
+  emailAttemptCount:   { type: Number, default: 0 },
 
   // Chain detection (services/dispensaryChains.js)
   isChain:   { type: Boolean, default: false },
