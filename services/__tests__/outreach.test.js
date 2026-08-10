@@ -952,3 +952,39 @@ test('an unresolvable domain is absent from the MX map, not marked dead', () => 
   const bad = pickInvalidEnrollments(rows, mx).map((r) => r.toEmail);
   assert.deepEqual(bad, ['a@dead.com'], 'only a definitive false may condemn an address');
 });
+
+// ── The brake has to be able to let go ───────────────────────────────────────
+// The engine sat paused for days at a time and the owner watched it send zero.
+// Two mechanisms combined to do that, and neither was the threshold.
+
+test('a held breaker does NOT release just because the sample thinned', () => {
+  // Bounces age out alongside the sends that caused them, so the RATE barely
+  // moves as the window rolls. What used to change was `enoughData`: once
+  // sent7d fell under the 50-sample floor the breaker un-tripped with the rate
+  // still nearly double the threshold, sent into the same roster, and re-tripped
+  // within a day. It resumed on "not enough data to judge", never on "fixed".
+  const fresh = evaluateDeliverability({ sent7d: 163, bounced7d: 21 });
+  assert.equal(fresh.tripped, true);
+
+  const thinnedButStillBad = evaluateDeliverability({ sent7d: 49, bounced7d: 6, alreadyHeld: true });
+  assert.equal(thinnedButStillBad.tripped, true, 'a thin sample must keep the pause, not end it');
+
+  // …and a thin sample that is genuinely CLEAN releases immediately.
+  const thinnedAndClean = evaluateDeliverability({ sent7d: 49, bounced7d: 1, alreadyHeld: true });
+  assert.equal(thinnedAndClean.tripped, false);
+});
+
+test('the sample floor still protects a small test batch from tripping it', () => {
+  // The floor exists so three bounces in a 30-send test can't pause the engine.
+  // That must survive: the floor governs the FIRST trip, it just no longer
+  // doubles as the release.
+  assert.equal(evaluateDeliverability({ sent7d: 30, bounced7d: 3 }).tripped, false);
+  assert.equal(evaluateDeliverability({ sent7d: 30, bounced7d: 3, alreadyHeld: false }).tripped, false);
+});
+
+test('a clean record never trips, held or not', () => {
+  for (const alreadyHeld of [true, false]) {
+    assert.equal(evaluateDeliverability({ sent7d: 200, bounced7d: 2, alreadyHeld }).tripped, false);
+    assert.equal(evaluateDeliverability({ sent7d: 0, bounced7d: 0, alreadyHeld }).tripped, false);
+  }
+});
