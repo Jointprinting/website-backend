@@ -124,3 +124,22 @@ test('sendFitReason still reads the rows when the name is clean', () => {
   const rows = [{ companyKey: 'shop', name: 'Some Shop', state: 'TN', segment: 'hemp' }];
   assert.strictEqual(sendFitReason(rows, { name: 'Some Shop' }), 'non-retail');
 });
+
+// ── The escape hatch has to actually be reachable ────────────────────────────
+// includeChains / includeNonRetail live under campaign.enrollFilters — that is
+// where the model declares them and what sanitizeEnrollFilters reads. Both the
+// send gate and the fit sweep were reading them off the campaign's top level,
+// where they have never existed, so `!!undefined` made the opt-in inoperative:
+// a campaign that opted these shops back IN would enroll them and then stop them
+// one at a time at the send, which reads as the engine refusing its own queue.
+
+test('the send gate and the fit sweep read the opt-in where it lives', () => {
+  const src = require('fs').readFileSync(require.resolve('../outreachEngine'), 'utf8');
+  // CODE only — the comments explaining this bug quote the broken form.
+  const code = src.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  assert.doesNotMatch(code, /campaign\.includeNonRetail\b/,
+    'includeNonRetail is under campaign.enrollFilters, never on the campaign itself');
+  assert.doesNotMatch(code, /campaign\.includeChains\b/,
+    'includeChains is under campaign.enrollFilters, never on the campaign itself');
+  assert.match(code, /campaign\.enrollFilters && campaign\.enrollFilters\.includeNonRetail/);
+});

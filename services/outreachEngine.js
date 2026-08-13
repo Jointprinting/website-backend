@@ -1084,7 +1084,10 @@ async function runListQuarantine(campaigns = [], now = new Date()) {
 // sent" so a lead that got mailed or replied while we worked is left alone.
 // Returns how many were stopped.
 async function stopUnfitWaiting(waiting = [], campaign = {}) {
-  if (campaign.includeNonRetail) return 0;
+  // The opt-in lives under enrollFilters (that is where the model puts it and
+  // what sanitizeEnrollFilters reads); campaign.includeNonRetail is always
+  // undefined, so reading it would make the escape hatch silently inoperative.
+  if (campaign.enrollFilters && campaign.enrollFilters.includeNonRetail) return 0;
   let stopped = 0;
   for (const e of waiting) {
     const reason = nonRetailNameReason(e.companyName);
@@ -1585,8 +1588,12 @@ async function sendOne(enr, campaign, now = new Date(), sender = null) {
   const fitRows = await Dispensary.find({ companyKey: enr.companyKey })
     .select('companyKey name isChain segment state').lean().catch(() => []);
   const unfit = sendFitReason(fitRows, {
-    includeChains: !!campaign.includeChains,
-    includeNonRetail: !!campaign.includeNonRetail,
+    // Same place enrollment reads them from. These were reading the top level,
+    // where the flags have never lived — so a campaign that opted chains or
+    // non-retail shops back IN got them enrolled and then stopped one by one at
+    // the send, which reads as the engine refusing to send its own queue.
+    includeChains: !!(campaign.enrollFilters && campaign.enrollFilters.includeChains),
+    includeNonRetail: !!(campaign.enrollFilters && campaign.enrollFilters.includeNonRetail),
     // The lead's OWN name, so the verdict lands on the shops the row-join can
     // never reach — an OSM-sourced lead has no Dispensary row, and a Google pin
     // in a rec state carries segment:'rec' whatever business it actually is.
