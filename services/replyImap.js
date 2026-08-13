@@ -108,6 +108,18 @@ const FOLDERS = [
   { name: 'Archive', excludeSelf: true },
 ];
 
+// ...and the other half of the conversation. Every folder above deliberately
+// excludes our own outbound, so the loop could see a buyer write in and never
+// see the owner ANSWER — which is why a reply he had already handled in Gmail
+// sat in "needs a response" until he went and clicked it closed a second time.
+// The system has no way to tell "waiting on me" from "waiting on them", so it
+// showed everything, forever.
+//
+// These folders are read for exactly one fact: he replied to this company at
+// this time. Envelope only — no bodies, no triage rows, so this costs nothing
+// against the body budget and can never create a signal of its own.
+const SENT_FOLDERS = ['[Gmail]/Sent Mail', 'Sent', 'Sent Items', 'Sent Messages', 'INBOX.Sent'];
+
 // How far back into a folder each tick looks. This used to be 60, chosen when
 // every message in the window was fully downloaded on every run — and 60 is not
 // two weeks of a cold-sending mailbox. That box collects bounces and
@@ -397,6 +409,57 @@ async function fetchFolder(client, folder, since, ingest, stats, seen) {
   }
 }
 
+// Scan one Sent folder for messages the owner sent, and hand each one's
+// (recipients, subject, thread refs, when) to the closer. Envelope-only: the
+// answer's TEXT is his business, we only need to know that it happened.
+//
+// Only the FIRST folder that exists is scanned — Gmail exposes the same message
+// under '[Gmail]/Sent Mail' and possibly an alias, and closing the same
+// conversation twice is wasted work.
+async function fetchSentFolder(client, name, since, onOwnReply, stats) {
+  let lock;
+  try {
+    lock = await client.getMailboxLock(name);
+  } catch {
+    return false;                              // folder doesn't exist here
+  }
+  try {
+    const query = { since };
+    if (stats.mailbox) query.from = stats.mailbox;   // his, not a shared alias's
+    const uids = await client.search(query, { uid: true });
+    if (!uids || !uids.length) return true;
+    const recent = uids.slice(-MAX_PER_FOLDER);
+    for await (const msg of client.fetch(recent, { uid: true, envelope: true }, { uid: true })) {
+      const env = msg.envelope || {};
+      const to = [...(env.to || []), ...(env.cc || [])]
+        .map((a) => String((a && a.address) || '').trim().toLowerCase()).filter(Boolean);
+      if (!to.length) continue;
+      stats.sentScanned += 1;
+      try {
+        const closed = await onOwnReply({
+          toEmails: to,
+          subject: env.subject || '',
+          // The thread spine. inReplyTo is the direct parent; the envelope's
+          // messageId is ours and deliberately not passed — matching on it would
+          // resolve every send to itself.
+          messageIds: [env.inReplyTo, ...(env.references || [])].filter(Boolean),
+          sentAt: env.date || msg.internalDate || new Date(),
+        });
+        stats.closed += Number(closed) || 0;
+      } catch (e) {
+        stats.errors += 1;
+        console.warn('[reply-imap] own-reply close failed:', e.message);
+      }
+    }
+    return true;
+  } catch (e) {
+    console.warn(`[reply-imap] sent scan failed for ${name}:`, e.message);
+    return true;                               // the folder existed; don't fall through
+  } finally {
+    try { lock.release(); } catch { /* already released */ }
+  }
+}
+
 /**
  * Which of these RFC Message-IDs are already stored AND readable? Used to skip a
  * download.
@@ -427,18 +490,25 @@ async function seenMessageIds(ids = []) {
  * Pull recent mail from the sending mailbox and run it through triage.
  * Returns a stats object; never throws.
  */
-async function runImapSync({ env = process.env, ingestOne, lookbackDays = LOOKBACK_DAYS, seen = seenMessageIds } = {}) {
+async function runImapSync({ env = process.env, ingestOne, onOwnReply, lookbackDays = LOOKBACK_DAYS, seen = seenMessageIds } = {}) {
   const cfg = imapConfig(env);
   if (!cfg) return { ok: false, reason: 'not-configured', scanned: 0, imported: 0, skipped: 0, errors: 0 };
   const ingest = ingestOne || require('../controllers/replyTriage').ingestOne;
+  const closeOwn = onOwnReply || require('../controllers/replyTriage').closeOnOwnReply;
 
-  const stats = { ok: true, mailbox: cfg.auth.user, scanned: 0, imported: 0, skipped: 0, errors: 0, bodies: 0, deferred: 0 };
+  const stats = { ok: true, mailbox: cfg.auth.user, scanned: 0, imported: 0, skipped: 0, errors: 0, bodies: 0, deferred: 0, sentScanned: 0, closed: 0 };
   const since = new Date(Date.now() - Math.max(1, lookbackDays) * 86400000);
   const client = new ImapFlow({ ...cfg, logger: false, emitLogs: false });
 
   try {
     await client.connect();
     for (const folder of FOLDERS) await fetchFolder(client, folder, since, ingest, stats, seen);
+    // Then the owner's own answers, so anything he has already handled in Gmail
+    // stops asking him to handle it again. Last, and never fatal: a mailbox with
+    // no readable Sent folder still gets a full inbound sync.
+    for (const name of SENT_FOLDERS) {
+      if (await fetchSentFolder(client, name, since, closeOwn, stats)) break;
+    }
   } catch (e) {
     console.warn('[reply-imap] sync failed:', e.message);
     return { ...stats, ok: false, reason: e.message };
@@ -447,6 +517,7 @@ async function runImapSync({ env = process.env, ingestOne, lookbackDays = LOOKBA
   }
   if (stats.imported) console.log(`[reply-imap] ${stats.imported} new repl${stats.imported === 1 ? 'y' : 'ies'} from ${stats.mailbox} (${stats.scanned} scanned)`);
   if (stats.deferred) console.log(`[reply-imap] ${stats.deferred} message(s) deferred to the next run (body budget ${MAX_BODIES_PER_RUN})`);
+  if (stats.closed) console.log(`[reply-imap] ${stats.closed} worklist row(s) closed — the owner had already answered in Gmail`);
   return stats;
 }
 

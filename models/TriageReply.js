@@ -50,6 +50,10 @@ const TriageReplySchema = new mongoose.Schema({
   gmailMessageId: { type: String, default: null },
 
   handledAt: { type: Date, default: null },
+  // WHO closed it: '' = the owner, in the Studio. 'owner-reply' = the IMAP
+  // reader saw him answer this company in Gmail and took it off his list on its
+  // own. Kept so "I never clicked this closed" has an answer.
+  handledBy: { type: String, default: '' },
 }, { timestamps: true });
 
 // Newest-first listing.

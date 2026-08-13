@@ -129,6 +129,84 @@ async function repairStoredReply(dup, { subject, body, snippet, fromEmail, fromN
   return { repaired: true, promoted, category };
 }
 
+// ── The owner answered: take it off his list ─────────────────────────────────
+//
+// A worklist row is a question waiting on HIM. Until now the only way for one to
+// stop asking was for him to go and click it closed — so every conversation he
+// had already answered in Gmail kept sitting in "needs a response", and every
+// further message in a live back-and-forth arrived as a fresh signal about a
+// deal he was visibly already working.
+//
+// The rule this collapses to is just: THE BALL IS IN WHOSEVER COURT SPOKE LAST.
+// They wrote last → it's on his list. He wrote last → it isn't. Nothing to mark,
+// nothing to remember, and it re-opens by itself the moment they write back,
+// which is exactly when he wants to know.
+//
+// Only `new` rows are closed. quote_requested / mockup_requested / follow_up are
+// states HE set to track his own work — a quote isn't delivered because he sent
+// a message — so they stay until he clears them.
+//
+// `receivedAt < sentAt` is the whole safety property: a message that arrived
+// AFTER his answer is a genuinely new ball in his court and must survive. Called
+// once per sent message by the IMAP reader; returns how many rows it closed.
+async function closeOnOwnReply(raw = {}) {
+  const sentAt = raw.sentAt ? new Date(raw.sentAt) : new Date();
+  if (!Number.isFinite(sentAt.getTime())) return 0;
+  const subject = String(raw.subject || '').trim();
+  const messageIds = (raw.messageIds || []).map((x) => String(x || '').trim()).filter(Boolean);
+  const toEmails = [...new Set((raw.toEmails || [])
+    .map((e) => normEmail(e)).filter(Boolean))];
+  if (!toEmails.length && !messageIds.length) return 0;
+
+  // Resolve the RECIPIENT to a company. matchReply is written from the buyer's
+  // side, so handing it the address he wrote TO reuses the exact same
+  // thread → email → subject → domain ladder, with the same confidence rules.
+  const refVariants = [...new Set(messageIds.flatMap((id) => {
+    const bare = String(id).replace(/[<>]/g, '').trim();
+    return [id, bare, `<${bare}>`];
+  }).filter(Boolean))];
+
+  let closed = 0;
+  const seenKeys = new Set();
+  for (const to of (toEmails.length ? toEmails : [''])) {
+    const dom = domainOf(to);
+    const enrOr = [];
+    if (to) enrOr.push({ toEmail: to });
+    if (dom && !FREEMAIL.has(dom)) enrOr.push({ toEmail: new RegExp(`@${escapeRegex(dom)}$`, 'i') });
+    if (refVariants.length) enrOr.push({ 'sends.messageId': { $in: refVariants } });
+    if (!enrOr.length) continue;
+    const enrollments = await OutreachEnrollment.find({ $or: enrOr })
+      .select('companyKey companyName toEmail sends').limit(50).lean();
+    const clients = to
+      ? await Client.find({ $or: [{ email: to }, { 'contacts.email': to }] })
+        .select('companyKey companyName email contacts').lean()
+      : [];
+
+    const match = matchReply(to, subject, {
+      enrollments: enrollments.map((e) => ({
+        ...e,
+        subjects: (e.sends || []).map((s) => s.subject),
+        messageIds: (e.sends || []).map((s) => s.messageId),
+      })),
+      clients,
+      messageIds,
+    });
+    // A DOMAIN match is the soft one — same business, different mailbox. Good
+    // enough to show a link, not good enough to silence a buying signal, so the
+    // closer holds to the strong matches the auto-actions already trust.
+    if (!match.matched || !match.companyKey || match.matchBy === 'domain') continue;
+    if (seenKeys.has(match.companyKey)) continue;   // one sent mail, one close
+    seenKeys.add(match.companyKey);
+
+    const r = await TriageReply.updateMany(
+      { companyKey: match.companyKey, status: 'new', receivedAt: { $lt: sentAt } },
+      { $set: { status: 'handled', handledAt: sentAt, handledBy: 'owner-reply' } },
+    ).catch(() => ({ modifiedCount: 0 }));
+    closed += r.modifiedCount || 0;
+  }
+  return closed;
+}
+
 // Classify + match one raw reply and persist it. Own sent mail is dropped (not a
 // reply); everything else — including bounces/auto-replies and unmatched senders —
 // is stored so nothing silently disappears. Returns { saved, skip }.
@@ -1144,7 +1222,7 @@ async function getWorklist(_req, res) {
 
 module.exports = {
   listReplies, addReplies, updateStatus, startJobFromReply, syncGmail, getSyncStatus, getWorklist,
-  ingestOne, repairStoredReply, applyStatusSideEffects, runGmailSync, startGmailIngest, retriageStoredReplies,
+  ingestOne, closeOnOwnReply, repairStoredReply, applyStatusSideEffects, runGmailSync, startGmailIngest, retriageStoredReplies,
   resweepStoredNdrs, auditQuotedFooterOptOuts,
   // Shared contract: which mailbox the reply sync is authenticated as (read by
   // the outreach overview to detect a reply black hole).
