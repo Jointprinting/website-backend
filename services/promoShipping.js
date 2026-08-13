@@ -1,9 +1,19 @@
 // services/promoShipping.js
 //
-// Ballpark freight for a promo quote: Cannabis Promotions (St. Petersburg, FL)
-// straight to the client. Promo goods are vendor-direct — the vendor
-// manufactures, prints and ships them (docs/BUSINESS-MODEL.md #11) — so this
-// models ONE leg, origin to destination.
+// The freight engine for BOTH legs the owner actually pays for. Named for the
+// promo case it was built for; it now rates apparel too, because both ship on
+// the same UPS account at the same negotiated rates and only the origin differs:
+//
+//   PROMO   — Cannabis Promotions (St. Petersburg, FL) straight to the client.
+//             Vendor-direct: they manufacture, print and ship
+//             (docs/BUSINESS-MODEL.md #11).
+//   APPAREL — the printer who decorated the job ships straight to the client
+//             (docs/ECOSYSTEM.md step 9), billed third-party to the owner's
+//             account. Origin is Printer.state.
+//
+// Both are ONE leg. Blanks moving supplier -> printer are deliberately not
+// modeled: the owner gets those freight-free, so adding a leg would invent a
+// cost he does not pay.
 //
 // WHY: the vendor catalog prices carry the owner's margin but NOT freight, so
 // before this every promo quote either guessed or silently ate the shipping.
@@ -158,12 +168,14 @@ function normalizeState(s) {
  * @param {number} [input.pad]       safety margin, default 0.15.
  * @returns {Object} estimate with a per-line allocation and an explainable basis.
  */
-function estimateShipping({ lines = [], destState = '', pad = null } = {}) {
+function estimateShipping({ lines = [], destState = '', pad = null, origin = ORIGIN } = {}) {
   const basis = [];
   const st = normalizeState(destState);
-  const miles = st ? haversineMiles([ORIGIN.lat, ORIGIN.lon], STATE_CENTROIDS[st]) : null;
-  const zone = st ? zoneForMiles(miles) : 5;
-  if (st) basis.push(`${ORIGIN.city} to ${st}: ~${Math.round(miles)} mi, zone ${zone}`);
+  const from = resolveOrigin(origin);
+  const miles = st && from ? haversineMiles([from.lat, from.lon], STATE_CENTROIDS[st]) : null;
+  const zone = st && from ? zoneForMiles(miles) : 5;
+  if (st && from) basis.push(`${from.city} to ${st}: ~${Math.round(miles)} mi, zone ${zone}`);
+  else if (!from) basis.push('No shipping origin — assuming zone 5 (mid-range). Set the printer on the line for a real number.');
   else basis.push('No ship-to state on the quote — assuming zone 5 (mid-range). Set the state for a real number.');
 
   // Per-line weights. "Shipping included" SKUs are carried but contribute
@@ -265,7 +277,7 @@ function estimateShipping({ lines = [], destState = '', pad = null } = {}) {
 
   return {
     ok: true,
-    origin: ORIGIN,
+    origin: from || ORIGIN,
     destState: st,
     miles: miles === null ? null : Math.round(miles),
     zone,
@@ -290,6 +302,66 @@ function estimateShipping({ lines = [], destState = '', pad = null } = {}) {
   };
 }
 
+// An origin may be the promo vendor (full coords) or just a printer's USPS
+// state, which is all Printer.state carries. Both resolve to the same shape.
+function resolveOrigin(origin) {
+  if (!origin) return null;
+  if (Number.isFinite(origin.lat) && Number.isFinite(origin.lon)) return origin;
+  const st = normalizeState(origin.state || origin);
+  if (!st) return null;
+  const [lat, lon] = STATE_CENTROIDS[st];
+  return { state: st, city: st, lat, lon };
+}
+
+/**
+ * Freight for the APPAREL leg: the printer who decorated the job ships straight
+ * to the client (docs/ECOSYSTEM.md step 9), billed third-party to the owner's
+ * UPS account — the same account and the same rates as promo, so this is the
+ * same engine with a different origin.
+ *
+ * Blanks moving supplier -> printer are NOT modeled: the owner gets those
+ * freight-free, so adding a leg would invent a cost he does not pay.
+ *
+ * @param {Array}  lines        [{ weightOz, qty, label }] — weightOz per unit,
+ *                              which quote lines carry as blankWeightOz.
+ * @param {string} originState  the printer's USPS state (Printer.state).
+ * @param {string} destState    the client's ship-to state.
+ */
+function estimateApparelShipping({ lines = [], originState = '', destState = '', pad = null } = {}) {
+  // Wrap each apparel line in the shape the shared engine reads. There is no
+  // hazmat and no "shipping included" here — those are promo-catalog facts.
+  const wrapped = lines.map((l) => ({
+    product: {
+      name: (l && l.label) || 'Blank',
+      unitWeightOz: Number(l && l.weightOz) || 0,
+      weightSource: Number(l && l.weightOz) > 0 ? 'catalog' : '',
+      category: '',
+      description: '',
+    },
+    qty: Number(l && l.qty) || 0,
+  }));
+
+  const r = estimateShipping({
+    lines: wrapped,
+    destState,
+    pad,
+    origin: originState ? { state: originState } : null,
+  });
+
+  // A garment with no recorded weight silently fell back to the UNKNOWN anchor,
+  // which is a promo default and wrong for apparel. Say which lines we could not
+  // weigh instead of quietly quoting a made-up number.
+  const unweighed = lines
+    .map((l, i) => ({ i, l }))
+    .filter(({ l }) => !(Number(l && l.weightOz) > 0))
+    .map(({ l }) => (l && l.label) || 'a line');
+  if (unweighed.length) {
+    r.unweighed = unweighed;
+    r.basis.push(`No garment weight on: ${unweighed.join(', ')} — re-pick the blank from Find blanks to capture it.`);
+  }
+  return r;
+}
+
 function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 
 function reconcile(perLine, total) {
@@ -306,5 +378,6 @@ module.exports = {
   CARTON_MAX_LB, PARCEL_CEILING_LB, DEFAULT_PAD, LTL_PAD,
   RATES_CALIBRATED_ON, RATES_STALE_AFTER_DAYS, rateAgeDays,
   FUEL_SURCHARGE_PCT, ACCOUNT_INCENTIVE_PCT,
-  haversineMiles, zoneForMiles, normalizeState, estimateShipping,
+  haversineMiles, zoneForMiles, normalizeState, resolveOrigin,
+  estimateShipping, estimateApparelShipping,
 };

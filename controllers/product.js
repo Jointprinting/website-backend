@@ -6,6 +6,8 @@ const axios = require('axios');
 const mongoose = require('mongoose');
 const sharp = require('sharp');
 const Product = require('../models/Product');
+const Printer = require('../models/Printer');
+const { estimateApparelShipping } = require('../services/promoShipping');
 const { getGfs } = require('../gridfs');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1252,6 +1254,54 @@ exports.getBlankOptions = async (req, res) => {
       tiers, options, count: options.length,
       priced: options.length, considered: candidates.length,
     });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  POST /api/products/apparel-shipping-estimate
+//    { lines: [{ label, weightOz, qty }], printerName | printerKey, destState }
+//
+//  Freight for the apparel leg — the printer ships the decorated job straight to
+//  the client, billed third-party to the owner's UPS account. The caller sends
+//  the printer it picked, not a location: the Quoter should not have to know
+//  printer geography, and Printer.state is the fact the routing strategy already
+//  turns on.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getApparelShippingEstimate = async (req, res) => {
+  try {
+    const body = req.body || {};
+    const lines = Array.isArray(body.lines) ? body.lines : [];
+    if (!lines.length) return res.status(400).json({ message: 'No lines provided.' });
+
+    // Resolve the printer to a state. An unknown printer is not fatal — the
+    // estimate degrades to a mid-range zone and says so, which beats refusing
+    // to answer while the owner is mid-quote.
+    let originState = String(body.originState || '').trim();
+    if (!originState && (body.printerKey || body.printerName)) {
+      const cond = body.printerKey
+        ? { key: String(body.printerKey) }
+        : { name: String(body.printerName) };
+      const printer = await Printer.findOne(cond).select('state name').lean();
+      if (printer && printer.state) originState = printer.state;
+    }
+
+    const estimate = estimateApparelShipping({
+      lines: lines.map((l) => ({
+        label: String((l && l.label) || ''),
+        weightOz: Number(l && l.weightOz) || 0,
+        qty: Number(l && l.qty) || 0,
+      })),
+      originState,
+      destState: String(body.destState || ''),
+      pad: body.pad === undefined ? undefined : Number(body.pad),
+    });
+    estimate.originState = originState || null;
+    if (!originState) {
+      estimate.basis.push('No printer state resolved — set the printer on the quote for a real zone.');
+    }
+    res.json(estimate);
   } catch (e) {
     res.status(500).json({ message: e.message });
   }

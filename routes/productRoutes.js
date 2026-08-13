@@ -23,6 +23,7 @@ const {
   findSSStyle,
   ssFinder,
   getBlankOptions,
+  getApparelShippingEstimate,
   dropGridfsAndStaleSync,
 } = require('../controllers/product');
 
@@ -51,6 +52,10 @@ router.get('/ss/finder', requireAdmin, ssFinder);
 // with XS-2XL averaged LIST pricing, live stock, and per-unit weight.
 // Owner-only: it exposes blank COST, which is never client-facing.
 router.get('/blank-options', requireAdmin, getBlankOptions);
+// Freight for the apparel leg — the printer ships the decorated job to the
+// client, billed third-party to the owner's UPS account. Same rate engine as
+// promo (services/promoShipping.js), different origin. Owner-only.
+router.post('/apparel-shipping-estimate', requireAdmin, express.json({ limit: '1mb' }), getApparelShippingEstimate);
 router.get('/ss/style/:style', getSSStyleDetail);       // honest live fallback
 router.get('/style/:style', getProductByStyleCode);     // Mongo -> sync -> fallback
 router.get('/:id', getProductById);
