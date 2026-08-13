@@ -112,3 +112,55 @@ test('orderMoney treats a refund as contra-revenue', () => {
   assert.equal(m.revenue, 750);
   assert.equal(m.profit, 450);
 });
+
+// ── REGRESSION: commission must not eat itself ───────────────────────────────
+//
+// orderRevenueCost counts every COGS category, and `Commission` is where the
+// owner books what he pays the agent. Feeding that into a commission
+// calculation is circular — booking a payout would shrink the order's profit,
+// so the next read pays a smaller cut of a smaller number and a statement the
+// agent already agreed to changes underneath them. Profit for commission
+// purposes is measured BEFORE the agent's own commission.
+
+test('a booked Commission row does NOT reduce the profit the agent is paid on', () => {
+  const base = [
+    { type: 'income',  category: 'Client Sales',   amount: 1682.86 },
+    { type: 'expense', category: 'Blank COGS',     amount: 467.00 },
+    { type: 'expense', category: 'Printer COGS',   amount: 291.49 },
+    { type: 'expense', category: 'Shipping',       amount: 27.40 },
+    { type: 'expense', category: 'Processing Fee', amount: 50.32 },
+  ];
+  const before = orderMoney({ totalValue: 0, cogs: 0 }, base);
+  const after  = orderMoney({ totalValue: 0, cogs: 0 }, [
+    ...base,
+    { type: 'expense', category: 'Commission', amount: 84.67, party: 'Alvin' },
+  ]);
+
+  // Real order #000001 (JFS): profit before commission is $846.65.
+  assert.equal(before.profit, 846.65);
+  assert.equal(after.profit, 846.65, 'booking the payout must not change the basis');
+  assert.equal(after.cost, before.cost, 'commission is not part of the cost the agent is measured on');
+});
+
+test('the historical 10% rate reproduces exactly off this basis', () => {
+  const m = orderMoney({ totalValue: 0, cogs: 0 }, [
+    { type: 'income',  category: 'Client Sales',   amount: 1682.86 },
+    { type: 'expense', category: 'Blank COGS',     amount: 467.00 },
+    { type: 'expense', category: 'Printer COGS',   amount: 291.49 },
+    { type: 'expense', category: 'Shipping',       amount: 27.40 },
+    { type: 'expense', category: 'Processing Fee', amount: 50.32 },
+    { type: 'expense', category: 'Commission',     amount: 84.67 },
+  ]);
+  assert.equal(Math.round(m.profit * 0.10 * 100) / 100, 84.67);
+});
+
+test('a commission CREDIT (a clawback) also stays out of the basis', () => {
+  const m = orderMoney({ totalValue: 0, cogs: 0 }, [
+    { type: 'income',  category: 'Client Sales', amount: 1000 },
+    { type: 'expense', category: 'Blank COGS',   amount: 300 },
+    { type: 'expense', category: 'Commission',   amount: 100 },
+    { type: 'expense', category: 'Commission',   amount: 40, isCredit: true },  // clawed back
+  ]);
+  assert.equal(m.cost, 300, 'both commission rows net out of the basis');
+  assert.equal(m.profit, 700);
+});
