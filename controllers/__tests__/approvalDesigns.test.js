@@ -187,3 +187,53 @@ test('handles an empty library and a missing order', () => {
   assert.deepStrictEqual(_clientDesigns(PROJECT, null).projectRefs, []);
   assert.deepStrictEqual(_clientDesigns(null, [lib('#000145A')]).projectRefs, []);
 });
+
+// ── How many options of a group the client may take ──────────────────────────
+//
+// The order that prompted this: 100 tees (50 black, 50 white — one design, two
+// garment colours) plus 50 hats. Under the old flat pick-ONE rule the two colour
+// rows were alternatives, so the client took 50 and the other 50 had nowhere to
+// go on the link. Colourways must add up; brands must not.
+const { _tooManyPicksMessage } = require('../approval');
+
+const TEE = { group: 'T-Shirts', styleCode: 'G500', description: 'Heavy Cotton Tee', printDetails: '1c front', qty: 50 };
+const BLACK = { ...TEE, color: 'Black', lid: 'a' };
+const WHITE = { ...TEE, color: 'White', lid: 'b' };
+const HAT_A = { group: 'Hats', styleCode: 'C112', description: 'Trucker', color: 'Black', qty: 50, lid: 'c' };
+const HAT_B = { group: 'Hats', styleCode: 'RC104', description: 'Richardson 112', color: 'Black', qty: 50, lid: 'd' };
+
+test('the reported order: both tee colours AND a hat go through', () => {
+  const view = [BLACK, WHITE, HAT_A, HAT_B];
+  assert.strictEqual(_tooManyPicksMessage(view, [BLACK, WHITE, HAT_A]), '');
+});
+
+test('two brands of one product is still the invalid shape', () => {
+  const view = [BLACK, WHITE, HAT_A, HAT_B];
+  const msg = _tooManyPicksMessage(view, [HAT_A, HAT_B]);
+  assert.match(msg, /just one option for "Hats"/);
+});
+
+test('taking one colour, or none, is always fine', () => {
+  const view = [BLACK, WHITE];
+  assert.strictEqual(_tooManyPicksMessage(view, [BLACK]), '');
+  assert.strictEqual(_tooManyPicksMessage(view, []), '');
+});
+
+test('an owner pin closes a colour set back down to pick-one', () => {
+  const view = [{ ...BLACK, groupMode: 'one_of' }, { ...WHITE, groupMode: 'one_of' }];
+  assert.match(_tooManyPicksMessage(view, view), /just one option for "T-Shirts"/);
+});
+
+test('the mode is read from the SERVED VIEW, not from the picks', () => {
+  // The client picked two lines that look like a colour set on their own, but
+  // the page they were served also carried a rival brand — so the group is
+  // alternatives and two picks is wrong.
+  const view = [BLACK, WHITE, { ...TEE, styleCode: '3001', description: 'Bella', color: 'Black', lid: 'e' }];
+  assert.match(_tooManyPicksMessage(view, [BLACK, WHITE]), /just one option for "T-Shirts"/);
+});
+
+test('empty / junk input never throws', () => {
+  assert.strictEqual(_tooManyPicksMessage([], []), '');
+  assert.strictEqual(_tooManyPicksMessage(null, null), '');
+  assert.strictEqual(_tooManyPicksMessage([null], [null]), '');
+});
