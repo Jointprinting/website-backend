@@ -7,6 +7,7 @@ const { nextNumber } = require('../utils/sequence');
 const { appendClientLog } = require('../services/clientLog');
 const { compareMockupNums, parseMockupNum } = require('../utils/mockupNumbers');
 const { clientLibraryScopeFor, mockupProjectNumber, belongsToProject } = require('../utils/mockupScope');
+const { groupPickModes } = require('../utils/quoteGroups');
 
 // One tile per COLOUR, showing its latest edit — the client's view of a
 // project's designs.
@@ -541,6 +542,12 @@ const publicGetProject = async (req, res) => {
         // Stable pick handle — the picker posts these back (publicSelectOptions).
         lid:          l.lid || '',
         group:        l.group        || '',
+        // The owner's pinned pick-mode for this group, when set. The client
+        // derives the mode from the lines exactly as the server does (shared
+        // quoteGroups/quoteGrid rule), so this only has to carry the OVERRIDE —
+        // but it must carry it, or the picker would offer a choice the API then
+        // rejects (or cap a colourway set the owner deliberately opened up).
+        groupMode:    l.groupMode    || '',
         accepted:     !!l.accepted,
         styleCode:    l.styleCode    || '',
         description:  l.description  || '',
@@ -748,6 +755,36 @@ function _confPublished(conf) {
   return _hasConfContent(conf) && !!(conf && conf.publishedAt);
 }
 
+// HOW MANY options of each group the client may take, enforced.
+//
+// The client takes the options they want and can skip whole groups entirely — a
+// 10-option pitch where they only want 5 is a valid selection, not an error. The
+// only invalid shape is taking TOO MANY from one group, and how many is too many
+// depends on what the group IS:
+//
+//   • one_of — ALTERNATIVES (brands, print variants). Two picks is nonsense.
+//   • any_of — COLOURWAYS. "50 black AND 50 white of the same design" is two
+//     production runs the client wants both of. Capping that at one is the bug
+//     this replaces: it left a client's second 50 shirts unsellable on the link.
+//
+// The mode is derived from the lines (or pinned by the owner) — see
+// utils/quoteGroups, mirrored on the client in common/quoteGrid so the picker
+// never offers a choice this then rejects. Computed over the SERVED VIEW, so it
+// matches the page the client actually picked on rather than a newer edit.
+//
+// Returns an error message, or '' when the selection is allowed. PURE.
+function _tooManyPicksMessage(view, pickedEntries) {
+  const modes = groupPickModes(view || []);
+  const groups = [...new Set((view || []).map(l => l && l.group).filter(Boolean))];
+  for (const g of groups) {
+    if (modes[g] === 'any_of') continue;
+    if ((pickedEntries || []).filter(l => l && l.group === g).length > 1) {
+      return `Please choose just one option for "${g}" — or skip it.`;
+    }
+  }
+  return '';
+}
+
 // POST /api/public/projects/:id/select?token=... — the interactive quote
 // stage. Body: { picks: [lineIndex, ...] }. The client picks ONE option per
 // product group; standalone (ungrouped) lines are always part of the order.
@@ -814,15 +851,8 @@ const publicSelectOptions = async (req, res) => {
       }
       pickedEntries.push(entry);
     }
-    // AT MOST one option per group. The client takes the options they want and
-    // can skip whole groups entirely — a 10-option pitch where they only want 5
-    // is a valid selection, not an error. Two picks in the same group (which
-    // are alternatives, not add-ons) is the only invalid shape.
-    for (const g of groups) {
-      if (pickedEntries.filter(l => l.group === g).length > 1) {
-        return res.status(400).json({ message: `Please choose just one option for "${g}" — or skip it.` });
-      }
-    }
+    const overPicked = _tooManyPicksMessage(view, pickedEntries);
+    if (overPicked) return res.status(400).json({ message: overPicked });
     // The order can't be empty: require at least one picked option, unless the
     // quote carries always-included standalone lines that stand on their own.
     if (pickedEntries.length === 0 && standaloneCount === 0) {
@@ -1354,6 +1384,7 @@ module.exports = {
   // totals obey the exact same draft-hiding rules as the approval page.
   _confPublished, _hasConfContent,
   _latestPerColour,   // exported for tests
+  _tooManyPicksMessage,   // exported for tests
   _clientDesigns,     // which designs a client sees on a project — exported for tests
   DEFAULT_TRACKING_STEPS,
   // Link liveness — the single source of truth for "is this approval link dead?".

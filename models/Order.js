@@ -569,10 +569,25 @@ const OrderSchema = new mongoose.Schema({
     _id: false,
   }],
   quoteLines: [{
-    // Lines sharing a `group` label ("Bucket Hats") are alternative brand
-    // options the client picks ONE of on the approval page. Ungrouped lines
-    // are standalone (always included). `accepted` records the client's pick.
+    // Lines sharing a `group` label ("Bucket Hats") are options the client
+    // chooses from on the approval page; ungrouped lines are standalone (always
+    // included). `accepted` records the client's pick.
     group:        { type: String, default: '' },
+    // HOW MANY of this group the client may take. A group used to be pick-ONE
+    // unconditionally, which is right for brands (Gildan vs Bella) and wrong for
+    // COLOURWAYS: "50 black + 50 white of the same design" is two runs the client
+    // wants both of, and under pick-one the second colour had nowhere to go —
+    // the failure that prompted this field ("there weren't color options").
+    //   ''        → derive (the default; see utils/quoteGroups.groupPickMode —
+    //               lines differing ONLY by colour read as a colourway set)
+    //   'one_of'  → alternatives, pick at most one (historical behaviour)
+    //   'any_of'  → co-produced, take any combination; quantities add up
+    // Stored per line, the same way `group` is (a group is not its own doc); the
+    // first non-empty value in the group wins. Deliberately does NOT combine
+    // quantities into a better price tier — per the owner, two garment shades
+    // mean different screens and a different ink lane, so each colour keeps its
+    // own line, setup and tier.
+    groupMode:    { type: String, enum: ['', 'one_of', 'any_of'], default: '' },
     accepted:     { type: Boolean, default: false },
     // Stable line id — survives reorders/edits so the client's picks (made
     // against the PUSHED snapshot below) always map back to the right live
