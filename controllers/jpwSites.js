@@ -517,10 +517,18 @@ async function uploadPhoto(req, res) {
       });
     }
 
+    // NO inline fallback here, unlike clientLogos. A logo is a few KB and fits
+    // inside the document; a photograph does not — `data` is capped at
+    // MAX_DATA_JSON above, and one camera shot as base64 blows straight past it.
+    // Handing back a data URL would look like a successful upload and then lose
+    // the photo when the autosave was rejected as too large. Better to refuse
+    // now, out loud, than to break a client's gallery quietly later.
     if (!r2.isR2Configured()) {
-      // Honest about what happened: the URL works, but it is the image itself,
-      // so it rides inside the site document rather than being hosted.
-      return res.json({ url: dataUrl, hosted: false });
+      return res.status(503).json({
+        message: 'Photo uploads need image hosting, which is not configured on this server. '
+          + `A photo cannot live inside the site record (that field is capped at ${Math.round(MAX_DATA_JSON / 1024)} KB). `
+          + 'Set the R2_* environment variables, or paste a link to an already-hosted image.',
+      });
     }
     const url = await r2.uploadDataUrl(dataUrl, `webworks/${site.slug || 'site'}`);
     res.json({ url, hosted: true });
