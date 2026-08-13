@@ -192,6 +192,24 @@ test('a magazine or a platform can never be a merch buyer', () => {
   }
 });
 
+// hi@mystore.com reached the owner's send queue as a real lead. mystore.com is
+// Shopify's demo domain — the address ships inside the theme and gets published
+// when nobody fills the field in. The mailbox never existed, so it isn't a stale
+// address on a live domain; it's a guaranteed hard bounce.
+test('theme placeholder addresses never send', () => {
+  for (const bad of [
+    'hi@mystore.com',                // the real one, off the queue
+    'info@yourstore.com',
+    'contact@yourdomain.com',
+    'hello@example.com',
+    'sales@company.com',
+    'orders@shop.mystore.com',       // suffix match, same as the domains above
+  ]) {
+    assert.equal(isNeverSend(bad), true, bad);
+    assert.equal(emailTier(bad), 'never', bad);
+  }
+});
+
 test('a real dispensary on a similar-looking domain is untouched', () => {
   for (const ok of [
     'info@greenleafdispensary.com',

@@ -1270,7 +1270,7 @@ function interleaveByCity(rows = [], cityOf = (r) => r && r.city) {
 // The chain / non-retail verdict now lives in services/leadFit so the SEND path
 // applies the identical rule — a gate on the door alone did nothing about the
 // leads already inside the sequence.
-const { fieldMapExclusions } = require('../services/leadFit');
+const { fieldMapExclusions, nonRetailNameReason } = require('../services/leadFit');
 
 // Discover cold candidates and enroll up to `limit` of them into `campaign`,
 // best-lead-first with a per-city spread — the same cold-only + suppression +
@@ -1326,10 +1326,10 @@ async function autoFillCampaign(campaign, { limit, includeChains, includeNonReta
     // The Field Map's read on these exact shops — ONE indexed query scoped to the
     // pool we already loaded (not a scan of the national collection), so the join
     // costs a single round-trip per fill.
-    Dispensary.find({ companyKey: { $in: keys } }).select('companyKey isChain segment state').lean().catch(() => []),
+    Dispensary.find({ companyKey: { $in: keys } }).select('companyKey name isChain segment state').lean().catch(() => []),
   ]);
-  const { excluded, chains, nonRetail } = fieldMapExclusions(fieldMapRows, filterOpts);
-  const filtered = { chains, nonRetail };
+  const { excluded, chains, nonRetail, notRetailBusiness } = fieldMapExclusions(fieldMapRows, filterOpts);
+  const filtered = { chains, nonRetail, notRetailBusiness };
   const enrolledSet = new Set(existing.map((e) => e.companyKey));
   const usedEmails = new Set(allEnrollments.map((e) => String(e.toEmail || '').toLowerCase()).filter(Boolean));
   const suppressed = await suppressedSet(clients.map((c) => pickEmail(c)));
@@ -1352,6 +1352,13 @@ async function autoFillCampaign(campaign, { limit, includeChains, includeNonReta
     // Chains and non-retail shops never enter the pool — they can't buy, so a
     // send to them is pure burned cap (and burned reputation).
     if (excluded.has(c.companyKey)) continue;
+    // The lead's own name, judged even when the Field Map holds no row for it —
+    // OSM-sourced leads never get a Dispensary row, so the join above is blind
+    // to exactly the hemp/CBD/smoke shops we most need to keep out.
+    if (!filterOpts.includeNonRetail && nonRetailNameReason(c.companyName)) {
+      filtered.notRetailBusiness += 1;
+      continue;
+    }
     const email = String(pickEmail(c) || '').toLowerCase();
     const reason = enrollBlockReason(c, enrolledSet.has(c.companyKey), customerKeys.has(c.companyKey), email ? suppressed.has(email) : false);
     if (reason || !email || usedEmails.has(email)) continue;
