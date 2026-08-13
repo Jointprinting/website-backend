@@ -52,7 +52,14 @@ const { getSenders } = require('./senderPool');
 const { getAuthStatus, recommendedRecords } = require('../utils/dnsAuth');
 const { replyPathStatus, normalizeAddress } = require('../utils/replyPath');
 const { isNeverSend, scoreEmail, looksLikeHumanName, nameShaped, isRoleInbox } = require('../utils/emailQuality');
-const { sendFitReason } = require('./leadFit');
+const { sendFitReason, nonRetailNameReason } = require('./leadFit');
+// What each hold reason reads like in the log line the owner actually sees.
+const UNFIT_LABEL = {
+  chain: 'chain/MSO',
+  'non-retail': 'not a licensed retail market',
+  'hemp-cbd': 'a hemp/CBD shop, not a licensed dispensary',
+  'smoke-shop': 'a smoke/vape shop, not a licensed dispensary',
+};
 const { tzForState, zoneLabel, US_ZONES } = require('../utils/usTimezones');
 const Dispensary = require('../models/Dispensary');
 const { BUSINESS_TZ, etStartOfToday, etToday, etDaysSince } = require('../utils/time');
@@ -1064,6 +1071,36 @@ async function runListQuarantine(campaigns = [], now = new Date()) {
 // company is deliberately NOT doNotEmail'd — a better address may be found
 // later. Returns [{ campaignId, checked, dropped }] for the tick result.
 // NEVER throws — hygiene is a bonus pass and must not break sending.
+// Clear the not-yet-contacted leads that are not dispensaries at all, judged by
+// their own name — hemp/CBD storefronts, smoke and vape shops. See leadFit for
+// why the name is the signal that has to carry this: `segment` is derived from
+// the STATE, so in a legal-retail state every sweep pin is stamped 'rec'
+// whatever business it is, and an OSM-sourced lead the map never rowed can't be
+// judged by the join at all.
+//
+// The address is NOT suppressed. Nothing is wrong with the mailbox — the
+// business is wrong for this pitch, and suppressing would also block a future
+// campaign that legitimately wants them. Guarded on "still active, still never
+// sent" so a lead that got mailed or replied while we worked is left alone.
+// Returns how many were stopped.
+async function stopUnfitWaiting(waiting = [], campaign = {}) {
+  if (campaign.includeNonRetail) return 0;
+  let stopped = 0;
+  for (const e of waiting) {
+    const reason = nonRetailNameReason(e.companyName);
+    if (!reason) continue;
+    const r = await OutreachEnrollment.updateOne(
+      { _id: e._id, status: 'active', 'sends.0': { $exists: false } },
+      { $set: { status: 'stopped', stopReason: `not-a-target:${reason}`, nextSendAt: null } },
+    ).catch(() => ({ modifiedCount: 0 }));
+    if (r.modifiedCount) stopped += 1;
+  }
+  if (stopped) {
+    console.log(`[outreach] hygiene: "${campaign.name}" — cleared ${stopped} lead${stopped === 1 ? '' : 's'} that are not licensed dispensaries (hemp/CBD/smoke shops)`);
+  }
+  return stopped;
+}
+
 // Swap a not-yet-contacted lead onto the best address the company has NOW.
 //
 // Mutates the passed rows in place so the MX pass that follows verifies the
@@ -1114,8 +1151,9 @@ async function runRosterHygiene(campaigns = [], now = new Date()) {
         && now.getTime() - new Date(campaign.lastHygieneAt).getTime() < HYGIENE_COOLDOWN_MS) continue;
       const rows = await OutreachEnrollment.find({ campaignId: campaign._id })
         // companyKey is what the re-pick joins on — omitting it made that pass a
-        // silent no-op that reported nothing and did nothing.
-        .select('companyKey status stopReason toEmail sends.at').lean();
+        // silent no-op that reported nothing and did nothing. companyName is what
+        // the fit sweep reads.
+        .select('companyKey companyName status stopReason toEmail sends.at').lean();
       // Two different bars, because the two halves of this pass carry different
       // risk. RE-PICKING an address is free and always correct — it swaps a
       // queued lead onto the best address its own company already has, and the
@@ -1154,6 +1192,12 @@ async function runRosterHygiene(campaigns = [], now = new Date()) {
       // expensive way. Cheap: only leads that never received a touch, and only
       // where the company actually has a better address on file.
       const repicked = waiting.length ? await repickWaitingAddresses(waiting, campaign.name) : 0;
+      // FIT, swept in bulk. The send-time gate stops one wrong lead per tick, at
+      // the moment it comes up — which leaves a queue that still COUNTS them and
+      // still spends the day's picks discovering them one at a time. These are
+      // known wrong the second the rule exists, so clear them in one pass. Not
+      // spike-gated: the name doesn't get truer after a bounce.
+      const unfit = waiting.length ? await stopUnfitWaiting(waiting, campaign) : 0;
       if (waiting.length) {
         const domains = waiting.map((e) => emailDomain(String(e.toEmail || '').toLowerCase()));
         const mxMap = await verifyDomainsMx(domains).catch(() => new Map()); // deduped per domain
@@ -1163,7 +1207,7 @@ async function runRosterHygiene(campaigns = [], now = new Date()) {
         // tomorrow's pass retries with healthy DNS) rather than mass-suppress.
         if (looksLikeDnsOutage(bad.length, waiting.length)) {
           console.warn(`[outreach] hygiene: "${campaign.name}" — ${bad.length}/${waiting.length} waiting domains look dead at once; treating it as a DNS outage, dropping nothing`);
-          out.push({ campaignId: String(campaign._id), checked: waiting.length, dropped: 0, held: bad.length, repicked });
+          out.push({ campaignId: String(campaign._id), checked: waiting.length, dropped: 0, held: bad.length, repicked, unfit });
           continue;
         }
         for (const e of (mayDrop ? bad : [])) {
@@ -1177,7 +1221,7 @@ async function runRosterHygiene(campaigns = [], now = new Date()) {
           dropped += 1;
         }
       }
-      out.push({ campaignId: String(campaign._id), checked: waiting.length, dropped, repicked });
+      out.push({ campaignId: String(campaign._id), checked: waiting.length, dropped, repicked, unfit });
       console.log(`[outreach] hygiene: "${campaign.name}" bounce spike — re-verified ${waiting.length} waiting lead${waiting.length === 1 ? '' : 's'}, dropped ${dropped} dead address${dropped === 1 ? '' : 'es'}`);
     } catch (e) {
       console.warn(`[outreach] hygiene pass failed for campaign ${campaign && campaign._id}:`, e.message);
@@ -1539,17 +1583,21 @@ async function sendOne(enr, campaign, now = new Date(), sender = null) {
   // is not evidence of a chain, and a referral or hand-added prospect must not
   // be blocked by a map that never saw it.
   const fitRows = await Dispensary.find({ companyKey: enr.companyKey })
-    .select('companyKey isChain segment state').lean().catch(() => []);
+    .select('companyKey name isChain segment state').lean().catch(() => []);
   const unfit = sendFitReason(fitRows, {
     includeChains: !!campaign.includeChains,
     includeNonRetail: !!campaign.includeNonRetail,
+    // The lead's OWN name, so the verdict lands on the shops the row-join can
+    // never reach — an OSM-sourced lead has no Dispensary row, and a Google pin
+    // in a rec state carries segment:'rec' whatever business it actually is.
+    name: enr.companyName,
   });
   if (unfit) {
     enr.status = 'stopped';
     enr.stopReason = `not-a-target:${unfit}`;
     enr.nextSendAt = null;
     await enr.save();
-    console.log(`[outreach] holding ${enr.companyName || enr.companyKey} — ${unfit === 'chain' ? 'chain/MSO' : 'not a licensed retail market'}`);
+    console.log(`[outreach] holding ${enr.companyName || enr.companyKey} — ${UNFIT_LABEL[unfit] || 'not a licensed retail market'}`);
     return 'skipped';
   }
 

@@ -19,6 +19,7 @@ const LeadFinderState = require('../models/LeadFinderState');
 const { cityFromAddress } = require('./outreachEngine');
 const { enrichWebsiteDetailed } = require('./emailEnricher');
 const { upsertOsmCandidates } = require('./dispensaryIngest');
+const { nonRetailNameReason, nonRetailNameFilter } = require('./leadFit');
 const { verifyDomainsMx, partitionDeliverable, emailDomain } = require('./emailVerify');
 const LeadFinderRun = require('../models/LeadFinderRun');
 const Client = require('../models/Client');
@@ -104,7 +105,10 @@ async function discoverRegion(regionId, { maxEnrich = DEFAULT_MAX_ENRICH, vertic
   const candidates = [
     ...rosterRows,
     ...osmCandidates.filter((c) => !c.website || !seenSite.has(normalizeSite(c.website))),
-  ];
+  // OSM tags cannabis, hemp and head shops alike, and an OSM lead never gets a
+  // Dispensary row — so nothing downstream can tell them apart later. This is
+  // the only place that ever sees these candidates before they become leads.
+  ].filter((c) => !nonRetailNameReason(c && c.name));
 
   // Split: already have an email (free, from OSM) vs. need a scrape (have a
   // website but no email). No website + no email → unreachable, still counted.
@@ -251,6 +255,11 @@ async function rosterCandidates(state, { limit = 250 } = {}) {
     isChain: false,                       // corporate handles merch, not the store
     segment: { $in: ROSTER_SEGMENTS },
     website: { $nin: ['', null] },        // no site, nothing to scrape (yet)
+    // ...and `segment` alone does not mean what it looks like it means. It is
+    // derived from the STATE, so in a rec state a Google pin on a CBD store is
+    // stamped 'rec' exactly like a licensed dispensary. Read the name too, in
+    // the QUERY, so these never enter the frontier or eat its scrape budget.
+    ...nonRetailNameFilter('name'),
   };
   const fields = '_id name address city state zip phone website companyKey';
 

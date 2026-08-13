@@ -936,6 +936,38 @@ test('roster hygiene selects the field its re-pick joins on', () => {
   assert.ok(projection, 'hygiene enrollment projection not found');
   assert.match(projection[1], /\bcompanyKey\b/,
     'repickWaitingAddresses joins on companyKey — omitting it makes the pass a silent no-op');
+  assert.match(projection[1], /\bcompanyName\b/,
+    'stopUnfitWaiting reads companyName — omitting it makes the fit sweep a silent no-op');
+});
+
+// ── The fit sweep must clear the queue, not just guard the next send ─────────
+// The send-time gate stops one wrong lead per tick, at the moment it comes up.
+// The queue still counts them and still spends the day's picks rediscovering
+// them one at a time, which is what the owner was looking at: a queue of
+// hemp/CBD shops under a "0 of 40 sent" banner.
+
+test('the fit sweep runs unconditionally, not behind the bounce-spike bar', () => {
+  const src = require('fs').readFileSync(require.resolve('../outreachEngine'), 'utf8');
+  const call = src.match(/const unfit = waiting\.length \? await stopUnfitWaiting\([^)]*\) : 0;/);
+  assert.ok(call, 'stopUnfitWaiting call not found in the hygiene pass');
+  // `mayDrop` is the bounce-spike gate that governs the irreversible drops. A
+  // wrong-business verdict does not get truer after a bounce, so it must not be
+  // waiting on one.
+  assert.doesNotMatch(call[0], /mayDrop/,
+    'the name verdict needs no bounce spike — gating it means damage happens first');
+});
+
+test('the fit sweep stops the lead without suppressing its address', () => {
+  const src = require('fs').readFileSync(require.resolve('../outreachEngine'), 'utf8');
+  const fn = src.match(/async function stopUnfitWaiting[\s\S]*?\n}\n/);
+  assert.ok(fn, 'stopUnfitWaiting not found');
+  // Nothing is wrong with the mailbox — the BUSINESS is wrong for this pitch.
+  // Suppressing would also block a future campaign that legitimately wants them.
+  assert.doesNotMatch(fn[0], /suppress\(/,
+    'a wrong-business lead must not have its address globally suppressed');
+  // Guarded write: a lead that got mailed or replied while we worked is left alone.
+  assert.match(fn[0], /'sends\.0': \{ \$exists: false \}/);
+  assert.match(fn[0], /status: 'active'/);
 });
 
 // ── A resolver hiccup must never be read as "this domain has no mail server" ──

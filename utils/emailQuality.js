@@ -90,6 +90,19 @@ const NEVER_DOMAINS = [
   'greenbits.com', 'flowhub.com', 'treez.io', 'alpineiq.com', 'leaflink.com',
   // Seed banks / grow supply / lab — not retail merch buyers
   'seedsman.com', 'ilgm.com', 'growersnetwork.org',
+  // Site builders / commerce platforms — same category as the above (they sell
+  // TO shops), and an address ON one of them is never a shop's real inbox.
+  'shopify.com', 'wix.com', 'wixpress.com', 'squarespace.com', 'godaddy.com',
+  'weebly.com', 'bigcommerce.com', 'duda.co', 'webflow.com',
+  // PLACEHOLDER addresses that ship inside a website theme and get published
+  // when nobody fills the field in. hi@mystore.com — Shopify's own demo domain
+  // — reached the send queue as a real lead. These aren't dead mailboxes on a
+  // live domain; they're mailboxes that never existed, so every one is a
+  // guaranteed hard bounce against our own sending reputation.
+  'mystore.com', 'yourstore.com', 'yourdomain.com', 'yourcompany.com',
+  'yoursite.com', 'yourwebsite.com', 'mysite.com', 'mywebsite.com',
+  'mydomain.com', 'mycompany.com', 'domain.com', 'website.com', 'company.com',
+  'email.com', 'test.com', 'example.com', 'example.org', 'example.net',
 ];
 function isNeverDomain(domain) {
   const d = String(domain || '').toLowerCase();
