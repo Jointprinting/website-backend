@@ -15,6 +15,7 @@ const {
 const {
   estimateShipping, zoneForMiles, normalizeState, haversineMiles, ORIGIN, STATE_CENTROIDS,
   rateAgeDays, RATES_CALIBRATED_ON, RATES_STALE_AFTER_DAYS,
+  estimateApparelShipping, resolveOrigin,
 } = require('../promoShipping');
 
 const catalog = require('../../data/promoCatalog.json');
@@ -263,6 +264,90 @@ test('parcel carries a small pad and LTL a wide one, since LTL is the guess', ()
   const parcelPct = parcel.pad / parcel.freight;
   const ltlPct = ltl.pad / ltl.freight;
   assert.ok(ltlPct > parcelPct, `LTL pad ${ltlPct} should exceed parcel pad ${parcelPct}`);
+});
+
+// ── The apparel leg ──────────────────────────────────────────────────────────
+// Same engine, different origin: the printer ships the decorated job to the
+// client, billed third-party to the same UPS account. Blanks moving
+// supplier -> printer are deliberately NOT modeled — the owner gets those
+// freight-free, so a second leg would invent a cost he does not pay.
+
+const tee = (qty, oz = 4.3, label = 'Bella + Canvas 3001C') => ({ label, weightOz: oz, qty });
+
+test('an origin resolves from a bare printer state as well as full coords', () => {
+  assert.strictEqual(resolveOrigin({ state: 'PA' }).state, 'PA');
+  assert.strictEqual(resolveOrigin('NJ').state, 'NJ');
+  assert.strictEqual(resolveOrigin({ lat: 27.75, lon: -82.66, city: 'X' }).city, 'X');
+  assert.strictEqual(resolveOrigin({ state: 'ZZ' }), null);
+  assert.strictEqual(resolveOrigin(null), null);
+});
+
+test('apparel freight rates from the PRINTER, not the promo vendor', () => {
+  // Heritage (PA) to a NJ client is a short hop; the promo vendor in Florida
+  // is not — if the origin were ignored these would match.
+  const fromPrinter = estimateApparelShipping({ lines: [tee(48)], originState: 'PA', destState: 'NJ' });
+  const fromFlorida = estimateShipping({
+    lines: [{ product: { name: 't', unitWeightOz: 4.3, weightSource: 'catalog' }, qty: 48 }],
+    destState: 'NJ',
+  });
+  assert.ok(fromPrinter.zone < fromFlorida.zone, `PA->NJ zone ${fromPrinter.zone} should beat FL->NJ ${fromFlorida.zone}`);
+  assert.ok(fromPrinter.total < fromFlorida.total);
+});
+
+test('a 48-piece tee run prices like a single realistic carton', () => {
+  const r = estimateApparelShipping({ lines: [tee(48)], originState: 'PA', destState: 'NJ' });
+  assert.strictEqual(r.method, 'parcel');
+  assert.strictEqual(r.cartons, 1);
+  assert.ok(r.total > 10 && r.total < 45, `48 tees came out $${r.total}`);
+});
+
+test('apparel gets billed on dimensional weight, which is the whole problem', () => {
+  // Garments are light and bulky: a carton cubes out before it weighs out, so
+  // billable weight exceeds actual. This is the charge the owner is losing to.
+  const r = estimateApparelShipping({ lines: [tee(48)], originState: 'PA', destState: 'NJ' });
+  assert.ok(r.billableLb > r.grossLb, `billable ${r.billableLb} should exceed actual ${r.grossLb}`);
+});
+
+test('cost rises with quantity and with distance', () => {
+  const at = (qty, dest) => estimateApparelShipping({ lines: [tee(qty)], originState: 'PA', destState: dest }).total;
+  assert.ok(at(48, 'NJ') < at(500, 'NJ'));
+  assert.ok(at(200, 'NJ') < at(200, 'CA'));
+});
+
+test('a heavier garment costs more than a lighter one at the same count', () => {
+  const teeRun = estimateApparelShipping({ lines: [tee(200, 4.3)], originState: 'PA', destState: 'NJ' });
+  const hoodieRun = estimateApparelShipping({ lines: [tee(200, 20, 'Hoodie')], originState: 'PA', destState: 'NJ' });
+  assert.ok(hoodieRun.total > teeRun.total);
+});
+
+test('a line with no recorded garment weight is named, not silently invented', () => {
+  const r = estimateApparelShipping({
+    lines: [tee(48), { label: 'Hand-typed line', weightOz: 0, qty: 48 }],
+    originState: 'PA', destState: 'NJ',
+  });
+  assert.deepStrictEqual(r.unweighed, ['Hand-typed line']);
+  assert.ok(r.basis.some((b) => /No garment weight on/i.test(b)));
+});
+
+test('an unknown printer degrades to a mid-range zone instead of refusing', () => {
+  const r = estimateApparelShipping({ lines: [tee(48)], originState: '', destState: 'NJ' });
+  assert.strictEqual(r.zone, 5);
+  assert.ok(r.total > 0);
+  assert.ok(r.basis.some((b) => /assuming zone 5/i.test(b)));
+});
+
+test('a big apparel run crosses into freight the same way promo does', () => {
+  const r = estimateApparelShipping({ lines: [tee(3000, 20, 'Hoodie')], originState: 'PA', destState: 'CA' });
+  assert.strictEqual(r.method, 'ltl');
+});
+
+test('per-line allocation still sums to the whole on an apparel quote', () => {
+  const r = estimateApparelShipping({
+    lines: [tee(100), tee(50, 20, 'Hoodie')],
+    originState: 'PA', destState: 'NJ',
+  });
+  const sum = r.perLine.reduce((s, p) => s + p.shipping, 0);
+  assert.ok(Math.abs(sum - r.total) < 0.02);
 });
 
 // ── Staleness: the table has to admit its own age ────────────────────────────
