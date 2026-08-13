@@ -21,7 +21,7 @@ const AdminUser = require('../models/AdminUser');
 const { nextNumber } = require('../utils/sequence');
 const { visibleFilter, stampFor, ownershipStamp, canAccessDoc } = require('../middleware/scope');
 const { computeAgentStats, currentMonth } = require('./admin');
-const { orderRevenueCost, normalizeOrderNumber } = require('./finances');
+const { orderRevenueCost, normalizeOrderNumber, signed } = require('./finances');
 const {
   normalizeConfig, tierFor, nextTierFor, originKind, earnedState, commissionForOrder,
 } = require('../services/commission');
@@ -258,8 +258,27 @@ async function updateMyLead(req, res) {
 // rather than reporting a job as pure profit.
 
 // One earnings row's money, actual-first with an honest estimate fallback.
+//
+// COMMISSION IS EXCLUDED FROM COST ON PURPOSE. `orderRevenueCost` is the
+// canonical P&L rule and counts every COGS category — including `Commission`,
+// which is where the owner books what he pays THIS agent. Feeding that straight
+// back into a commission calculation is circular: the moment a payout is
+// booked, the order's profit drops by the payout, so the next read pays a
+// smaller percentage of a smaller number, and the statement the agent already
+// agreed to silently changes underneath them.
+//
+// So we take the canonical cost and add the booked commission back. That is
+// exactly the "profit BEFORE this agent's own commission" basis
+// services/commission.js documents, and the basis the historical rows were
+// computed on — order #000001 booked $84.67, which is 10.00% of $846.65, the
+// profit with that $84.67 added back.
 function orderMoney(order, ledgerRows) {
-  const actual = orderRevenueCost(ledgerRows || []);
+  const rows = ledgerRows || [];
+  const actual = orderRevenueCost(rows);
+  const commissionBooked = rows.reduce(
+    (s, t) => (t && t.type === 'expense' && t.category === 'Commission' ? s + signed(t) : s), 0,
+  );
+  actual.cost = Math.round((actual.cost - commissionBooked) * 100) / 100;
   const estRevenue = Math.max(0, Number(order.totalValue) || 0);
   const estCost = Math.max(0, Number(order.cogs) || 0);
   // Revenue: the ledger is truth when a sale is booked; otherwise the order's
