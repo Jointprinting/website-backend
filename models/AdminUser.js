@@ -57,6 +57,94 @@ const AdminUserSchema = new mongoose.Schema({
       default: undefined,   // absent → services/commission.js supplies the ladder
     },
   },
+  // ── Lifecycle ──────────────────────────────────────────────────────────────
+  // `active` above is the ACCESS switch (it revokes the session). These are the
+  // HISTORY, and they exist because without them tenure, ramp, churn and cohort
+  // retention are all literally uncomputable for anyone who leaves — the moment
+  // an account is switched off, every fact about how long they lasted and why is
+  // gone. Nothing here is derivable after the fact, so it must be recorded as it
+  // happens.
+  //
+  // status is the owner-facing state; `active` stays the thing auth reads, so no
+  // gate changes meaning. They are kept in sync by controllers/admin.js.
+  status: {
+    type: String,
+    enum: ['applicant', 'onboarding', 'active', 'paused', 'departed'],
+    default: 'onboarding',
+    index: true,
+  },
+  // When they were cleared to sell — NOT createdAt. The gap between the two is
+  // onboarding drag, and the clock for "time to first sale" starts here, or a
+  // slow paperwork week reads as a slow rep.
+  startedSellingAt: { type: Date, default: null },
+  // Set once, when they stop. `kind` is the analytic fact (voluntary vs not is
+  // what separates a retention problem from a hiring problem); `reason` is the
+  // owner's note.
+  departedAt:     { type: Date, default: null, index: true },
+  departedKind:   { type: String, enum: ['', 'quit', 'let_go', 'never_started', 'other'], default: '' },
+  departedReason: { type: String, default: '' },
+  // Where they came from. The only way to learn which channel produces reps that
+  // last, which is the question that decides where to recruit next.
+  recruitSource: { type: String, default: '' },
+  territory:     { type: String, default: '' },
+
+  // ── Identity & compliance ─────────────────────────────────────────────────
+  // What is needed to pay someone and to defend contractor status — deliberately
+  // NOT the sensitive artifacts themselves. See services/agentLifecycle.js:
+  // the W-9 document is tracked as RECEIVED, never stored, because this stack has
+  // no private file storage and a full SSN must not exist in it.
+  legalName:    { type: String, default: '' },
+  contactEmail: { type: String, default: '' },
+  phone:        { type: String, default: '' },
+  entityName:   { type: String, default: '' },   // their LLC, if they have one (ABC prong C evidence)
+  entityEin:    { type: String, default: '' },   // an EIN is a business id, not a personal one
+  tinLast4:     { type: String, default: '' },   // LAST FOUR ONLY — never the full TIN/SSN
+  hasOtherClients: { type: Boolean, default: false },  // prong C: do they sell for anyone else
+
+  // ── Onboarding ────────────────────────────────────────────────────────────
+  // Completions only, keyed to the canonical checklist in
+  // services/agentLifecycle.js. Storing keys rather than a copy of the checklist
+  // means adding or renaming a step needs no migration, and one definition drives
+  // both the UI and the access gates.
+  onboarding: {
+    type: Map,
+    of: new mongoose.Schema({
+      doneAt: { type: Date, default: Date.now },
+      by:     { type: String, default: '' },
+      note:   { type: String, default: '' },
+      _id: false,
+    }),
+    default: undefined,
+  },
+
+  // ── Cost to carry ─────────────────────────────────────────────────────────
+  // What this person costs regardless of what they sell. Without it "net
+  // contribution" is just commission subtracted from profit, which flatters
+  // every rep who never sells enough to cover their seat.
+  seatCostMonthly:   { type: Number, default: 0 },  // e.g. a Google Workspace seat
+  onboardingCostOnce: { type: Number, default: 0 }, // one-off setup/recruiting spend
+
+  // ── Owner support time ────────────────────────────────────────────────────
+  // The genuinely scarce input in a solo-owner rep network — Fresh Prints backs
+  // every rep with a paid mentor; here it is the owner's own hours. Logged at
+  // each check-in so cost-per-rep and "how many reps can I actually carry" stop
+  // being guesses. Until entries exist, the roster says so instead of implying
+  // support is free.
+  supportLog: {
+    type: [new mongoose.Schema({
+      at:      { type: Date, default: Date.now },
+      minutes: { type: Number, default: 0 },
+      note:    { type: String, default: '' },
+      _id: false,
+    })],
+    default: undefined,
+  },
+  // The owner's standing call on this rep, set at a review and dated. The one
+  // field on the scorecard that is a DECISION rather than a measurement.
+  disposition:     { type: String, enum: ['', 'keep', 'coach', 'cut'], default: '' },
+  dispositionAt:   { type: Date, default: null },
+  dispositionNote: { type: String, default: '' },
+
   loginCount: { type: Number, default: 0 },       // access-frequency signal for the Admin log
   createdAt: { type: Date, default: Date.now },
   lastLoginAt: { type: Date },

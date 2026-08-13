@@ -234,7 +234,15 @@ async function updateMyLead(req, res) {
     // Append a touch to the log and advance lastContact for real contact kinds.
     const entry = b.logEntry || b.log;
     if (entry && (entry.text || entry.kind)) {
-      lead.log.push({ at: new Date(), text: String(entry.text || ''), kind: String(entry.kind || 'note') });
+      // Stamp WHO logged it. The card's agentId is mutable (reassignment moves
+      // it), so without an author the whole activity history of a departed agent
+      // would silently re-attribute to whoever inherits the book.
+      lead.log.push({
+        at: new Date(),
+        text: String(entry.text || ''),
+        kind: String(entry.kind || 'note'),
+        by: stampFor(req),
+      });
       if (['call', 'text', 'email', 'visit'].includes(entry.kind)) lead.lastContact = new Date();
     }
     await lead.save();

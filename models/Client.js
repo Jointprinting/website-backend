@@ -62,6 +62,13 @@ const LogEntrySchema = new mongoose.Schema({
   // re-import can recognize "I already wrote this" and skip it instead of piling
   // up near-duplicate rows. Empty for normal human-logged touches.
   dedupKey: { type: String, default: '' },
+  // WHO logged this touch — an AdminUser _id, '' for the owner. Stamped at write
+  // time and never rewritten. The card's `agentId` is MUTABLE (reassignment moves
+  // it), so without this a departed agent's whole activity history silently
+  // re-attributes to whoever inherited the book — which would make every
+  // per-agent activity metric fiction. This is the durable record of who did the
+  // work, the same way originAgentId is the durable record of who sourced it.
+  by: { type: String, default: '', index: true },
 });
 
 const ClientSchema = new mongoose.Schema({

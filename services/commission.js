@@ -32,14 +32,26 @@
 // Owner-editable defaults, applied to every new agent. Percentages are of
 // gross profit. `houseReordersPay: false` encodes "house leads pay on the first
 // order only" — after that the account is the owner's.
+// THRESHOLDS ARE CALIBRATED TO THIS BUSINESS, NOT COPIED FROM A BENCHMARK.
+// The first version of this ladder used $15,000 / $40,000 of lifetime sourced
+// profit. At a median order profit of ~$317 that is 47 and 126 sourced orders —
+// against a company that has done 37 orders in total, ever. No agent would have
+// reached the second rung, so the ladder read as a promise that could not be
+// kept, which is worse than having no ladder at all.
+//
+// $3,000 / $9,000 is roughly 9 and 28 median orders: reachable inside a first
+// and second year by someone genuinely working, and still meaningful — hitting
+// Partner means having sourced most of a year's worth of the company's current
+// order volume. Re-tune here (or per agent in the Team tab) if the median order
+// size moves.
 const DEFAULT_COMMISSION = {
   enabled: false,          // off until the owner turns it on for that agent
   fastStartOrders: 3,      // first N completed self-sourced orders ride tier 2
   houseReordersPay: false,
   tiers: [
-    { name: 'Starter',     minLifetimeProfit: 0,     selfPct: 30, housePct: 15,   reorderPct: 15 },
-    { name: 'Established', minLifetimeProfit: 15000, selfPct: 35, housePct: 17.5, reorderPct: 17.5 },
-    { name: 'Partner',     minLifetimeProfit: 40000, selfPct: 40, housePct: 20,   reorderPct: 20 },
+    { name: 'Starter',     minLifetimeProfit: 0,    selfPct: 30, housePct: 15,   reorderPct: 15 },
+    { name: 'Established', minLifetimeProfit: 3000, selfPct: 35, housePct: 17.5, reorderPct: 17.5 },
+    { name: 'Partner',     minLifetimeProfit: 9000, selfPct: 40, housePct: 20,   reorderPct: 20 },
   ],
 };
 
