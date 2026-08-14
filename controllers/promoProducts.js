@@ -13,7 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const PromoProduct = require('../models/PromoProduct');
 const { normalizePromoProduct } = require('../services/promoCatalog');
-const { estimateShipping } = require('../services/promoShipping');
+const { estimateShipping, BILLED_BY } = require('../services/promoShipping');
 
 const escapeRegex = (s) => String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -154,7 +154,11 @@ async function estimateQuoteShipping(req, res) {
       lines,
       destState: body.destState || '',
       pad: body.pad === undefined ? undefined : Number(body.pad),
+      // Cannabis Promotions ships on THEIR account and invoices the freight
+      // afterwards, so the owner's UPS incentive does not apply here.
+      billedBy: BILLED_BY.VENDOR,
     });
+    estimate.basis.push('Cannabis Promotions bills this freight, not UPS — send one of their freight invoices and this stops being an estimate.');
     estimate.perLine.forEach((p, i) => { p.resolved = lines[i].resolved; });
     if (unresolved.length) {
       estimate.unresolved = unresolved;
