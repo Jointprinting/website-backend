@@ -4,12 +4,15 @@
 // promo case it was built for; it now rates apparel too, because both ship on
 // the same UPS account at the same negotiated rates and only the origin differs:
 //
-//   PROMO   — Cannabis Promotions (St. Petersburg, FL) straight to the client.
-//             Vendor-direct: they manufacture, print and ship
-//             (docs/BUSINESS-MODEL.md #11).
 //   APPAREL — the printer who decorated the job ships straight to the client
-//             (docs/ECOSYSTEM.md step 9), billed third-party to the owner's
-//             account. Origin is Printer.state.
+//             (docs/ECOSYSTEM.md step 9), billed THIRD-PARTY TO THE OWNER'S UPS
+//             ACCOUNT. His rates apply, so this is priced at his real net.
+//             Origin is Printer.state.
+//   PROMO   — Cannabis Promotions ships on THEIR OWN carrier account and
+//             invoices the owner the freight afterwards. His UPS incentive does
+//             NOT apply, and their rate (and whatever they add on top) is not
+//             something we have seen. Priced as an unknown pass-through: see
+//             `billedBy` below.
 //
 // Both are ONE leg. Blanks moving supplier -> printer are deliberately not
 // modeled: the owner gets those freight-free, so adding a leg would invent a
@@ -168,7 +171,19 @@ function normalizeState(s) {
  * @param {number} [input.pad]       safety margin, default 0.15.
  * @returns {Object} estimate with a per-line allocation and an explainable basis.
  */
-function estimateShipping({ lines = [], destState = '', pad = null, origin = ORIGIN } = {}) {
+// WHOSE ACCOUNT THE FREIGHT IS BILLED TO. This is not cosmetic — it decides
+// whether the owner's negotiated UPS discount applies at all.
+//   'owner'  — billed to his UPS account (every apparel printer). His 30% is real.
+//   'vendor' — the vendor ships on their own account and invoices him after
+//              (Cannabis Promotions). His incentive does NOT apply. Their rate is
+//              probably better than his (they ship constantly) but they mark it
+//              up when they rebill, and we have seen neither number. So the point
+//              estimate stays near his own net — the two effects roughly cancel —
+//              and the RANGE widens to say plainly that this one is unverified.
+const BILLED_BY = { OWNER: 'owner', VENDOR: 'vendor' };
+const VENDOR_PAD = 0.15;
+
+function estimateShipping({ lines = [], destState = '', pad = null, origin = ORIGIN, billedBy = BILLED_BY.OWNER } = {}) {
   const basis = [];
   const st = normalizeState(destState);
   const from = resolveOrigin(origin);
@@ -234,7 +249,9 @@ function estimateShipping({ lines = [], destState = '', pad = null, origin = ORI
       const withFuel = transportation * (1 + FUEL_SURCHARGE_PCT);
       freight = withFuel * (1 - ACCOUNT_INCENTIVE_PCT);
       basis.push(`${grossLb.toFixed(1)} lb gross in ${cartons} carton(s), billable ${billableLb} lb, zone ${zone} ground`);
-      basis.push(`$${transportation.toFixed(2)} published + ${Math.round(FUEL_SURCHARGE_PCT * 100)}% fuel, less your ${Math.round(ACCOUNT_INCENTIVE_PCT * 100)}% UPS incentive`);
+      basis.push(billedBy === BILLED_BY.VENDOR
+        ? `$${transportation.toFixed(2)} published + ${Math.round(FUEL_SURCHARGE_PCT * 100)}% fuel, then the vendor's rate assumed comparable to yours — they bill this, not UPS, so it is unverified`
+        : `$${transportation.toFixed(2)} published + ${Math.round(FUEL_SURCHARGE_PCT * 100)}% fuel, less your ${Math.round(ACCOUNT_INCENTIVE_PCT * 100)}% UPS incentive`);
     } else {
       method = 'ltl';
       cartons = Math.ceil(grossLb / CARTON_MAX_LB);
@@ -249,7 +266,8 @@ function estimateShipping({ lines = [], destState = '', pad = null, origin = ORI
   }
 
   // An explicit pad wins; otherwise it follows how certain the method is.
-  const defaultPad = method === 'ltl' ? LTL_PAD : DEFAULT_PAD;
+  const defaultPad = method === 'ltl' ? LTL_PAD
+    : (billedBy === BILLED_BY.VENDOR ? VENDOR_PAD : DEFAULT_PAD);
   const padPct = pad === null || pad === undefined
     ? defaultPad
     : Math.max(0, Number(pad) || 0);
@@ -295,8 +313,12 @@ function estimateShipping({ lines = [], destState = '', pad = null, origin = ORI
     total,
     // A believable spread around the point estimate, so the Studio can show a
     // range instead of implying false precision.
-    low: round2(total * 0.75),
-    high: round2(total * 1.35),
+    billedBy,
+    // A vendor-billed leg is genuinely unverified — their discount and their
+    // markup are both unknown to us — so the band says so instead of implying
+    // the same confidence as a leg billed to an account we can see.
+    low: round2(total * (billedBy === BILLED_BY.VENDOR ? 0.55 : 0.75)),
+    high: round2(total * (billedBy === BILLED_BY.VENDOR ? 1.60 : 1.35)),
     perLine,
     basis,
   };
@@ -346,6 +368,7 @@ function estimateApparelShipping({ lines = [], originState = '', destState = '',
     destState,
     pad,
     origin: originState ? { state: originState } : null,
+    billedBy: BILLED_BY.OWNER,   // printers bill third-party to his UPS account
   });
 
   // A garment with no recorded weight silently fell back to the UNKNOWN anchor,
@@ -377,6 +400,7 @@ module.exports = {
   ORIGIN, STATE_CENTROIDS, ZONE_BANDS, PARCEL_RATES, LTL_CWT,
   CARTON_MAX_LB, PARCEL_CEILING_LB, DEFAULT_PAD, LTL_PAD,
   RATES_CALIBRATED_ON, RATES_STALE_AFTER_DAYS, rateAgeDays,
+  BILLED_BY, VENDOR_PAD,
   FUEL_SURCHARGE_PCT, ACCOUNT_INCENTIVE_PCT,
   haversineMiles, zoneForMiles, normalizeState, resolveOrigin,
   estimateShipping, estimateApparelShipping,

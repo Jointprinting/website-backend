@@ -15,7 +15,7 @@ const {
 const {
   estimateShipping, zoneForMiles, normalizeState, haversineMiles, ORIGIN, STATE_CENTROIDS,
   rateAgeDays, RATES_CALIBRATED_ON, RATES_STALE_AFTER_DAYS,
-  estimateApparelShipping, resolveOrigin,
+  estimateApparelShipping, resolveOrigin, BILLED_BY,
 } = require('../promoShipping');
 
 const catalog = require('../../data/promoCatalog.json');
@@ -348,6 +348,50 @@ test('per-line allocation still sums to the whole on an apparel quote', () => {
   });
   const sum = r.perLine.reduce((s, p) => s + p.shipping, 0);
   assert.ok(Math.abs(sum - r.total) < 0.02);
+});
+
+// ── Whose account the freight is billed to ───────────────────────────────────
+// This is the difference between the two legs, and it is not cosmetic. Apparel
+// printers bill THIRD-PARTY TO THE OWNER'S UPS ACCOUNT, so his 30% is real.
+// Cannabis Promotions ships on THEIR account and invoices him after, so his
+// incentive does not apply and neither their rate nor their markup is known.
+
+test('an owner-billed leg names the real UPS incentive; a vendor-billed one does not', () => {
+  const p = find('Black Metal 4 Piece Grinder (40mm)');
+  const owner = estimateShipping({ lines: [{ product: p, qty: 1000 }], destState: 'PA', billedBy: BILLED_BY.OWNER });
+  const vendor = estimateShipping({ lines: [{ product: p, qty: 1000 }], destState: 'PA', billedBy: BILLED_BY.VENDOR });
+
+  assert.ok(owner.basis.some((b) => /your 30% UPS incentive/i.test(b)));
+  assert.ok(!vendor.basis.some((b) => /your \d+% UPS incentive/i.test(b)),
+    'a vendor-billed leg must not claim a discount that does not apply to it');
+  assert.ok(vendor.basis.some((b) => /unverified/i.test(b)));
+});
+
+test('a vendor-billed leg reports a wider range, because it is genuinely unverified', () => {
+  const p = find('Black Metal 4 Piece Grinder (40mm)');
+  const owner = estimateShipping({ lines: [{ product: p, qty: 1000 }], destState: 'PA', billedBy: BILLED_BY.OWNER });
+  const vendor = estimateShipping({ lines: [{ product: p, qty: 1000 }], destState: 'PA', billedBy: BILLED_BY.VENDOR });
+
+  const spread = (r) => (r.high - r.low) / r.total;
+  assert.ok(spread(vendor) > spread(owner), 'the unverified leg should carry the wider band');
+  assert.ok(vendor.low < owner.low && vendor.high > owner.high);
+});
+
+test('apparel is always owner-billed — that is the whole point of the split', () => {
+  const r = estimateApparelShipping({
+    lines: [{ label: 'tee', weightOz: 4.3, qty: 200 }],
+    originState: 'PA', destState: 'NJ',
+  });
+  assert.strictEqual(r.billedBy, BILLED_BY.OWNER);
+  assert.ok(r.basis.some((b) => /UPS incentive/i.test(b)));
+});
+
+test('defaulting to owner-billed keeps existing callers unchanged', () => {
+  const p = find('Black Metal 4 Piece Grinder (40mm)');
+  const explicit = estimateShipping({ lines: [{ product: p, qty: 500 }], destState: 'PA', billedBy: BILLED_BY.OWNER });
+  const implied = estimateShipping({ lines: [{ product: p, qty: 500 }], destState: 'PA' });
+  assert.strictEqual(implied.billedBy, BILLED_BY.OWNER);
+  assert.strictEqual(implied.total, explicit.total);
 });
 
 // ── Staleness: the table has to admit its own age ────────────────────────────
