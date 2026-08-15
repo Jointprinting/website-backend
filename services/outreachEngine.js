@@ -2035,7 +2035,7 @@ async function runOutreachTick(now = new Date(), opts = {}) {
 function startOutreachEngine() {
   // Every 15 minutes; the tick itself gates on the ET business-hours window,
   // so UTC/DST drift can never move the send window.
-  cron.schedule('*/15 * * * *', () => {
+  cron.schedule('11,26,41,56 * * * *', () => {
     // pace:true → space sends apart with jitter (the manual "run now" fires immediately).
     runOutreachTick(new Date(), { pace: true }).catch((e) => console.error('[outreach] tick error:', e.message));
   });
