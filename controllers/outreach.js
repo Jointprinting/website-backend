@@ -1398,7 +1398,7 @@ async function autoFillCampaign(campaign, { limit, includeChains, includeNonReta
 // off). Started from server.js.
 function startAutoEnroll() {
   const cron = require('node-cron');
-  cron.schedule('*/30 * * * *', () => {
+  cron.schedule('7,37 * * * *', () => {
     runAutoEnrollTick()
       .then((r) => { if (r && r.enrolled) console.log(`[outreach] auto-enroll: +${r.enrolled}`); })
       .catch((e) => console.warn('[outreach] auto-enroll failed:', e.message));

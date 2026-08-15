@@ -1127,7 +1127,7 @@ function startGmailIngest() {
     console.log('[triage] Gmail ingest idle — set GMAIL_TRIAGE_ENABLED + GMAIL_* creds to enable read-only reply sync');
     return;
   }
-  cron.schedule('*/10 * * * *', () => {
+  cron.schedule('3,13,23,33,43,53 * * * *', () => {
     runGmailSync()
       .then((r) => {
         if (r.imported || r.errors || r.truncated) {

@@ -328,7 +328,12 @@ async function fetchFolder(client, folder, since, ingest, stats, seen) {
     const heads = [];
     for await (const msg of client.fetch(
       recent,
-      { uid: true, envelope: true, bodyStructure: true, size: true, internalDate: true },
+      // NO bodyStructure here. It is a parsed MIME tree per message, and this
+      // pass covers up to MAX_PER_FOLDER messages across NINE folders — on a
+      // 512MB box that is the largest recurring allocation in the process, held
+      // for data only the rare oversized-message path ever reads. It is fetched
+      // lazily below, for the handful that actually need it.
+      { uid: true, envelope: true, size: true, internalDate: true },
       { uid: true },
     )) heads.push(msg);
     if (!heads.length) return;
@@ -377,7 +382,13 @@ async function fetchFolder(client, folder, since, ingest, stats, seen) {
           // leave the attachments on the server. A text-only read beats a
           // missed lead. Headers come along on this path — thread matching and
           // the RFC auto/bulk signals are read off them.
-          const part = textPartPath(meta.bodyStructure);
+          // Lazily — see the metadata fetch above. Only oversized/unparsed
+          // messages reach here, so this is a handful of round-trips per run,
+          // not one parsed tree per message in the window.
+          const bs = meta.bodyStructure
+            || (await client.fetchOne(meta.uid, { bodyStructure: true }, { uid: true })
+              .catch(() => null) || {}).bodyStructure;
+          const part = textPartPath(bs);
           if (part) bodyText = await downloadPart(client, meta.uid, part).catch(() => '');
           if (!headers) {
             const one = await client.fetchOne(meta.uid, { headers: true }, { uid: true }).catch(() => null);

@@ -291,7 +291,7 @@ function startLeadFinderScheduler() {
   // Every 6 hours, always on. The tick self-gates on each vertical's queue depth,
   // so it's a cheap no-op when the pools are full — but it refills promptly
   // (within hours, not a week) once sending draws a pool down.
-  cron.schedule('0 */6 * * *', () => {
+  cron.schedule('40 */6 * * *', () => {
     runAllFrontierSweeps({ force: false }).catch((e) => console.error('[lead-finder] sweep error:', e.message));
   });
   console.log(`[lead-finder] engine started — always on, queue-aware refill every 6h per active vertical (low<${LOW_WATERMARK}, target ${REFILL_TARGET} emailable, ≤${MAX_REGIONS_PER_RUN} states/run, ≤${MAX_UPGRADE_PER_RUN} auto-upgrades/run)`);
