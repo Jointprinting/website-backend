@@ -60,7 +60,11 @@ const REC_STATES = {
   MT: { name: 'Montana',       approxRetail: 214,  roster: { kind: 'cannlytics', url: cannlyticsUrl('mt'), homepage: 'https://mtrevenue.gov/cannabis/' } },
   NJ: { name: 'New Jersey',    approxRetail: 250,  roster: { kind: 'cannlytics', url: cannlyticsUrl('nj'), homepage: 'https://www.nj.gov/cannabis/' } },
   NM: { name: 'New Mexico',    approxRetail: 1000, roster: { kind: 'cannlytics', url: cannlyticsUrl('nm'), homepage: 'https://crop.rld.nm.gov/dispensaries.html' } },
-  NV: { name: 'Nevada',        approxRetail: 100,  roster: { kind: 'cannlytics', url: cannlyticsUrl('nv'), homepage: 'https://ccb.nv.gov/list-of-licensees/' } },
+  // dualLicence: the CCB issues "Medical Marijuana Dispensary" certificates to
+  // ordinary walk-in stores (most hold an adult-use certificate as well), so a
+  // medical licence type here names a real storefront rather than a separate
+  // medical-program entity the way it does in New York.
+  NV: { name: 'Nevada',        approxRetail: 100,  dualLicence: true, roster: { kind: 'cannlytics', url: cannlyticsUrl('nv'), homepage: 'https://ccb.nv.gov/list-of-licensees/' } },
   NY: {
     name: 'New York', approxRetail: 600,
     roster: {

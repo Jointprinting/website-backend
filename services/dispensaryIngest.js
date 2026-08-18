@@ -308,7 +308,7 @@ const MED_STOREFRONT = /dispensar|store(front)?|pharmacy|treatment[\s-]*center|m
  * business-entity type), in which case demanding retail words filters out an
  * entire state's roster and reports a perfectly "successful" empty ingest.
  */
-function rowPasses(row, map, typeFilter, { medicalMarket = false, relaxed = false } = {}) {
+function rowPasses(row, map, typeFilter, { medicalMarket = false, relaxed = false, dualLicence = false } = {}) {
   const type = map.licenseType ? String(row[map.licenseType] || '') : '';
   const status = map.licenseStatus ? String(row[map.licenseStatus] || '') : '';
   if (status && DEAD_STATUS.test(status)) return false;
@@ -318,7 +318,21 @@ function rowPasses(row, map, typeFilter, { medicalMarket = false, relaxed = fals
     const storefront = medicalMarket ? MED_STOREFRONT : STOREFRONT;
     // Non-retail activity disqualifies unless the row also names a storefront.
     if (NON_RETAIL.test(type) && !storefront.test(type)) return false;
-    if (!medicalMarket && MEDICAL_ONLY_TYPE.test(type.trim())) return false;
+    // ...unless this state issues medical certificates to real walk-in shops.
+    //
+    // The rule keeps a rec state's medical-PROGRAM entities out of a retail
+    // roster, and for somewhere like New York that is right: the medical side is
+    // a separate registered-organization regime, not a storefront licence.
+    // Nevada is not that. Its CCB issues "Medical Marijuana Dispensary" to
+    // ordinary shops on the Strip, most of which hold an adult-use certificate
+    // too — so the anchored pattern matched, and every medical-certificate store
+    // in Las Vegas was discarded before it could become a pin.
+    //
+    // Which regime a state runs is a fact about the state, so it lives on the
+    // state's roster config rather than being inferred here. Storefront word
+    // still required, same shape as the NON_RETAIL rule two lines up.
+    if (!medicalMarket && MEDICAL_ONLY_TYPE.test(type.trim())
+      && !(dualLicence && STOREFRONT.test(type))) return false;
     if (!relaxed && !retailish.test(type)) return false;
   }
   return true;
@@ -692,7 +706,7 @@ async function ingestState(state, opts = {}) {
   const collect = (relaxed) => {
     const out = [];
     for (const row of stateRows) {
-      if (!rowPasses(row, map, typeFilter, { medicalMarket, relaxed })) continue;
+      if (!rowPasses(row, map, typeFilter, { medicalMarket, relaxed, dualLicence: !!cfg.dualLicence })) continue;
       const n = normalizeRow(row, map, state, sourceUrl);
       if (n) out.push(n);
     }

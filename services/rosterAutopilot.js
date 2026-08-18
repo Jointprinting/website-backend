@@ -134,6 +134,12 @@ async function ensureStateRoster(state, { reason = 'on-demand' } = {}) {
     const importedNothing = report.fetchedRows > 0 && report.imported === 0;
     if (importedNothing) {
       console.warn(`[rosterAutopilot] ${st}: fetched ${report.fetchedRows} rows but imported 0 — check the type/status columns (headerMap: ${JSON.stringify(report.headerMap)})`);
+      // ...and actually cool it down, which the comment above has always
+      // promised and the code never did. Without the stamp a broken state is
+      // re-attempted on EVERY tick forever, and since each tick only runs
+      // MAX_PER_TICK states, it permanently consumes a slot — starving every
+      // state behind it in the priority order out of ever being loaded at all.
+      _failedAt.set(st, Date.now());
     }
     if (needsOsmFallback({
       failed: importedNothing,
