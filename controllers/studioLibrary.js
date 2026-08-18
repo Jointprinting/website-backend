@@ -157,7 +157,7 @@ async function saveItem(req, res) {
     const { store } = req.params;
     if (!['blanks','logos','mockups'].includes(store))
       return res.status(400).json({ message: 'Invalid store.' });
-    let { name, data, thumbnail, client, pageState, pages, extraViews, extraBackViews, savedAt, remoteId } = req.body;
+    let { name, data, thumbnail, client, pageState, pages, extraViews, extraBackViews, savedAt, remoteId, colorway } = req.body;
 
     // Stamp the canonical companyKey so this mockup joins the client cleanly
     // (lookbook picker / CRM design library). Prefer an explicit key from the
@@ -244,6 +244,7 @@ async function saveItem(req, res) {
       const fields = {
         store, name, data: data || '', thumbnail: thumbnail || '',
         client: client || '', companyKey, projectNumber, pageState: pageState || null,
+        ...(colorway ? { colorway } : {}),
         pages: pages || null,
         extraViews: Array.isArray(extraViews) ? extraViews.filter(Boolean) : [],
         // Kept index-aligned to pages[1..] (NOT filtered): a front-only extra page
@@ -271,6 +272,7 @@ async function saveItem(req, res) {
     const item = await StudioLibraryItem.create({
       store, name, data: data || '', thumbnail: thumbnail || '',
       client: client || '', companyKey, projectNumber, pageState: pageState || null,
+        ...(colorway ? { colorway } : {}),
       pages: pages || null,
       extraViews: Array.isArray(extraViews) ? extraViews.filter(Boolean) : [],
       // Index-aligned to pages[1..] (NOT filtered) — see the upsert branch above.

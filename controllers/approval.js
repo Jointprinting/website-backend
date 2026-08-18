@@ -447,7 +447,7 @@ const publicGetProject = async (req, res) => {
     // can't fall through the floor (see utils/mockupScope).
     const scoped = await StudioLibraryItem
       .find(clientLibraryScopeFor(order))
-      .select('name pageState.mockupNum pageState.projectNumber projectNumber thumbnail data extraViews extraBackViews')
+      .select('name pageState.mockupNum pageState.projectNumber projectNumber thumbnail data extraViews extraBackViews colorway')
       .lean();
 
     const { byNorm, projectRefs } = _clientDesigns(order, scoped);
@@ -474,6 +474,15 @@ const publicGetProject = async (req, res) => {
         mockupNum: m.pageState?.mockupNum,
         extraViews: m.extraViews || [],
         extraBackViews: m.extraBackViews || [],
+        // WHICH COLOUR this proof is. Four colourways of one design used to
+        // reach the client as four tiles all captioned with the same design
+        // name — the letter in the number was the only thing telling them
+        // apart, and only the owner knows what a letter means. The colour name
+        // is safe to show (it is the garment they are buying); the supplier and
+        // its pricing stay internal, as they always have.
+        colorway: m.colorway && m.colorway.name
+          ? { name: m.colorway.name, hex: m.colorway.hex || '' }
+          : null,
       }));
 
     const logo = await ClientLogo.findOne({ companyKey: order.companyKey }).select('imageDataUrl').lean();

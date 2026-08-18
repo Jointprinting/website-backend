@@ -38,6 +38,24 @@ const StudioLibraryItemSchema = new mongoose.Schema({
     mockupNum:     { type: String, default: '' },
     at:            { type: Date, default: null },
   },
+  // WHICH GARMENT COLOUR this mockup is, as data rather than prose.
+  //
+  // The mockup NUMBER already says which colourway it is — #000150A and
+  // #000150B are two colours of one design (utils/mockupNumbers). What the
+  // letter cannot say is WHICH colour, so it lived in the display name
+  // ("Tee · Black") and the free-text subtitle ("Gildan 5000, Black"), where
+  // nothing could group, label or match on it. The S&S picker had the real
+  // values all along and threw them away.
+  //
+  // Stamped when a colourway is made from an S&S colour; empty on anything made
+  // before, or on an uploaded promo shot. Never part of the mockup's identity —
+  // the number stays the only thing the client is shown.
+  colorway: {
+    name:  { type: String, default: '' },   // 'Black', 'Sport Grey'
+    code:  { type: String, default: '' },   // S&S colorCode — the stable id
+    hex:   { type: String, default: '' },   // swatch, for a colour chip
+    style: { type: String, default: '' },   // the S&S style it was taken from
+  },
   pageState:  { type: mongoose.Schema.Types.Mixed, default: null }, // full page state for mockups
   // MULTI-PAGE mockups: every page (view) of the one mockup file, trimmed like
   // pageState (base64 layers stripped client-side before sync). null = single.
