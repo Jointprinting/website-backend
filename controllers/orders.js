@@ -20,6 +20,7 @@ const { nextNumber, bumpCounterTo, peekNumber } = require('../utils/sequence');
 // one shared engine so the API and the studio editor never drift. See
 // utils/mockupNumbers.js.
 const { letterToNum, nextColorLetter, nextEditVersion, parseMockupNum, baseForProject } = require('../utils/mockupNumbers');
+const { flatFieldsFor } = require('../utils/printLocations');
 const { etToday, etDayKey } = require('../utils/time');
 const r2 = require('../services/r2');
 
@@ -429,6 +430,14 @@ const updateOrder = async (req, res) => {
       // order's manual numbers when a confirmation lacks the data (e.g. older
       // confirmations built before unitCost, or a still-empty draft).
       await _offloadConfirmationImages(body.confirmation);
+      // Fold each item's per-location decoration back into the flat
+      // printType/printDetails the PDF, the PO builder and the client document
+      // already read, so a screen-front + DTG-back garment describes itself
+      // everywhere without any of those surfaces learning a new shape. No-ops
+      // for every item that doesn't use printLocations.
+      for (const it of (body.confirmation.items || [])) {
+        if (it) Object.assign(it, flatFieldsFor(it.printLocations));
+      }
       const { revenue, cogs } = _confirmationTotals(body.confirmation);
       if (revenue > 0) body.totalValue = revenue;
       if (cogs > 0) body.cogs = cogs;

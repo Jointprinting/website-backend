@@ -106,7 +106,7 @@ function extractAlphaBroderMinPrice(item) {
 //  S&S constants
 // ─────────────────────────────────────────────────────────────────────────────
 const {
-  DEFAULT_SIZE_WINDOW, summarizeBlank, assignTiers, pickPerTier,
+  DEFAULT_SIZE_WINDOW, summarizeBlank, assignTiers, pickPerTier, stockForColor,
 } = require('../services/blankOptions');
 
 const SS_API_BASE = process.env.SS_API_BASE || 'https://api.ssactivewear.com/V2';
@@ -1411,7 +1411,7 @@ function summarizeSsStyle(skus) {
 // already renders (worker-compatible): { name, count, colors:[{color, colorCode,
 // swatch1, swatch2, front, back}] }, or { name, match:{…} } when a color filter
 // narrows to one. Lets the Finder call OUR backend instead of an external worker.
-function ssFinderColorsPayload(s, colorFilter) {
+function ssFinderColorsPayload(s, colorFilter, skus) {
   const colors = (s.colors || []).map((c) => ({
     color:     c.name,
     colorCode: c.colorCode || '',
@@ -1419,6 +1419,13 @@ function ssFinderColorsPayload(s, colorFilter) {
     swatch2:   '',
     front:     c.front || '',
     back:      c.back || '',
+    // AVAILABILITY, from the same SKU rows this payload was summarized from.
+    // blankOptions rule 3: "never quote something that is not there" — the
+    // Quoter offers these colours to a CLIENT, so a colour with nothing on hand
+    // must be visibly unavailable rather than a surprise at order time. Reports
+    // { known:false } when S&S gives us no readable inventory, so an unreadable
+    // feed reads as "unknown", never as out-of-stock.
+    stock:     skus ? stockForColor(skus, { color: c.name }) : null,
   }));
   const name = `${s.brand || ''} ${s.styleName || ''}`.trim() || s.styleName || '';
   if (colorFilter) {
@@ -1449,7 +1456,7 @@ exports.ssFinder = async (req, res) => {
       const prod = await ssClient.get('/products/', { params: { styleid } });
       const skus = Array.isArray(prod.data) ? prod.data : [];
       if (!skus.length) return res.json({ error: 'That style has no product data.' });
-      return res.json(ssFinderColorsPayload(summarizeSsStyle(skus), color));
+      return res.json(ssFinderColorsPayload(summarizeSsStyle(skus), color, skus));
     }
 
     if (!style) return res.status(400).json({ error: 'Enter a style code first.' });
@@ -1479,7 +1486,7 @@ exports.ssFinder = async (req, res) => {
     const prod = await ssClient.get('/products/', { params: { styleid: matches[0].styleID } });
     const skus = Array.isArray(prod.data) ? prod.data : [];
     if (!skus.length) return res.json({ error: 'That style has no product data.' });
-    return res.json(ssFinderColorsPayload(summarizeSsStyle(skus), color));
+    return res.json(ssFinderColorsPayload(summarizeSsStyle(skus), color, skus));
   } catch (e) {
     const status = e.response && e.response.status;
     res.status(200).json({

@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const crypto = require('crypto');
+const { orderedQty } = require('../utils/colorSplit');
 
 function deriveCompanyKey(companyName, clientName) {
   const raw = (companyName || clientName || '').toString();
@@ -34,7 +35,11 @@ function computeQuoteTotals(lines, orderSetup, orderShip) {
   const perLineExtras = arr.reduce((s, l) => s + n(l.setupCost) + n(l.shippingCost), 0);
   const legacy = perLineExtras === 0 ? (n(orderSetup) + n(orderShip)) : 0;
   const totalValue = arr.reduce((s, l) => {
-    const qty = n(l.qty);
+    // The ORDERED quantity, which is the colour split's total when the client
+    // typed one. The line's own qty is only the TIER it priced at: a 450-piece
+    // split lands on the 300 break and must bill 450 units at that price, not
+    // 300. Without a split this is the line qty exactly as before.
+    const qty = orderedQty(l);
     const setupShip = n(l.setupCost) + n(l.shippingCost);
     const unitCogs = n(l.blankCost) + n(l.printCost) + (qty > 0 ? setupShip / qty : 0);
     // Unit price = the owner's committed price, else cost × markup. Markup
@@ -44,7 +49,7 @@ function computeQuoteTotals(lines, orderSetup, orderShip) {
     return s + qty * unit;
   }, 0) + legacy;
   const cogs = arr.reduce((s, l) =>
-    s + n(l.qty) * (n(l.blankCost) + n(l.printCost)) + n(l.setupCost) + n(l.shippingCost), 0) + legacy;
+    s + orderedQty(l) * (n(l.blankCost) + n(l.printCost)) + n(l.setupCost) + n(l.shippingCost), 0) + legacy;
   return { totalValue, cogs };
 }
 
@@ -446,6 +451,24 @@ const OrderSchema = new mongoose.Schema({
       styleCode:           { type: String, default: '' },
       printType:           { type: String, default: '' },
       printDetails:        { type: String, default: '' },    // decoration detail, e.g. "1 color front" — distinguishes a print variant (carried from the quote line)
+      // DECORATION PER LOCATION. One garment often carries more than one method
+      // — a screen-printed front with a DTG back, or a screen front and an
+      // embroidered sleeve — and the single `printType` above could only ever
+      // say one of them. The owner hit this on a real confirmation: "if a garment
+      // has screen print and DTG that doesn't let me."
+      //
+      // Each entry is one decorated PLACE on the garment, with its own method
+      // and detail. Additive and optional: when empty (every existing item) the
+      // flat printType/printDetails above are read exactly as before, so no
+      // document, PDF, PO or client page changes. When present they are the
+      // truth, and printType/printDetails carry a summary of them so anything
+      // reading the flat fields still gets a sensible answer.
+      printLocations: [{
+        location: { type: String, default: '' },   // 'Front', 'Back', 'Left sleeve', …
+        method:   { type: String, default: '' },   // 'Screen Print', 'DTG', 'Embroidery', …
+        details:  { type: String, default: '' },   // '3 color', '8,000 stitches', '12x16'
+        _id: false,
+      }],
       color:               { type: String, default: '' },
       // NJ exempts CLOTHING from sales tax — promo products (grinders, trays,
       // bags…) are taxable. Per-item so a mixed apparel+promo order taxes only
@@ -569,25 +592,10 @@ const OrderSchema = new mongoose.Schema({
     _id: false,
   }],
   quoteLines: [{
-    // Lines sharing a `group` label ("Bucket Hats") are options the client
-    // chooses from on the approval page; ungrouped lines are standalone (always
-    // included). `accepted` records the client's pick.
+    // Lines sharing a `group` label ("Bucket Hats") are alternative brand
+    // options the client picks ONE of on the approval page. Ungrouped lines
+    // are standalone (always included). `accepted` records the client's pick.
     group:        { type: String, default: '' },
-    // HOW MANY of this group the client may take. A group used to be pick-ONE
-    // unconditionally, which is right for brands (Gildan vs Bella) and wrong for
-    // COLOURWAYS: "50 black + 50 white of the same design" is two runs the client
-    // wants both of, and under pick-one the second colour had nowhere to go —
-    // the failure that prompted this field ("there weren't color options").
-    //   ''        → derive (the default; see utils/quoteGroups.groupPickMode —
-    //               lines differing ONLY by colour read as a colourway set)
-    //   'one_of'  → alternatives, pick at most one (historical behaviour)
-    //   'any_of'  → co-produced, take any combination; quantities add up
-    // Stored per line, the same way `group` is (a group is not its own doc); the
-    // first non-empty value in the group wins. Deliberately does NOT combine
-    // quantities into a better price tier — per the owner, two garment shades
-    // mean different screens and a different ink lane, so each colour keeps its
-    // own line, setup and tier.
-    groupMode:    { type: String, enum: ['', 'one_of', 'any_of'], default: '' },
     accepted:     { type: Boolean, default: false },
     // Stable line id — survives reorders/edits so the client's picks (made
     // against the PUSHED snapshot below) always map back to the right live
@@ -606,6 +614,42 @@ const OrderSchema = new mongoose.Schema({
     styleCode:    { type: String, default: '' },
     description:  { type: String, default: '' },
     color:        { type: String, default: '' },
+    // GARMENT COLOURS OFFERED FOR THIS RUN, and what the client did with them.
+    //
+    // A row is one PRINT JOB — one ink, one spec (the owner labels them "black
+    // ink" / "white ink"). The garment colours it can run on are a curated list
+    // he picks in the Quoter off the live S&S colour range, checked against S&S
+    // stock at the moment he picks them, so nothing is offered that isn't there.
+    // It snapshots into the pushed quote rather than being re-fetched on the
+    // client's page: an approval link must not depend on a live vendor API, and
+    // supplier PRICING must never ride out to a public route.
+    //
+    // The client then TYPES a quantity per colour instead of picking one fixed
+    // quantity chip. Their quantities add up, and the total is what selects the
+    // price tier — 75 maroon + 75 white on one ink is a 150-piece run and gets
+    // the 150 price. Two rows with DIFFERENT ink never combine, which is the
+    // whole reason the run is keyed on the print and not the garment.
+    //
+    // Empty colorOptions = the historical behaviour (one fixed quantity, colour
+    // as a label), so every existing quote reads exactly as it did.
+    colorOptions: [{
+      name:  { type: String, default: '' },   // the S&S colour name the client sees
+      code:  { type: String, default: '' },   // S&S colorCode — the stable id
+      hex:   { type: String, default: '' },   // swatch
+      image: { type: String, default: '' },   // that colourway's garment photo
+      _id: false,
+    }],
+    // The client's allocation, written on the tier line their total landed on.
+    // Sum of qty is what they actually ordered — see utils/colorSplit.orderedQty,
+    // which the money math uses so a 450-unit split priced off the 300 tier bills
+    // 450 units rather than 300.
+    colorSplit: [{
+      name: { type: String, default: '' },
+      code: { type: String, default: '' },
+      hex:  { type: String, default: '' },
+      qty:  { type: Number, default: 0 },
+      _id: false,
+    }],
     supplier:     { type: String, default: '' },
     // Public product page for THIS blank (e.g. an S&S Activewear /p/ URL) so a
     // client comparing brands can click through to specs/colors. Deliberately a
