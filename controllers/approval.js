@@ -7,7 +7,7 @@ const { nextNumber } = require('../utils/sequence');
 const { appendClientLog } = require('../services/clientLog');
 const { compareMockupNums, parseMockupNum } = require('../utils/mockupNumbers');
 const { clientLibraryScopeFor, mockupProjectNumber, belongsToProject } = require('../utils/mockupScope');
-const { groupPickModes } = require('../utils/quoteGroups');
+const { tierLineFor, validateSplit, runLines } = require('../utils/colorSplit');
 
 // One tile per COLOUR, showing its latest edit — the client's view of a
 // project's designs.
@@ -542,16 +542,20 @@ const publicGetProject = async (req, res) => {
         // Stable pick handle — the picker posts these back (publicSelectOptions).
         lid:          l.lid || '',
         group:        l.group        || '',
-        // The owner's pinned pick-mode for this group, when set. The client
-        // derives the mode from the lines exactly as the server does (shared
-        // quoteGroups/quoteGrid rule), so this only has to carry the OVERRIDE —
-        // but it must carry it, or the picker would offer a choice the API then
-        // rejects (or cap a colourway set the owner deliberately opened up).
-        groupMode:    l.groupMode    || '',
         accepted:     !!l.accepted,
         styleCode:    l.styleCode    || '',
         description:  l.description  || '',
         color:        l.color        || '',
+        // The garment colours this run is offered in, and what the client has
+        // already allocated. Snapshotted by the owner against S&S stock when he
+        // built the quote — never re-fetched here, so a public page never
+        // depends on a live vendor API and no supplier pricing can ride along.
+        colorOptions: (l.colorOptions || []).map(c => ({
+          name: c.name || '', code: c.code || '', hex: c.hex || '', image: c.image || '',
+        })),
+        colorSplit:   (l.colorSplit || []).map(c => ({
+          name: c.name || '', code: c.code || '', hex: c.hex || '', qty: Number(c.qty) || 0,
+        })),
         printType:    l.printType    || '',
         printDetails: l.printDetails || '',
         unitPrice:    n(l.unitPrice) || +(unitCogs * (n(l.markup) || 1.4)).toFixed(2),
@@ -755,36 +759,6 @@ function _confPublished(conf) {
   return _hasConfContent(conf) && !!(conf && conf.publishedAt);
 }
 
-// HOW MANY options of each group the client may take, enforced.
-//
-// The client takes the options they want and can skip whole groups entirely — a
-// 10-option pitch where they only want 5 is a valid selection, not an error. The
-// only invalid shape is taking TOO MANY from one group, and how many is too many
-// depends on what the group IS:
-//
-//   • one_of — ALTERNATIVES (brands, print variants). Two picks is nonsense.
-//   • any_of — COLOURWAYS. "50 black AND 50 white of the same design" is two
-//     production runs the client wants both of. Capping that at one is the bug
-//     this replaces: it left a client's second 50 shirts unsellable on the link.
-//
-// The mode is derived from the lines (or pinned by the owner) — see
-// utils/quoteGroups, mirrored on the client in common/quoteGrid so the picker
-// never offers a choice this then rejects. Computed over the SERVED VIEW, so it
-// matches the page the client actually picked on rather than a newer edit.
-//
-// Returns an error message, or '' when the selection is allowed. PURE.
-function _tooManyPicksMessage(view, pickedEntries) {
-  const modes = groupPickModes(view || []);
-  const groups = [...new Set((view || []).map(l => l && l.group).filter(Boolean))];
-  for (const g of groups) {
-    if (modes[g] === 'any_of') continue;
-    if ((pickedEntries || []).filter(l => l && l.group === g).length > 1) {
-      return `Please choose just one option for "${g}" — or skip it.`;
-    }
-  }
-  return '';
-}
-
 // POST /api/public/projects/:id/select?token=... — the interactive quote
 // stage. Body: { picks: [lineIndex, ...] }. The client picks ONE option per
 // product group; standalone (ungrouped) lines are always part of the order.
@@ -840,19 +814,59 @@ const publicSelectOptions = async (req, res) => {
     // Picks arrive as stable line ids (lid strings) from the current client
     // page, or as indexes INTO THE SERVED VIEW from a not-yet-refreshed one.
     // Resolve each to a view entry; every pick must land on a grouped option.
+    //
+    // A pick is either a bare id/index (the historical "I'll take this option at
+    // this run size" chip) or `{ lid, colors: [{ name, code, qty }] }` — a COLOUR
+    // SPLIT, where the client typed a quantity per garment colour instead. For a
+    // split the id only says WHICH RUN they want; the tier is then resolved from
+    // what they actually allocated, because the run's quantities add up: 75
+    // maroon + 75 white on one ink is a 150-piece run and gets the 150 price.
+    // Two runs with different ink never combine — they are separate rows and
+    // each resolves its own tier independently.
     const picksRaw = (req.body && req.body.picks) || [];
     const pickedEntries = [];
-    for (const p of Array.isArray(picksRaw) ? [...new Set(picksRaw)] : []) {
-      const entry = typeof p === 'string' && p
-        ? view.find(l => l.lid === p)
-        : (Number.isInteger(Number(p)) ? view[Number(p)] : null);
+    const splitByEntry = new Map();
+    const seenPickKeys = new Set();
+    for (const p of Array.isArray(picksRaw) ? picksRaw : []) {
+      const isSplit = p && typeof p === 'object' && !Array.isArray(p);
+      const ref = isSplit ? p.lid : p;
+      // De-dupe on the reference, not the object — two split objects for one run
+      // are never both meaningful.
+      const dedupeKey = typeof ref === 'string' ? `s:${ref}` : `i:${Number(ref)}`;
+      if (seenPickKeys.has(dedupeKey)) continue;
+      seenPickKeys.add(dedupeKey);
+
+      let entry = typeof ref === 'string' && ref
+        ? view.find(l => l.lid === ref)
+        : (Number.isInteger(Number(ref)) ? view[Number(ref)] : null);
       if (!entry || !entry.group) {
         return res.status(400).json({ message: 'Invalid selection — please refresh the page and try again.' });
       }
+
+      if (isSplit && Array.isArray(p.colors)) {
+        const offered = entry.colorOptions || [];
+        if (!offered.length) {
+          return res.status(400).json({ message: 'This option is not sold by colour — please refresh the page and try again.' });
+        }
+        const siblings = runLines(view, entry);
+        const check = validateSplit(offered, p.colors, siblings);
+        if (!check.ok) return res.status(400).json({ message: check.message });
+        // The TOTAL picks the tier, not the chip they happened to click.
+        const tier = tierLineFor(siblings, check.total) || entry;
+        entry = tier;
+        splitByEntry.set(entry, check.split);
+      }
       pickedEntries.push(entry);
     }
-    const overPicked = _tooManyPicksMessage(view, pickedEntries);
-    if (overPicked) return res.status(400).json({ message: overPicked });
+    // AT MOST one option per group. The client takes the options they want and
+    // can skip whole groups entirely — a 10-option pitch where they only want 5
+    // is a valid selection, not an error. Two picks in the same group (which
+    // are alternatives, not add-ons) is the only invalid shape.
+    for (const g of groups) {
+      if (pickedEntries.filter(l => l.group === g).length > 1) {
+        return res.status(400).json({ message: `Please choose just one option for "${g}" — or skip it.` });
+      }
+    }
     // The order can't be empty: require at least one picked option, unless the
     // quote carries always-included standalone lines that stand on their own.
     if (pickedEntries.length === 0 && standaloneCount === 0) {
@@ -872,15 +886,30 @@ const publicSelectOptions = async (req, res) => {
     // committed — so a selection of "decline every group, keep only the
     // standalone items" still books its real value instead of reading as an
     // un-picked $0 quote.
+    // Map each accepted view entry's split onto the LIVE line it corresponds to,
+    // by the same lid the acceptance rides on.
+    const splitByLid = new Map();
+    splitByEntry.forEach((split, entry) => { if (entry.lid) splitByLid.set(entry.lid, split); });
     lines.forEach((l) => {
       l.accepted = !l.hiddenFromClient
         && ((l.lid && pickedLids.has(l.lid)) || pickedLive.has(l) || !l.group);
+      // The split lives on the tier line it landed on. Clearing it everywhere
+      // else matters: a re-pick that moves to a different tier (or drops the
+      // run entirely) must not leave a stale allocation behind for the money
+      // math to keep billing.
+      if (l.accepted && l.lid && splitByLid.has(l.lid)) l.colorSplit = splitByLid.get(l.lid);
+      else if ((l.colorSplit || []).length) l.colorSplit = [];
     });
     doc.markModified('quoteLines');
     doc.optionsPickedAt = now;
     const chosen = lines.filter(l => l.accepted || !l.group);
     const summary = chosen
-      .map(l => `${l.group ? l.group + ': ' : ''}${l.description || l.styleCode || 'item'} × ${l.qty}`)
+      .map((l) => {
+        const split = (l.colorSplit || []).filter(c => Number(c.qty) > 0);
+        const qty = split.length ? split.reduce((s, c) => s + Number(c.qty), 0) : l.qty;
+        const colours = split.length ? ` (${split.map(c => `${c.name} ${c.qty}`).join(', ')})` : '';
+        return `${l.group ? l.group + ': ' : ''}${l.description || l.styleCode || 'item'} × ${qty}${colours}`;
+      })
       .join(' · ');
     doc.approvalEvents.push({ kind: 'options_picked', message: summary, by: '', email, at: now });
     await doc.save();
@@ -1384,7 +1413,6 @@ module.exports = {
   // totals obey the exact same draft-hiding rules as the approval page.
   _confPublished, _hasConfContent,
   _latestPerColour,   // exported for tests
-  _tooManyPicksMessage,   // exported for tests
   _clientDesigns,     // which designs a client sees on a project — exported for tests
   DEFAULT_TRACKING_STEPS,
   // Link liveness — the single source of truth for "is this approval link dead?".
