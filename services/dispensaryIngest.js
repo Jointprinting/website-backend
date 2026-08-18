@@ -641,8 +641,15 @@ async function geocodeMissing(state, { limit = 300, budgetMs = 45_000 } = {}) {
 async function rechainState(state) {
   const filter = { active: true, hidden: false };
   if (state) filter.state = state;
-  const docs = await Dispensary.find(filter, { name: 1, licensee: 1 }).lean();
-  const chainMap = assignChains(docs.map((d) => ({ name: d.name, licensee: d.licensee })));
+  // city + companyKey + address are what let assignChains tell a real chain from
+  // an artefact: the city so a metro's generically-named shops don't collapse to
+  // the city name and fuse, and companyKey/address so a store holding two
+  // licences (Nevada issues medical and adult-use separately) counts once.
+  // Projecting only name+licensee made both of those impossible.
+  const docs = await Dispensary.find(filter, { name: 1, licensee: 1, city: 1, companyKey: 1, address: 1 }).lean();
+  const chainMap = assignChains(docs.map((d) => ({
+    name: d.name, licensee: d.licensee, city: d.city, companyKey: d.companyKey, address: d.address,
+  })));
   const ops = [];
   docs.forEach((d, i) => {
     const chainName = chainMap.get(i) || '';

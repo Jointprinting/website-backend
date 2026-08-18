@@ -105,10 +105,14 @@ async function discoverRegion(regionId, { maxEnrich = DEFAULT_MAX_ENRICH, vertic
   const candidates = [
     ...rosterRows,
     ...osmCandidates.filter((c) => !c.website || !seenSite.has(normalizeSite(c.website))),
-  // OSM tags cannabis, hemp and head shops alike, and an OSM lead never gets a
-  // Dispensary row — so nothing downstream can tell them apart later. This is
-  // the only place that ever sees these candidates before they become leads.
-  ].filter((c) => !nonRetailNameReason(c && c.name));
+  // OSM tags cannabis, hemp and head shops alike. TAGGED, not dropped — this
+  // list feeds TWO consumers with opposite needs. The cold-email pool must not
+  // hold a CBD store (that was the 18.9% bounce rate). The FIELD MAP must still
+  // show it: the owner is driving to Las Vegas to walk through doors, and a
+  // smoke shop on the strip is a real door even though its inbox is not a lead.
+  // Dropping the row here deleted it from both, which quietly took pins off the
+  // map — a sourcing filter has no business editing the map.
+  ].map((c) => (nonRetailNameReason(c && c.name) ? { ...c, nonRetail: true } : c));
 
   // Split: already have an email (free, from OSM) vs. need a scrape (have a
   // website but no email). No website + no email → unreachable, still counted.
@@ -116,7 +120,7 @@ async function discoverRegion(regionId, { maxEnrich = DEFAULT_MAX_ENRICH, vertic
   // HTTP GET of a page the shop publishes itself and costs nothing. Because
   // every attempt is now stamped, consecutive runs advance through the roster
   // rather than re-attempting the same rows, so the state does get finished.
-  const needScrape = candidates.filter((c) => !c.email && c.website).slice(0, Math.max(0, maxEnrich));
+  const needScrape = candidates.filter((c) => !c.nonRetail && !c.email && c.website).slice(0, Math.max(0, maxEnrich));
   let enriched = 0;
   const scraped = await pool(needScrape, ENRICH_CONCURRENCY, async (c) => {
     // The OUTCOME rides along with the address, so markRosterAttempts can tell a
@@ -220,6 +224,7 @@ function selectImportable(candidates, { skipChains = true } = {}) {
   const seenEmail = new Set();
   return (candidates || []).filter((c) => {
     if (!c || !c.email) return false;          // mail merge → email required
+    if (c.nonRetail) return false;             // on the map, never in the outbox
     if (skipChains && c.chain) return false;
     if (seenEmail.has(c.email)) return false;  // same inbox already queued this run
     seenEmail.add(c.email);
