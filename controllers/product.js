@@ -7,6 +7,9 @@ const mongoose = require('mongoose');
 const sharp = require('sharp');
 const Product = require('../models/Product');
 const Printer = require('../models/Printer');
+const Vendor = require('../models/Vendor');
+const { placeZip, parseZip } = require('../services/zipGeo');
+const { vendorKey: vendorKeyOf } = require('../utils/poCost');
 const { estimateApparelShipping } = require('../services/promoShipping');
 const { getGfs } = require('../gridfs');
 
@@ -1279,13 +1282,36 @@ exports.getApparelShippingEstimate = async (req, res) => {
     // estimate degrades to a mid-range zone and says so, which beats refusing
     // to answer while the owner is mid-quote.
     let originState = String(body.originState || '').trim();
-    if (!originState && (body.printerKey || body.printerName)) {
+    let originZip = String(body.originZip || '').trim();
+    if ((!originState || !originZip) && (body.printerKey || body.printerName)) {
       const cond = body.printerKey
         ? { key: String(body.printerKey) }
         : { name: String(body.printerName) };
       const printer = await Printer.findOne(cond).select('state name').lean();
-      if (printer && printer.state) originState = printer.state;
+      if (printer && printer.state && !originState) originState = printer.state;
+      // Printer carries only a state; the SAME shop as a Vendor carries its zip
+      // (models/Vendor city/state/zip). Reading across gets the printer placed
+      // to a postal sector instead of "somewhere in Ohio", which between
+      // Cleveland and Cincinnati is a 200-mile guess.
+      if (!originZip) {
+        const name = (printer && printer.name) || String(body.printerName || '');
+        if (name) {
+          const vendor = await Vendor.findOne({ vendorKey: vendorKeyOf(name) }).select('zip state').lean();
+          if (vendor && vendor.zip) originZip = String(vendor.zip).trim();
+          if (vendor && vendor.state && !originState) originState = vendor.state;
+        }
+      }
     }
+
+    // The client's ZIP is already in the ship-to address the owner types — no
+    // new field to fill in. An address with no readable ZIP simply doesn't
+    // resolve, and the state centre stands.
+    const destZip = String(body.destZip || '').trim() || parseZip(body.destAddress || '');
+
+    const [originPoint, destPoint] = await Promise.all([
+      originZip ? placeZip(originZip) : null,
+      destZip ? placeZip(destZip) : null,
+    ]);
 
     const estimate = estimateApparelShipping({
       lines: lines.map((l) => ({
@@ -1295,11 +1321,24 @@ exports.getApparelShippingEstimate = async (req, res) => {
       })),
       originState,
       destState: String(body.destState || ''),
+      originPoint,
+      destPoint,
       pad: body.pad === undefined ? undefined : Number(body.pad),
     });
     estimate.originState = originState || null;
+    estimate.placed = { origin: !!originPoint, dest: !!destPoint };
     if (!originState) {
       estimate.basis.push('No printer state resolved — set the printer on the quote for a real zone.');
+    }
+    // Say when a leg fell back, and why it is worth fixing — a ZIP-placed leg is
+    // routinely a whole zone band tighter than a state centre.
+    if (originState && !originPoint) {
+      estimate.basis.push(`Printer placed by state only — add a zip on the ${body.printerName || 'printer'} vendor card for a tighter zone.`);
+    }
+    if (!destPoint) {
+      estimate.basis.push(destZip
+        ? `Ship-to ${destZip} isn't in the map yet — priced from the state centre.`
+        : 'No ship-to ZIP on the order — priced from the state centre.');
     }
     res.json(estimate);
   } catch (e) {

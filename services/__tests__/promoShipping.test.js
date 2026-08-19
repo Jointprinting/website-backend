@@ -492,3 +492,47 @@ test('an unresolved product does not produce NaN', () => {
   assert.ok(Number.isFinite(r.total));
   assert.ok(r.total > 0, 'an unknown item still falls back to the UNKNOWN anchor');
 });
+
+// ── Placing both ends for real ───────────────────────────────────────────────
+// State centres are not where anyone lives. Michigan's is 300 miles north of
+// Jackson, so an Ohio printer shipping there measured 311 mi (zone 4) against a
+// real leg of ~149 (zone 2) — invented freight, marked up, passed to the client.
+// services/zipGeo places both ends from the dispensary map when it can.
+
+test('a ZIP-placed leg rates the zone the shipment actually travels', () => {
+  const lines = [tee(300, 6.5)];
+  const byState = estimateApparelShipping({ lines, originState: 'OH', destState: 'MI' });
+  const byZip = estimateApparelShipping({
+    lines, originState: 'OH', destState: 'MI',
+    originPoint: { lat: 41.50, lon: -81.70, zip3: '441' },   // Cleveland-area printer
+    destPoint:   { lat: 42.26, lon: -84.41, zip3: '492' },   // Jackson MI
+  });
+  assert.strictEqual(byState.zone, 4, 'state centres put it two bands out');
+  assert.strictEqual(byZip.zone, 2);
+  assert.ok(byZip.total < byState.total, `${byZip.total} should undercut ${byState.total}`);
+  assert.ok(byZip.basis.some((b) => /441xx to 492xx/.test(b)), 'and names the sectors it used');
+});
+
+test('a state-centre leg SAYS it is one, so the number is not over-trusted', () => {
+  const r = estimateApparelShipping({ lines: [tee(300, 6.5)], originState: 'OH', destState: 'MI' });
+  assert.ok(r.basis.some((b) => /between state centres/i.test(b)));
+});
+
+test('half-placed still helps: a real origin against a state destination', () => {
+  const r = estimateApparelShipping({
+    lines: [tee(100, 6.5)], originState: 'OH', destState: 'MI',
+    originPoint: { lat: 41.50, lon: -81.70, zip3: '441' },
+  });
+  assert.ok(r.miles > 0);
+  assert.ok(r.basis.some((b) => /between state centres/i.test(b)), 'and still flags the loose end');
+});
+
+test('an unplaceable point is ignored, never trusted', () => {
+  // A malformed point must not produce NaN miles and a nonsense zone.
+  const r = estimateApparelShipping({
+    lines: [tee(100, 6.5)], originState: 'OH', destState: 'MI',
+    destPoint: { lat: null, lon: undefined },
+  });
+  assert.strictEqual(r.zone, 4, 'falls back to the state centre');
+  assert.ok(Number.isFinite(r.miles));
+});

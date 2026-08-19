@@ -183,14 +183,25 @@ function normalizeState(s) {
 const BILLED_BY = { OWNER: 'owner', VENDOR: 'vendor' };
 const VENDOR_PAD = 0.15;
 
-function estimateShipping({ lines = [], destState = '', pad = null, origin = ORIGIN, billedBy = BILLED_BY.OWNER } = {}) {
+function estimateShipping({ lines = [], destState = '', destPoint = null, pad = null, origin = ORIGIN, billedBy = BILLED_BY.OWNER } = {}) {
   const basis = [];
   const st = normalizeState(destState);
   const from = resolveOrigin(origin);
-  const miles = st && from ? haversineMiles([from.lat, from.lon], STATE_CENTROIDS[st]) : null;
-  const zone = st && from ? zoneForMiles(miles) : 5;
-  if (st && from) basis.push(`${from.city} to ${st}: ~${Math.round(miles)} mi, zone ${zone}`);
-  else if (!from) basis.push('No shipping origin — assuming zone 5 (mid-range). Set the printer on the line for a real number.');
+  // WHERE THE SHIPMENT IS ACTUALLY GOING. A state centre is not where anyone
+  // lives — Michigan's is 300 miles north of Jackson — so a real point beats it
+  // whenever the caller could resolve one (services/zipGeo). Falls back to the
+  // state centre, which is what this always did.
+  const to = (destPoint && Number.isFinite(destPoint.lat) && Number.isFinite(destPoint.lon))
+    ? [destPoint.lat, destPoint.lon]
+    : (st ? STATE_CENTROIDS[st] : null);
+  const precise = !!(destPoint && to && to[0] === destPoint.lat);
+  const miles = to && from ? haversineMiles([from.lat, from.lon], to) : null;
+  const zone = to && from ? zoneForMiles(miles) : 5;
+  if (to && from) {
+    const where = precise && destPoint.zip3 ? `${destPoint.zip3}xx` : (st || 'destination');
+    basis.push(`${from.city} to ${where}: ~${Math.round(miles)} mi, zone ${zone}`
+      + (precise ? '' : ' (between state centres — a destination near the border rates lower)'));
+  } else if (!from) basis.push('No shipping origin — assuming zone 5 (mid-range). Set the printer on the line for a real number.');
   else basis.push('No ship-to state on the quote — assuming zone 5 (mid-range). Set the state for a real number.');
 
   // Per-line weights. "Shipping included" SKUs are carried but contribute
@@ -328,7 +339,11 @@ function estimateShipping({ lines = [], destState = '', pad = null, origin = ORI
 // state, which is all Printer.state carries. Both resolve to the same shape.
 function resolveOrigin(origin) {
   if (!origin) return null;
-  if (Number.isFinite(origin.lat) && Number.isFinite(origin.lon)) return origin;
+  // A printer resolved to its own ZIP sector arrives with coordinates already;
+  // `city` is what the basis line names it by.
+  if (Number.isFinite(origin.lat) && Number.isFinite(origin.lon)) {
+    return origin.city ? origin : { ...origin, city: origin.zip3 ? `${origin.zip3}xx` : (origin.state || 'origin') };
+  }
   const st = normalizeState(origin.state || origin);
   if (!st) return null;
   const [lat, lon] = STATE_CENTROIDS[st];
@@ -363,9 +378,14 @@ const ASSUMED_GARMENT_OZ = 6.5;   // a mid-weight cotton tee, packed
  * @param {string} originState  the printer's USPS state (Printer.state).
  * @param {string} destState    the client's ship-to state.
  */
-function estimateApparelShipping({ lines = [], originState = '', destState = '', pad = null } = {}) {
+function estimateApparelShipping({ lines = [], originState = '', destState = '', originPoint = null, destPoint = null, pad = null } = {}) {
   const list = Array.isArray(lines) ? lines : [];
-  const origin = originState ? { state: originState } : null;
+  // A printer placed to its own ZIP sector beats its state centre, the same way
+  // the destination does — Ohio is compact, but "somewhere in Ohio" is still a
+  // 200-mile guess between Cleveland and Cincinnati.
+  const origin = (originPoint && Number.isFinite(originPoint.lat) && Number.isFinite(originPoint.lon))
+    ? { ...originPoint, state: originState || originPoint.state || '' }
+    : (originState ? { state: originState } : null);
 
   // Which garments we had to assume a weight for — by GARMENT, not by line. The
   // same blank appears once per run size, so listing every line repeated each
@@ -387,6 +407,7 @@ function estimateApparelShipping({ lines = [], originState = '', destState = '',
         qty: Number(l && l.qty) || 0,
       }],
       destState,
+      destPoint,
       pad,
       origin,
       billedBy: BILLED_BY.OWNER,   // printers bill third-party to his UPS account
@@ -420,10 +441,11 @@ function estimateApparelShipping({ lines = [], originState = '', destState = '',
   const basis = [];
   const head = biggest.raw;
   if (head.miles != null) {
-    // Said plainly: a state-to-state distance, not a route. It reads long
-    // whenever the destination sits near the origin's border — the centre of
-    // Michigan is 300 miles north of its southern cities.
-    basis.push(`${originState || '?'} to ${destState || '?'}: ~${head.miles} mi between state centres, zone ${head.zone} (state-level — a destination near the border rates lower)`);
+    // The engine's own line already names the precision it managed — a ZIP
+    // sector when both ends resolved, state centres otherwise. Reusing it means
+    // the two can never disagree about how good the number is.
+    const geo = (head.basis || []).find((b2) => /~\d+ mi, zone/.test(b2));
+    basis.push(geo || `~${head.miles} mi, zone ${head.zone}`);
   } else if (head.zone) {
     basis.push(`No printer state — assuming zone ${head.zone}.`);
   }
