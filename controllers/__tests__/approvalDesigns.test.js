@@ -228,3 +228,19 @@ test('a curated lane still advances to its latest edit', () => {
   const { projectRefs } = _clientDesigns(order, items);
   assert.deepStrictEqual(projectRefs, ['#000150A2'], 'the revision follows the lane; colour B stays out');
 });
+
+// ── A draft confirmation must not narrow the design gallery ──────────────────
+// The client's CHOOSE page shows the project's designs; a confirmation speaks
+// for them only once PUBLISHED. Starting one with a single item used to drop
+// that gallery from nine mockups to one, while the confirmation itself stayed
+// correctly hidden behind the publish gate — the page said "your mockups" and
+// showed a ninth of them.
+const { _confPublished } = require('../approval');
+
+test('an unpublished confirmation does not speak for the client gallery', () => {
+  assert.strictEqual(_confPublished({ items: [{ mockupNum: '#000158A' }], publishedAt: null }), false);
+});
+
+test('a published one does', () => {
+  assert.strictEqual(_confPublished({ items: [{ mockupNum: '#000158A' }], publishedAt: new Date() }), true);
+});
