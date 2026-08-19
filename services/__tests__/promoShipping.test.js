@@ -327,6 +327,26 @@ test('a line with no recorded garment weight is named, not silently invented', (
   });
   assert.deepStrictEqual(r.unweighed, ['Hand-typed line']);
   assert.ok(r.basis.some((b) => /No garment weight on/i.test(b)));
+  // …and it is named ONCE, however many run sizes it appears at. The same blank
+  // is one line per quantity column, so listing lines repeated every brand once
+  // per column ("Gildan, Gildan, Gildan, Gildan").
+  const many = estimateApparelShipping({
+    lines: [50, 100, 150, 300].map((q) => ({ label: 'Gildan', weightOz: 0, qty: q })),
+    originState: 'PA', destState: 'NJ',
+  });
+  assert.deepStrictEqual(many.unweighed, ['Gildan']);
+});
+
+test('an apparel line with no weight is assumed at a GARMENT weight, not a promo default', () => {
+  // The shared engine's UNKNOWN anchor is 20 grams — a keychain. Apparel fell
+  // through to it, so 300 shirts weighed 14 lb in one carton instead of ~136 lb
+  // in four, and the freight was a tenth of the real bill.
+  const r = estimateApparelShipping({
+    lines: [{ label: 'Gildan', weightOz: 0, qty: 300 }], originState: 'OH', destState: 'MI',
+  });
+  assert.ok(r.grossLb > 100, `300 shirts came out ${r.grossLb} lb`);
+  assert.ok(r.cartons >= 3, `300 shirts in ${r.cartons} carton(s)`);
+  assert.strictEqual(r.perLine[0].assumedWeight, true);
 });
 
 test('an unknown printer degrades to a mid-range zone instead of refusing', () => {
@@ -341,13 +361,33 @@ test('a big apparel run crosses into freight the same way promo does', () => {
   assert.strictEqual(r.method, 'ltl');
 });
 
-test('per-line allocation still sums to the whole on an apparel quote', () => {
-  const r = estimateApparelShipping({
-    lines: [tee(100), tee(50, 20, 'Hoodie')],
+test('each run is costed as its OWN shipment, never as one combined pile', () => {
+  // A quote's lines are mutually-exclusive candidates: three brands at four run
+  // sizes is twelve lines and the client takes ONE cell. Packing all twelve into
+  // a single shipment sized a t-shirt job at the sum of every option nobody
+  // orders together — which tipped a 300-shirt run over the 150 lb parcel
+  // ceiling and priced it as LTL freight.
+  const alone = estimateApparelShipping({ lines: [tee(100)], originState: 'PA', destState: 'NJ' }).total;
+  const beside = estimateApparelShipping({
+    lines: [tee(100), tee(100), tee(100)],   // the same run offered three ways
     originState: 'PA', destState: 'NJ',
   });
-  const sum = r.perLine.reduce((s, p) => s + p.shipping, 0);
-  assert.ok(Math.abs(sum - r.total) < 0.02);
+  assert.ok(Math.abs(beside.perLine[0].shipping - alone) < 0.02,
+    'a run must cost the same whether or not alternatives sit beside it');
+  assert.strictEqual(beside.total, alone, 'the headline is one real shipment, not a sum of alternatives');
+  assert.strictEqual(beside.method, 'parcel', 'alternatives must not push a parcel job into freight');
+});
+
+test('the headline spread runs cheapest to dearest, and each line carries its own', () => {
+  const r = estimateApparelShipping({
+    lines: [tee(50), tee(150), tee(300)],
+    originState: 'PA', destState: 'NJ',
+  });
+  const [a50, a150, a300] = r.perLine.map((p) => p.shipping);
+  assert.ok(a50 < a150 && a150 < a300, 'a bigger run ships for more');
+  assert.strictEqual(r.low, a50);
+  assert.strictEqual(r.high, a300);
+  assert.strictEqual(r.total, a300);
 });
 
 // ── Whose account the freight is billed to ───────────────────────────────────

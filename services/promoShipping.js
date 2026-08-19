@@ -335,6 +335,13 @@ function resolveOrigin(origin) {
   return { state: st, city: st, lat, lon };
 }
 
+// A blank tee with no recorded weight. The shared engine's UNKNOWN anchor is a
+// PROMO default — 20 grams, a keychain — so an apparel line with no weight was
+// being shipped at about a tenth of its real mass: 300 shirts came out as 14 lb
+// in one carton instead of ~136 lb in four, and the freight with it. Apparel
+// gets an apparel-shaped fallback, and the caller is told it was assumed.
+const ASSUMED_GARMENT_OZ = 6.5;   // a mid-weight cotton tee, packed
+
 /**
  * Freight for the APPAREL leg: the printer who decorated the job ships straight
  * to the client (docs/ECOSYSTEM.md step 9), billed third-party to the owner's
@@ -344,45 +351,109 @@ function resolveOrigin(origin) {
  * Blanks moving supplier -> printer are NOT modeled: the owner gets those
  * freight-free, so adding a leg would invent a cost he does not pay.
  *
+ * EACH LINE IS ITS OWN SHIPMENT. A quote's lines are mutually-exclusive
+ * candidates — three brands at four run sizes is twelve lines, and the client
+ * takes ONE cell. Packing all twelve into a single shipment sized the job at the
+ * sum of every option nobody will order together, which threw off the carton
+ * count, the billable weight and every line's share of the freight. A line asks
+ * "what would it cost to ship THIS run?", so that is what each one is costed as.
+ *
  * @param {Array}  lines        [{ weightOz, qty, label }] — weightOz per unit,
  *                              which quote lines carry as blankWeightOz.
  * @param {string} originState  the printer's USPS state (Printer.state).
  * @param {string} destState    the client's ship-to state.
  */
 function estimateApparelShipping({ lines = [], originState = '', destState = '', pad = null } = {}) {
-  // Wrap each apparel line in the shape the shared engine reads. There is no
-  // hazmat and no "shipping included" here — those are promo-catalog facts.
-  const wrapped = lines.map((l) => ({
-    product: {
-      name: (l && l.label) || 'Blank',
-      unitWeightOz: Number(l && l.weightOz) || 0,
-      weightSource: Number(l && l.weightOz) > 0 ? 'catalog' : '',
-      category: '',
-      description: '',
-    },
-    qty: Number(l && l.qty) || 0,
-  }));
+  const list = Array.isArray(lines) ? lines : [];
+  const origin = originState ? { state: originState } : null;
 
-  const r = estimateShipping({
-    lines: wrapped,
-    destState,
-    pad,
-    origin: originState ? { state: originState } : null,
-    billedBy: BILLED_BY.OWNER,   // printers bill third-party to his UPS account
+  // Which garments we had to assume a weight for — by GARMENT, not by line. The
+  // same blank appears once per run size, so listing every line repeated each
+  // brand once per quantity column ("Gildan, Gildan, Gildan, Gildan").
+  const assumed = [];
+  const seenAssumed = new Set();
+
+  const perLine = list.map((l) => {
+    const known = Number(l && l.weightOz) > 0;
+    const oz = known ? Number(l.weightOz) : ASSUMED_GARMENT_OZ;
+    const label = (l && l.label) || 'Blank';
+    if (!known) {
+      const k = String(label).trim().toLowerCase();
+      if (!seenAssumed.has(k)) { seenAssumed.add(k); assumed.push(label); }
+    }
+    const one = estimateShipping({
+      lines: [{
+        product: { name: label, unitWeightOz: oz, weightSource: 'catalog', category: '', description: '' },
+        qty: Number(l && l.qty) || 0,
+      }],
+      destState,
+      pad,
+      origin,
+      billedBy: BILLED_BY.OWNER,   // printers bill third-party to his UPS account
+    });
+    return {
+      label,
+      qty: Number(l && l.qty) || 0,
+      weightOz: oz,
+      assumedWeight: !known,
+      shipping: one.ok ? one.total : 0,
+      cartons: one.cartons || 0,
+      grossLb: one.grossLb || 0,
+      billableLb: one.billableLb || 0,
+      method: one.method,
+      zone: one.zone,
+      miles: one.miles,
+      raw: one,
+    };
   });
 
-  // A garment with no recorded weight silently fell back to the UNKNOWN anchor,
-  // which is a promo default and wrong for apparel. Say which lines we could not
-  // weigh instead of quietly quoting a made-up number.
-  const unweighed = lines
-    .map((l, i) => ({ i, l }))
-    .filter(({ l }) => !(Number(l && l.weightOz) > 0))
-    .map(({ l }) => (l && l.label) || 'a line');
-  if (unweighed.length) {
-    r.unweighed = unweighed;
-    r.basis.push(`No garment weight on: ${unweighed.join(', ')} — re-pick the blank from Find blanks to capture it.`);
+  const priced = perLine.filter((r) => r.raw && r.raw.ok);
+  if (!priced.length) return { ok: false, perLine, basis: ['Nothing to weigh yet — add a quantity.'] };
+
+  // The HEADLINE is the biggest run, because that is the shipment most worth
+  // sanity-checking, and every shipment fact (cartons, billable weight, parcel
+  // vs freight, the rate table's age) then describes one real shipment rather
+  // than a fictional combined one.
+  const biggest = priced.reduce((a, b2) => (b2.raw.total > a.raw.total ? b2 : a), priced[0]);
+  const amounts = priced.map((r) => r.shipping);
+
+  const basis = [];
+  const head = biggest.raw;
+  if (head.miles != null) {
+    // Said plainly: a state-to-state distance, not a route. It reads long
+    // whenever the destination sits near the origin's border — the centre of
+    // Michigan is 300 miles north of its southern cities.
+    basis.push(`${originState || '?'} to ${destState || '?'}: ~${head.miles} mi between state centres, zone ${head.zone} (state-level — a destination near the border rates lower)`);
+  } else if (head.zone) {
+    basis.push(`No printer state — assuming zone ${head.zone}.`);
   }
-  return r;
+  for (const r of priced) {
+    basis.push(`${r.label} × ${r.qty}: ${r.grossLb.toFixed(1)} lb in ${r.cartons} carton(s)${r.method === 'ltl' ? ' — LTL freight' : ''} → $${r.shipping.toFixed(2)}`);
+  }
+  basis.push('Each run size is costed as its OWN shipment — the client takes one option, not all of them.');
+  // Keep the engine's own explanation of the MONEY for the headline run — the
+  // published rate, the fuel surcharge, the account incentive, the safety
+  // margin. Dropping it left the owner with a number and no way to check it.
+  for (const line of (head.basis || [])) {
+    if (/fuel|incentive|safety margin|LTL|unverified/i.test(line)) basis.push(line);
+  }
+  if (assumed.length) {
+    basis.push(`No garment weight on ${assumed.join(', ')} — assumed ${ASSUMED_GARMENT_OZ} oz each. Re-pick the blank from Find blanks to use the real weight.`);
+  }
+  if (head.ratesStale) basis.push(`Rate table last checked ${head.ratesCalibratedOn} — re-calibrate against a recent invoice.`);
+
+  return {
+    // Every shipment fact describes the BIGGEST run, which is a real shipment.
+    ...head,
+    perLine: perLine.map(({ raw, ...rest }) => rest),
+    unweighed: assumed,
+    // The runs are alternatives, so the honest headline is a spread from the
+    // cheapest run to the dearest — never their sum.
+    low: round2(Math.min(...amounts)),
+    high: round2(Math.max(...amounts)),
+    total: round2(biggest.shipping),
+    basis,
+  };
 }
 
 function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
@@ -398,7 +469,7 @@ function reconcile(perLine, total) {
 
 module.exports = {
   ORIGIN, STATE_CENTROIDS, ZONE_BANDS, PARCEL_RATES, LTL_CWT,
-  CARTON_MAX_LB, PARCEL_CEILING_LB, DEFAULT_PAD, LTL_PAD,
+  CARTON_MAX_LB, PARCEL_CEILING_LB, DEFAULT_PAD, LTL_PAD, ASSUMED_GARMENT_OZ,
   RATES_CALIBRATED_ON, RATES_STALE_AFTER_DAYS, rateAgeDays,
   BILLED_BY, VENDOR_PAD,
   FUEL_SURCHARGE_PCT, ACCOUNT_INCENTIVE_PCT,
