@@ -188,3 +188,43 @@ test('handles an empty library and a missing order', () => {
   assert.deepStrictEqual(_clientDesigns(null, [lib('#000145A')]).projectRefs, []);
 });
 
+
+// ── Which designs reach the client ───────────────────────────────────────────
+// Order.mockupNumbers is the owner's curated, ordered pick. It used to be
+// UNIONED with every design on the project, so the pick could only ever add —
+// there was no way to show a client three of the eight proofs a job had
+// accumulated. A curation is a choice, including what it leaves out.
+
+
+test('a curated pick is the whole answer — unpicked designs stay off the link', () => {
+  const order = { projectNumber: '150', mockupNumbers: ['#000150A', '#000150C'] };
+  const items = ['#000150A', '#000150B', '#000150C', '#000150D'].map(n => lib(n, { projectNumber: '150' }));
+  const { projectRefs } = _clientDesigns(order, items);
+  assert.deepStrictEqual(projectRefs, ['#000150A', '#000150C']);
+});
+
+test('with nothing picked, every design on the project still shows', () => {
+  // The fallback that keeps existing orders rendering as they do today, and
+  // stops an empty selection shipping a confirmation with no artwork.
+  const order = { projectNumber: '150', mockupNumbers: [] };
+  const items = ['#000150A', '#000150B'].map(n => lib(n, { projectNumber: '150' }));
+  const { projectRefs } = _clientDesigns(order, items);
+  assert.deepStrictEqual(projectRefs, ['#000150A', '#000150B']);
+});
+
+test('a curated pick still collapses each colour to its latest edit', () => {
+  const order = { projectNumber: '150', mockupNumbers: ['#000150A', '#000150A2'] };
+  const items = ['#000150A', '#000150A2', '#000150B'].map(n => lib(n, { projectNumber: '150' }));
+  const { projectRefs } = _clientDesigns(order, items);
+  assert.deepStrictEqual(projectRefs, ['#000150A2'], 'the superseded proof stays hidden');
+});
+
+test('a curated lane still advances to its latest edit', () => {
+  // The pick names colour A of design 150; A has since been revised to A2. The
+  // client must see the CURRENT proof of the lane they were shown, never the
+  // one they were already talked out of.
+  const order = { projectNumber: '150', mockupNumbers: ['#000150A'] };
+  const items = ['#000150A', '#000150A2', '#000150B'].map(n => lib(n, { projectNumber: '150' }));
+  const { projectRefs } = _clientDesigns(order, items);
+  assert.deepStrictEqual(projectRefs, ['#000150A2'], 'the revision follows the lane; colour B stays out');
+});

@@ -100,6 +100,8 @@ function _clientDesigns(order, scoped) {
     .filter(mine)
     .map((m) => (m.pageState && m.pageState.mockupNum) || m.name)
     .filter(Boolean);
+  // Order.mockupNumbers is the owner's CURATED, ORDERED pick of what the client
+  // should see (see the schema note: membership vs presentation).
   const explicitRefs = (o.mockupNumbers || []).filter((n) => {
     const item = byNorm[norm(n)];
     if (!item) return false;                          // nothing to show
@@ -107,7 +109,34 @@ function _clientDesigns(order, scoped) {
     return !owner || owner === String(o.projectNumber || '');
   });
 
-  return { byNorm, projectRefs: _latestPerColour([...linkedRefs, ...explicitRefs]) };
+  // A CURATION IS A CHOICE, INCLUDING WHAT IT LEAVES OUT.
+  //
+  // These two used to be unioned, so the pick could only ever ADD: every design
+  // on the project reached the client whatever the owner selected, and there was
+  // no way to show a client three of the eight proofs a job accumulated.
+  //
+  // But a pick names a COLOUR LANE, not a frozen image. #000145A means "colour A
+  // of design 145", and if the artwork has been revised since, #000145A2 is what
+  // that lane currently looks like — showing the superseded proof would hand the
+  // client the version they were already talked out of. So a curated lane pulls
+  // its later edits along with it, and _latestPerColour then collapses the lane
+  // to the current one. Other designs and other colours stay out.
+  //
+  // Falling back to every project design when nothing is picked is deliberate:
+  // it keeps every existing order rendering exactly as it does today, and means
+  // an empty selection can never silently ship a confirmation with no artwork.
+  let refs = linkedRefs;
+  if (explicitRefs.length) {
+    const lane = (n) => {
+      const p = parseMockupNum(n);
+      return p ? `${p.digits}|${p.letter}` : `raw:${norm(n)}`;
+    };
+    const picked = new Set(explicitRefs.map(lane));
+    const edits = linkedRefs.filter((n) => picked.has(lane(n)));
+    refs = [...explicitRefs, ...edits];
+  }
+
+  return { byNorm, projectRefs: _latestPerColour(refs) };
 }
 
 const DEFAULT_TTL_DAYS = 7;
