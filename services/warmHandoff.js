@@ -51,7 +51,18 @@ async function warmCompany(companyKey, opts = {}) {
   const tags = Array.isArray(client.tags) ? client.tags : [];
   if (!tags.some((t) => String(t).toLowerCase() === 'warm')) tags.push('warm');
   client.tags = tags;
-  client.nextFollowUp = new Date(`${etToday(now)}T00:00:00.000Z`); // today → Today queue
+  // RE-ARM THE CALL QUEUE ONLY ON THE FIRST REPLY. This runs on EVERY inbound
+  // human reply, and the dedupKey guard below covers only the log LINE — these
+  // field writes sat outside it. So message twelve of a live negotiation shoved
+  // the company back into the Today queue exactly like message one, which is
+  // the same "stop nagging me about a deal I'm already working" complaint
+  // wearing different clothes. Once he has engaged, HE decides when to follow
+  // up; a buyer answering him is not a new task.
+  if (!client.engagedAt) {
+    client.nextFollowUp = new Date(`${etToday(now)}T00:00:00.000Z`); // today → Today queue
+  }
+  // lastContact stays per-message — it genuinely means "when did anything last
+  // happen here", and other surfaces read it as freshness.
   client.lastContact = now;
   client.stage = promoteStage(client.stage, 'contacted');
 

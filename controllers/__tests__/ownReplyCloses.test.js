@@ -178,13 +178,21 @@ test('the Sent scan is envelope-only, so it cannot eat the body budget', () => {
   assert.doesNotMatch(fn[0], /stats\.bodies/);
 });
 
-test('the Sent scan matches on the thread it answers, not its own id', () => {
+test('the Sent scan reads the real References header, not the envelope', () => {
   const src = require('fs').readFileSync(require.resolve('../../services/replyImap'), 'utf8');
   const fn = src.match(/async function fetchSentFolder[\s\S]*?\n}\n/);
-  // env.messageId is OURS. Passing it would resolve every sent message to the
-  // send it is, matching the company on nothing at all.
-  assert.match(fn[0], /inReplyTo/);
-  assert.doesNotMatch(fn[0], /messageIds: \[env\.messageId/);
+  // The version of this test that shipped asserted /inReplyTo/ appeared in the
+  // function text — and passed against the very line that was broken, because
+  // `env.references` is not a field an IMAP ENVELOPE has. The real behaviour is
+  // pinned in engagedConversation.test.js, which runs threadIdsFrom against a
+  // realistic envelope; all this one has to do is stop the header fetch being
+  // dropped back to envelope-only.
+  // CODE only — the comment explaining this bug quotes the broken form, which is
+  // the second time that has caught me in this suite.
+  const code = fn[0].split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  assert.match(code, /headers: \['in-reply-to', 'references'\]/);
+  assert.match(code, /threadIdsFrom\(env, msg\.headers\)/);
+  assert.doesNotMatch(code, /env\.references/);
 });
 
 test('only the first Sent folder that exists is scanned', () => {

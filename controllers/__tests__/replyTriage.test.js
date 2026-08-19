@@ -34,7 +34,7 @@ test('enums expose the categories and the triage statuses', () => {
   assert.ok(CATEGORIES.includes('hot_lead'));
   assert.ok(CATEGORIES.includes('auto_reply_ooo'));
   assert.ok(CATEGORIES.includes('bounce_auto_ignore'));
-  assert.deepEqual(STATUSES, ['new', 'handled', 'follow_up', 'mockup_requested', 'quote_requested', 'not_interested', 'do_not_contact', 'ignored']);
+  assert.deepEqual(STATUSES, ['new', 'in_conversation', 'handled', 'follow_up', 'mockup_requested', 'quote_requested', 'not_interested', 'do_not_contact', 'ignored']);
   assert.ok(isValidStatus('do_not_contact'));
   assert.ok(!isValidStatus('nope'));
   assert.ok(isValidCategory('asked_pricing'));

@@ -110,6 +110,19 @@ const ClientSchema = new mongoose.Schema({
   // "Needs attention" feed — even a hot deal — until this instant passes, then it
   // returns on its own. Null = not snoozed. This is the "hold / keep-warm" control.
   snoozedUntil: { type: Date, default: null, index: true },
+  // ENGAGED — "I am already talking to these people." Set the first time the
+  // owner ACTS on a reply (triages it, answers it in Gmail, starts a job from
+  // it), and from then on their later messages stop entering the signal feeds:
+  // he can see them in his inbox, and a deal he is visibly working is not news.
+  //
+  // A Date, not a flag, and modelled on snoozedUntil directly above — same
+  // shape, same intent ("get this out of my face"), same precedent. The date is
+  // what makes the quiet-gap rule computable: engagement is not permanent, it
+  // lapses when a company goes silent long enough that their next message is
+  // genuinely new information again. That is the one thing standing between
+  // this feature and silencing a real order.
+  engagedAt:    { type: Date, default: null, index: true },
+  engagedBy:    { type: String, default: '' },   // triage | owner-reply | job | backfill
   // EXACT street address — the owner found "Area" (a vague region) useless and
   // asked for a real address instead. `area` is kept below for back-compat (so
   // stored regions aren't lost) but is no longer the field we center on; the

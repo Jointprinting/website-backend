@@ -234,14 +234,18 @@ db.once('open', () => {
     // Workspace "free trial" row) + changed-email → wrong_person, AND the NDR
     // resweep — terminal "Message not delivered" notices synced before the
     // hard-bounce fix get their dead addresses suppressed retroactively.
-    const KEY = 'retriageAutoAcks-v4';
+    const KEY = 'retriageAutoAcks-v5';
     try {
       const migrations = mongoose.connection.db.collection('migrations');
       if (await migrations.findOne({ _id: KEY })) return;
       const triage = require('./controllers/replyTriage');
       const n = await triage.retriageStoredReplies();
       const b = await triage.resweepStoredNdrs();
-      await migrations.insertOne({ _id: KEY, at: new Date(), demoted: n, bouncesResweeped: b });
+      // ...and teach the stored rows who he is already in conversation with, so
+      // the new "don't re-signal a live deal" rule applies to the deals he is
+      // ALREADY working rather than only to future ones.
+      const e = await triage.backfillEngagedConversations();
+      await migrations.insertOne({ _id: KEY, at: new Date(), demoted: n, bouncesResweeped: b, engagement: e });
     } catch (e) {
       console.warn('[triage] re-triage healer failed (will retry next boot):', e.message);
     }
