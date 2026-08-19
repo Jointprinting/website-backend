@@ -31,6 +31,7 @@ const {
   runTickNow,
   sendTest,
   recheckAuthNow,
+  resumeSending,
   trackOpen,
   unsubscribe,
   unsubscribePage,
@@ -65,6 +66,7 @@ router.post('/run-tick',  runTickNow);
 router.post('/recover-sends', recoverSenderFailures); // requeue leads dropped by a sender-side error
 router.post('/test-send', sendTest);        // first-run wizard: send a sample to yourself
 router.post('/auth-recheck', recheckAuthNow); // force-refresh SPF/DKIM/DMARC classification
+router.post('/resume-sending', resumeSending);  // clear a circuit-breaker hold once the list is fixed
 
 // Free dispensary lead engine (OSM discovery → website email scrape → import).
 // Always on — no toggle; it milks each state dry and advances on its own.

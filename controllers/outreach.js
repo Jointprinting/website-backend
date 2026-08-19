@@ -35,7 +35,7 @@ async function keysWithPlacedOrders(keys) {
     .select('companyKey').lean();
   return new Set(rows.map((r) => r.companyKey));
 }
-const { engineStatus, runOutreachTick, sendTestEmail, recheckAuth, newToken, pickEmail, sendBlockReason, deliverabilityStats, cityFromAddress, jitteredFollowUpAt, openPixelEnabled, DAILY_CAP_MAX } = require('../services/outreachEngine');
+const { clearSendingHold, engineStatus, runOutreachTick, sendTestEmail, recheckAuth, newToken, pickEmail, sendBlockReason, deliverabilityStats, cityFromAddress, jitteredFollowUpAt, openPixelEnabled, DAILY_CAP_MAX } = require('../services/outreachEngine');
 const { runFinder, finderStatus } = require('../services/leadFinderRunner');
 const { scoreLead } = require('../services/leadScore');
 const { runFrontierSweep } = require('../services/leadFinderScheduler');
@@ -1518,6 +1518,32 @@ async function recheckAuthNow(req, res) {
   }
 }
 
+// POST /api/outreach/resume-sending — the deliberate way out of a hold.
+//
+// The breaker no longer lifts when the bounces that caused it age out of the
+// 7-day window: resuming on an expired measurement is what made the engine
+// pause and un-pause repeatedly, sending into the same bad roster each time.
+// So a hold waits for a human to say the list is fixed.
+//
+// This is not an override. Clearing the latch only makes the breaker judge
+// fresh — if the list is still bad, the next evaluation trips it again on real
+// numbers, and nothing here can send a single message on its own.
+async function resumeSending(req, res) {
+  try {
+    const out = await clearSendingHold(`resumed by owner ${new Date().toISOString()}`);
+    const stats = await deliverabilityStats({ force: true }).catch(() => null);
+    res.json({
+      ...out,
+      // Report what the breaker thinks NOW, so a resume that immediately
+      // re-trips says so instead of looking like it worked.
+      deliverability: stats,
+      retripped: !!(stats && stats.tripped),
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
 // ── Analytics ─────────────────────────────────────────────────────────────────
 
 const US_STATES = new Set([
@@ -2195,6 +2221,7 @@ module.exports = {
   runTickNow,
   sendTest,
   recheckAuthNow,
+  resumeSending,
   trackOpen,
   unsubscribe,
   unsubscribePage,

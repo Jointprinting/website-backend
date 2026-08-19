@@ -1017,6 +1017,14 @@ test('the sample floor still protects a small test batch from tripping it', () =
 test('a clean record never trips, held or not', () => {
   for (const alreadyHeld of [true, false]) {
     assert.equal(evaluateDeliverability({ sent7d: 200, bounced7d: 2, alreadyHeld }).tripped, false);
-    assert.equal(evaluateDeliverability({ sent7d: 0, bounced7d: 0, alreadyHeld }).tripped, false);
   }
+  // An EMPTY window is a different claim, and this used to assert the wrong one.
+  // With nothing sent, bounceRate is 0 by definition — which reads as perfect
+  // health while actually meaning "we stopped sending". For an engine that is
+  // not held that is correct (nothing has gone wrong). For a HELD one it is the
+  // flap: the bounces that caused the pause age out, the window empties, the
+  // brake lifts on a list nobody fixed, and it bounces again. The owner's inbox
+  // showed five hard bounces in nine sends the morning after exactly that.
+  assert.equal(evaluateDeliverability({ sent7d: 0, bounced7d: 0, alreadyHeld: false }).tripped, false);
+  assert.equal(evaluateDeliverability({ sent7d: 0, bounced7d: 0, alreadyHeld: true }).tripped, true);
 });
