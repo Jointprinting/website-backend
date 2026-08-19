@@ -708,6 +708,13 @@ const MAX_COMPLAINT_RATE = parseFloat(process.env.OUTREACH_MAX_COMPLAINT_RATE ||
 // it can't dilute the rate with fresh good sends until the bad batch ages out. So the
 // breaker also requires a real COUNT of bad events, not just a rate, before it trips.
 const BREAKER_MIN_BOUNCES = parseInt(process.env.OUTREACH_BREAKER_MIN_BOUNCES || '6', 10);
+// How many recent sends count as "enough to judge that it is FIXED". Lower than
+// the trip floor on purpose: a clean run of this size is real evidence, and
+// demanding the full trip sample would mean a held engine — which by definition
+// sends almost nothing — could never clear itself at all. What this rules out
+// is the near-empty window, where a bounce rate of 0 means "we stopped sending"
+// rather than "we stopped bouncing".
+const BREAKER_RELEASE_MIN_SAMPLE = parseInt(process.env.OUTREACH_BREAKER_RELEASE_MIN_SAMPLE || '20', 10);
 const BREAKER_MIN_COMPLAINTS = parseInt(process.env.OUTREACH_BREAKER_MIN_COMPLAINTS || '2', 10);
 // Unsubscribe breaker: a high opt-out rate means the LIST or the PITCH is
 // off-target — keep firing and you train mailbox providers that this sender is
@@ -748,6 +755,27 @@ const UNSUB_EPOCH = new Date(process.env.OUTREACH_UNSUB_EPOCH || '2026-08-06T18:
 // over — normally the full 7 days, but narrower while the pre-fix readings are
 // still aging out (see UNSUB_EPOCH). Defaults to sent7d so every existing caller
 // and test behaves exactly as before.
+/**
+ * The deliberate way out of a hold.
+ *
+ * `alreadyHeld` is read off OutreachState.last_result, so clearing that string
+ * is what tells the breaker to judge fresh instead of latching. It does NOT
+ * override the rate test: if the list is still bad, the very next evaluation
+ * trips again on real numbers. What it clears is the LATCH — the state where a
+ * pause outlives the evidence and cannot end on its own.
+ *
+ * Deliberate on purpose. The engine resuming by itself on an expired
+ * measurement is precisely the failure this replaced.
+ */
+async function clearSendingHold(note = 'hold cleared by owner') {
+  await OutreachState.findOneAndUpdate(
+    { key: 'engine' },
+    { $set: { last_result: String(note).slice(0, 200), breaker_cleared_at: new Date() } },
+    { upsert: true },
+  );
+  return { cleared: true, at: new Date() };
+}
+
 function evaluateDeliverability({ sent7d = 0, bounced7d = 0, complaints7d = 0, unsub7d = 0, unsubSent = null, alreadyHeld = false } = {}) {
   const unsubDenom = unsubSent == null ? sent7d : unsubSent;
   const bounceRate = sent7d > 0 ? bounced7d / sent7d : 0;
@@ -767,7 +795,21 @@ function evaluateDeliverability({ sent7d = 0, bounced7d = 0, complaints7d = 0, u
   // ending it, and a genuinely clean thin sample is indistinguishable from a
   // healthy one anyway (bounceRate 0 clears immediately).
   const rateIsBad = bounceRate > MAX_BOUNCE_RATE && bounced7d >= BREAKER_MIN_BOUNCES;
-  const bounceTrips = rateIsBad && (enoughData || alreadyHeld);
+  // ...and the SAME decay defeats the rate test itself, one level down. A held
+  // engine sends nothing, so sent7d AND bounced7d both fall toward zero. Once
+  // bounced7d drops under BREAKER_MIN_BOUNCES, rateIsBad goes false; once
+  // sent7d hits zero, bounceRate is defined as 0. Either way the brake lifts
+  // because the EVIDENCE EXPIRED, not because anything got fixed — the engine
+  // sends into the identical roster, bounces, and trips again. That flap is
+  // what put five hard bounces in nine sends on the owner's screen one morning,
+  // and every cycle of it costs real domain reputation.
+  //
+  // So a hold now ends only on POSITIVE evidence: a full fresh sample that is
+  // clean. A held engine cannot produce that by itself, which is the point —
+  // the pause outlives the data that caused it and waits for the list to
+  // actually be fixed. clearSendingHold() is the deliberate way out.
+  const evidenceExpired = alreadyHeld && sent7d < BREAKER_RELEASE_MIN_SAMPLE;
+  const bounceTrips = (rateIsBad && (enoughData || alreadyHeld)) || evidenceExpired;
   const complaintTrips = enoughData && complaintRate > MAX_COMPLAINT_RATE && complaints7d >= BREAKER_MIN_COMPLAINTS;
   // The opt-out leg carries its own sample floor, against its own denominator:
   // right after the meter was fixed there aren't 50 clean sends yet, and "not
@@ -778,7 +820,9 @@ function evaluateDeliverability({ sent7d = 0, bounced7d = 0, complaints7d = 0, u
   // Bounce/complaint hurt reputation hardest, so report them first on a tie.
   const reason = !tripped ? ''
     : bounceTrips
-      ? `${(bounceRate * 100).toFixed(1)}% bounce rate (7d) is over ${(MAX_BOUNCE_RATE * 100).toFixed(0)}% — paused to protect your sender reputation. The list is auto-cleaning; sending resumes on its own.`
+      ? (evidenceExpired && !rateIsBad
+        ? `Paused to protect your sender reputation. The bounces that caused it have aged out of the 7-day window, but nothing has shown the list is fixed — and resuming on an expired measurement is what made this pause and un-pause repeatedly. Clean the list, then resume it deliberately.`
+        : `${(bounceRate * 100).toFixed(1)}% bounce rate (7d) is over ${(MAX_BOUNCE_RATE * 100).toFixed(0)}% — paused to protect your sender reputation. The list is auto-cleaning; resume once it is clean.`)
       : complaintTrips
         ? `${(complaintRate * 100).toFixed(2)}% complaint rate (7d) is over ${(MAX_COMPLAINT_RATE * 100).toFixed(2)}% — paused to protect your sender reputation. Resumes on its own.`
         : `${(unsubRate * 100).toFixed(1)}% unsubscribe rate (7d) is over ${(MAX_UNSUB_RATE * 100).toFixed(0)}% — paused: the list or the pitch is off-target. Tighten the targeting/copy; sending resumes as the window clears.`;
@@ -2048,6 +2092,7 @@ function startOutreachEngine() {
 
 module.exports = {
   startOutreachEngine,
+  clearSendingHold,
   runOutreachTick,
   engineStatus,
   sendOne,
