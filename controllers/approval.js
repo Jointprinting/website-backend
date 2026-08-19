@@ -463,7 +463,14 @@ const publicGetProject = async (req, res) => {
     //      include a design carried over from an earlier project).
     //   2. No confirmation yet (the mockup-review rounds, where a share link is
     //      most often sent) → this project's designs, per _clientDesigns above.
-    const confItems = (order.confirmation && order.confirmation.items) || [];
+    //
+    // The confirmation only speaks for the client's designs once it is PUBLISHED.
+    // A half-built DRAFT was silently narrowing the gallery: start a confirmation
+    // with one item and the client's CHOOSE page — where they are still reviewing
+    // the designs — dropped from nine mockups to that one item's, while the
+    // confirmation itself stayed correctly hidden behind the publish gate. The
+    // page said "your mockups" and showed a ninth of them.
+    const confItems = (_confPublished(order.confirmation) && order.confirmation.items) || [];
     const confRefs = confItems
       .map(it => it && it.mockupNum)
       .filter(Boolean);
