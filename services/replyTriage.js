@@ -35,6 +35,17 @@ const CATEGORIES = [
 // auto-detected bounce_auto_ignore CATEGORY).
 const STATUSES = [
   'new',
+  // A message from a company the owner is ALREADY talking to. Stored and
+  // listed like any other reply — never hidden — but never a signal.
+  //
+  // Deliberately a STATUS rather than a flag beside one. Every feed that shouts
+  // at him keys off `status === 'new'`, and there are three of them written
+  // independently: the worklist bucket below, the hub's Smart Alerts
+  // (services/signals.js bucketOutreachReplies) and a raw countDocuments in
+  // hubPulse. A new status is correct in all three by construction; a flag
+  // would have needed all three found and edited, and the raw count would have
+  // been missed.
+  'in_conversation',
   'handled',
   'follow_up',
   'mockup_requested',

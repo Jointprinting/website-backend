@@ -58,6 +58,9 @@ const TriageReplySchema = new mongoose.Schema({
 
 // Newest-first listing.
 TriageReplySchema.index({ receivedAt: -1 });
+// Every conversation-state question is asked per company ("has he engaged with
+// these people", "when did they last write"), and there was no index for it.
+TriageReplySchema.index({ companyKey: 1, receivedAt: -1 });
 // Dedupe synced messages without blocking the many null manual/import rows.
 TriageReplySchema.index(
   { gmailMessageId: 1 },

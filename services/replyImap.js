@@ -427,6 +427,25 @@ async function fetchFolder(client, folder, since, ingest, stats, seen) {
 // Only the FIRST folder that exists is scanned — Gmail exposes the same message
 // under '[Gmail]/Sent Mail' and possibly an alias, and closing the same
 // conversation twice is wasted work.
+/**
+ * Every Message-ID in a sent message's thread: the direct parent (In-Reply-To)
+ * plus the full References chain, which on a long thread still contains the
+ * ROOT — the cold send we can actually join on. `headers` arrives as a Buffer
+ * of raw header lines; flattenHeaders already lowercases and folds them. Pure.
+ */
+function threadIdsFrom(env = {}, headers = null) {
+  const ids = [];
+  if (env.inReplyTo) ids.push(String(env.inReplyTo));
+  const h = flattenHeaders(headers);
+  for (const key of ['references', 'in-reply-to']) {
+    const v = h && h[key];
+    if (v) String(v).split(/\s+/).forEach((x) => { const t = x.trim(); if (t) ids.push(t); });
+  }
+  // The envelope's own messageId is deliberately absent: matching on it would
+  // resolve every sent message to itself.
+  return [...new Set(ids.filter(Boolean))];
+}
+
 async function fetchSentFolder(client, name, since, onOwnReply, stats) {
   let lock;
   try {
@@ -440,7 +459,16 @@ async function fetchSentFolder(client, name, since, onOwnReply, stats) {
     const uids = await client.search(query, { uid: true });
     if (!uids || !uids.length) return true;
     const recent = uids.slice(-MAX_PER_FOLDER);
-    for await (const msg of client.fetch(recent, { uid: true, envelope: true }, { uid: true })) {
+    // Headers, not just the envelope. An IMAP ENVELOPE carries exactly ten
+    // fields and References is NOT one of them — imapflow does not synthesize
+    // it — so reading env.references yielded undefined and the thread spine
+    // collapsed to a single id. Header-only stays cheap and never touches the
+    // body budget.
+    for await (const msg of client.fetch(
+      recent,
+      { uid: true, envelope: true, headers: ['in-reply-to', 'references'] },
+      { uid: true },
+    )) {
       const env = msg.envelope || {};
       const to = [...(env.to || []), ...(env.cc || [])]
         .map((a) => String((a && a.address) || '').trim().toLowerCase()).filter(Boolean);
@@ -450,10 +478,15 @@ async function fetchSentFolder(client, name, since, onOwnReply, stats) {
         const closed = await onOwnReply({
           toEmails: to,
           subject: env.subject || '',
-          // The thread spine. inReplyTo is the direct parent; the envelope's
-          // messageId is ours and deliberately not passed — matching on it would
-          // resolve every send to itself.
-          messageIds: [env.inReplyTo, ...(env.references || [])].filter(Boolean),
+          // The thread spine, off the real References header.
+          //
+          // This is the whole reason the closer never fired on a long thread.
+          // In-Reply-To alone is only ever the DIRECT PARENT — on his 34th
+          // message to a buyer that is her message 33, and the original cold
+          // send's Message-ID (the one the enrollment actually stores) is the
+          // In-Reply-To of nothing he has ever sent. References keeps the whole
+          // chain including the root, so the id we can match on comes back.
+          messageIds: threadIdsFrom(env, msg.headers),
           sentAt: env.date || msg.internalDate || new Date(),
         });
         stats.closed += Number(closed) || 0;
@@ -540,5 +573,6 @@ function imapMailbox(env = process.env) {
 
 module.exports = {
   runImapSync, imapConfig, imapHostFor, imapMailbox, toRaw, flattenHeaders, addressOf,
+  threadIdsFrom,
   htmlToText, bodyTextOf, textPartPath, seenMessageIds,
 };

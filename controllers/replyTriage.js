@@ -30,6 +30,7 @@ const {
   domainOf,
   FREEMAIL,
   STRONG_MATCHES,
+  STATUSES,
   isGmailConfigured,
   worklistFromReplies,
 } = require('../services/replyTriage');
@@ -192,9 +193,23 @@ async function closeOnOwnReply(raw = {}) {
       messageIds,
     });
     // A DOMAIN match is the soft one — same business, different mailbox. Good
-    // enough to show a link, not good enough to silence a buying signal, so the
-    // closer holds to the strong matches the auto-actions already trust.
-    if (!match.matched || !match.companyKey || match.matchBy === 'domain') continue;
+    // enough to show a link, not good enough to silence an unread cold reply on
+    // its own... but that bar is wrong for a thread he has demonstrably been
+    // answering for weeks. The cold mail usually goes to info@ or hello@ and a
+    // named buyer picks it up, so a domain match is the ONLY rung that fires,
+    // and refusing it outright is what kept discarding the close.
+    //
+    // So: accept a domain match when something else already establishes this is
+    // a live conversation with that company — a stored reply from them that was
+    // matched some stronger way. That is real corroboration, not a guess.
+    if (!match.matched || !match.companyKey) continue;
+    if (match.matchBy === 'domain') {
+      const corroborated = await TriageReply.exists({
+        companyKey: match.companyKey,
+        matchBy: { $in: [...STRONG_MATCHES] },
+      }).catch(() => null);
+      if (!corroborated) continue;
+    }
     if (seenKeys.has(match.companyKey)) continue;   // one sent mail, one close
     seenKeys.add(match.companyKey);
 
@@ -203,8 +218,91 @@ async function closeOnOwnReply(raw = {}) {
       { $set: { status: 'handled', handledAt: sentAt, handledBy: 'owner-reply' } },
     ).catch(() => ({ modifiedCount: 0 }));
     closed += r.modifiedCount || 0;
+    // He answered them, so he is talking to them — the same fact his triage
+    // click asserts, arrived at without the click. Recorded even when the
+    // updateMany closed nothing (he may have replied before any row was filed).
+    await markEngaged(match.companyKey, 'owner-reply').catch(() => {});
   }
   return closed;
+}
+
+// ── "I'm already talking to these people" ────────────────────────────────────
+//
+// The owner asked for this twice: the FIRST reply from a shop is news and should
+// reach him; the twelfth message of a live negotiation is not. He was getting
+// "needs a response" on message twelve of a deal he was actively working, which
+// is noise pretending to be a signal.
+//
+// Engagement is per-COMPANY, not per-reply. A worklist row is per-reply, but
+// collapseByCompany already folds a company down to one card, so "one company =
+// one thing to do" is a decision this codebase made long ago.
+//
+// It is set by HIS action, never hers. Every existing "warm" marker
+// (Client.lastContact, stage, the warm tag, enrollment.status 'replied') is
+// written by warmCompany on the INBOUND message — they all go true the instant
+// her first reply lands, so any of them would have silenced the one
+// notification he explicitly asked to keep.
+const QUIET_DAYS = parseInt(process.env.TRIAGE_QUIET_DAYS || '21', 10);
+const DAY_MS = 86400000;
+
+/**
+ * Mark a company as one the owner is in conversation with. Idempotent — the
+ * FIRST engagement wins, so re-engaging never moves the clock forward and can
+ * never extend a silence into permanence. Never throws: this is bookkeeping
+ * alongside the action the owner actually asked for.
+ */
+async function markEngaged(companyKey, by = 'triage') {
+  const key = String(companyKey || '').trim();
+  if (!key) return false;
+  const r = await Client.updateOne(
+    { companyKey: key, $or: [{ engagedAt: null }, { engagedAt: { $exists: false } }] },
+    { $set: { engagedAt: new Date(), engagedBy: String(by).slice(0, 24) } },
+  ).catch(() => ({ modifiedCount: 0 }));
+  return !!r.modifiedCount;
+}
+
+/**
+ * Is this incoming reply a SIGNAL, or just the next line of a conversation
+ * already in flight? Returns the status the row should be born with.
+ *
+ * The quiet-gap rule is the part that protects revenue. Permanent engagement
+ * would mean Apothecare going quiet for two months and then writing "ready to
+ * order 500 hoodies" lands silently — and that hub row is the only automated
+ * detector of inbound revenue in the whole system. A fixed expiry is just as
+ * wrong: it re-opens a deal mid-negotiation on day 31 for no reason.
+ *
+ * So the clock is QUIET TIME, and it is only ever read when a message arrives:
+ * her answer three days into a live thread stays quiet, her answer after two
+ * months of silence is news again. Rebecca's case satisfied in both directions,
+ * with no field beyond engagedAt.
+ */
+async function statusForIncoming(companyKey, receivedAt) {
+  const key = String(companyKey || '').trim();
+  if (!key) return 'new';                       // unmatched — always a signal
+  const client = await Client.findOne({ companyKey: key })
+    .select('engagedAt').lean().catch(() => null);
+  const engagedAt = client && client.engagedAt ? new Date(client.engagedAt) : null;
+  if (!engagedAt || !Number.isFinite(engagedAt.getTime())) return 'new';
+
+  // Last time anything happened on this relationship: her most recent message,
+  // or the moment he engaged, whichever is later.
+  const last = await TriageReply.findOne({ companyKey: key })
+    .sort({ receivedAt: -1 }).select('receivedAt').lean().catch(() => null);
+  const lastAt = Math.max(
+    engagedAt.getTime(),
+    last && last.receivedAt ? new Date(last.receivedAt).getTime() : 0,
+  );
+  const at = receivedAt instanceof Date && Number.isFinite(receivedAt.getTime())
+    ? receivedAt.getTime() : Date.now();
+  if (at - lastAt > QUIET_DAYS * DAY_MS) {
+    // Gone quiet long enough that this is new information again. Clearing the
+    // stamp lets the row be born a signal through the ordinary path rather than
+    // needing a special case at read time.
+    await Client.updateOne({ companyKey: key }, { $set: { engagedAt: null, engagedBy: '' } })
+      .catch(() => {});
+    return 'new';
+  }
+  return 'in_conversation';
 }
 
 // Classify + match one raw reply and persist it. Own sent mail is dropped (not a
@@ -320,7 +418,12 @@ async function ingestOne(raw = {}) {
     receivedAt: isNaN(receivedAt.getTime()) ? new Date() : receivedAt,
     category,
     suggestedAction: suggestedActionFor(category),
-    status: 'new',
+    // A message from a company he is already working is not a signal. Resolved
+    // HERE, at birth, because the re-open he complained about was never in the
+    // Sent-folder closer — it is that every reply was stamped 'new' with no
+    // memory of the company, so Rebecca's message twelve was born byte-identical
+    // to her message one.
+    status: await statusForIncoming(match.companyKey, receivedAt),
     matched: match.matched,
     matchBy: match.matchBy,
     companyKey: match.companyKey,
@@ -513,6 +616,60 @@ async function ingestNdrBounce(reply) {
 // status 'ignored', so they drop out of the triage worklist AND the hub banner
 // without the owner touching anything. Idempotent; safe to re-run. Returns count.
 const HUMANISH_CATEGORIES = ['hot_lead', 'needs_response', 'asked_pricing', 'asked_mockups', 'follow_up_later', 'wrong_person'];
+/**
+ * ONE-TIME: teach the existing data who he is already talking to.
+ *
+ * Without this the fix does nothing on day one — Apothecare's stored rows are
+ * still status:'new', so the worklist, the hub alerts and the bridge bucket all
+ * go on shouting about a deal he has been working for weeks, and he would have
+ * to clear every one of them by hand. Exactly the chore he asked to stop doing.
+ *
+ * Engagement is inferred from evidence that ALREADY EXISTS and can only mean he
+ * acted: a reply he triaged himself (any status the machine does not set), or a
+ * company that produced a job. Deliberately NOT inferred from warm/lastContact/
+ * stage/enrollment-'replied' — every one of those is written by warmCompany on
+ * HER inbound message, so they would mark companies engaged that he has never
+ * touched and swallow the first-reply notification he asked to keep.
+ *
+ * Then, for each engaged company, its still-'new' rows become 'in_conversation'
+ * — the state they would have been born into. Returns what it changed.
+ */
+async function backfillEngagedConversations() {
+  // Statuses only a human sets. 'new' is the machine default and 'ignored' is
+  // written by the auto-classifier, so neither is evidence of him.
+  const OWNER_SET = STATUSES.filter((x) => x !== 'new' && x !== 'ignored' && x !== 'in_conversation');
+  const triaged = await TriageReply.find({ status: { $in: OWNER_SET }, companyKey: { $ne: '' } })
+    .select('companyKey').lean().catch(() => []);
+  const keys = new Set(triaged.map((r) => r.companyKey).filter(Boolean));
+
+  // A company that produced a real job is unambiguously a live relationship.
+  try {
+    const Order = require('../models/Order');
+    const withOrders = await Order.find({ companyKey: { $ne: '' } }).select('companyKey').lean();
+    for (const o of withOrders) if (o.companyKey) keys.add(o.companyKey);
+  } catch { /* Order model unavailable — triage evidence alone still applies */ }
+
+  if (!keys.size) return { engaged: 0, quieted: 0 };
+  const list = [...keys];
+  const eng = await Client.updateMany(
+    { companyKey: { $in: list }, $or: [{ engagedAt: null }, { engagedAt: { $exists: false } }] },
+    { $set: { engagedAt: new Date(), engagedBy: 'backfill' } },
+  ).catch(() => ({ modifiedCount: 0 }));
+
+  // Their outstanding rows stop being signals. Only 'new' is touched: a row he
+  // parked as quote_requested / follow_up is his own tracking and stays.
+  const quiet = await TriageReply.updateMany(
+    { companyKey: { $in: list }, status: 'new' },
+    { $set: { status: 'in_conversation' } },
+  ).catch(() => ({ modifiedCount: 0 }));
+
+  const out = { engaged: eng.modifiedCount || 0, quieted: quiet.modifiedCount || 0 };
+  if (out.engaged || out.quieted) {
+    console.log(`[triage] engagement backfill: ${out.engaged} compan${out.engaged === 1 ? 'y' : 'ies'} marked in-conversation, ${out.quieted} row(s) quieted`);
+  }
+  return out;
+}
+
 async function retriageStoredReplies() {
   const rows = await TriageReply.find({ category: { $in: HUMANISH_CATEGORIES } })
     .select('subject snippet fromEmail fromName enrollmentId companyKey matched').lean();
@@ -705,6 +862,17 @@ async function updateStatus(req, res) {
     reply.status = status;
     reply.handledAt = status === 'new' ? null : new Date();
 
+    // "Once i mark a conversation once i shouldnt have to do it again." THIS is
+    // the click he meant, and it is deliberately sufficient on its own — the
+    // Sent-folder scan is an accelerator that saves him this click, never a
+    // dependency. It can be blind (wrong mailbox, aliased From, an unlisted
+    // folder name) and report success while seeing nothing, so if answering in
+    // Gmail were the only trigger the whole feature would quietly degrade back
+    // to today's behavior and he would be telling me a third time.
+    if (status !== 'new') {
+      await markEngaged(reply.companyKey, 'triage').catch(() => {});
+    }
+
     // Owner correction: "that wasn't a real reply" (an auto-responder slipped
     // past the classifier and warmed the company / stopped the drip). Beyond
     // dismissing the row, reclassify it AND undo the warm side-effects — the
@@ -776,6 +944,9 @@ async function startJobFromReply(req, res) {
     reply.status = 'handled';
     reply.handledAt = new Date();
     await reply.save();
+    // Starting a job is the least ambiguous statement in the system that this
+    // is a real, live relationship.
+    await markEngaged(reply.companyKey, 'job').catch(() => {});
 
     res.status(out.created ? 201 : 200).json({ ok: true, ...out, reply: reply.toObject() });
   } catch (e) {
@@ -1193,8 +1364,18 @@ async function getWorklist(_req, res) {
       (await TriageReply.find({ companyKey: { $in: enrKeys } }).select('companyKey').lean())
         .map((r) => r.companyKey),
     );
+    // ...and never for a company he is already talking to. This bucket bypasses
+    // TriageReply entirely — it is built from enrollments — so the row status
+    // can never quiet it, and it would have gone on surfacing Apothecare after
+    // every other channel was fixed. Engagement is per-COMPANY precisely so the
+    // one door that has no reply row can still read it.
+    const engagedKeys = new Set(
+      (await Client.find({ companyKey: { $in: enrKeys }, engagedAt: { $ne: null } })
+        .select('companyKey').lean().catch(() => []))
+        .map((c) => c.companyKey),
+    );
     const untriagedReplied = repliedEnr
-      .filter((e) => e.companyKey && !triagedKeys.has(e.companyKey))
+      .filter((e) => e.companyKey && !triagedKeys.has(e.companyKey) && !engagedKeys.has(e.companyKey))
       .map((e) => ({
         _id: String(e._id),
         enrollmentId: String(e._id),
@@ -1222,7 +1403,8 @@ async function getWorklist(_req, res) {
 
 module.exports = {
   listReplies, addReplies, updateStatus, startJobFromReply, syncGmail, getSyncStatus, getWorklist,
-  ingestOne, closeOnOwnReply, repairStoredReply, applyStatusSideEffects, runGmailSync, startGmailIngest, retriageStoredReplies,
+  ingestOne, closeOnOwnReply, repairStoredReply, backfillEngagedConversations,
+  markEngaged, statusForIncoming, applyStatusSideEffects, runGmailSync, startGmailIngest, retriageStoredReplies,
   resweepStoredNdrs, auditQuotedFooterOptOuts,
   // Shared contract: which mailbox the reply sync is authenticated as (read by
   // the outreach overview to detect a reply black hole).
