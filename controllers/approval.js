@@ -7,6 +7,7 @@ const { nextNumber } = require('../utils/sequence');
 const { appendClientLog } = require('../services/clientLog');
 const { compareMockupNums, parseMockupNum } = require('../utils/mockupNumbers');
 const { clientLibraryScopeFor, mockupProjectNumber, belongsToProject } = require('../utils/mockupScope');
+const r2 = require('../services/r2');
 const { tierLineFor, validateSplit, runLines } = require('../utils/colorSplit');
 
 // One tile per COLOUR, showing its latest edit — the client's view of a
@@ -444,6 +445,32 @@ function notifyAdminAndLog(orderId, subject, body, failNote) {
   });
 }
 
+// AN IMAGE WE ACTUALLY HOST, or nothing.
+//
+// A mockup side falls back to its bare garment photo when no art was flattened
+// onto it (mockupToLibraryItem: `backCompositeBase64 || backBlankBase64`), and
+// that photo is usually an S&S CDN URL. The R2 offload passes any non-base64
+// value through untouched (services/r2.uploadDataUrl line 89), so the
+// supplier's URL was being served straight to the client — where it does not
+// load. Every design showed its front beside a dead back.
+//
+// Two reasons that is the wrong thing to send, not merely a broken one:
+//   • a bare blank is not a PROOF. It is a stock photo of an undecorated
+//     garment and says nothing about the client's design.
+//   • it leaks the supplier, which stays internal here. The one deliberate
+//     exception is the owner-set productUrl on a quote line.
+//
+// So a client-facing image must be ours: a data: URI, or an object in our own
+// bucket. With R2 unconfigured (dev) nothing is hosted, so the old pass-through
+// stands and local work is unaffected. PURE — exported for tests.
+function _clientImage(src) {
+  const s = typeof src === 'string' ? src.trim() : '';
+  if (!s) return '';
+  if (/^data:image\//i.test(s)) return s;
+  if (!r2.isR2Configured()) return s;
+  return r2.isR2Url(s) ? s : '';
+}
+
 // GET /api/public/projects/:id?token=... — read-only project view (mockups, items, totals)
 const publicGetProject = async (req, res) => {
   try {
@@ -505,11 +532,13 @@ const publicGetProject = async (req, res) => {
       // sides. utils/mockupViews owns how the two arrays pair up.
       .map(m => ({
         name: m.name,
-        thumbnail: m.thumbnail,
-        back: m.data,
+        thumbnail: _clientImage(m.thumbnail),
+        back: _clientImage(m.data),
         mockupNum: m.pageState?.mockupNum,
-        extraViews: m.extraViews || [],
-        extraBackViews: m.extraBackViews || [],
+        extraViews: (m.extraViews || []).map(_clientImage).filter(Boolean),
+        // Index-aligned to extraViews by contract (utils/mockupViews) — an
+        // unusable back keeps its slot as '' rather than shifting the pairing.
+        extraBackViews: (m.extraBackViews || []).map(_clientImage),
         // WHICH COLOUR this proof is. Four colourways of one design used to
         // reach the client as four tiles all captioned with the same design
         // name — the letter in the number was the only thing telling them
@@ -1458,6 +1487,7 @@ module.exports = {
   // totals obey the exact same draft-hiding rules as the approval page.
   _confPublished, _hasConfContent,
   _latestPerColour,   // exported for tests
+  _clientImage,       // exported for tests
   _clientDesigns,     // which designs a client sees on a project — exported for tests
   DEFAULT_TRACKING_STEPS,
   // Link liveness — the single source of truth for "is this approval link dead?".
