@@ -50,7 +50,7 @@ test('different products are different lines', () => {
 
 test('the line is labelled from the drop catalog, with variant and colour', () => {
   const { items } = rollupCommitments(link([c({ variant: 'Independent', color: 'Black' })]));
-  assert.strictEqual(items[0].description, 'Hoodie · Independent · Black');
+  assert.strictEqual(items[0].productName, 'Hoodie · Independent · Black');
 });
 
 test('a promo item with no size gets one OS row, not a blank label', () => {
@@ -99,13 +99,13 @@ test('the biggest line sorts first — the one worth checking before sending', (
     c({ itemId: 't', qty: 1 }),
     c({ itemId: 'h', qty: 40 }),
   ]));
-  assert.strictEqual(items[0].description, 'Hoodie');
+  assert.strictEqual(items[0].productName, 'Hoodie');
 });
 
 test('an unknown itemId still produces a line rather than losing the order', () => {
   const { items } = rollupCommitments(link([c({ itemId: 'ghost' })]));
   assert.strictEqual(items.length, 1);
-  assert.ok(items[0].description.includes('ghost'));
+  assert.ok(items[0].productName.includes('ghost'));
 });
 
 test('handles an empty or missing drop', () => {
@@ -117,4 +117,45 @@ test('mergeSizes and lineLabel are usable on their own', () => {
   assert.deepStrictEqual(mergeSizes([{ size: 'S', qty: 1, unitPrice: 10 }, { size: 'S', qty: 2 }]),
     [{ label: 'S', qty: 3, unitPrice: 10 }]);
   assert.strictEqual(lineLabel('Hoodie', '', 'Black'), 'Hoodie · Black');
+});
+
+// ── The rolled-up item has to fit where it is going ──────────────────────────
+//
+// This file used to assert `description`, and so did the code — but
+// Order.confirmation.items has no `description` path, and Mongoose strict mode
+// drops an undeclared field silently. The tests passed while every rolled-in
+// drop line lost its name on save and reached the client's confirmation, and the
+// printer's PO, as "Item 1 · Black".
+//
+// A test that pins a shape the destination never accepted is worse than no test,
+// so this one asks the schema instead of asserting a name.
+test('every field a rolled-up item carries actually exists on a confirmation item', () => {
+  const Order = require('../../models/Order');
+  const allowed = new Set(Object.keys(Order.schema.path('confirmation.items').schema.paths));
+
+  const { items } = rollupCommitments({
+    items: [{ id: 'i1', label: 'Hoodie', sizes: ['M', 'L'] }],
+    commitments: [
+      { name: 'Nathan', itemId: 'i1', variant: 'Independent', color: 'Black', size: 'L', qty: 1, unitPrice: 42 },
+      { name: 'Rita',   itemId: 'i1', variant: 'Independent', color: 'Black', size: 'M', qty: 2, unitPrice: 42 },
+    ],
+  });
+
+  assert.ok(items.length > 0);
+  for (const it of items) {
+    for (const key of Object.keys(it)) {
+      assert.ok(allowed.has(key), `confirmation.items has no "${key}" path — strict mode would drop it`);
+    }
+  }
+});
+
+test('the product name survives onto the item the client will read', () => {
+  const { items } = rollupCommitments({
+    items: [{ id: 'i1', label: 'Hoodie', sizes: ['L'] }],
+    commitments: [{ name: 'Nathan', itemId: 'i1', variant: 'Independent', color: 'Black', size: 'L', qty: 1, unitPrice: 42 }],
+  });
+  // productName is what ConfirmationDocument reads first:
+  //   productName || brandName || styleCode || `Item ${idx + 1}`
+  assert.strictEqual(items[0].productName, 'Hoodie · Independent · Black');
+  assert.notStrictEqual(items[0].productName, undefined, 'without this the line renders as "Item 1"');
 });
