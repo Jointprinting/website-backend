@@ -43,6 +43,42 @@ async function _findLinkedOrder(rawOrderNumber) {
   return exact.find((o) => (o.companyName || o.clientName)) || exact[0];
 }
 
+// ── the printed number: ORDER LINK vs INVOICE NUMBER ─────────────────────────
+// The reader is asked for "any PO / order / job / invoice number printed on it"
+// (services/receiptScanner.js) — ONE field carrying two DIFFERENT identifiers. On a
+// supplier receipt that number is usually the job/PO # and links fine. On OUR OWN
+// sales invoice the number on the page is the INVOICE number, which runs on its own
+// sequence entirely (invoice #1049 vs project #140 — the same divergence
+// finances.js enrichTransactionLinks already accounts for).
+//
+// Booking that straight into Transaction.orderNumber INVENTED A PHANTOM ORDER: the
+// payment attached to an order that does not exist, so the real job still read
+// "cost recorded, no client payment" on the Finances gap panel while its revenue sat
+// on a ghost row at ~100% margin. (Invoice #1054 booked against the Custom Boatworks
+// job, which is order #138.)
+//
+// The rule now: a printed number becomes an ORDER LINK only when it actually
+// resolves to an Order. Otherwise it is never dropped — it is kept as what it
+// plainly is, the owner's invoice number, in the field the ledger already has for it
+// (Transaction.invoiceNumber). PURE (no DB) so it is exported + tested; the caller
+// passes the Order it looked up.
+function receiptNumberPlan(rawNumber, matchedOrder) {
+  const printed = digits(rawNumber);
+  if (!printed) return { orderNumber: '', invoiceNumber: '', unmatched: false };
+  // Matched → store the CANONICAL key every finance join uses, not the decorated
+  // string off the page ("PO-021" / "0000021" both link as "21").
+  if (matchedOrder) {
+    return { orderNumber: normalizeOrderNumber(matchedOrder.orderNumber), invoiceNumber: '', unmatched: false };
+  }
+  return { orderNumber: '', invoiceNumber: printed, unmatched: true };
+}
+
+// The DB half of the same decision: resolve the printed number, then plan it.
+async function _resolveReceiptNumber(rawNumber) {
+  const order = await _findLinkedOrder(rawNumber);
+  return { ...receiptNumberPlan(rawNumber, order), order };
+}
+
 // Receipt→vendor LEARNING (conservative). When an expense receipt is booked with
 // a real vendor (party) AND an order #, remember "this printer did this order" on
 // the Vendor record. This is the link that lets the system pre-fill the right
@@ -158,7 +194,7 @@ const scan = async (req, res) => {
     //   • a supplier receipt → expense · party = the vendor we paid.
     // The party is left BLANK when no client can be determined, for the owner to
     // fill, rather than guessing the company itself (the reported bug).
-    const order = await _findLinkedOrder(ex.orderNumber);
+    const { orderNumber, invoiceNumber, order } = await _resolveReceiptNumber(ex.orderNumber);
     const d = scanner.decideTransaction(ex, order);
     res.json({
       configured: true,
@@ -169,7 +205,11 @@ const scan = async (req, res) => {
         party:       d.party,
         amount:      ex.amount != null ? ex.amount : '',
         date:        ex.date ? new Date(ex.date).toISOString().slice(0, 10) : '',
-        orderNumber: digits(ex.orderNumber),
+        // Only a number that RESOLVED to a real Order pre-fills the order link —
+        // otherwise saving the prefill would mint the same phantom order the
+        // auto-booker used to. An unmatched number comes back as what it is:
+        invoiceNumber,
+        orderNumber,
         description: ex.summary || '',
       },
       // Additive order-link context for the modal (ignored by older clients): when
@@ -293,8 +333,13 @@ const autoBookFromScan = async (rec) => {
   // The model's own uncertainty is the first gate — a shaky read waits for eyes.
   if (!['high', 'medium'].includes(String(rec.confidence))) return 'review';
   const date = e.date ? new Date(e.date) : new Date();
-  const orderNumber = digits(e.orderNumber);
-  const order = await _findLinkedOrder(orderNumber);
+  const { orderNumber, unmatched, order } = await _resolveReceiptNumber(e.orderNumber);
+  // A printed number that matches NO order is never auto-booked. This is the exact
+  // case that used to slip through — and it slipped through the anonymity gate below
+  // *because* a bogus number made the row look MORE linked, not less. It goes to the
+  // review inbox instead, where the owner attaches the real order (or books it as the
+  // invoice # it is).
+  if (unmatched) return 'review';
   const decided = scanner.decideTransaction(e, order);
   // Refunds/credits flip a row's direction — misbooking one corrupts COGS, so
   // they always go through the owner.
@@ -331,7 +376,10 @@ const confirm = async (req, res) => {
     const amount = Math.abs(num(e.amount));
     if (!amount) return res.status(400).json({ message: 'An amount is required to book this receipt.' });
     const date = e.date ? new Date(e.date) : new Date();
-    const orderNumber = digits(e.orderNumber);
+    // Order link vs invoice #: the number only links when it resolves to a real
+    // Order; unmatched, it is preserved as the invoice number instead of minting a
+    // phantom order link. The owner can still set a true order # on the ledger row.
+    const { orderNumber, invoiceNumber, unmatched, order } = await _resolveReceiptNumber(e.orderNumber);
     // Direction (isCredit) is OWNER-CONFIRMED whenever the owner says so, and only
     // falls back to the scan otherwise. Precedence:
     //   1. an explicit isCredit boolean from the owner — accepted whether the
@@ -354,7 +402,6 @@ const confirm = async (req, res) => {
     // supplier receipt books as an expense with the vendor as party. The OWNER's
     // explicit corrections still win over the read — confirm is the owner's final
     // say — so an edited type/party/category/isCredit is honored verbatim.
-    const order = await _findLinkedOrder(orderNumber);
     const decided = scanner.decideTransaction(e, order);
     const ownerType = req.body.extracted && req.body.extracted.type;
     const type = ownerType === 'income' || ownerType === 'expense' ? ownerType : decided.type;
@@ -389,7 +436,7 @@ const confirm = async (req, res) => {
     }
 
     const fields = {
-      date, type, category, orderNumber, isCredit,
+      date, type, category, orderNumber, invoiceNumber, isCredit,
       party, description: e.summary || '', amount,
       receiptUrl: rec.fileUrl, source: 'receipt',
     };
@@ -416,7 +463,9 @@ const confirm = async (req, res) => {
     // receipt for it can pre-fill the vendor, and the vendor card shows the link.
     await _learnVendorOrder(party, type, orderNumber);
 
-    res.json({ receipt: rec, transaction: txn });
+    // Additive: tell the client what happened to the printed number, so a demoted
+    // order # is never a silent surprise (ignored by older clients).
+    res.json({ receipt: rec, transaction: txn, numberLink: { orderNumber, invoiceNumber, unmatched } });
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
@@ -561,3 +610,4 @@ const archiveRest = async (req, res) => {
 module.exports = { upload, scan, batch, list, getOne, reprocess, update, confirm, remove, reconcile, bulkReconcile, clearAll, resetReceipts, archiveRest, autoBookFromScan };
 // Pure receipt→vendor learning decision (no DB) — exported for unit tests.
 module.exports.vendorOrderLearnPlan = vendorOrderLearnPlan;
+module.exports.receiptNumberPlan = receiptNumberPlan;
