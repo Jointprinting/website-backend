@@ -11,6 +11,8 @@ const r2 = require('../services/r2');
 const { tierLineFor, validateSplit, validateQty, runLines, orderedQty } = require('../utils/colorSplit');
 // A re-push must not silently re-price what the client already accepted.
 const { clearStaleAcceptances, stillPicked } = require('../utils/quoteRepush');
+// What the client's per-unit price covers — derived, never asserted.
+const { priceIncludesFor } = require('../utils/priceIncludes');
 
 // One tile per COLOUR, showing its latest edit — the client's view of a
 // project's designs.
@@ -734,6 +736,11 @@ const publicGetProject = async (req, res) => {
         approvalBy:           cur.by || '',
         approvalExpiresAt:    order.approvalTokenExpiresAt,
         tracking:             { steps: trackingSteps },
+        // What the per-unit price actually covers, DERIVED from the quote —
+        // see utils/priceIncludes.js. The page only promises what the lines
+        // back; no cost amount leaves the server, just booleans about the
+        // client's own price.
+        priceIncludes:        priceIncludesFor(publicQuoteSrc),
       },
       mockups,
       logo: logo ? logo.imageDataUrl : null,
