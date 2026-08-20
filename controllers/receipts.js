@@ -38,9 +38,36 @@ async function _findLinkedOrder(rawOrderNumber) {
     .select('orderNumber companyName clientName projectNumber totalValue paid')
     .lean();
   const exact = candidates.filter((o) => normalizeOrderNumber(o.orderNumber) === key);  // canonical: the real match
-  if (!exact.length) return null;
-  // On the rare order-number collision, pick deterministically: prefer a named one.
-  return exact.find((o) => (o.companyName || o.clientName)) || exact[0];
+  if (exact.length) return pickLinkedOrder(key, exact, []);
+
+  // Second pass — the PROJECT #. The owner routinely writes the project number on a
+  // receipt instead of the order # ("project #140 vs invoice #1049" — the same habit
+  // finances.js enrichTransactionLinks already compensates for downstream). A project
+  // number NAMES A REAL ORDER, so it is an order link like any other, not an unknown
+  // number: resolving it keeps that cost attached to its job (per-order actuals, the
+  // missing-receipts nag) instead of stranding it unlinked.
+  const byProject = await Order.find({ projectNumber: { $in: [key, Number(key)] } })
+    .select('orderNumber companyName clientName projectNumber totalValue paid')
+    .lean();
+  return pickLinkedOrder(key, [], byProject);
+}
+
+// Which Order a printed number links to, given what each lookup returned. PURE (no
+// DB) — exported + tested, because the ambiguity rule is the part worth pinning:
+//   • an ORDER-# match always wins over a project-# match (a number that is one
+//     order's invoice # and another's project # links to the invoice, never both);
+//   • a PROJECT-# match links only when it is UNAMBIGUOUS — one distinct order #
+//     behind it (duplicate order docs for the same job are fine; two different jobs
+//     are not). Ambiguity yields null, so a number is never guessed onto a job;
+//   • an order we cannot link BY number (blank/junk order #) is not a link at all.
+// On a collision, prefer a NAMED order so decideTransaction gets the real client.
+function pickLinkedOrder(key, exactByNumber, byProject) {
+  const named = (list) => list.find((o) => (o.companyName || o.clientName)) || list[0] || null;
+  if ((exactByNumber || []).length) return named(exactByNumber);
+  const linkable = (byProject || []).filter((o) => normalizeOrderNumber(o.orderNumber));
+  const distinct = [...new Set(linkable.map((o) => normalizeOrderNumber(o.orderNumber)))];
+  if (distinct.length !== 1) return null;   // 0 = no such project; >1 = ambiguous
+  return named(linkable);
 }
 
 // ── the printed number: ORDER LINK vs INVOICE NUMBER ─────────────────────────
@@ -423,9 +450,15 @@ const confirm = async (req, res) => {
     // NEITHER an order# NOR a party (a valid blank-party income the owner will fill),
     // we skip the probe entirely — otherwise every blank-party row of the same amount
     // would falsely collide and block a genuinely distinct sale.
-    if (!req.body.force && (orderNumber || party)) {
+    if (!req.body.force && (orderNumber || invoiceNumber || party)) {
       const dupQ = { type, amount, _id: { $exists: true } };
-      if (orderNumber) dupQ.orderNumber = orderNumber; else dupQ.party = party;
+      // An unmatched number is still the sharpest identity this receipt has — probe on
+      // it rather than falling straight through to the party, which is BLANK on our own
+      // sales invoice (the seller is us, and isSelf rejects it). Without this, the very
+      // receipts this change routes to review are the ones that could double-book.
+      if (orderNumber) dupQ.orderNumber = orderNumber;
+      else if (invoiceNumber) dupQ.invoiceNumber = invoiceNumber;
+      else dupQ.party = party;
       const dup = await Transaction.findOne(dupQ).lean();
       if (dup && String(dup._id) !== String(rec.transactionId || '')) {
         return res.status(409).json({
@@ -508,7 +541,10 @@ const reconcile = async (req, res) => {
       // Best candidate: same order # if we have one, else same vendor near date.
       const cand = txns.find((t) => {
         if (usedTxn.has(String(t._id))) return false;
-        if (ord && digits(t.orderNumber) === ord) return true;
+        // The printed number lands in orderNumber when it resolved to an order, and in
+        // invoiceNumber when it did not — match EITHER, or an already-booked receipt
+        // reads as "missing from the ledger" and gets entered a second time.
+        if (ord && (digits(t.orderNumber) === ord || digits(t.invoiceNumber) === ord)) return true;
         if (!ord && vendor && (t.party || '').toLowerCase().includes(vendor.split(' ')[0]) &&
             rc.extracted && rc.extracted.date && within(t.date, rc.extracted.date, 7)) return true;
         return false;
@@ -554,7 +590,7 @@ const bulkReconcile = async (req, res) => {
       const cand = txns.find((t) => {
         if (usedTxn.has(String(t._id))) return false;
         if (!amt || Math.abs(round2(t.amount) - amt) > 0.02) return false;
-        if (ord && digits(t.orderNumber) === ord) return true;
+        if (ord && (digits(t.orderNumber) === ord || digits(t.invoiceNumber) === ord)) return true;
         const party = (t.party || '').toLowerCase(); const desc = (t.description || '').toLowerCase();
         if (tokens.some((tok) => party.includes(tok) || desc.includes(tok)) && (!e.date || within(t.date, e.date, 45))) return true;
         return false;
@@ -611,3 +647,4 @@ module.exports = { upload, scan, batch, list, getOne, reprocess, update, confirm
 // Pure receipt→vendor learning decision (no DB) — exported for unit tests.
 module.exports.vendorOrderLearnPlan = vendorOrderLearnPlan;
 module.exports.receiptNumberPlan = receiptNumberPlan;
+module.exports.pickLinkedOrder = pickLinkedOrder;

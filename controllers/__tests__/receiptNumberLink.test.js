@@ -85,3 +85,55 @@ test('an order doc with a junk/blank number cannot produce a junk link', () => {
   const plan = receiptNumberPlan('1054', { orderNumber: '' });
   assert.equal(plan.orderNumber, '');
 });
+
+// ── which Order a printed number links to (pickLinkedOrder) ──────────────────
+// The number on a receipt is not always the order #. The owner routinely writes the
+// PROJECT # instead ("project #140 vs invoice #1049" — the habit finances.js
+// enrichTransactionLinks already compensates for downstream). A project # names a
+// REAL order, so it is an order link, not an unknown number — otherwise the cost is
+// stranded off its job and that job is false-flagged as still missing its receipt.
+
+const { pickLinkedOrder } = require('../receipts');
+
+const ord = (orderNumber, projectNumber = '', companyName = '') =>
+  ({ orderNumber, projectNumber, companyName, clientName: '' });
+
+test('an ORDER-# match always beats a project-# match', () => {
+  // "140" is order #140's own number AND order #1049's project #. The invoice wins;
+  // a number never links to two jobs at once.
+  const hit = pickLinkedOrder('140', [ord('140', '9', 'A')], [ord('1049', '140', 'B')]);
+  assert.equal(hit.orderNumber, '140');
+});
+
+test('REGRESSION: a receipt stamped with the PROJECT # still links to its job', () => {
+  const hit = pickLinkedOrder('140', [], [ord('1049', '140', 'Heritage')]);
+  assert.equal(hit.orderNumber, '1049', 'project #140 belongs to order #1049');
+  // …and it books as a real order link, not as an invoice number.
+  assert.deepEqual(receiptNumberPlan('140', hit), { orderNumber: '1049', invoiceNumber: '', unmatched: false });
+});
+
+test('an AMBIGUOUS project # links to nothing rather than guessing a job', () => {
+  const hit = pickLinkedOrder('140', [], [ord('1049', '140', 'B'), ord('1050', '140', 'C')]);
+  assert.equal(hit, null);
+  // Ambiguous → it falls back to being kept as the invoice #, never guessed onto a job.
+  assert.equal(receiptNumberPlan('140', hit).invoiceNumber, '140');
+});
+
+test('duplicate order docs for ONE job are not ambiguous', () => {
+  const hit = pickLinkedOrder('140', [], [ord('1049', '140', ''), ord('1049', '140', 'Heritage')]);
+  assert.equal(hit.orderNumber, '1049');
+  assert.equal(hit.companyName, 'Heritage', 'prefer the NAMED doc so the client resolves');
+});
+
+test('a project match on an order with no usable order # is not a link', () => {
+  assert.equal(pickLinkedOrder('140', [], [ord('', '140', 'B')]), null);
+});
+
+test('nothing found either way → no link', () => {
+  assert.equal(pickLinkedOrder('1054', [], []), null);
+});
+
+test('on an order-# collision, the NAMED order wins so the client resolves', () => {
+  const hit = pickLinkedOrder('138', [ord('138', '', ''), ord('138', '', 'Custom Boatworks')], []);
+  assert.equal(hit.companyName, 'Custom Boatworks');
+});
