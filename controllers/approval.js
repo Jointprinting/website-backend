@@ -1129,26 +1129,50 @@ const publicRequestChanges = async (req, res) => {
     const email = String((req.body && req.body.email) || '').trim().slice(0, 200) || _recipientEmail(req);
     const message = String((req.body && req.body.message) || '').slice(0, 2000);
 
-    // Same atomic first-decision-wins guard as approve — if this loses the race
-    // to an approval that landed a moment earlier, we don't double-record.
-    const decided = await _recordDecisionIfFirst(order, req.query.token, {
-      kind: 'requested_changes', message, by, email, at: new Date(),
-    }, null);
-    if (!decided) return _alreadyDecidedResponse(res, order._id);
+    // BEFORE the confirmation is published, the client is still choosing options
+    // — "Ask a question" there is a question, not a decision. Recording it as a
+    // terminal `requested_changes` flipped approvalStatus, which flipped the page
+    // out of the picker and into the legacy summary: a table of EVERY option,
+    // including the ones they never chose, under a Total that summed all of them.
+    // So asking "does this come in green?" replaced their quote with a wildly
+    // inflated number and no way back, and only the owner re-sharing could undo
+    // it. A question at this stage is now a non-terminal note: the owner is
+    // emailed exactly the same way, and the client keeps their page.
+    const preConfirmation = !_confPublished(order.confirmation);
+    if (preConfirmation) {
+      await Order.updateOne(
+        { _id: order._id, approvalToken: req.query.token },
+        { $push: { approvalEvents: { kind: 'question', message, by, email, at: new Date() } } },
+      );
+    } else {
+      // Same atomic first-decision-wins guard as approve — if this loses the race
+      // to an approval that landed a moment earlier, we don't double-record.
+      const decided = await _recordDecisionIfFirst(order, req.query.token, {
+        kind: 'requested_changes', message, by, email, at: new Date(),
+      }, null);
+      if (!decided) return _alreadyDecidedResponse(res, order._id);
+    }
 
     const recips = (order.approvalRecipients || []).map(r => r.email).filter(Boolean);
     notifyAdminAndLog(
       order._id,
-      `[Joint Printing] Changes requested — ${order.companyName || order.clientName || 'Project'} (#${order.projectNumber || ''})`,
-      `<p><strong>${_esc(_actorLine(by, email, order))}</strong> requested changes on project #${order.projectNumber || ''}.</p>` +
+      preConfirmation
+        ? `[Joint Printing] Question on the quote — ${order.companyName || order.clientName || 'Project'} (#${order.projectNumber || ''})`
+        : `[Joint Printing] Changes requested — ${order.companyName || order.clientName || 'Project'} (#${order.projectNumber || ''})`,
+      `<p><strong>${_esc(_actorLine(by, email, order))}</strong> ${preConfirmation ? 'asked a question about' : 'requested changes on'} project #${order.projectNumber || ''}.</p>` +
       (order.companyName ? `<p style="color:#555">${_esc(order.companyName)}</p>` : '') +
       (message ? `<blockquote style="border-left:3px solid #ccc;padding-left:10px;color:#444">${_esc(message).replace(/\n/g,'<br>')}</blockquote>` : '') +
       (recips.length ? `<p style="color:#888;font-size:12px">Approval link was shared with: ${recips.map(_esc).join(', ')}</p>` : '') +
       `<p>Open it in the Order Tracker to respond.</p>`,
-      'Client requested changes, but the email notification to you failed to send. Check your email (SendGrid) settings.',
+      preConfirmation
+        ? 'A client asked a question on the quote, but the email notification to you failed to send. Check your email (SendGrid) settings.'
+        : 'Client requested changes, but the email notification to you failed to send. Check your email (SendGrid) settings.',
     );
 
-    res.json({ ok: true });
+    // `terminal:false` tells the page the quote is still live, so it can show a
+    // "we got your question" acknowledgement instead of locking into the
+    // decided state.
+    res.json({ ok: true, terminal: !preConfirmation });
   } catch (e) {
     console.error('[approval] public handler failed:', e.message);
     res.status(500).json({ message: 'Something went wrong on our end — please try again.' });
