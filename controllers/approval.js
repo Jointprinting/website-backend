@@ -1373,6 +1373,25 @@ const sendApprovalLink = async (req, res) => {
 // numbers first. Never touches the approval token — same link, nothing new
 // minted. If the client had requested changes, re-publishing reopens the cycle
 // on the same link so the revised confirmation is a fresh approve/request ask.
+// The publish write, as data — pure so the rule can be pinned by a test: this
+// update may never carry a whole `confirmation` or a whole `activity`, because
+// either one would roll back a concurrent autosave. Every path is dotted or a
+// $push.
+function _publishUpdate(now, reopened) {
+  const $set = { 'confirmation.publishedAt': now };
+  if (reopened) $set.approvalSupersededAt = new Date(now);
+  return {
+    $set,
+    $push: {
+      activity: {
+        kind: 'confirmation_pushed', actor: 'admin',
+        message: reopened ? 'Pushed revised confirmation to the client' : 'Pushed confirmation to the client',
+        meta: { published: true, reopened }, at: now,
+      },
+    },
+  };
+}
+
 const publishConfirmation = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
@@ -1395,24 +1414,32 @@ const publishConfirmation = async (req, res) => {
     }
 
     const now = new Date();
-    if (!order.confirmation) order.confirmation = {};
-    order.confirmation.publishedAt = now;
-    order.markModified('confirmation');
 
     // If the client had asked for changes, this push IS the revised ask: reopen
     // the cycle on the SAME token (mirrors sendApprovalLink's reopen path) so
     // their existing link flips from the "we're on it" dead-end back to a live
     // Approve / Request-edits screen.
     const reopened = _currentApprovalStatus(order).status === 'requested_changes';
-    if (reopened) order.approvalSupersededAt = new Date(now);
 
-    order.activity = order.activity || [];
-    order.activity.push({
-      kind: 'confirmation_pushed', actor: 'admin',
-      message: reopened ? 'Pushed revised confirmation to the client' : 'Pushed confirmation to the client',
-      meta: { published: true, reopened }, at: now,
-    });
-    await order.save();
+    // Write ONLY the three fields publishing owns.
+    //
+    // This used to mutate the document read above and save() it, with a
+    // markModified('confirmation') that forces Mongoose to $set the WHOLE
+    // subdocument as it was read. Both builders autosave 800ms after a
+    // keystroke, with no Save button — so an autosave landing between that read
+    // and this write was silently reverted, and the reverted confirmation is
+    // what went live to the client. Of every read-modify-write in the codebase
+    // this is the one whose loser is a customer-facing document.
+    //
+    // A dotted $set touches publishedAt alone, so a concurrent confirmation
+    // write is left exactly as the owner saved it. $push does the same for the
+    // activity log, which a whole-array write would also have rolled back.
+    //
+    // findOneAndUpdate (not updateOne) keeps the model hooks in play: the
+    // pre-hook no-ops here because it branches on `set.confirmation` and
+    // `set.quoteLines`, neither of which a dotted path defines, and the
+    // post-hook's deal-value sync runs exactly as it did under save().
+    await Order.findOneAndUpdate({ _id: order._id }, _publishUpdate(now, reopened), { new: true });
 
     res.json({
       ok: true,
@@ -1509,7 +1536,8 @@ module.exports = {
   updateTracking, initTracking,
   // Publish-gate primitives — shared with the client portal so its per-order
   // totals obey the exact same draft-hiding rules as the approval page.
-  _confPublished, _hasConfContent,
+  _confPublished,
+  _publishUpdate, _hasConfContent,
   _latestPerColour,   // exported for tests
   _clientImage,       // exported for tests
   _clientDesigns,     // which designs a client sees on a project — exported for tests
