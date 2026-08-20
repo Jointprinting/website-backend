@@ -21,6 +21,8 @@ const { nextNumber, bumpCounterTo, peekNumber } = require('../utils/sequence');
 // utils/mockupNumbers.js.
 const { letterToNum, nextColorLetter, nextEditVersion, parseMockupNum, baseForProject } = require('../utils/mockupNumbers');
 const { flatFieldsFor } = require('../utils/printLocations');
+// The board feed returns a CARD, not a whole order — see utils/projectCard.js.
+const { projectCard } = require('../utils/projectCard');
 const { etToday, etDayKey, utcDayKey } = require('../utils/time');
 const r2 = require('../services/r2');
 
@@ -235,9 +237,16 @@ const listProjects = async (req, res) => {
     // and /attention already exclude them (?archived=1 opts them back in for a
     // future recover surface).
     const q = req.query.archived === '1' ? {} : { archived: { $ne: true } };
-    const orders = await Order.find(q)
-      .sort({ createdAt: -1 })
-      .lean();
+    // Stream, then shrink. `.lean()` on a find() materialises EVERY order —
+    // confirmations, quote lines, artwork and all — in the heap at once, before
+    // anything can project it down; a cursor holds one batch. Together with
+    // projectCard() the peak stops scaling with the collection, which is what
+    // made this endpoint fatal somewhere between 300 and 800 orders on a 352MB
+    // dyno. Sort stays on the server so the tie-break below sees the same input
+    // order it always did.
+    const cursor = Order.find(q).sort({ createdAt: -1 }).lean().batchSize(100).cursor();
+    const orders = [];
+    for await (const doc of cursor) orders.push(projectCard(doc));
 
     // Sort by numeric portion of projectNumber descending (so 135 > 134 > ... > 22-2 > 22-1 > 21).
     orders.sort((a, b) => {
