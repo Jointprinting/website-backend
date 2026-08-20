@@ -6,11 +6,31 @@ const { parseMockupNum } = require('../utils/mockupNumbers');
 
 // Best-effort: free the R2 objects an item owned. Only called on delete —
 // update-replacement cleanup lives in saveItem.
-function _freeR2(item) {
-  if (!item) return;
+// Is this R2 object still referenced by some OTHER library doc?
+//
+// A carried or duplicated mockup copies thumbnail/data/extraViews BY VALUE, and
+// after the R2 migration those values are URLs — so the art is shared at the
+// storage layer even though orders.js says "the art is cloned, not shared".
+// Freeing an object because one doc stopped using it therefore blanked every
+// copy that still pointed at it. Deliberately unscoped by `archived`: an
+// archived doc is recoverable and still owns its art, so it counts as a holder.
+async function _r2UrlInUseElsewhere(url, exceptId) {
+  if (!r2.isR2Url(url)) return false;
+  const q = {
+    $or: [{ thumbnail: url }, { data: url }, { extraViews: url }, { extraBackViews: url }],
+    archived: { $in: [true, false] },   // explicit, so the live-scope guard stands aside
+  };
+  if (exceptId) q._id = { $ne: exceptId };
+  try { return (await StudioLibraryItem.countDocuments(q)) > 0; } catch (_) { return true; }
+}
+
+// Free an R2 object ONLY when no other doc references it. Best-effort: on any
+// doubt we keep the bytes. Storage is cheap; a client's artwork is not.
+async function _freeR2Url(url, exceptId) {
   try {
-    if (r2.isR2Url(item.thumbnail)) r2.deleteByUrl(item.thumbnail);
-    if (r2.isR2Url(item.data)) r2.deleteByUrl(item.data);
+    if (!r2.isR2Url(url)) return;
+    if (await _r2UrlInUseElsewhere(url, exceptId)) return;
+    r2.deleteByUrl(url);
   } catch (_) { /* paid-storage cleanup must never fail the request */ }
 }
 
@@ -258,13 +278,18 @@ async function saveItem(req, res) {
       // upsert keeps each kind isolated.
       const prev = await StudioLibraryItem.findOneAndUpdate(
         { store, remoteId },
-        { $set: fields, $setOnInsert: { remoteId } },
-        { new: false, upsert: true },
+        // Re-saving a soft-deleted mockup REVIVES it rather than minting a second
+        // doc under the same remoteId. `withArchived` lets this one query see past
+        // the archived-rows guard to do that — the same opt-in ClientLogo's
+        // upsert/revive path uses.
+        { $set: { ...fields, archived: false, archivedAt: null }, $setOnInsert: { remoteId } },
+        { new: false, upsert: true, withArchived: true },
       );
       if (prev) {
-        // Free the replaced R2 objects (best-effort) when the URL actually changed.
-        if (r2.isR2Url(prev.thumbnail) && prev.thumbnail !== thumbnail) r2.deleteByUrl(prev.thumbnail);
-        if (r2.isR2Url(prev.data) && prev.data !== data) r2.deleteByUrl(prev.data);
+        // Free the replaced R2 objects when the URL actually changed AND nothing
+        // else still points at them — a carried copy shares the URL.
+        if (prev.thumbnail !== thumbnail) await _freeR2Url(prev.thumbnail, prev._id);
+        if (prev.data !== data) await _freeR2Url(prev.data, prev._id);
       }
       const item = await StudioLibraryItem.findOne({ remoteId }).lean();
       return res.status(prev ? 200 : 201).json(item);
@@ -421,9 +446,13 @@ async function backfillProjectNumbers() {
 
 async function deleteItem(req, res) {
   try {
-    const item = await StudioLibraryItem.findByIdAndDelete(req.params.id);
-    if (!item) return res.status(404).json({ message: 'Item not found.' });
-    _freeR2(item);
+    // Soft-delete. The art is KEPT: the row is recoverable, and its R2 objects may
+    // be shared with mockups carried into other projects.
+    const r = await StudioLibraryItem.updateOne(
+      { _id: req.params.id, archived: { $ne: true } },
+      { $set: { archived: true, archivedAt: new Date() } },
+    );
+    if (!(r.matchedCount ?? r.n ?? 0)) return res.status(404).json({ message: 'Item not found.' });
     res.json({ deleted: true, id: req.params.id });
   } catch (err) {
     console.error('[studioLibrary] delete error:', err);
@@ -433,9 +462,15 @@ async function deleteItem(req, res) {
 
 async function deleteByRemoteId(req, res) {
   try {
-    const item = await StudioLibraryItem.findOneAndDelete({ remoteId: req.params.remoteId });
-    _freeR2(item);
-    res.json({ deleted: !!item });
+    // Scoped by `store`, like every other query in this file. This was the one
+    // that wasn't: a remoteId that collides across stores could delete a blank or
+    // a logo instead of the mockup the caller meant. Soft-delete, art kept.
+    const store = String((req.query && req.query.store) || 'mockups');
+    const r = await StudioLibraryItem.updateOne(
+      { store, remoteId: req.params.remoteId, archived: { $ne: true } },
+      { $set: { archived: true, archivedAt: new Date() } },
+    );
+    res.json({ deleted: (r.matchedCount ?? r.n ?? 0) > 0 });
   } catch (err) {
     res.status(500).json({ message: 'Failed to delete item.' });
   }

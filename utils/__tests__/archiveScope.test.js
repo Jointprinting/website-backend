@@ -60,3 +60,29 @@ test('scopeLivePipeline respects an existing leading archived match and the opt-
 test('LIVE_MATCH is the canonical not-archived fragment', () => {
   assert.deepEqual(LIVE_MATCH, { archived: { $ne: true } });
 });
+
+// ── The backup must see archived rows ────────────────────────────────────────
+// Transaction, ClientLogo and StudioLibraryItem all install this guard, and
+// controllers/backup exported with a plain Model.find({}) — so every
+// soft-deleted row was silently missing from the nightly archive. That voids
+// archive-not-delete across a restore: the row you can still recover today is
+// gone the moment you restore from a backup taken after it was archived.
+// backup.js now passes { withArchived: true }; this pins what that must mean.
+
+test('the backup opt-in returns an UNFILTERED query — archived rows included', () => {
+  const asBackupReads = scopeLiveFilter({}, { withArchived: true });
+  assert.deepEqual(asBackupReads, {}, 'no archived condition may be added for a backup');
+});
+
+test('without the opt-in a backup would silently drop every archived row', () => {
+  // This is the behaviour that was live: the guard turns "everything" into
+  // "everything except the soft-deleted rows".
+  assert.deepEqual(scopeLiveFilter({}, {}), { archived: { $ne: true } });
+});
+
+test('an explicit both-states filter also reaches archived rows', () => {
+  // Used by the R2 reference check in controllers/studioLibrary: an archived
+  // mockup still OWNS its art, so it must count as a holder of that object.
+  const both = { $or: [{ thumbnail: 'u' }], archived: { $in: [true, false] } };
+  assert.deepEqual(scopeLiveFilter(both, {}), both, 'left untouched');
+});

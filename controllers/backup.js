@@ -200,7 +200,14 @@ async function appendBackupContents(archive) {
   const r2Urls = new Set();
   const wantR2 = r2.isR2Configured();
   for (const { name, Model } of models) {
-    const docs = await Model.find({}).lean();
+    // withArchived: a backup must capture EVERY row, including soft-deleted ones.
+    // Transaction, ClientLogo and StudioLibraryItem install a query guard
+    // (utils/archiveScope) that hides archived rows from ordinary reads — which
+    // silently excluded them from the export too. The whole point of
+    // archive-not-delete is that the row is recoverable; a backup that drops it
+    // makes the deletion permanent the moment you restore. Unguarded models
+    // ignore this option.
+    const docs = await Model.find({}, null, { withArchived: true }).lean();
     counts[name] = docs.length;
     totalDocs += docs.length;
     if (wantR2) for (const d of docs) addR2UrlsFromValue(d, r2Urls);

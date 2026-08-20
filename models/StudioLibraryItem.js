@@ -71,7 +71,21 @@ const StudioLibraryItemSchema = new mongoose.Schema({
   extraBackViews: { type: [String], default: [] },
   savedAt:    { type: Number, default: () => Date.now() },
   remoteId:   { type: String, default: '', index: true },           // client-generated UUID for dedup
+  // SOFT DELETE. Deleting a mockup used to be a hard findOneAndDelete that also
+  // freed the R2 objects — unrecoverable, on the one collection holding the
+  // client artwork the whole business is built on, and reachable from a single
+  // click. Everything else here archives (Orders, POs, Vendors, Clients, Deals);
+  // this now does too, with the same query guard ClientLogo and Transaction use
+  // so an archived row can never leak back into a read. Re-saving the same
+  // remoteId revives it (see controllers/studioLibrary.saveItem).
+  archived:   { type: Boolean, default: false, index: true },
+  archivedAt: { type: Date, default: null },
 }, { timestamps: true });
+
+// Archived rows are filtered out of every find/aggregate automatically. Doing it
+// by hand at each read site is how one missed site resurrects deleted art in a
+// client-facing lookbook — see utils/archiveScope for the full reasoning.
+require('../utils/archiveScope').applyLiveScope(StudioLibraryItemSchema);
 
 StudioLibraryItemSchema.index({ store: 1, savedAt: -1 });
 // Client-scoped mockup lookups (lookbook picker, CRM design library) filter by
