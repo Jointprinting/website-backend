@@ -40,7 +40,7 @@ const {
   cleanupPreview,
   cleanupApply,
   cleanupRevert,
-  cleanupStatus,
+  cleanupStatus, duplicateIds,
 } = require('../controllers/dataCleanup');
 
 router.use(requireAdmin);
@@ -79,6 +79,10 @@ router.post('/data-cleanup/preview', cleanupPreview);
 router.post('/data-cleanup/apply',   cleanupApply);
 router.post('/data-cleanup/revert',  cleanupRevert);
 router.get('/data-cleanup/status',   cleanupStatus);
+// REPORT ONLY — the identifiers the whole ecosystem joins on, and which of them
+// currently collide. No writes; see the controller for why it is deliberately
+// not part of the fixable count.
+router.get('/data-cleanup/duplicate-ids', duplicateIds);
 
 router.get('/:companyKey',   getOne);
 router.patch('/:companyKey', patchOne);

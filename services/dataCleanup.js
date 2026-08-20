@@ -283,9 +283,99 @@ function detectVendorRefunds(transactions, clientKeys, categoryHint) {
   return out;
 }
 
+// ── Duplicate IDENTIFIERS — report only, never auto-fixed ────────────────────
+//
+// projectNumber, orderNumber, poNumber, dealNumber and remoteId are the handles
+// the whole ecosystem joins on — a PO's order, a receipt's order, a finance
+// row's project, a mockup's library item — and NOT ONE of them is enforced
+// unique in the database. Every one is assigned from an atomic counter, so
+// duplicates only appear when something bypasses the counter (a hand-typed
+// number, an import, a restore), and when they do the join silently picks one.
+//
+// This detection exists to be READ, not applied. Every other detection here
+// proposes a field-level fix; deciding which of two orders keeps #142 is a
+// judgement about real jobs with real POs and real money hanging off them, and
+// the guardrail on live data is preview → the owner decides. It is also the
+// honest prerequisite for ever adding a unique index: an index built over
+// existing duplicates fails, and one built after a blind auto-merge is worse.
+//
+// PURE (no DB). Each list is an array of { value, count, records: [...] }.
+function _groupDupes(rows, keyOf, shape) {
+  const groups = new Map();
+  for (const r of (rows || [])) {
+    if (!r) continue;
+    const k = keyOf(r);
+    if (!k) continue;                       // blank/unassigned is not a duplicate
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(shape(r));
+  }
+  const out = [];
+  for (const [value, records] of groups) {
+    if (records.length > 1) out.push({ value, count: records.length, records });
+  }
+  // Worst first — the owner should see a three-way collision before a pair.
+  return out.sort((a, b) => b.count - a.count || String(a.value).localeCompare(String(b.value)));
+}
+
+const _s = (v) => String(v == null ? '' : v).trim();
+
+function detectDuplicateIdentifiers({ orders = [], pos = [], deals = [], library = [] } = {}) {
+  const projectNumbers = _groupDupes(orders, (o) => _s(o.projectNumber), (o) => ({
+    id: String(o._id), projectNumber: _s(o.projectNumber), orderNumber: _s(o.orderNumber),
+    companyName: _s(o.companyName) || _s(o.clientName), status: _s(o.status),
+    totalValue: Number(o.totalValue) || 0, createdAt: o.createdAt || null,
+  }));
+
+  // Invoice numbers are compared CANONICALLY — "0000021", "#21" and "21" are the
+  // same invoice to finance, the CRM and every reconcile pass, so they are the
+  // same collision here too.
+  const orderNumbers = _groupDupes(orders, (o) => normalizeOrderNumber(o.orderNumber), (o) => ({
+    id: String(o._id), projectNumber: _s(o.projectNumber), orderNumber: _s(o.orderNumber),
+    companyName: _s(o.companyName) || _s(o.clientName), status: _s(o.status),
+    totalValue: Number(o.totalValue) || 0, createdAt: o.createdAt || null,
+  }));
+
+  // PO numbers are only unique WITHIN a vendor — each vendor has its own counter,
+  // so two vendors both having a PO 1001 is correct, not a collision.
+  const poNumbers = _groupDupes(pos, (p) => {
+    const key = _s(p.vendorKey) || _s(p.vendorName).toLowerCase();
+    const num = _s(p.poNumber);
+    return (key && num) ? `${key}|${num}` : '';
+  }, (p) => ({
+    id: String(p._id), poNumber: _s(p.poNumber), vendorKey: _s(p.vendorKey),
+    vendorName: _s(p.vendorName), orderId: p.orderId ? String(p.orderId) : '',
+    grandTotal: Number(p.grandTotal) || 0, createdAt: p.createdAt || null,
+  }));
+
+  const dealNumbers = _groupDupes(deals, (d) => _s(d.dealNumber), (d) => ({
+    id: String(d._id), dealNumber: _s(d.dealNumber), companyKey: _s(d.companyKey),
+    stage: _s(d.stage), value: Number(d.value) || 0, createdAt: d.createdAt || null,
+  }));
+
+  // remoteId is scoped by `store` — the same id in 'mockups' and 'blanks' is two
+  // different things, which is the scoping bug the delete path already had.
+  const remoteIds = _groupDupes(library, (m) => {
+    const store = _s(m.store);
+    const rid = _s(m.remoteId);
+    return (store && rid) ? `${store}|${rid}` : '';
+  }, (m) => ({
+    id: String(m._id), remoteId: _s(m.remoteId), store: _s(m.store),
+    name: _s(m.name), projectNumber: _s(m.projectNumber), savedAt: m.savedAt || null,
+  }));
+
+  const groups = { projectNumbers, orderNumbers, poNumbers, dealNumbers, remoteIds };
+  const total = Object.values(groups).reduce((n, list) => n + list.length, 0);
+  // How many RECORDS are involved, which is the number that tells the owner how
+  // much work he is looking at — not how many distinct values collided.
+  const records = Object.values(groups).reduce(
+    (n, list) => n + list.reduce((m, g) => m + g.count, 0), 0,
+  );
+  return { ...groups, total, records };
+}
+
 module.exports = {
   deriveCompanyKey, normalizeOrderNumber, splitPollutedName,
   detectOrphanOrders, detectPollutedClients, detectMisKeyedReceipts, detectDuplicateSales,
-  detectVendorRefunds,
+  detectVendorRefunds, detectDuplicateIdentifiers,
   partyCompanyKeys, companyKeyOf, COST_CATEGORIES,
 };

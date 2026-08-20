@@ -23,7 +23,7 @@ const DataCleanupBatch = require('../models/DataCleanupBatch');
 const {
   partyCompanyKeys, companyKeyOf,
   normalizeOrderNumber, detectOrphanOrders, detectPollutedClients, detectMisKeyedReceipts,
-  detectDuplicateSales, detectVendorRefunds,
+  detectDuplicateSales, detectVendorRefunds, detectDuplicateIdentifiers,
 } = require('../services/dataCleanup');
 
 // Only flag a mis-keyed receipt that was ENTERED recently. The owner's historical
@@ -301,4 +301,42 @@ async function cleanupStatus(req, res) {
   } catch (e) { res.json({ total: 0, error: e.message }); }
 }
 
-module.exports = { cleanupPreview, cleanupApply, cleanupRevert, cleanupStatus, buildPlan };
+// GET /api/crm/data-cleanup/duplicate-ids — REPORT ONLY. No writes, no fix.
+//
+// projectNumber, orderNumber, poNumber, dealNumber and remoteId are what the
+// whole ecosystem joins on, and not one of them is enforced unique in the
+// database. They're assigned from atomic counters, so a duplicate means
+// something bypassed the counter — a hand-typed number, an import, a restore —
+// and when that happens the join silently picks one.
+//
+// Deliberately NOT part of the fixable count above, for two reasons. Deciding
+// which of two orders keeps #142 is a judgement about real jobs with real POs
+// and real money hanging off them, not a field-level fix. And a permanent
+// unfixable badge trains the owner to ignore the badge — every other entry in
+// this surface auto-hides at zero, and this one would never reach zero on its
+// own.
+//
+// It is also the honest prerequisite for ever enforcing uniqueness: an index
+// built over existing duplicates fails outright, and one built after a blind
+// auto-merge is worse than the duplicates were.
+async function duplicateIds(req, res) {
+  try {
+    const PurchaseOrder = require('../models/PurchaseOrder');
+    const Deal = require('../models/Deal');
+    const StudioLibraryItem = require('../models/StudioLibraryItem');
+    const [orders, pos, deals, library] = await Promise.all([
+      Order.find({ archived: { $ne: true } })
+        .select('projectNumber orderNumber companyName clientName status totalValue createdAt').lean(),
+      PurchaseOrder.find({ archived: { $ne: true } })
+        .select('poNumber vendorKey vendorName orderId grandTotal createdAt').lean(),
+      Deal.find({ archived: { $ne: true } })
+        .select('dealNumber companyKey stage value createdAt').lean(),
+      StudioLibraryItem.find({}).select('remoteId store name projectNumber savedAt').lean(),
+    ]);
+    res.json(detectDuplicateIdentifiers({ orders, pos, deals, library }));
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+module.exports = { cleanupPreview, cleanupApply, cleanupRevert, cleanupStatus, duplicateIds, buildPlan };
