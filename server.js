@@ -3,7 +3,6 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const multer = require('multer');
 const fs = require('fs');
 const mongoose = require('mongoose');
 const rateLimit = require('express-rate-limit');
@@ -73,16 +72,6 @@ app.use((req, res, next) => {
 app.use('/api/studio', express.json({ limit: '100mb' }));
 
 if (!fs.existsSync('uploads')) fs.mkdirSync('uploads');
-
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, 'uploads/'),
-  filename:    (_req, file, cb) => cb(null, Date.now() + '-' + file.originalname.replace(/[^\w.\-]/g, '_')),
-});
-
-const upload = multer({
-  storage,
-  limits: { fileSize: 25 * 1024 * 1024, files: 10 },
-});
 
 // Last-resort net: a single stray rejected promise (e.g. a public webhook that
 // awaits Mongo during a blip) must not crash the whole single-dyno API. Log and
@@ -604,7 +593,9 @@ app.use('/api/recurring-expenses', express.json({ limit: '40mb' }), require('./r
 // 40mb: a single receipt can be a ~25 MB file, which is ~34 MB as base64 JSON.
 // (The /batch zip route uses multipart via multer, so this limit doesn't gate it.)
 app.use('/api/receipts', express.json({ limit: '40mb' }), receiptRoutes);
-app.use('/api/email', contactLimiter, upload.array('files', 10), emailRoutes);
+// Multipart parsing is mounted on the individual routes inside emailRoutes,
+// not here — see the note there.
+app.use('/api/email', contactLimiter, emailRoutes);
 
 app.use((err, _req, res, next) => {
   if (err && err.message && err.message.includes('CORS')) {
@@ -620,6 +611,40 @@ app.use((err, _req, res, next) => {
   next();
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Server up & running on port ${PORT}`);
+});
+
+// GRACEFUL SHUTDOWN. Render sends SIGTERM on every deploy and SIGKILLs ~30s later.
+// With no handler, Node's default SIGTERM disposition terminates immediately and
+// every in-flight request is severed mid-write — a client clicking Approve, or the
+// owner saving an order, just gets a connection reset. Since several operations
+// write more than one document without a transaction, that window is also where a
+// half-finished write can be left behind. Stop accepting new connections, let the
+// open ones finish, close Mongo, then exit; hard-exit at 25s so we still beat the
+// platform's SIGKILL.
+let shuttingDown = false;
+const shutdown = (signal) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`${signal} received — draining in-flight requests…`);
+  const hardExit = setTimeout(() => {
+    console.error('Drain timed out after 25s — exiting anyway.');
+    process.exit(0);
+  }, 25_000);
+  hardExit.unref();
+  server.close(() => {
+    mongoose.connection.close(false)
+      .catch((e) => console.error('Mongo close failed:', e && e.message))
+      .finally(() => { clearTimeout(hardExit); process.exit(0); });
+  });
+};
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT',  () => shutdown('SIGINT'));
+
+// A synchronous throw inside a cron callback would otherwise take the whole dyno
+// down silently. Log it loudly and keep serving — same posture as the
+// unhandledRejection guard above, which this deliberately mirrors.
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err && err.stack ? err.stack : err);
 });
