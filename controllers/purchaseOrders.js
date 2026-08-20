@@ -571,6 +571,26 @@ const deletePo = async (req, res) => {
   }
 };
 
+// POST /api/orders/pos/:poId/restore — undo the archive above.
+//
+// deletePo has always been a soft-archive, and the Studio has always said
+// "Delete PO? This cannot be undone." The warning was false and there was no way
+// to act on the truth. This is that way.
+const restorePo = async (req, res) => {
+  try {
+    if (badId(req.params.poId)) return res.status(404).json({ message: 'PO not found' });
+    const po = await PurchaseOrder.findOneAndUpdate(
+      { _id: req.params.poId, archived: true },
+      { $set: { archived: false, archivedAt: null, archivedReason: '' } },
+      { new: true },
+    ).select('_id poNumber').lean();
+    if (!po) return res.status(404).json({ message: 'Not found, or it was never archived.' });
+    res.json({ ok: true, po });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 // Per-vendor usage stats (PO count + grand-total, distinct order count, and a
 // rough actual-spend from the expense ledger), keyed by canonical vendorKey, in a
 // few aggregate queries. Used to (a) pick the survivor when the list collapses a
@@ -1499,7 +1519,7 @@ const mergeVendors = async (req, res) => {
 };
 
 module.exports = {
-  listPos, createPo, createPosFromConfirmation, updatePo, deletePo, listVendors,
+  listPos, createPo, createPosFromConfirmation, updatePo, deletePo, restorePo, listVendors,
   poCostHistory, poPdf, sendPo, parseUnitCost, nextPoNumber, getVendor, updateVendor,
   searchVendors, vendorDuplicates, mergeVendors,
 };
