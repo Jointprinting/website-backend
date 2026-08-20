@@ -23,6 +23,8 @@ const { letterToNum, nextColorLetter, nextEditVersion, parseMockupNum, baseForPr
 const { flatFieldsFor } = require('../utils/printLocations');
 // The board feed returns a CARD, not a whole order — see utils/projectCard.js.
 const { projectCard } = require('../utils/projectCard');
+// Optimistic concurrency for the whole-subtree builder writes.
+const { planRevisionGuard, conflictPayload } = require('../utils/orderRevision');
 const { etToday, etDayKey, utcDayKey } = require('../utils/time');
 const r2 = require('../services/r2');
 
@@ -418,7 +420,7 @@ const updateOrder = async (req, res) => {
     const body = { ...req.body };
 
     const current = await Order.findById(req.params.id)
-      .select('status paid orderNumber companyKey companyName clientName confirmation.publishedAt').lean();
+      .select('status paid orderNumber companyKey companyName clientName confirmation.publishedAt confirmationRev quoteLinesRev').lean();
     if (!current) return res.status(404).json({ message: 'Not found' });
 
     // APPROVAL FREEZE (revenue + client integrity): once the client has approved
@@ -502,17 +504,35 @@ const updateOrder = async (req, res) => {
       });
     }
 
+    // Optimistic concurrency, planned LAST so it sees the body the way it will
+    // actually be written — MONEY_LOCKED above can drop `confirmation` entirely,
+    // and a write that no longer carries a subtree must not claim a revision of
+    // it. Strips the base-revision control fields out of the body (they are
+    // protocol, not data) and returns the precondition + counter bump they imply.
+    const guard = planRevisionGuard(body);
+
     const update = { $set: body };
     if (newEvents.length > 0) {
       update.$push = { activity: { $each: newEvents } };
     }
+    if (Object.keys(guard.inc).length > 0) update.$inc = guard.inc;
 
-    const order = await Order.findByIdAndUpdate(
-      req.params.id,
+    const order = await Order.findOneAndUpdate(
+      { _id: req.params.id, ...guard.filter },
       update,
       { new: true, runValidators: true },
     ).lean();
-    if (!order) return res.status(404).json({ message: 'Not found' });
+    if (!order) {
+      // No match can mean two different things, and the client has to be able to
+      // tell them apart: the project is gone, or someone else's write landed
+      // first. Only the second one is recoverable, and only if we say which
+      // subtree moved and where it is now.
+      if (Object.keys(guard.filter).length > 0) {
+        const now = await Order.findById(req.params.id).select('confirmationRev quoteLinesRev').lean();
+        if (now) return res.status(409).json(conflictPayload(now, guard.bases));
+      }
+      return res.status(404).json({ message: 'Not found' });
+    }
     // Auto-promote to customer ONLY on a real transition INTO a placed status
     // (prior status was not placed). Best-effort — never blocks the response.
     if (isPlacedStatus(order.status) && !isPlacedStatus(current.status)) {
