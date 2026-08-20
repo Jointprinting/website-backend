@@ -142,4 +142,40 @@ test('legacy order-level setup/ship folds in only when no line carries its own',
   assert.equal(round(t.totalValue), 300);
 });
 
+// ── Cent-snapping (the values land straight on Order.totalValue / Order.cogs) ─
+// These two are persisted verbatim by the save hooks, and totalValue is pushed on
+// to Deal.value. Returned raw, the per-unit setup+shipping division left binary
+// drift in the stored record. Real jobs, real numbers.
+test('a real 1,100-piece job stores clean cents, not float drift', () => {
+  const t = computeQuoteTotals([{
+    accepted: true, qty: 1100,
+    blankCost: 3.42, printCost: 1.85, setupCost: 350, shippingCost: 240, markup: 1.4,
+  }]);
+  // Was 6386.999999999999 before the snap.
+  assert.equal(t.cogs, 6387);
+  assert.equal(t.totalValue, 8941.8);
+});
+
+test('a 137-piece job stores clean cents on both figures', () => {
+  const t = computeQuoteTotals([{
+    accepted: true, qty: 137,
+    blankCost: 4.10, printCost: 2.25, setupCost: 40, shippingCost: 19, markup: 1.4,
+  }]);
+  // Were 928.9499999999999 and 1300.5299999999997.
+  assert.equal(t.cogs, 928.95);
+  assert.equal(t.totalValue, 1300.53);
+});
+
+test('every returned figure is already snapped to at most 2 decimals', () => {
+  const cents = (v) => Number.isInteger(Math.round(v * 100)) && Math.abs(v * 100 - Math.round(v * 100)) < 1e-9;
+  for (const qty of [7, 13, 137, 299, 1100, 3333]) {
+    const t = computeQuoteTotals([{
+      accepted: true, qty, blankCost: 3.42, printCost: 1.85,
+      setupCost: 350, shippingCost: 240, markup: 1.4,
+    }]);
+    assert.ok(cents(t.cogs), `cogs not cent-clean at qty ${qty}: ${t.cogs}`);
+    assert.ok(cents(t.totalValue), `totalValue not cent-clean at qty ${qty}: ${t.totalValue}`);
+  }
+});
+
 function round(v) { return Math.round(v * 100) / 100; }
