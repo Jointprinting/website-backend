@@ -132,8 +132,19 @@ function computeLocationTax(conf) {
   const n = (v) => Number(v) || 0;
   const shipTos = (conf && Array.isArray(conf.shipTos)) ? conf.shipTos : [];
   const taxed = shipTos.filter(st => st && n(st.taxRate) > 0);
-  if (taxed.length === 0) return { active: false, total: 0, lines: [] };
+  if (taxed.length === 0) return { active: false, allocated: false, total: 0, lines: [] };
   const items = (conf && Array.isArray(conf.items)) ? conf.items : [];
+  // Has the owner actually ALLOCATED any units to a taxed location? Adding a
+  // shipTo with a rate makes per-location tax "active", but the taxable base is
+  // built from per-item allocations — so a half-finished setup (address recorded,
+  // allocations not filled in) computed $0 tax while ALSO suppressing the legacy
+  // "NJ tax" customLine below, and the tax silently vanished from the total: a
+  // $2,000 NJ order dropped from $2,132.50 to $2,000.00 with nothing flagged.
+  // This distinguishes "per-location tax is configured and in use" from "someone
+  // typed an address", so the legacy line is only superseded once it is real.
+  const taxedKeys = new Set(taxed.map(st => st && st.key));
+  const allocated = items.some(it => ((it && it.allocations) || [])
+    .some(a => a && taxedKeys.has(a.key) && n(a.qty) > 0));
   const lines = taxed.map(st => {
     const subtotal = items.reduce((sum, it) => {
       // NJ clothing exemption: an item flagged taxExempt contributes nothing to
@@ -164,7 +175,32 @@ function computeLocationTax(conf) {
   // Sum the already-rounded line values (so total == Σ of the lines the client
   // sees), then re-round defensively.
   const total = roundCents(lines.reduce((s, l) => s + l.value, 0));
-  return { active: true, total, lines };
+  return { active: true, allocated, total, lines };
+}
+
+// The MERCHANDISE base a sales-tax line may charge against: item revenue with
+// taxExempt items removed. This is the base computeLocationTax has always used —
+// tax is on merchandise, never stacked on add-on customLines (a card fee, a
+// discount). A legacy percent "NJ tax" customLine charged the whole running
+// subtotal instead, so it taxed NJ-exempt clothing AND whatever add-ons happened
+// to precede it. Exported so services/njSalesTax reconstructs the same number
+// rather than keeping its own copy of the formula.
+function confTaxableSubtotal(conf) {
+  const n = (v) => Number(v) || 0;
+  const items = (conf && Array.isArray(conf.items)) ? conf.items : [];
+  return items.reduce((s, it) => (it && it.taxExempt) ? s : (
+    s + ((it && it.sizes) || []).reduce((ss, sz) => ss + n(sz.qty) * n(sz.unitPrice), 0)
+  ), 0);
+}
+
+// The dollar value a customLine contributes. A percent SALES-TAX line charges the
+// taxable merchandise base; every other percent line still compounds on the
+// running subtotal. Mirrors frontend common/confTax.customLineValue.
+function customLineValue(line, running, taxableSubtotal) {
+  const n = (v) => Number(v) || 0;
+  if (!line || !line.isPercent) return n(line && line.amount);
+  const base = isTaxCustomLine(line) ? n(taxableSubtotal) : n(running);
+  return base * n(line.amount) / 100;
 }
 
 // Confirmation grand total — items subtotal plus custom lines, where percent
@@ -181,6 +217,13 @@ function computeConfirmationTotals(conf) {
     s + ((it && it.sizes) || []).reduce((ss, sz) => ss + n(sz.qty) * n(sz.unitPrice), 0), 0);
   const totalUnits = items.reduce((s, it) => s + itemTotalQty(it), 0);
   const locationTax = computeLocationTax(conf);
+  // The MERCHANDISE base a sales-tax line may charge against: item revenue with
+  // taxExempt items removed. Per-location tax has always used this base; a legacy
+  // percent "NJ tax" customLine charged the whole running subtotal instead, so it
+  // taxed NJ-exempt clothing (and whatever add-on lines happened to precede it).
+  // A $1,500 apparel + $500 promo order billed $132.50 of tax where $33.13 was
+  // due — $99.37 over-collected, decided purely by which tax mechanism was used.
+  const taxableSubtotal = confTaxableSubtotal(conf);
   let running = itemsSubtotal;
   ((conf && conf.customLines) || []).forEach(l => {
     // DOUBLE-TAX GUARD: when per-location tax is active, a legacy tax customLine
@@ -188,12 +231,17 @@ function computeConfirmationTotals(conf) {
     // job is taxed exactly once. With no per-location tax a legacy tax line still
     // applies (back-comp). The builder also suppresses the conflict going forward;
     // this keeps already-saved confirmations that carry both from double-taxing.
-    if (locationTax.active && isTaxCustomLine(l)) return;
+    // Supersede the legacy line only once per-location tax is REALLY in use
+    // (a rate AND allocations). Dropping it on `active` alone lost the tax
+    // entirely on a half-configured multi-ship order — see computeLocationTax.
+    if (locationTax.active && locationTax.allocated && isTaxCustomLine(l)) return;
     // A baked payment fee (Card/ACH) always applies here — the double-charge is
     // prevented by HIDING the client payment picker whenever such a line exists
     // (hasBakedPaymentFee), not by dropping the line. So the fee is charged once:
     // via the baked line, OR via the client's pick when there's no baked line.
-    running += l && l.isPercent ? running * n(l.amount) / 100 : n(l && l.amount);
+    // A percent SALES-TAX line charges the taxable merchandise base; every other
+    // percent line (card fee, discount) still compounds on the running subtotal.
+    running += customLineValue(l, running, taxableSubtotal);
   });
   running += locationTax.total;
   // Snap the grand total to cents (the order's stored totalValue, the client's
@@ -898,6 +946,8 @@ module.exports.hasConfirmationContent = hasConfirmationContent;
 module.exports.confirmationIsPublished = confirmationIsPublished;
 module.exports.confirmationShareIssues = confirmationShareIssues;
 module.exports.isTaxCustomLine = isTaxCustomLine;
+module.exports.confTaxableSubtotal = confTaxableSubtotal;
+module.exports.customLineValue = customLineValue;
 module.exports.isPaymentFeeCustomLine = isPaymentFeeCustomLine;
 module.exports.hasBakedPaymentFee = hasBakedPaymentFee;
 module.exports.roundCents = roundCents;
