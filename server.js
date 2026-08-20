@@ -496,7 +496,25 @@ const ssProxyLimiter = rateLimit({
   message: { message: 'Too many catalog requests. Please slow down and try again shortly.' },
 });
 
-app.get('/healthz', (_req, res) => res.json({ ok: true, ts: Date.now() }));
+// Liveness AND readiness. This used to return {ok:true} unconditionally, which
+// made it worse than useless: it answered 200 while Mongo was down and every
+// request was failing, so a platform health check pointed at it would never
+// restart a wedged dyno and no uptime monitor could ever fire. Ping the database
+// — that is the dependency without which nothing here works — and answer 503 when
+// it is not there. Cheap (an admin ping, no collection scan) and never cached.
+app.get('/healthz', async (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const state = mongoose.connection.readyState;   // 1 = connected
+  if (state !== 1) {
+    return res.status(503).json({ ok: false, db: 'disconnected', readyState: state, ts: Date.now() });
+  }
+  try {
+    await mongoose.connection.db.admin().ping();
+    return res.json({ ok: true, db: 'ok', ts: Date.now() });
+  } catch (e) {
+    return res.status(503).json({ ok: false, db: 'ping-failed', error: e && e.message, ts: Date.now() });
+  }
+});
 
 // ── Routes ──
 const productRoutes        = require('./routes/productRoutes');
