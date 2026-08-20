@@ -50,7 +50,16 @@ function computeQuoteTotals(lines, orderSetup, orderShip) {
   }, 0) + legacy;
   const cogs = arr.reduce((s, l) =>
     s + orderedQty(l) * (n(l.blankCost) + n(l.printCost)) + n(l.setupCost) + n(l.shippingCost), 0) + legacy;
-  return { totalValue, cogs };
+  // SNAP TO CENTS before returning. These two numbers are persisted directly onto
+  // Order.totalValue / Order.cogs by the save hooks, and totalValue is pushed on
+  // to Deal.value. Returned raw, the per-unit setup+shipping division leaves
+  // binary drift in the stored record: a real 1,100-tee job (blank 3.42, print
+  // 1.85, setup 350, ship 240) stored cogs as 6386.999999999999 instead of
+  // 6387.00, and a 137-unit job stored totalValue as 1300.5299999999997. Every
+  // other money function in this file already rounds at its final point
+  // (computeLocationTax, computeConfirmationTotals, computeConfirmationCogs) and
+  // so does the frontend twin — this one was the exception.
+  return { totalValue: roundCents(totalValue), cogs: roundCents(cogs) };
 }
 
 // Auto-prefill sales-tax rate (percent) for the owner's ONLY nexus: New Jersey.
