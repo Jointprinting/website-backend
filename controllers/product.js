@@ -218,8 +218,15 @@ async function populateImages(product) {
 // ─────────────────────────────────────────────────────────────────────────────
 exports.getProducts = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 12;
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    // CAP THE PAGE SIZE. This route is PUBLIC, and every returned document has its
+    // front/back images resolved through GridFS below, in one Promise.all. An
+    // uncapped ?limit= therefore let a single unauthenticated request pull the whole
+    // Product collection plus decoded images into a heap capped at 352MB
+    // (package.json --max-old-space-size), which takes the API down for everyone.
+    // 60 is generous for the catalog grid; every sibling list route caps the same way
+    // (see :956, :1194, fieldRun.js:96, submissions.js:22).
+    const limit = Math.min(60, Math.max(1, parseInt(req.query.limit, 10) || 12));
     const skip = (page - 1) * limit;
 
     const { category, type, search, vendor } = req.query;
