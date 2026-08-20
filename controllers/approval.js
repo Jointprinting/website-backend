@@ -8,7 +8,7 @@ const { appendClientLog } = require('../services/clientLog');
 const { compareMockupNums, parseMockupNum } = require('../utils/mockupNumbers');
 const { clientLibraryScopeFor, mockupProjectNumber, belongsToProject } = require('../utils/mockupScope');
 const r2 = require('../services/r2');
-const { tierLineFor, validateSplit, runLines } = require('../utils/colorSplit');
+const { tierLineFor, validateSplit, validateQty, runLines, orderedQty } = require('../utils/colorSplit');
 
 // One tile per COLOUR, showing its latest edit — the client's view of a
 // project's designs.
@@ -630,6 +630,9 @@ const publicGetProject = async (req, res) => {
         colorSplit:   (l.colorSplit || []).map(c => ({
           name: c.name || '', code: c.code || '', hex: c.hex || '', qty: Number(c.qty) || 0,
         })),
+        // A free quantity they typed on a run not sold by colour, so re-opening
+        // the link shows what they chose instead of resetting to the chip.
+        pickedQty:    n(l.pickedQty) || 0,
         printType:    l.printType    || '',
         printDetails: l.printDetails || '',
         unitPrice:    n(l.unitPrice) || +(unitCogs * (n(l.markup) || 1.4)).toFixed(2),
@@ -900,6 +903,7 @@ const publicSelectOptions = async (req, res) => {
     const picksRaw = (req.body && req.body.picks) || [];
     const pickedEntries = [];
     const splitByEntry = new Map();
+    const qtyByEntry = new Map();
     const seenPickKeys = new Set();
     for (const p of Array.isArray(picksRaw) ? picksRaw : []) {
       const isSplit = p && typeof p === 'object' && !Array.isArray(p);
@@ -929,6 +933,24 @@ const publicSelectOptions = async (req, res) => {
         const tier = tierLineFor(siblings, check.total) || entry;
         entry = tier;
         splitByEntry.set(entry, check.split);
+      } else if (isSplit && p.qty !== undefined && p.qty !== null && p.qty !== '') {
+        // A FREE QUANTITY on a run that isn't sold by colour.
+        //
+        // A quote shows its price breaks as sibling lines — 50 / 100 / 150 of
+        // the same product. The client could only ever click one of those three
+        // chips, so someone who needed 75 had to email and ask for a chip to be
+        // added. The engine that solves this already exists and is already
+        // proven by the colour split; it was simply unreachable without a live
+        // S&S colour lookup on the line.
+        //
+        // Same rule, one step simpler: the largest tier at or below what they
+        // typed sets the price, and they are billed for what they typed.
+        const siblings = runLines(view, entry);
+        const check = validateQty(p.qty, siblings);
+        if (!check.ok) return res.status(400).json({ message: check.message });
+        const tier = tierLineFor(siblings, check.qty) || entry;
+        entry = tier;
+        qtyByEntry.set(entry, check.qty);
       }
       pickedEntries.push(entry);
     }
@@ -964,6 +986,8 @@ const publicSelectOptions = async (req, res) => {
     // by the same lid the acceptance rides on.
     const splitByLid = new Map();
     splitByEntry.forEach((split, entry) => { if (entry.lid) splitByLid.set(entry.lid, split); });
+    const qtyByLid = new Map();
+    qtyByEntry.forEach((qty, entry) => { if (entry.lid) qtyByLid.set(entry.lid, qty); });
     lines.forEach((l) => {
       l.accepted = !l.hiddenFromClient
         && ((l.lid && pickedLids.has(l.lid)) || pickedLive.has(l) || !l.group);
@@ -973,6 +997,11 @@ const publicSelectOptions = async (req, res) => {
       // math to keep billing.
       if (l.accepted && l.lid && splitByLid.has(l.lid)) l.colorSplit = splitByLid.get(l.lid);
       else if ((l.colorSplit || []).length) l.colorSplit = [];
+      // Same rule for a typed quantity, and for the same reason: a re-pick that
+      // lands on a different tier must not leave 75 sitting on the 100 line for
+      // orderedQty to keep billing.
+      if (l.accepted && l.lid && qtyByLid.has(l.lid)) l.pickedQty = qtyByLid.get(l.lid);
+      else if (Number(l.pickedQty) > 0) l.pickedQty = 0;
     });
     doc.markModified('quoteLines');
     doc.optionsPickedAt = now;
@@ -980,9 +1009,13 @@ const publicSelectOptions = async (req, res) => {
     const summary = chosen
       .map((l) => {
         const split = (l.colorSplit || []).filter(c => Number(c.qty) > 0);
-        const qty = split.length ? split.reduce((s, c) => s + Number(c.qty), 0) : l.qty;
+        const qty = orderedQty(l);
         const colours = split.length ? ` (${split.map(c => `${c.name} ${c.qty}`).join(', ')})` : '';
-        return `${l.group ? l.group + ': ' : ''}${l.description || l.styleCode || 'item'} × ${qty}${colours}`;
+        // Name the tier when they bought off-break, so the owner reads "75 at
+        // the 50 price" rather than a bare 75 he has to reconcile himself.
+        const tier = (!split.length && Number(l.pickedQty) > 0 && Number(l.qty) > 0 && Number(l.pickedQty) !== Number(l.qty))
+          ? ` (at the ${Number(l.qty)}-piece price)` : '';
+        return `${l.group ? l.group + ': ' : ''}${l.description || l.styleCode || 'item'} × ${qty}${colours}${tier}`;
       })
       .join(' · ');
     doc.approvalEvents.push({ kind: 'options_picked', message: summary, by: '', email, at: now });
