@@ -774,6 +774,25 @@ const OrderSchema = new mongoose.Schema({
   deliveredDate: { type: Date },
   importedFrom:  { type: String, default: '' },
 
+  // ── Per-subtree revisions (optimistic concurrency) ──────────────────────────
+  // The two heavy subtrees are written WHOLE by their builders, which autosave
+  // 800ms after a keystroke with no Save button. Two tabs on one project — the
+  // desktop and the iPad, the ordinary case here — therefore overwrite each
+  // other silently: correct a size on one, add a line on the other, and the size
+  // correction is gone with no conflict and no audit event.
+  //
+  // Each write of a subtree bumps its own counter, and a writer that supplies
+  // the revision it read is only allowed to land on that revision. Scoped per
+  // subtree rather than per document on purpose: a background write (the UPS
+  // tick, a publish, a status change) must not invalidate a quote the owner is
+  // in the middle of editing.
+  //
+  // Legacy documents have no counter at all, which reads as revision 0 — see
+  // utils/orderRevision.js, where the precondition matches missing as 0 so no
+  // backfill is needed.
+  confirmationRev: { type: Number, default: 0 },
+  quoteLinesRev:   { type: Number, default: 0 },
+
   // Soft-delete (mirrors Client). An order is NEVER hard-deleted by the reconcile
   // tooling: a mis-staged / bad-import order is archived (drops out of working
   // surfaces) with all data preserved and restorable. Set by the reconcile
