@@ -4,7 +4,7 @@ const router  = express.Router();
 const { requireAdmin } = require('../middleware/auth');
 const poCtl = require('../controllers/purchaseOrders');
 const {
-  listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
+  listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder, restoreOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
   dashboard, attention, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
   cleanupCandidates, cleanupDelete, mergeCompany, assignMockupNumber, carryMockups,
@@ -90,12 +90,16 @@ router.get('/:id',                        getOrder);
 router.post('/',                          createOrder);
 router.put('/:id',                        updateOrder);
 router.delete('/:id',                     deleteOrder);
+// Undo that archive. Both deletes below have ALWAYS been soft — these are what
+// make the Studio's "you can restore it" true rather than aspirational.
+router.post('/:id/restore',               restoreOrder);
 router.post('/:id/confirmation/pdf',      confirmationPdf);
 router.get('/:id/pos',                    poCtl.listPos);
 router.post('/:id/pos',                   poCtl.createPo);
 router.post('/:id/pos/from-confirmation',  poCtl.createPosFromConfirmation);
 router.put('/pos/:poId',                  poCtl.updatePo);
 router.delete('/pos/:poId',               poCtl.deletePo);
+router.post('/pos/:poId/restore',         poCtl.restorePo);
 router.post('/pos/:poId/pdf',             poCtl.poPdf);
 router.post('/pos/:poId/send',            poCtl.sendPo);   // email the PO (+ approved mockups) to a chosen printer contact
 router.post('/:id/mockups/assign',        assignMockupNumber);

@@ -606,6 +606,49 @@ const deleteOrder = async (req, res) => {
   }
 };
 
+// POST /api/orders/:id/restore — undo the archive above.
+//
+// deleteOrder has always been a soft-archive; its own comment says the POs are
+// archived too "so an unarchive of the order can restore both". That unarchive
+// did not exist. The Studio meanwhile told the owner "Delete project? This
+// cannot be undone" — a warning that was false, over an action that was
+// reversible, with no way to reverse it. Both halves of that are now true
+// instead: the dialog says what it does, and this is what undoes it.
+//
+// Only the POs THIS delete archived come back (archivedReason 'order-deleted').
+// A PO the owner archived himself beforehand stays archived — restoring the
+// order must not quietly resurrect a decision he made separately.
+// The filters and the write, as data. PURE — exported for tests, because the
+// interesting part isn't the update, it's WHICH POs come back.
+function restoreOrderPlan(orderId) {
+  const unarchive = { $set: { archived: false, archivedAt: null, archivedReason: '' } };
+  return {
+    // `archived: true` in the filter is what makes the restore a no-op on a live
+    // order — and what keeps this reachable if Order ever gains the archiveScope
+    // query guard, since that guard leaves a filter alone once it mentions
+    // `archived` itself (see utils/archiveScope).
+    orderFilter: { _id: orderId, archived: true },
+    // ONLY the POs this delete archived. deleteOrder stamps them
+    // 'order-deleted'; a PO the owner archived himself beforehand carries
+    // 'manual' and stays archived, because restoring the order must not quietly
+    // reverse a separate decision he made.
+    poFilter: { orderId, archived: true, archivedReason: 'order-deleted' },
+    unarchive,
+  };
+}
+
+const restoreOrder = async (req, res) => {
+  try {
+    const plan = restoreOrderPlan(req.params.id);
+    const order = await Order.findOneAndUpdate(plan.orderFilter, plan.unarchive, { new: true }).lean();
+    if (!order) return res.status(404).json({ message: 'Not found, or it was never archived.' });
+    await PurchaseOrder.updateMany(plan.poFilter, plan.unarchive);
+    res.json({ ok: true, order });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 // GET /api/orders/dashboard — light stats used by the header strip on the new UI.
 const dashboard = async (req, res) => {
   try {
@@ -1067,7 +1110,11 @@ const cleanupDelete = async (req, res) => {
       archived = r.modifiedCount != null ? r.modifiedCount : (r.nModified || 0);
     }
     // `deleted` kept for frontend back-compat (it reads r.deleted for the toast).
-    res.json({ archived, refused, deleted: archived });
+    // `archivedIds` is what makes the undo EXACT: the sweep refuses anything
+    // that isn't empty, so the set it actually archived is smaller than the set
+    // it was handed, and restoring the input list would resurrect projects this
+    // never touched.
+    res.json({ archived, refused, deleted: archived, archivedIds: archiveIds.map(String) });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -2009,9 +2056,9 @@ const upsCheck = async (_req, res) => {
 };
 
 module.exports = {
-  listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
+  listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder, restoreOrder,
   // PURE (no DB) — exported for tests.
-  duplicateQuoteLine, remapCarriedMockups,
+  duplicateQuoteLine, remapCarriedMockups, restoreOrderPlan,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
   dashboard, attention, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
   cleanupCandidates, cleanupDelete, mergeCompany, assignMockupNumber, carryMockups,
