@@ -1141,6 +1141,75 @@ const mergeCompany = async (req, res) => {
 // Resets: orderNumber, status='quoted', orderDate/shipDate/deliveredDate=null,
 // paid=false, files=[], approvalToken='', approvalEvents=[]. Auto-assigns the
 // next projectNumber.
+// One quote line, copied for a duplicate/reorder. PURE — exported for tests.
+//
+// An ALLOW-LIST, because a duplicate must not inherit the client's decisions:
+// `accepted`, `colorSplit`, `pickedQty` and `lid` all belong to the order that
+// was actually sold, and a fresh quote that arrives pre-picked is a quote nobody
+// agreed to. The recipe carries; the answers don't.
+//
+// The four fields added here were each a silent downgrade on every repeat job.
+// Without colorOptions the reorder came back a WORSE offer than the original —
+// fixed chips instead of a colour split that can land between price breaks. And
+// without hiddenFromClient an owner-parked costing line came back VISIBLE to the
+// client, the only one of the four whose loss is a leak rather than a regression.
+function duplicateQuoteLine(l) {
+  return {
+    // The FULL recipe: the group keeps its design-grid structure, and the
+    // printer + structured spec (routing + how it was priced) ride along.
+    group: l.group, qty: l.qty, styleCode: l.styleCode, description: l.description, color: l.color,
+    supplier: l.supplier, supplierUrl: l.supplierUrl, blankCost: l.blankCost,
+    blankWeightOz: l.blankWeightOz,
+    printType: l.printType, printDetails: l.printDetails, printCost: l.printCost,
+    printerKey: l.printerKey, printerName: l.printerName, printSpec: l.printSpec,
+    setupCost: l.setupCost, shippingCost: l.shippingCost,
+    markup: l.markup, noMarkup: l.noMarkup, unitPrice: l.unitPrice, turnaroundWeeks: l.turnaroundWeeks,
+    // Promo provenance, so a duplicate keeps its catalog price protected instead
+    // of quietly becoming markup-able.
+    catalogUnitPrice: l.catalogUnitPrice, priceLocked: l.priceLocked,
+    // The owner's curated garment colours, checked against S&S stock when he
+    // built the original quote.
+    colorOptions: ((l && l.colorOptions) || []).map((c) => ({
+      name: (c && c.name) || '', code: (c && c.code) || '', hex: (c && c.hex) || '', image: (c && c.image) || '',
+    })),
+    hiddenFromClient: !!(l && l.hiddenFromClient),
+    // The line's own product render — a vendor-shot promo item has no mockup
+    // number, so this IS its design.
+    image: (l && l.image) || '',
+    // Carried only so remapCarriedMockups can re-point it. Never trusted as-is.
+    mockupNum: (l && l.mockupNum) || '',
+  };
+}
+
+// Re-point copied quote lines at the designs the new project actually owns.
+// PURE — exported for tests. Returns how many lines changed.
+//
+// A carried mockup is CLONED and RE-LETTERED under the new project
+// (#000150A → #000200A), so keeping the source number verbatim would leave the
+// new quote pointing at the finished job's designs — the cross-project bleed the
+// mockup work already fixed once. Dropping it entirely (what happened before)
+// lost the design association even when the owner asked for the designs to come
+// along.
+//
+// So: remap through what was actually created, and BLANK anything that wasn't.
+// A line whose design didn't come across reads as "no design yet", which is
+// true, instead of pointing at someone else's.
+function remapCarriedMockups(lines, carried) {
+  const key = (v) => String(v == null ? '' : v).trim().toUpperCase();
+  const byFrom = new Map(
+    (Array.isArray(carried) ? carried : [])
+      .filter((c) => c && c.from)
+      .map((c) => [key(c.from), c.mockupNum || '']),
+  );
+  let touched = 0;
+  for (const l of (Array.isArray(lines) ? lines : [])) {
+    if (!l || !l.mockupNum) continue;
+    const next = byFrom.get(key(l.mockupNum)) || '';
+    if (next !== l.mockupNum) { l.mockupNum = next; touched += 1; }
+  }
+  return touched;
+}
+
 const duplicateOrder = async (req, res) => {
   try {
     const src = await Order.findById(req.params.id).lean();
@@ -1169,21 +1238,7 @@ const duplicateOrder = async (req, res) => {
       // the new project holding numbers whose base named the OLD one.)
       mockupNumbers:       [],
       items:               (src.items || []).map(i => ({ description: i.description, qty: i.qty, unitPrice: i.unitPrice })),
-      quoteLines:          (src.quoteLines || []).map(l => ({
-        // Carry the FULL recipe so a duplicate is faithful: the group keeps its
-        // design-grid structure, and the printer + structured spec (routing +
-        // how it was priced) ride along instead of being silently dropped.
-        group: l.group, qty: l.qty, styleCode: l.styleCode, description: l.description, color: l.color,
-        supplier: l.supplier, supplierUrl: l.supplierUrl, blankCost: l.blankCost,
-        blankWeightOz: l.blankWeightOz,
-        printType: l.printType, printDetails: l.printDetails, printCost: l.printCost,
-        printerKey: l.printerKey, printerName: l.printerName, printSpec: l.printSpec,
-        setupCost: l.setupCost, shippingCost: l.shippingCost,
-        markup: l.markup, noMarkup: l.noMarkup, unitPrice: l.unitPrice, turnaroundWeeks: l.turnaroundWeeks,
-        // Promo provenance rides along so a duplicated order keeps its catalog
-        // price protected instead of quietly becoming markup-able.
-        catalogUnitPrice: l.catalogUnitPrice, priceLocked: l.priceLocked,
-      })),
+      quoteLines:          (src.quoteLines || []).map(duplicateQuoteLine),
       orderDate:     null,
       shipDate:      null,
       deliveredDate: null,
@@ -1221,8 +1276,26 @@ const duplicateOrder = async (req, res) => {
       }
     }
 
-    const out = carried.length ? await Order.findById(created._id) : created;
-    res.status(201).json(carried.length ? { ...out.toObject(), _carried: carried } : out);
+    // Re-point each quote line at the design it now owns.
+    //
+    // A carried mockup is CLONED and RE-LETTERED under the new project
+    // (#000150A → #000200A), so copying the source line's mockupNum verbatim
+    // would leave the new project's quote pointing at the finished job's
+    // designs — the cross-project bleed the mockup work already fixed once.
+    // Dropping it entirely (what happened before) lost the design association
+    // even when the owner asked for the designs to come along.
+    //
+    // So: remap through what carryMockups actually created, and blank anything
+    // it didn't. A line whose design wasn't carried shows as "no design yet",
+    // which is true, rather than pointing at someone else's.
+    // Re-point each quote line at the design the new project now owns — see
+    // remapCarriedMockups for why a number is never copied verbatim.
+    const doc = carried.length ? await Order.findById(created._id) : created;
+    if (remapCarriedMockups(doc.quoteLines, carried) > 0) {
+      doc.markModified('quoteLines');
+      await doc.save();
+    }
+    res.status(201).json(carried.length ? { ...doc.toObject(), _carried: carried } : doc);
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -1937,6 +2010,8 @@ const upsCheck = async (_req, res) => {
 
 module.exports = {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder,
+  // PURE (no DB) — exported for tests.
+  duplicateQuoteLine, remapCarriedMockups,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
   dashboard, attention, createFromSubmission, mockupHealth, duplicateOrder, analytics, clientsSummary,
   cleanupCandidates, cleanupDelete, mergeCompany, assignMockupNumber, carryMockups,
