@@ -100,14 +100,60 @@ function finalLegFor(order) {
   return null;
 }
 
+// What a "UPS says delivered" write should touch, as data. Pure (no DB) so the
+// step-targeting rule below is unit-testable — same shape as
+// models/Order.dealValueSyncPlan.
+function deliveredUpdatePlan(order, leg, deliveredAt) {
+  const step = (leg && leg.step) || {};
+  const set = { status: 'delivered' };
+  if (!(order && order.deliveredDate)) set.deliveredDate = deliveredAt;
+  if (!step.completedAt) set['tracking.steps.$[s].completedAt'] = deliveredAt;
+  if (!step.note) set['tracking.steps.$[s].note'] = 'Delivered — confirmed by UPS';
+
+  const touchesStep = Object.keys(set).some((k) => k.startsWith('tracking.steps.'));
+  if (!touchesStep) return { set, arrayFilters: null };
+
+  // Prefer the stable id; fall back to the link that carried the UPS number we
+  // just tracked, which is what identified this step in the first place. Never
+  // fall back to a position — that is the bug this exists to prevent.
+  const arrayFilters = [step.id ? { 's.id': step.id } : { 's.link': step.link || '' }];
+  return { set, arrayFilters };
+}
+
 // ── Mark delivered (same effects as the manual delivered tick) ───────────────
+//
+// The step is written by its STABLE KEY, never by its position.
+//
+// This used to mutate the loaded subdocument and save(), which Mongoose turns
+// into a positional write — `tracking.steps.4.completedAt`. The timeline is an
+// owner-editable array: renaming, reordering, hiding or adding a step rewrites
+// it wholesale. So if the owner touched the timeline between this tick's read
+// and its write — a whole UPS API round-trip apart — index 4 was no longer the
+// step we looked up, and "Delivered — confirmed by UPS" landed on some other
+// row of a page the CLIENT is reading.
+//
+// arrayFilters keys the write on the step's own `id` (or its tracking link,
+// for legacy steps minted without one), so it lands on the right step or on no
+// step at all. `status` and `deliveredDate` were always whole-field writes and
+// are unchanged; findOneAndUpdate keeps the model's deal-value post-hook in
+// play exactly as save() did.
 async function markDelivered(order, leg, deliveredAt) {
   const Deal = require('../models/Deal');
+  const Order = require('../models/Order');
+
+  const plan = deliveredUpdatePlan(order, leg, deliveredAt);
+  await Order.findOneAndUpdate(
+    { _id: order._id },
+    { $set: plan.set },
+    plan.arrayFilters ? { arrayFilters: plan.arrayFilters, new: true } : { new: true },
+  );
+
+  // Keep the in-memory copy in step with what was just written — the tick's
+  // report and the delivered→won sync below both read off it.
   order.status = 'delivered';
   if (!order.deliveredDate) order.deliveredDate = deliveredAt;
   leg.step.completedAt = leg.step.completedAt || deliveredAt;
   if (!leg.step.note) leg.step.note = 'Delivered — confirmed by UPS';
-  await order.save();
 
   // Delivered → deal won, mirroring the updateOrder hook (owner's rule: a deal
   // is won only when its order is delivered). Best-effort.
@@ -180,4 +226,4 @@ function startUpsTracking() {
   setInterval(() => { runUpsTick().catch((e) => console.warn('[ups] tick failed:', e.message)); }, TICK_MS);
 }
 
-module.exports = { startUpsTracking, runUpsTick, upsConfigured, finalLegFor, trackOne, UPS_NUM_RE };
+module.exports = { startUpsTracking, runUpsTick, upsConfigured, finalLegFor, trackOne, deliveredUpdatePlan, UPS_NUM_RE };
