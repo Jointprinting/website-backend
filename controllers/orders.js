@@ -21,7 +21,7 @@ const { nextNumber, bumpCounterTo, peekNumber } = require('../utils/sequence');
 // utils/mockupNumbers.js.
 const { letterToNum, nextColorLetter, nextEditVersion, parseMockupNum, baseForProject } = require('../utils/mockupNumbers');
 const { flatFieldsFor } = require('../utils/printLocations');
-const { etToday, etDayKey } = require('../utils/time');
+const { etToday, etDayKey, utcDayKey } = require('../utils/time');
 const r2 = require('../services/r2');
 
 // True when an order status counts as a REAL placed order (a customer signal).
@@ -639,20 +639,52 @@ const dashboard = async (req, res) => {
 // is never off by one. 'approved' is excluded: turnaround starts at placement, not
 // quote approval.
 const ATTENTION_OPEN_STATUSES = ['placed', 'in_production', 'shipped'];
-const orderPlacedAt = (o) => {
+// The CALENDAR DAY the job was placed on, as YYYY-MM-DD.
+//
+// The three sources are not the same KIND of value, and that matters. The
+// activity event's `at` and `createdAt` are real instants, so their calendar day
+// is their ET day. But `orderDate` is a whole-day field stored at UTC MIDNIGHT
+// (confirmationPdf renders it in UTC for exactly this reason), and utils/time
+// warns in as many words not to put one through etDayKey: 2026-08-06T00:00:00Z
+// reads as 2026-08-05 in ET. Running every source through etDayKey therefore
+// aged any order dated from `orderDate` by one extra day, and both turnaround
+// alarms — 14-day "running long" and 21-day "possibly late" — fired a day early.
+const placedEventAt = (o) => {
   const ev = (Array.isArray(o.activity) ? o.activity : [])
     .filter((e) => e && e.kind === 'status_changed' && e.meta && e.meta.to === 'placed')
     .sort((a, b) => new Date(a.at || 0) - new Date(b.at || 0))[0];
-  return (ev && ev.at) || o.orderDate || o.createdAt || null;
+  return (ev && ev.at) || null;
 };
-const etAgeDays = (placedAt, now = new Date()) => {
-  const pk = etDayKey(placedAt);
-  if (!pk) return null;
+// The raw placement value, for the API response. Unchanged.
+const orderPlacedAt = (o) => placedEventAt(o) || o.orderDate || o.createdAt || null;
+
+// The calendar DAY the job was placed on, as YYYY-MM-DD — which is what the age
+// is measured in. The three sources are not the same KIND of value:
+// a placed EVENT and createdAt are real instants, so their calendar day is their
+// ET day; but `orderDate` is a whole-day field stored at UTC MIDNIGHT
+// (confirmationPdf renders it in UTC for exactly this reason). utils/time warns
+// in as many words not to put one of those through etDayKey —
+// 2026-08-06T00:00:00Z reads as 2026-08-05 in ET. Running all three through
+// etDayKey aged every order dated from `orderDate` by one extra day, so both
+// turnaround alarms — 14-day "running long" and 21-day "possibly late" — fired a
+// day early.
+const orderPlacedDayKey = (o) => {
+  const ev = placedEventAt(o);
+  if (ev) return etDayKey(ev);                      // an instant → its ET day
+  if (o.orderDate) return utcDayKey(o.orderDate);   // a whole day → its UTC day
+  if (o.createdAt) return etDayKey(o.createdAt);    // an instant → its ET day
+  return '';
+};
+// Whole ET calendar days between a placement day key and today.
+const etAgeDaysFromKey = (placedKey, now = new Date()) => {
+  if (!placedKey) return null;
   const today = Date.parse(`${etToday(now)}T00:00:00Z`);
-  const placed = Date.parse(`${pk}T00:00:00Z`);
+  const placed = Date.parse(`${placedKey}T00:00:00Z`);
   if (Number.isNaN(today) || Number.isNaN(placed)) return null;
   return Math.round((today - placed) / 86400000);
 };
+// Back-compat wrapper: age of an INSTANT. Kept because it is exported and tested.
+const etAgeDays = (placedAt, now = new Date()) => etAgeDaysFromKey(etDayKey(placedAt), now);
 const attention = async (req, res) => {
   try {
     const open = await Order.find({ status: { $in: ATTENTION_OPEN_STATUSES }, archived: { $ne: true } })
@@ -661,7 +693,7 @@ const attention = async (req, res) => {
     const orders = [];
     for (const o of open) {
       const placedAt = orderPlacedAt(o);
-      const ageDays = etAgeDays(placedAt);
+      const ageDays = etAgeDaysFromKey(orderPlacedDayKey(o));
       if (ageDays == null) continue;
       const flag = ageDays >= 21 ? 'possibly_late' : ageDays >= 14 ? 'running_long' : null;
       if (!flag) continue;
@@ -1882,6 +1914,6 @@ module.exports = {
   versionMockupNumber, duplicateMockup, createOrGetProjectForCompany, backfillConfirmationCogs, upsCheck,
   // exported for tests / reuse
   isPlacedStatus, bumpCustomerOnPlacement, pickLiveProjectForCompany, isLiveProject,
-  orderPlacedAt, etAgeDays, buildMockupVariation, buildCarriedMockup, buildOrderFromSubmission,
+  orderPlacedAt, etAgeDays, orderPlacedDayKey, etAgeDaysFromKey, buildMockupVariation, buildCarriedMockup, buildOrderFromSubmission,
   ensureProjectForCompany, ensureDealForProject,
 };
