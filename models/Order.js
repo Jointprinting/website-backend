@@ -696,6 +696,20 @@ const OrderSchema = new mongoose.Schema({
       image: { type: String, default: '' },   // that colourway's garment photo
       _id: false,
     }],
+    // A FREE QUANTITY the client typed on a run that ISN'T sold by colour.
+    //
+    // A quote shows price breaks as sibling lines — 50 / 100 / 150 of the same
+    // product. Until now the client could only click one of those three chips,
+    // so someone who needed 75 had to email the owner and ask him to add a chip
+    // for it. His words: "I don't want them to have to ask me to make the
+    // change, it adds friction."
+    //
+    // Same rule the colour split already uses, one step simpler: the largest
+    // tier at or below the typed quantity sets the price, so 75 bills 75 units
+    // at the 50-piece price. `qty` above stays the TIER this line priced at;
+    // this is what was ordered. Written by the approval endpoint only, and
+    // cleared from every line the client didn't take.
+    pickedQty:    { type: Number, default: 0 },
     // The client's allocation, written on the tier line their total landed on.
     // Sum of qty is what they actually ordered — see utils/colorSplit.orderedQty,
     // which the money math uses so a 450-unit split priced off the 300 tier bills
