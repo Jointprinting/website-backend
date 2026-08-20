@@ -11,7 +11,7 @@
 // fixed −5/−4 offset kept simple: we bucket on calendar month/day, which is
 // unambiguous for quarter boundaries.
 
-const { computeLocationTax, isTaxCustomLine, computeConfirmationTotals } = require('../models/Order');
+const { computeLocationTax, isTaxCustomLine, computeConfirmationTotals, confTaxableSubtotal, customLineValue } = require('../models/Order');
 
 const round2 = (v) => Math.round(((Number(v) || 0) + Number.EPSILON) * 100) / 100;
 
@@ -132,9 +132,15 @@ function grossReceiptsForOrder(order) {
   const n = (v) => Number(v) || 0;
   const { itemsSubtotal, grandTotal } = computeConfirmationTotals(conf);
   let tax = computeLocationTax(conf).total || 0;
+  // Reconstruct each customLine's value with the SAME rule computeConfirmationTotals
+  // uses — a percent tax line charges the taxable merchandise base, everything else
+  // compounds on the running subtotal. This used to keep its own copy of the
+  // formula, so the moment the tax base was corrected the two disagreed and gross
+  // receipts came out short by the difference.
+  const taxable = confTaxableSubtotal(conf);
   let running = itemsSubtotal;
   for (const line of (Array.isArray(conf.customLines) ? conf.customLines : [])) {
-    const value = line && line.isPercent ? running * n(line.amount) / 100 : n(line && line.amount);
+    const value = customLineValue(line, running, taxable);
     if (isTaxCustomLine(line)) tax += value;
     running += value;
   }

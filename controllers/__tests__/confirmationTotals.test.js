@@ -23,6 +23,7 @@ const {
   hasBakedPaymentFee,
   roundCents,
   dealValueSyncPlan,
+  confTaxableSubtotal,
 } = require('../../models/Order');
 
 // ── Factories ────────────────────────────────────────────────────────────────
@@ -370,4 +371,71 @@ test('dealValueSyncPlan: no identifiers → null (nothing to match a deal on)', 
 test('dealValueSyncPlan: matches on whichever identifier the order carries', () => {
   assert.deepEqual(dealValueSyncPlan({ totalValue: 10, projectNumber: 'P-9' }).filter.$or, [{ projectNumber: 'P-9' }]);
   assert.deepEqual(dealValueSyncPlan({ totalValue: 10, orderNumber: 55 }).filter.$or, [{ orderNumber: '55' }]);
+});
+
+// ── The two ways sales tax came out wrong ────────────────────────────────────
+
+test('a taxed shipTo with NO allocations must not swallow the legacy tax line', () => {
+  // Adding a shipTo with a rate made per-location tax "active", which suppressed
+  // the legacy "NJ tax" customLine — while itself computing $0, because the
+  // taxable base is built from per-item allocations that were never filled in.
+  // The tax silently vanished: $2,132.50 became $2,000.00, unflagged.
+  const conf = {
+    items: [{ sizes: [{ qty: 100, unitPrice: 20 }], taxExempt: false }],
+    customLines: [{ label: 'NJ sales tax', amount: 6.625, isPercent: true, isTax: true }],
+    shipTos: [{ key: 'a', label: 'Main', state: 'NJ', taxRate: 6.625 }],
+  };
+  const lt = computeLocationTax(conf);
+  assert.equal(lt.active, true);
+  assert.equal(lt.allocated, false, 'nothing is allocated, so per-location tax is not really in use');
+  assert.equal(lt.total, 0);
+  assert.equal(computeConfirmationTotals(conf).grandTotal, 2132.5);
+});
+
+test('once units ARE allocated, per-location tax supersedes and nothing double-taxes', () => {
+  const conf = {
+    items: [{ sizes: [{ qty: 100, unitPrice: 20 }], taxExempt: false, allocations: [{ key: 'a', qty: 100 }] }],
+    customLines: [{ label: 'NJ sales tax', amount: 6.625, isPercent: true, isTax: true }],
+    shipTos: [{ key: 'a', label: 'Main', state: 'NJ', taxRate: 6.625 }],
+  };
+  const lt = computeLocationTax(conf);
+  assert.equal(lt.allocated, true);
+  assert.equal(lt.total, 132.5);
+  assert.equal(computeConfirmationTotals(conf).grandTotal, 2132.5, 'taxed exactly once');
+});
+
+test('a legacy percent tax line charges the taxable base, not exempt clothing', () => {
+  // NJ exempts clothing. Per-location tax always honoured taxExempt; the legacy
+  // line charged the whole running subtotal, so which mechanism the owner used
+  // changed the bill by $99.37 on the same goods.
+  const conf = {
+    items: [
+      { sizes: [{ qty: 100, unitPrice: 15 }], taxExempt: true },   // $1,500 apparel — exempt
+      { sizes: [{ qty: 100, unitPrice: 5 }],  taxExempt: false },  // $500 promo — taxable
+    ],
+    customLines: [{ label: 'NJ sales tax', amount: 6.625, isPercent: true, isTax: true }],
+    shipTos: [],
+  };
+  assert.equal(confTaxableSubtotal(conf), 500);
+  assert.equal(computeConfirmationTotals(conf).grandTotal, 2033.13);  // was 2132.50
+});
+
+test('both tax mechanisms now agree on the same mixed order', () => {
+  const items = [
+    { sizes: [{ qty: 100, unitPrice: 15 }], taxExempt: true,  allocations: [{ key: 'a', qty: 100 }] },
+    { sizes: [{ qty: 100, unitPrice: 5 }],  taxExempt: false, allocations: [{ key: 'a', qty: 100 }] },
+  ];
+  const perLocation = { items, customLines: [], shipTos: [{ key: 'a', label: 'Main', taxRate: 6.625 }] };
+  assert.equal(computeLocationTax(perLocation).total, 33.13);
+  assert.equal(computeConfirmationTotals(perLocation).grandTotal, 2033.13);
+});
+
+test('a non-tax percent line still compounds on the running subtotal', () => {
+  // Only SALES-TAX lines move to the merchandise base; a card fee is unchanged.
+  const conf = {
+    items: [{ sizes: [{ qty: 100, unitPrice: 20 }], taxExempt: false }],
+    customLines: [{ label: 'Credit card fee', amount: 2.99, isPercent: true }],
+    shipTos: [],
+  };
+  assert.equal(computeConfirmationTotals(conf).grandTotal, 2059.8);
 });
