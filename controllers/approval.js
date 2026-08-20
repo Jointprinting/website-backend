@@ -9,6 +9,8 @@ const { compareMockupNums, parseMockupNum } = require('../utils/mockupNumbers');
 const { clientLibraryScopeFor, mockupProjectNumber, belongsToProject } = require('../utils/mockupScope');
 const r2 = require('../services/r2');
 const { tierLineFor, validateSplit, validateQty, runLines, orderedQty } = require('../utils/colorSplit');
+// A re-push must not silently re-price what the client already accepted.
+const { clearStaleAcceptances, stillPicked } = require('../utils/quoteRepush');
 
 // One tile per COLOUR, showing its latest edit — the client's view of a
 // project's designs.
@@ -199,6 +201,37 @@ async function markQuoteSent(order) {
 // Saves the order. No-op payload-wise for orders with no quote lines.
 async function _pushQuoteSnapshot(order) {
   Order.ensureQuoteLineIds(order.quoteLines || []);
+
+  // A push must not re-price what the client already said yes to.
+  //
+  // The builder autosaves constantly, and this is the moment those edits reach
+  // the client. Nothing checked whether an edit landed on an option they had
+  // already ACCEPTED — so correcting an accepted line from 100 @ $12 to 150 @
+  // $14 and pushing left the acceptance flag on, recording the client as having
+  // agreed to something they never saw, at a price they never agreed to. And
+  // `accepted` is what computeQuoteTotals bills off, so the money followed
+  // silently. (updateOrder's MONEY_LOCKED doesn't cover this: it locks the
+  // confirmation once approved, not the quote before it.)
+  //
+  // Clearing rather than blocking: the owner should be able to correct a quote
+  // and re-send it. What he should not be able to do is re-send it while it
+  // still claims a yes.
+  const undone = clearStaleAcceptances(order.quoteLines || [], order.quoteLinesPublished || []);
+  if (undone.length) {
+    // Nothing grouped is accepted any more → the client is back at the picker,
+    // so the "they've chosen" stamp comes off too. Otherwise the Studio keeps
+    // showing the project as picked while the client page asks again.
+    if (!stillPicked(order.quoteLines || [])) order.optionsPickedAt = null;
+    const what = undone.map((r) => r.description).filter(Boolean).join(', ');
+    order.activity = order.activity || [];
+    order.activity.push({
+      kind: 'quote_repushed', actor: 'admin',
+      message: `Quote re-pushed with changes — the client's pick was cleared on ${undone.length} option${undone.length === 1 ? '' : 's'}${what ? `: ${what}` : ''}`,
+      meta: { cleared: undone.map((r) => r.lid) },
+      at: new Date(),
+    });
+  }
+
   order.markModified('quoteLines');
   order.quoteLinesPublished = (order.quoteLines || []).map((l) =>
     (typeof l.toObject === 'function' ? l.toObject() : { ...l }));
