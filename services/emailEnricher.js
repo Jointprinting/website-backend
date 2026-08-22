@@ -15,6 +15,7 @@
 // is pure and unit-tested.
 
 const axios = require('axios');
+const { safeGet } = require('../utils/safeFetch');
 const { bestEmail, isNeverSend } = require('../utils/emailQuality');
 
 const POLITE_UA = 'JointPrintingLeadFinder/1.0 (+https://jointprinting.com)';
@@ -139,15 +140,18 @@ function hostOf(url) {
   catch { return ''; }
 }
 
+// The candidate URLs here come from Overpass — a public wiki anyone can edit a
+// `website=` tag on — and the response body is then regexed for emails and the
+// outcome shown in the Studio. Fetched from inside the API host that is a clean
+// read oracle for the host's own network, so every URL and every redirect hop
+// goes through utils/safeFetch. Timeout, size cap and user-agent are unchanged.
 async function _get(url) {
-  return axios.get(url, {
+  return safeGet(axios, url, {
     timeout: FETCH_TIMEOUT_MS,
-    maxRedirects: 5,
     maxContentLength: MAX_BYTES,
-    validateStatus: () => true,
     responseType: 'text',
     headers: { 'User-Agent': POLITE_UA, Accept: 'text/html,application/xhtml+xml,*/*;q=0.8' },
-  });
+  }, { maxRedirects: 5 });
 }
 
 // Find a same-site /contact-ish link on a page to try next. Pure-ish (parses
