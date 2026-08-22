@@ -83,11 +83,37 @@ exports.updateSubmission = async (req, res) => {
   }
 };
 
+// Archive, not delete. A contact submission is an inbound LEAD — the record that
+// someone asked — and it was the last collection here still destroying rows.
+// It drops out of every list and badge exactly as before (the model's query
+// guard excludes archived), so this looks identical to the owner; it is simply
+// recoverable now.
 exports.deleteSubmission = async (req, res) => {
   try {
-    const result = await ContactSubmission.findByIdAndDelete(req.params.id);
+    const result = await ContactSubmission.findByIdAndUpdate(
+      req.params.id,
+      { $set: { archived: true, archivedAt: new Date(), archivedReason: 'manual' } },
+      { new: true },
+    ).select('_id').lean();
     if (!result) return res.status(404).json({ message: 'Not found' });
-    return res.json({ ok: true });
+    return res.json({ ok: true, archived: true });
+  } catch (err) {
+    return res.status(400).json({ message: 'Invalid ID' });
+  }
+};
+
+// Undo it. `archived: true` in the filter is what reaches the row past the
+// model's live-scope guard — that guard leaves a filter alone once it mentions
+// `archived` itself (see utils/archiveScope).
+exports.restoreSubmission = async (req, res) => {
+  try {
+    const result = await ContactSubmission.findOneAndUpdate(
+      { _id: req.params.id, archived: true },
+      { $set: { archived: false, archivedAt: null, archivedReason: '' } },
+      { new: true },
+    ).lean();
+    if (!result) return res.status(404).json({ message: 'Not found, or it was never archived.' });
+    return res.json({ ok: true, submission: result });
   } catch (err) {
     return res.status(400).json({ message: 'Invalid ID' });
   }

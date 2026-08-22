@@ -7,6 +7,7 @@ const {
   getSubmission,
   updateSubmission,
   deleteSubmission,
+  restoreSubmission,
   getUnseenCount,
   markAllSeen,
 } = require('../controllers/submissions');
@@ -21,5 +22,7 @@ router.get('/',        listSubmissions);
 router.get('/:id',     getSubmission);
 router.patch('/:id',   updateSubmission);
 router.delete('/:id',  deleteSubmission);
+// Undo the archive above. A lead is never destroyed, so it can always come back.
+router.post('/:id/restore', restoreSubmission);
 
 module.exports = router;
