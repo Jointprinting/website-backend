@@ -389,6 +389,42 @@ const OrderSchema = new mongoose.Schema({
   // whenever the approval is superseded — a fresh ask means fresh numbers, so
   // the invoice already sent is stale.
   invoiceSentAt: { type: Date, default: null, index: true },
+
+  // ── Closeout ───────────────────────────────────────────────────────────────
+  // The order flow ends at 'delivered' and the tracking ends at 'arrived', so
+  // the last question — DID IT GO WELL? — has never had a home. Which means
+  // three things the business needs are simply not recorded anywhere:
+  //
+  //   • Reprints and replacement garments are REAL COGS. They come out of the
+  //     job's margin and no field has ever held them, so every margin figure in
+  //     the system is the margin before anything went wrong.
+  //   • Whether a printer ships when they promised, which is the only honest
+  //     source for Vendor.leadTimeDays and qualityRating — both editable today,
+  //     both hand-typed guesses, both with zero readers.
+  //   • Whether this client is worth asking for a reorder, and when.
+  //
+  // Deliberately OPTIONAL and unset on every existing order: a closeout that was
+  // never done reads as "not closed out", which is true. Nothing branches on it
+  // that did not branch before.
+  closeout: {
+    at:          { type: Date, default: null },
+    // 1–5, the owner's call on how the job actually went. Distinct from the
+    // printer's own rating: a great printer can still have a bad job.
+    rating:      { type: Number, default: 0, min: 0, max: 5 },
+    onTime:      { type: Boolean, default: null },
+    // What went wrong, in the units the business thinks in.
+    defectQty:   { type: Number, default: 0 },
+    reprintQty:  { type: Number, default: 0 },
+    // What fixing it COST — the number that turns a margin into the real margin.
+    reworkCost:  { type: Number, default: 0 },
+    clientComplaint: { type: Boolean, default: false },
+    notes:       { type: String, default: '' },
+    // Reorder intent, so "who should I call in three months" is a query rather
+    // than a memory.
+    reorderLikely: { type: Boolean, default: null },
+    reorderAfter:  { type: Date, default: null },
+  },
+
   totalValue:    { type: Number, default: 0 },
   cogs:          { type: Number, default: 0 },
   printerName:   { type: String, default: '' },
@@ -983,4 +1019,33 @@ module.exports.confTaxableSubtotal = confTaxableSubtotal;
 module.exports.customLineValue = customLineValue;
 module.exports.isPaymentFeeCustomLine = isPaymentFeeCustomLine;
 module.exports.hasBakedPaymentFee = hasBakedPaymentFee;
+// The margin a job ACTUALLY earned, after what it cost to fix.
+//
+// PURE (no DB) — exported for tests and for the readouts.
+//
+// Reprints and replacement garments are real COGS, and deliberately NOT folded
+// into the stored `cogs` field: that number is money-locked once an order is
+// approved, and rewriting it after the fact would silently move a figure the
+// client's invoice and the P&L were both built from. So the rework is kept
+// beside it and the honest margin is computed, which lets a job show both "what
+// we quoted" and "what we got" without either one lying.
+function realMarginOf(order) {
+  const o = order || {};
+  const revenue = Number(o.totalValue) || 0;
+  const rework = Number(o.closeout && o.closeout.reworkCost) || 0;
+  const cogs = (Number(o.cogs) || 0) + rework;
+  if (!(revenue > 0)) return null;
+  return {
+    revenue,
+    cogs: roundCents(cogs),
+    rework: roundCents(rework),
+    profit: roundCents(revenue - cogs),
+    marginPct: +(((revenue - cogs) / revenue) * 100).toFixed(2),
+    // What the job looked like before anything went wrong — the number every
+    // report in the system currently shows.
+    quotedMarginPct: +(((revenue - (Number(o.cogs) || 0)) / revenue) * 100).toFixed(2),
+  };
+}
+
 module.exports.roundCents = roundCents;
+module.exports.realMarginOf = realMarginOf;
