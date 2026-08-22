@@ -560,6 +560,26 @@ function daysBetween(aMs, bMs) {
 // toes" bug where cold mail-merge leads surfaced as "call today". Pure. The cadence
 // cockpit excludes exactly these, so its buckets stay the OWNER's chosen worklist — a
 // genuine new lead (untagged) still flows through.
+// PURE — exported for tests. "Has the owner personally worked this lead?" A
+// logged call/text/visit counts; an automated cold email does not. Split out of
+// isEngineManagedCold so the companies list can compute it from a `log.kind`-only
+// projection instead of shipping every log entry to the browser.
+function hasOwnerTouch(c) {
+  return (c && Array.isArray(c.log) ? c.log : []).some((l) => ['call', 'text', 'visit'].includes(l && l.kind));
+}
+
+// What a COMPANIES LIST ROW needs. Everything the list renders, filters, sorts or
+// scores by — and nothing else. `log` is fetched separately as `log.kind` only.
+const LIST_FIELDS = [
+  'companyKey', 'companyName', 'clientName', 'email', 'phone', 'stage', 'area',
+  'address', 'tags', 'akas', 'notes', 'source', 'leadSource', 'interestType',
+  'dealValue', 'contacts', 'nextFollowUp', 'lastContact', 'snoozedUntil',
+  'engagedAt', 'engagedBy', 'agentId', 'originAgentId', 'defaultPrinter',
+  'defaultSupplier', 'defaultMarkup', 'paymentTerms', 'lostReason', 'doNotEmail',
+  'archived', 'archivedAt', 'archivedReason', 'mergedInto', 'matchKey',
+  'portalToken', 'portalRevokedAt', 'createdAt', 'updatedAt',
+].join(' ');
+
 function isEngineManagedCold(c) {
   if (!c) return false;
   const stage = c.stage;
@@ -567,7 +587,7 @@ function isEngineManagedCold(c) {
   const outreachProspect = !tags.includes('warm')
     && (tags.includes('cold-email') || tags.includes('dispensary') || tags.includes('cold')
       || tags.includes('meta-ad') || c.leadSource === 'Cold Outreach');
-  const ownerTouched = (c.log || []).some((l) => ['call', 'text', 'visit'].includes(l && l.kind));
+  const ownerTouched = hasOwnerTouch(c);
   return outreachProspect && !ownerTouched && stage !== 'customer' && stage !== 'won';
 }
 
@@ -925,7 +945,19 @@ async function listCrm(req, res) {
       if (tag && String(tag).trim()) filter.tags = String(tag).trim(); // tags[] contains this tag
     }
 
-    const clients = await Client.find(filter).sort({ companyName: 1 }).lean();
+    // PROJECTION. This list is the CRM's main read and it returned every field of
+    // every client — including `log[]`, which is unbounded and, on a worked
+    // account, is most of the document. Nothing in the list UI renders a log
+    // entry; only CompanyDetail does, and that opens one record through getOne.
+    //
+    // `log` can't simply be dropped, though: the client-side cold-pool gate reads
+    // it to decide whether the owner has ever called/texted/visited. Project it
+    // out and every already-worked cold lead silently re-enters the outreach pool.
+    // So it's computed HERE — the same way isCustomer and leadScore already are —
+    // and shipped as one boolean instead of the whole history.
+    const clients = await Client.find(filter)
+      .select(`${LIST_FIELDS} log.kind`)   // log.kind only: enough for ownerTouched, ~nothing on the wire
+      .sort({ companyName: 1 }).lean();
     // Which of these companies have ≥1 PLACED order (⇒ customers)? The Companies
     // list's ★ / segment split / cleanup-candidate / demote-guard all read this
     // server-computed flag — the same one getToday/getPipeline/getOne attach —
@@ -937,7 +969,16 @@ async function listCrm(req, res) {
     // list can badge and sort by it and the owner works the best leads first.
     const scored = clients.map((c) => {
       const s = scoreLead(c);
-      return { ...c, isCustomer: withOrders.has(c.companyKey), leadScore: s.score, leadGrade: s.grade, leadReasons: s.reasons };
+      const { log, ...rest } = c;
+      return {
+        ...rest,
+        isCustomer: withOrders.has(c.companyKey),
+        leadScore: s.score, leadGrade: s.grade, leadReasons: s.reasons,
+        // Precomputed so the row doesn't have to carry log[] to answer it. The
+        // frontend mirror prefers this flag and falls back to reading the log,
+        // so a surface still fetching full records keeps working unchanged.
+        ownerTouched: hasOwnerTouch(c),
+      };
     });
     res.json({ clients: scored });
   } catch (e) {
@@ -3115,6 +3156,8 @@ async function migrateRetiredStages() {
 
 module.exports = {
   listCrm,
+  // PURE — exported for tests.
+  _hasOwnerTouch: hasOwnerTouch, _LIST_FIELDS: LIST_FIELDS,
   getToday,
   getCalendar,
   getPipeline,

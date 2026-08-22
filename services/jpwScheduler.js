@@ -132,14 +132,20 @@ async function runWeeklySweep() {
 }
 
 // ── Bootstrap ────────────────────────────────────────────────────────────
+// Every schedule in this file is pinned to the BUSINESS timezone. Nothing pins
+// TZ on the host, so an unpinned cron runs on whatever zone the platform hands
+// us — UTC today. "3am" then means 11pm ET, i.e. the middle of the owner's
+// evening rather than overnight, and it moves if the platform ever changes.
+const CRON_TZ = { timezone: 'America/New_York' };
+
 function startJpwScheduler() {
   // 03:00 every day
-  cron.schedule('0 3 * * *', () => { runRescoreAll(); });
+  cron.schedule('0 3 * * *', () => { runRescoreAll(); }, CRON_TZ);
   // 03:30 on Sundays
-  cron.schedule('30 3 * * 0', () => { runStaleAudit(); });
+  cron.schedule('30 3 * * 0', () => { runStaleAudit(); }, CRON_TZ);
   // Mon 04:00 — opt-in weekly sweep, off unless env flag set
   if (process.env.JPW_WEEKLY_SWEEP_ENABLED === 'true') {
-    cron.schedule('0 4 * * 1', () => { runWeeklySweep(); });
+    cron.schedule('0 4 * * 1', () => { runWeeklySweep(); }, CRON_TZ);
     console.log('[jpw-scheduler] started — rescore 03:00 daily, stale-audit 03:30 Sun, weekly-sweep 04:00 Mon');
   } else {
     console.log('[jpw-scheduler] started — rescore 03:00 daily, stale-audit 03:30 Sun (weekly-sweep off; set JPW_WEEKLY_SWEEP_ENABLED=true to enable)');

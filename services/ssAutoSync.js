@@ -4,8 +4,13 @@
 const cron = require('node-cron');
 const { _refreshAllSSProducts } = require('../controllers/product');
 
+// Pinned to the BUSINESS timezone. Nothing pins TZ on the host, so an unpinned
+// cron runs on whatever zone the platform hands us — UTC today — which makes
+// "2am" mean 10pm ET, the owner's evening rather than overnight.
+const CRON_TZ = { timezone: 'America/New_York' };
+
 function startSSAutoSync() {
-  // 2:00 AM server time every night
+  // 2:00 AM ET every night
   cron.schedule('0 2 * * *', async () => {
     console.log('[SS auto-sync] Starting nightly price refresh…');
     try {
@@ -17,9 +22,9 @@ function startSSAutoSync() {
     } catch (err) {
       console.error('[SS auto-sync] Fatal error:', err.message);
     }
-  });
+  }, CRON_TZ);
 
-  console.log('[SS auto-sync] Nightly price refresh scheduled at 02:00 server time.');
+  console.log('[SS auto-sync] Nightly price refresh scheduled at 02:00 ET.');
 }
 
 module.exports = { startSSAutoSync };

@@ -1645,12 +1645,26 @@ function buildStepFunnel(enrollments = []) {
   return rows;
 }
 
+// PURE — exported for tests. Fields an analytics rollup must NOT pull. `subject`
+// and `messageId` are one heavy string each PER SEND, on an array that grows for
+// the life of every sequence; nothing in the funnel, trend or A/B split reads
+// them. `token` is the recipient's unsubscribe credential and has no business in
+// a rollup at all.
+const ANALYTICS_OMIT = '-sends.subject -sends.messageId -token -lastError -originSubject -originMessageId';
+
 // GET /api/outreach/analytics — overall funnel, per-state funnel, weekly trend,
 // and finder coverage per state. Powers the Studio's Analytics view.
 async function getAnalytics(req, res) {
   try {
     const [enrollments, finderRuns, campaigns] = await Promise.all([
-      OutreachEnrollment.find({}).lean(),
+      // PROJECTION. This is every enrollment the business has ever made, and each
+      // one carries a `sends[]` that grows for the life of the sequence. Analytics
+      // reads only four things off a send — which step, when, whether it opened,
+      // and the A/B variant — so the subject line and the Message-ID (the two
+      // heavy strings, one per send) never need to leave the database. The
+      // per-enrollment unsubscribe `token` is a credential and has no business in
+      // a rollup at all.
+      OutreachEnrollment.find({}).select(ANALYTICS_OMIT).lean(),
       LeadFinderRun.find({ dryRun: false }).sort({ createdAt: -1 }).limit(300).lean(),
       OutreachCampaign.find({}).sort({ createdAt: -1 }).lean(),
     ]);
@@ -2199,6 +2213,7 @@ async function releaseBounceBlacklistedLeads() {
 }
 
 module.exports = {
+  _ANALYTICS_OMIT: ANALYTICS_OMIT,
   releaseBounceBlacklistedLeads,
   getOverview,
   createCampaign,
