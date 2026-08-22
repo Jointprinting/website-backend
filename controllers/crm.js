@@ -41,6 +41,10 @@ const Subscription = require('../models/Subscription');
 // normalization). Never re-derive finance numbers here.
 const { summarizeCompanyFinance, normalizeOrderNumber } = require('./finances');
 const { scoreLead } = require('../services/leadScore');
+const T = require('../services/clientTimeline');
+const TriageReply = require('../models/TriageReply');
+const ContactSubmission = require('../models/ContactSubmission');
+const FieldRun = require('../models/FieldRun');
 const {
   parseCsv, rowsToObjects, rowsToObjectsWithMeta, mapTrackerRow,
   matchKey: deriveMatchKey, matchKeysFuzzyEqual, normPhone, normEmail,
@@ -981,6 +985,76 @@ async function listCrm(req, res) {
       };
     });
     res.json({ clients: scored });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+// GET /api/crm/:companyKey/timeline — ONE STREAM for a company.
+//
+// The owner's ask: "the states clients are in, from talking to the client to
+// placing the order." Every event already existed; it was scattered across seven
+// append-only logs that never met, so answering "what has actually happened with
+// this company" meant opening five screens.
+//
+// This merges them at read time rather than writing to a new events collection.
+// A write-only spine starts EMPTY — every client on the books today would show
+// nothing until something new happened to them, which is exactly backwards for a
+// business that has been running for years. Merged, the full history is there on
+// the first load, there is no migration, and there is no second copy that can
+// drift out of sync.
+//
+// The per-source shaping is pure and unit-tested in services/clientTimeline.
+async function getTimeline(req, res) {
+  try {
+    const companyKey = String(req.params.companyKey || '').trim().toLowerCase();
+    if (!companyKey) return res.status(400).json({ message: 'A company is required.' });
+
+    const client = await Client.findOne({ ...visibleFilter(req), companyKey }).lean();
+    if (!client) return res.status(404).json({ message: 'No such company.' });
+
+    // Projections everywhere: a timeline needs the log fields and nothing else,
+    // and several of these collections carry base64 and full quote lines.
+    const [orders, replies, enrollments, submissions] = await Promise.all([
+      Order.find({ companyKey })
+        .select('orderNumber projectNumber createdAt orderDate shipDate deliveredDate totalValue closeout activity')
+        .lean(),
+      TriageReply.find({ companyKey })
+        .select('receivedAt createdAt subject fromName fromEmail category').lean(),
+      OutreachEnrollment.find({ companyKey })
+        .select('toEmail sends.stepIndex sends.at sends.openedAt').lean(),
+      ContactSubmission.find({ companyName: client.companyName })
+        .select('createdAt name source quantity inHandDate').lean(),
+    ]);
+
+    // POs hang off orders, not off the company.
+    const orderNumbers = orders.map((o) => o.orderNumber).filter(Boolean);
+    const [pos, runs] = await Promise.all([
+      orderNumbers.length
+        ? PurchaseOrder.find({ orderNumber: { $in: orderNumbers } })
+          .select('poNumber vendorKey orderNumber events').lean()
+        : [],
+      FieldRun.find({ 'stops.companyKey': companyKey }).select('stops').lean(),
+    ]);
+
+    const events = T.mergeTimeline(
+      T.fromClientLog(client),
+      orders.flatMap((o) => T.fromOrder(o)),
+      T.fromPurchaseOrders(pos),
+      T.fromOutreach(enrollments),
+      T.fromReplies(replies),
+      T.fromSubmissions(submissions),
+      T.fromFieldRuns(runs, companyKey),
+    );
+
+    res.json({
+      companyKey,
+      companyName: client.companyName || '',
+      stage: client.stage || '',
+      summary: T.summarize(events),
+      phases: T.PHASES,
+      events,
+    });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
@@ -3156,6 +3230,7 @@ async function migrateRetiredStages() {
 
 module.exports = {
   listCrm,
+  getTimeline,
   // PURE — exported for tests.
   _hasOwnerTouch: hasOwnerTouch, _LIST_FIELDS: LIST_FIELDS,
   getToday,

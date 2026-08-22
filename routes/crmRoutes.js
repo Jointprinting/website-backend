@@ -14,7 +14,7 @@ const {
   getToday,
   getCalendar,
   getPipeline,
-  getDashboard,
+  getDashboard, getTimeline,
   getOne,
   patchOne,
   importRows,
@@ -84,6 +84,9 @@ router.get('/data-cleanup/status',   cleanupStatus);
 // not part of the fixable count.
 router.get('/data-cleanup/duplicate-ids', duplicateIds);
 
+// One merged stream per company — every touch, quote, order, PO and reply in
+// time order. Above the bare '/:companyKey' so the literal segment wins.
+router.get('/:companyKey/timeline', getTimeline);
 router.get('/:companyKey',   getOne);
 router.patch('/:companyKey', patchOne);
 // Single-card actions the detail page calls directly (all soft / reversible):
