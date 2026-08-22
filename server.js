@@ -557,6 +557,7 @@ const publicLookbookRoutes = require('./routes/publicLookbookRoutes');
 const socialPostRoutes     = require('./routes/socialPostRoutes');
 const newsletterRoutes     = require('./routes/newsletterRoutes');
 const promoProductRoutes   = require('./routes/promoProductRoutes');
+const clientErrorRoutes    = require('./routes/clientErrorRoutes');
 
 app.use('/api/products/ss', ssProxyLimiter);
 app.use('/api/products', productRoutes);
@@ -569,6 +570,10 @@ app.use('/api/roadtrip', roadTripRoutes);
 app.use('/api/studio', studioRoutes);
 app.use('/api/orders', express.json({ limit: '100mb' }), orderRoutes);
 app.use('/api/client-logos', express.json({ limit: '5mb' }), clientLogoRoutes);
+// Browser crashes reported back. The POST is public by necessity (the crash may
+// have taken down the app that would carry a token) and carries its own limiter
+// and body cap; every read is owner-only.
+app.use('/api/client-errors', clientErrorRoutes);
 app.use('/api/clients', express.json(), clientRoutes);
 // CRM import can carry the whole field tracker as JSON rows or raw CSV text, so
 // allow a larger body than the global 1mb default.
