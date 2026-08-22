@@ -37,6 +37,7 @@
 // per-request timeout per page and bail gracefully.
 
 const axios = require('axios');
+const { safeGet } = require('../utils/safeFetch');
 const cheerio = require('cheerio');
 
 const FETCH_TIMEOUT_MS = 15000;
@@ -190,19 +191,20 @@ const DEFAULT_TEMPLATE_TELLS = [
 const POLITE_UA   = 'Mozilla/5.0 (compatible; JPWebworksBot/1.0; +https://jointprinting.com)';
 const REALISTIC_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
 
+// The audited URL is supplied per-lead and is not one this app chose, so it goes
+// through utils/safeFetch — scheme allowlist, private/loopback/link-local block,
+// re-checked on every redirect hop. Everything else is unchanged.
 async function _httpGet(url, { userAgent, timeout = FETCH_TIMEOUT_MS, maxBytes = MAX_CONTENT_BYTES, responseType = 'text' } = {}) {
-  return axios.get(url, {
+  return safeGet(axios, url, {
     timeout,
-    maxRedirects: 5,
     maxContentLength: maxBytes,
-    validateStatus: () => true,
     responseType,
     headers: {
       'User-Agent': userAgent || POLITE_UA,
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Accept-Language': 'en-US,en;q=0.9',
     },
-  });
+  }, { maxRedirects: 5 });
 }
 
 async function _httpHead(url) {

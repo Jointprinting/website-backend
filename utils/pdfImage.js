@@ -6,6 +6,7 @@
 // aborting the whole document.
 
 const axios = require('axios');
+const { safeGet } = require('./safeFetch');
 
 // data:image/png;base64,... → Buffer (pdfkit only reads PNG/JPEG)
 function dataUrlToBuffer(dataUrl) {
@@ -24,7 +25,12 @@ async function resolveImageBuffer(value) {
   if (value.startsWith('data:')) return dataUrlToBuffer(value);
   if (/^https?:\/\//i.test(value)) {
     try {
-      const r = await axios.get(value, { responseType: 'arraybuffer', timeout: 15000 });
+      // The URL is whatever a document referenced, which is not necessarily one
+      // this app chose — so it goes through utils/safeFetch (scheme allowlist,
+      // private/loopback block, re-checked on every redirect). A refusal lands
+      // in the same catch as any other failure: no image, no crash.
+      const r = await safeGet(axios, value, { responseType: 'arraybuffer', timeout: 15000 });
+      if (!r || Number(r.status) >= 400) return null;
       return Buffer.from(r.data);
     } catch (_) { return null; }
   }
