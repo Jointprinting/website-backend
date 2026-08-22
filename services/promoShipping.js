@@ -42,6 +42,11 @@ const { effectiveUnitWeightOz, hazmatFee, shippingIncluded } = require('./promoW
 const OZ_PER_LB = 16;
 
 // Cannabis Promotions — 2460 5th Ave S Ste A, St. Petersburg, FL 33712.
+//
+// This is the DEFAULT origin, not the only one. It was a module constant back
+// when the promo catalog was one vendor's catalog, which is also why a rug
+// supplier could not be recorded at all. Products now carry `vendorKey` and
+// optionally `shipsFromZip`; originForProduct resolves the right one.
 const ORIGIN = { zip: '33712', city: 'St. Petersburg, FL', lat: 27.7503, lon: -82.6626 };
 
 // Geographic centers, good enough to resolve a zone band. A full ship-to ZIP
@@ -337,6 +342,29 @@ function estimateShipping({ lines = [], destState = '', destPoint = null, pad = 
 
 // An origin may be the promo vendor (full coords) or just a printer's USPS
 // state, which is all Printer.state carries. Both resolve to the same shape.
+// Where a given promo product actually ships FROM.
+//
+// Freight is a leg between two real places, and a rug supplier in North Carolina
+// is not a 2.5-hour drive from St. Petersburg. A product's own shipsFromZip wins;
+// then the vendor record's, when the caller supplies one; then the default —
+// which is correct for every product in the catalog today, because they are all
+// Cannabis Promotions.
+//
+// Returns an origin shaped for resolveOrigin (a state is enough to place it in a
+// zone band; a real point is better and the caller can pass one).
+function originForProduct(product, vendor = null) {
+  const p = product || {};
+  const v = vendor || {};
+  const zip = String(p.shipsFromZip || v.shipsFromZip || '').trim();
+  const state = normalizeState(v.state || '');
+  if (!zip && !state) return ORIGIN;
+  // A ZIP alone can't be placed without a geocoder here; the vendor's state is
+  // what puts it in a zone band. Both absent → the default, which is honest for
+  // the only supplier the catalog has ever had.
+  if (state) return { zip, state, city: v.city || state };
+  return ORIGIN;
+}
+
 function resolveOrigin(origin) {
   if (!origin) return null;
   // A printer resolved to its own ZIP sector arrives with coordinates already;
@@ -495,6 +523,6 @@ module.exports = {
   RATES_CALIBRATED_ON, RATES_STALE_AFTER_DAYS, rateAgeDays,
   BILLED_BY, VENDOR_PAD,
   FUEL_SURCHARGE_PCT, ACCOUNT_INCENTIVE_PCT,
-  haversineMiles, zoneForMiles, normalizeState, resolveOrigin,
+  haversineMiles, zoneForMiles, normalizeState, resolveOrigin, originForProduct,
   estimateShipping, estimateApparelShipping,
 };

@@ -67,6 +67,12 @@ router.get('/vendors',                    poCtl.listVendors);
 // leaks client-side.
 router.get('/vendors/duplicates',         poCtl.vendorDuplicates);
 router.get('/vendors/search',             poCtl.searchVendors);
+// Create one deliberately. Until now a vendor could only appear as a side effect
+// of a PO or a booked receipt, so a supplier still being EVALUATED — the whole
+// DistributorCentral flow — could not be recorded at all.
+// One segment, so it cannot shadow the literal '/vendors/merge' and
+// '/vendors/rebuild/*' routes either side of it.
+router.post('/vendors',                   poCtl.createVendor);
 router.post('/vendors/merge',             poCtl.mergeVendors);
 // Owner-triggered "Rebuild printers from Drive" reconcile (preview → confirm;
 // idempotent; reversible; archive-not-delete; preserves the Happy-Leaf in-app PO).

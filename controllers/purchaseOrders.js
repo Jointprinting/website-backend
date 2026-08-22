@@ -1343,6 +1343,61 @@ const VENDOR_PATCHABLE = ['name', 'contactName', 'email', 'phone', 'address', 's
   'city', 'state', 'zip', 'capabilities', 'leadTimeDays', 'qualityRating',
   // The join to this printer's price book in the Printer catalog (link/unlink from the card).
   'printerKey'];
+// POST /api/orders/vendors — create one deliberately.
+//
+// There was no way to do this. A vendor could only come into existence as a SIDE
+// EFFECT of writing a PO against it or booking a receipt to it — which means the
+// exact vendor the owner most needs to record, one he is still evaluating and
+// has not bought from yet, could not be recorded at all.
+//
+// That is the DistributorCentral case in full: research a few rug suppliers,
+// collect quotes, pick a winner. Every step before "pick a winner" was
+// unrepresentable, so the losing quotes and the reason vanished, and the next
+// rug job starts the research over.
+//
+// Idempotent on the canonical name: asking for a vendor that already exists
+// returns it rather than minting a duplicate. That matters more here than
+// anywhere — a duplicate Vendor gets its own PO counter, and the two then hand
+// the same PO number to the same printer.
+const createVendor = async (req, res) => {
+  try {
+    const b = req.body || {};
+    const name = String(b.name || '').trim();
+    if (!name) return res.status(400).json({ message: 'Give the vendor a name.' });
+
+    // findByName is the whitespace/case-tolerant lookup the rest of the file uses.
+    // Reusing it is what stops "Heritage" and "heritage " becoming two vendors
+    // with two counters.
+    const existing = await Vendor.findByName(name);
+    if (existing) return res.json({ vendor: existing.toObject ? existing.toObject() : existing, existed: true });
+
+    const vendor = await Vendor.create({
+      name,
+      kinds:        Array.isArray(b.kinds) ? b.kinds.filter(Boolean).map(String) : [],
+      contactName:  String(b.contactName || '').trim(),
+      email:        String(b.email || '').trim(),
+      phone:        String(b.phone || '').trim(),
+      address:      String(b.address || '').trim(),
+      city:         String(b.city || '').trim(),
+      state:        String(b.state || '').trim().toUpperCase().slice(0, 2),
+      zip:          String(b.zip || '').trim(),
+      shipsFromZip: String(b.shipsFromZip || '').trim(),
+      terms:        String(b.terms || '').trim(),
+      freightTerms: String(b.freightTerms || '').trim(),
+      minOrder:     Math.max(0, Number(b.minOrder) || 0),
+      capabilities: Array.isArray(b.capabilities) ? b.capabilities.filter(Boolean).map(String) : [],
+      leadTimeDays: Math.max(0, Number(b.leadTimeDays) || 0),
+      qualityRating: Math.min(5, Math.max(0, Number(b.qualityRating) || 0)),
+      accountNumber: String(b.accountNumber || '').trim(),
+      notes:        String(b.notes || '').trim(),
+      createdVia:   'manual',
+    });
+    res.status(201).json({ vendor: vendor.toObject(), existed: false });
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+};
+
 const updateVendor = async (req, res) => {
   try {
     if (badId(req.params.id)) return res.status(404).json({ message: 'Vendor not found' });
@@ -1521,7 +1576,7 @@ const mergeVendors = async (req, res) => {
 module.exports = {
   listPos, createPo, createPosFromConfirmation, updatePo, deletePo, restorePo, listVendors,
   poCostHistory, poPdf, sendPo, parseUnitCost, nextPoNumber, getVendor, updateVendor,
-  searchVendors, vendorDuplicates, mergeVendors,
+  searchVendors, vendorDuplicates, mergeVendors, createVendor,
 };
 module.exports.renderPoPdfBuffer = renderPoPdfBuffer;   // exported for tests
 // Exported for unit tests — pure helpers for the multi-location ship-split PO output.
