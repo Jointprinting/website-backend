@@ -5,6 +5,17 @@ const cors = require('cors');
 const helmet = require('helmet');
 const fs = require('fs');
 const mongoose = require('mongoose');
+const { claim, finish, fail } = require('./utils/migrationClaim');
+
+// BOOT MIGRATIONS run on every instance, and a deploy boots the new one while
+// the old is still serving — so for a few seconds two processes race. These wrap
+// utils/migrationClaim so a migration is CLAIMED before it runs (the collection's
+// unique _id is the lock) and its outcome is recorded, rather than the old
+// check-then-act where both instances passed the check and both did the work.
+const migrationsCol = () => mongoose.connection.db.collection('migrations');
+const claimMigration = (key) => claim(migrationsCol(), key);
+const finishMigration = (key, result) => finish(migrationsCol(), key, result);
+const failMigration = (key, err) => fail(migrationsCol(), key, err).catch(() => {});
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const { roleFrom } = require('./middleware/auth');
@@ -203,13 +214,12 @@ db.once('open', () => {
   setTimeout(async () => {
     const KEY = 'confirmationPublishedBackfill-v1';
     try {
-      const migrations = mongoose.connection.db.collection('migrations');
-      const done = await migrations.findOne({ _id: KEY });
-      if (done) return;
+      if (!(await claimMigration(KEY))) return;
       const n = await require('./controllers/approval').backfillConfirmationPublished();
-      await migrations.insertOne({ _id: KEY, at: new Date(), modified: n });
+      await finishMigration(KEY, { modified: n });
       console.log(`[approval] confirmation publish-gate backfill: stamped ${n} existing confirmation(s) as published.`);
     } catch (e) {
+      await failMigration(KEY, e);
       console.warn('[approval] confirmation publish backfill failed (will retry next boot):', e.message);
     }
   }, 6_500);
@@ -225,8 +235,7 @@ db.once('open', () => {
     // hard-bounce fix get their dead addresses suppressed retroactively.
     const KEY = 'retriageAutoAcks-v5';
     try {
-      const migrations = mongoose.connection.db.collection('migrations');
-      if (await migrations.findOne({ _id: KEY })) return;
+      if (!(await claimMigration(KEY))) return;
       const triage = require('./controllers/replyTriage');
       const n = await triage.retriageStoredReplies();
       const b = await triage.resweepStoredNdrs();
@@ -234,8 +243,9 @@ db.once('open', () => {
       // the new "don't re-signal a live deal" rule applies to the deals he is
       // ALREADY working rather than only to future ones.
       const e = await triage.backfillEngagedConversations();
-      await migrations.insertOne({ _id: KEY, at: new Date(), demoted: n, bouncesResweeped: b, engagement: e });
+      await finishMigration(KEY, { demoted: n, bouncesResweeped: b, engagement: e });
     } catch (e) {
+      await failMigration(KEY, e);
       console.warn('[triage] re-triage healer failed (will retry next boot):', e.message);
     }
   }, 7_000);
@@ -249,12 +259,12 @@ db.once('open', () => {
   setTimeout(async () => {
     const KEY = 'releaseBounceBlacklist-v1';
     try {
-      const migrations = mongoose.connection.db.collection('migrations');
-      if (await migrations.findOne({ _id: KEY })) return;
+      if (!(await claimMigration(KEY))) return;
       const r = await require('./controllers/outreach').releaseBounceBlacklistedLeads();
-      await migrations.insertOne({ _id: KEY, at: new Date(), ...r });
+      await finishMigration(KEY, { ...r });
       if (r.released) console.log(`[outreach] released ${r.released} lead(s) blacklisted by a bounce (of ${r.scanned} scanned).`);
     } catch (e) {
+      await failMigration(KEY, e);
       console.warn('[outreach] bounce-blacklist release failed (will retry next boot):', e.message);
     }
   }, 9_500);
@@ -267,12 +277,12 @@ db.once('open', () => {
   setTimeout(async () => {
     const KEY = 'clearParkedLeadRegions-v1';
     try {
-      const migrations = mongoose.connection.db.collection('migrations');
-      if (await migrations.findOne({ _id: KEY })) return;
+      if (!(await claimMigration(KEY))) return;
       const r = await require('./services/leadFinderScheduler').clearParkedRegions();
-      await migrations.insertOne({ _id: KEY, at: new Date(), ...r });
+      await finishMigration(KEY, { ...r });
       if (r.cleared) console.log(`[lead-finder] un-parked ${r.cleared} region(s): ${r.regions.join(', ')}`);
     } catch (e) {
+      await failMigration(KEY, e);
       console.warn('[lead-finder] un-park failed (will retry next boot):', e.message);
     }
   }, 11_000);
@@ -294,14 +304,14 @@ db.once('open', () => {
   setTimeout(async () => {
     const KEY = 'printerSeed-v7'; // v1: Heritage · v2: + Print Hybrid (TX), A+ Images (IN), Contract-DTG (PA) · v3: + Branded (NV) · v4: + Garment Gear (FL) · v5: + Blue Moon (OH), Garment Gear email fix · v6: refresh Garment Gear + Blue Moon contacts · v7: A+ Images gains DTG (Direct-to-Garment, qty×size×shade) + capabilities normalized (screen/embroidery/dtg/dtf)
     try {
-      const migrations = mongoose.connection.db.collection('migrations');
-      if (await migrations.findOne({ _id: KEY })) return;
+      if (!(await claimMigration(KEY))) return;
       // Garment Gear (customsales@) + Blue Moon (Johanna/orders@) contacts were
       // corrected after first seed; force-refresh just those two so the fix lands.
       const r = await require('./controllers/printers').seedPrinters({ forceContactsFor: ['garmentgear', 'bluemoon'] });
-      await migrations.insertOne({ _id: KEY, at: new Date(), seeded: r.seeded });
+      await finishMigration(KEY, { seeded: r.seeded });
       console.log(`[printers] network seeded — ${r.seeded} printer(s) from data/printerCatalog-*.json`);
     } catch (e) {
+      await failMigration(KEY, e);
       console.warn('[printers] seed failed (will retry next boot):', e.message);
     }
   }, 9_500);
@@ -313,12 +323,12 @@ db.once('open', () => {
   setTimeout(async () => {
     const KEY = 'recurringExpenseSeed-v1';
     try {
-      const migrations = mongoose.connection.db.collection('migrations');
-      if (await migrations.findOne({ _id: KEY })) return;
+      if (!(await claimMigration(KEY))) return;
       const r = await require('./controllers/recurringExpenses').seedDefaults();
-      await migrations.insertOne({ _id: KEY, at: new Date(), seeded: r.seeded });
+      await finishMigration(KEY, { seeded: r.seeded });
       console.log(`[finances] recurring-expense stack seeded — ${r.seeded} subscription(s)`);
     } catch (e) {
+      await failMigration(KEY, e);
       console.warn('[finances] recurring-expense seed failed (will retry next boot):', e.message);
     }
   }, 9_800);
@@ -329,14 +339,14 @@ db.once('open', () => {
   setTimeout(async () => {
     const KEY = 'recurringExpenseCleanup-planetfitness-v1';
     try {
-      const migrations = mongoose.connection.db.collection('migrations');
-      if (await migrations.findOne({ _id: KEY })) return;
+      if (!(await claimMigration(KEY))) return;
       const r = await require('./models/RecurringExpense').updateMany(
         { name: 'Planet Fitness' },
         { $set: { archived: true, archivedAt: new Date(), archivedReason: 'not-business', active: false } });
-      await migrations.insertOne({ _id: KEY, at: new Date(), archived: r.modifiedCount });
+      await finishMigration(KEY, { archived: r.modifiedCount });
       console.log(`[finances] archived Planet Fitness (${r.modifiedCount}) — not a business expense`);
     } catch (e) {
+      await failMigration(KEY, e);
       console.warn('[finances] Planet Fitness cleanup failed (will retry next boot):', e.message);
     }
   }, 10_200);
@@ -350,15 +360,15 @@ db.once('open', () => {
     // dupe merged (its 'CDOOB-T / CDOOB-ST' doc archives below — no deletes).
     const KEY = 'promoCatalogSeed-v3';
     try {
-      const migrations = mongoose.connection.db.collection('migrations');
-      if (await migrations.findOne({ _id: KEY })) return;
+      if (!(await claimMigration(KEY))) return;
       const r = await require('./controllers/promoProducts').seedPromoCatalog();
       await require('./models/PromoProduct').updateOne(
         { sku: 'CDOOB-T / CDOOB-ST', variant: '' },
         { $set: { archived: true, archivedAt: new Date() } });
-      await migrations.insertOne({ _id: KEY, at: new Date(), seeded: r.seeded });
+      await finishMigration(KEY, { seeded: r.seeded });
       console.log(`[promo] catalog seeded — ${r.seeded} product(s) from data/promoCatalog.json`);
     } catch (e) {
+      await failMigration(KEY, e);
       console.warn('[promo] catalog seed failed (will retry next boot):', e.message);
     }
   }, 9_000);
@@ -378,12 +388,12 @@ db.once('open', () => {
   setTimeout(async () => {
     const KEY = 'confirmationCogsBackfill-v1';
     try {
-      const migrations = mongoose.connection.db.collection('migrations');
-      if (await migrations.findOne({ _id: KEY })) return;
+      if (!(await claimMigration(KEY))) return;
       const n = await require('./controllers/orders').backfillConfirmationCogs();
-      await migrations.insertOne({ _id: KEY, at: new Date(), fixed: n });
+      await finishMigration(KEY, { fixed: n });
       if (n) console.log(`[orders] confirmation-COGS backfill: corrected the estimate on ${n} order(s).`);
     } catch (e) {
+      await failMigration(KEY, e);
       console.warn('[orders] confirmation-COGS backfill failed (will retry next boot):', e.message);
     }
   }, 7_500);
