@@ -83,6 +83,21 @@ const PurchaseOrderSchema = new mongoose.Schema({
   items: [{
     title:   { type: String, default: '' },           // "Glass Ashtrays, 100 units"
     details: [{ type: String }],                       // ["$3.02/unit * 100 units = $302", "$40 setup"]
+    // The SAME numbers, structured. utils/poCost.buildPoLines already computes
+    // every one of these to render the strings above, and then throws them away
+    // — which is why parseUnitCost exists to regex them back out of the prose it
+    // just wrote. Keeping them means per-unit cost, quantity and setup are
+    // readable without parsing English, and a PO can be reconciled against the
+    // quote it came from.
+    //
+    // All optional with no default beyond the schema's: an existing PO simply
+    // has them empty and every current reader still works off `details`.
+    qty:       { type: Number, default: null },
+    unitCost:  { type: Number, default: null },
+    setupCost: { type: Number, default: null },
+    // Which confirmation item this line came from, so a PO can be re-derived or
+    // diffed against the order rather than re-typed.
+    lineKey:   { type: String, default: '' },
     _id: false,
   }],
 
@@ -95,6 +110,46 @@ const PurchaseOrderSchema = new mongoose.Schema({
   grandTotal: { type: Number, default: 0 },
 
   notes: { type: String, default: '' },                // free-form extra section
+
+  // ── Lifecycle ──────────────────────────────────────────────────────────────
+  // A PO had no state at all. Emailing one to a printer wrote NOTHING to the
+  // document, so "what is outstanding at a printer right now" was unanswerable,
+  // and Vendor.leadTimeDays / qualityRating stayed hand-typed guesses with zero
+  // readers because nothing measured them.
+  //
+  // `status` defaults to 'draft' and every existing PO reads as a draft, which
+  // is true — none of them was ever marked sent. Nothing branches on it that did
+  // not branch before.
+  status: {
+    type: String,
+    default: 'draft',
+    enum: ['draft', 'sent', 'acknowledged', 'in_production', 'shipped', 'received', 'cancelled'],
+    index: true,
+  },
+  sentAt:         { type: Date, default: null },
+  sentTo:         { type: String, default: '' },      // the address it actually went to
+  sentBy:         { type: String, default: '' },      // AdminUser _id, '' = owner
+  sendCount:      { type: Number, default: 0 },       // re-sends are a real signal
+  acknowledgedAt: { type: Date, default: null },
+  // Promised vs actual is the whole point: the difference IS the printer's
+  // measured lead time and on-time record, instead of a number typed once.
+  promisedShipDate: { type: Date, default: null },
+  actualShipDate:   { type: Date, default: null },
+  trackingNumber:   { type: String, default: '' },
+  receivedAt:       { type: Date, default: null },
+  // When the money left. The owner's rule: the lifecycle "should coincide with
+  // when we pay it". Links to the ledger row rather than duplicating the amount.
+  paidAt:           { type: Date, default: null },
+  paidTxnId:        { type: String, default: '' },
+  // Append-only trail of the transitions above, so a disputed delivery date has
+  // a record instead of a recollection.
+  events: [{
+    kind: { type: String, default: '' },   // 'sent' | 'acknowledged' | 'shipped' | 'received' | 'paid' | 'cancelled'
+    at:   { type: Date, default: Date.now },
+    by:   { type: String, default: '' },
+    note: { type: String, default: '' },
+    _id: false,
+  }],
 
   // Provenance + reversibility for the "Rebuild printers from Drive" reconcile
   // (controllers/vendorRebuild). `source` distinguishes an app-built PO ('' / 'app')
@@ -114,6 +169,9 @@ const PurchaseOrderSchema = new mongoose.Schema({
 // Per-vendor PO lookups + the numbering/clash check are the hot path here, and
 // they are always "this vendor, newest first".
 PurchaseOrderSchema.index({ vendorKey: 1, archived: 1, poNumber: -1 });
+// "What is outstanding at a printer right now" — the question the lifecycle
+// fields exist to answer.
+PurchaseOrderSchema.index({ archived: 1, status: 1, promisedShipDate: 1 });
 
 const { attachVendorKeySync } = require('../utils/vendorKeySync');
 

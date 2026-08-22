@@ -168,7 +168,22 @@ function buildPoLines(costLines, opts) {
     (Array.isArray(extra) ? extra : [extra]).filter(Boolean).forEach((d) => details.push(d));
     if (unitCost && qty) details.push(`${money(unitCost)}/unit * ${qty} units = ${money(unitCost * qty)}`);
     if (setupCost) details.push(`${money(setupCost)} setup`);
-    items.push({ title, details });
+    // Keep the numbers, not just the sentence about them.
+    //
+    // These three were computed right here and then thrown away, so the only
+    // record of a PO's per-unit cost was English — which is why parseUnitCost
+    // exists to regex it back out of prose this function had just written. The
+    // strings are unchanged and every current reader still works off `details`;
+    // these ride alongside so a PO can be reconciled against the quote it came
+    // from without parsing money out of a label.
+    items.push({
+      title,
+      details,
+      qty: qty || null,
+      unitCost: unitCost || null,
+      setupCost: setupCost || null,
+      lineKey: cl.lineKey || cl.lid || '',
+    });
 
     if (unitCost && qty) {
       charges.push({ label: `${colorTitle}: ${money(unitCost)}/unit * ${qty} units`, amount: unitCost * qty });

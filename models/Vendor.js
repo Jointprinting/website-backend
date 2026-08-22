@@ -56,6 +56,38 @@ const VendorSchema = new mongoose.Schema({
   leadTimeDays:  { type: Number, default: 0 },     // typical turnaround in business days (0 = unset)
   qualityRating: { type: Number, default: 0 },     // owner score 1–5 (0 = unrated)
 
+  // WHAT this counterparty is to the business. One real company can be more than
+  // one thing — a shop that decorates AND sells blanks — so this is a list, not
+  // a type.
+  //
+  // Empty is the honest default for every existing row: they were all created as
+  // a side effect of a PO or a booked receipt, and nothing recorded what they
+  // were. Nothing branches on an empty list, so no existing behaviour moves.
+  //
+  // 'blank_supplier' is the one worth naming immediately: S&S is the largest
+  // recurring supplier in the business and is not modelled as a vendor at all —
+  // it appears only accidentally, when a receipt mints a name-only row.
+  kinds: {
+    type: [String],
+    default: [],
+    // Kept open rather than enum'd: the next one is a rug manufacturer nobody
+    // has thought of a category for yet, and rejecting it at the schema is how
+    // the owner ends up unable to record the supplier he is evaluating.
+  },
+  // Payment + freight terms, so a PO can state them and the ledger can expect
+  // them. Free text on purpose — these arrive as whatever the vendor's sheet said
+  // ("Net 30", "50% deposit, balance before ship", "FOB origin").
+  terms:        { type: String, default: '' },
+  freightTerms: { type: String, default: '' },
+  minOrder:     { type: Number, default: 0 },      // 0 = none stated
+  // Where this vendor ships FROM, when it isn't their billing address. Freight is
+  // a leg between two real places.
+  shipsFromZip: { type: String, default: '' },
+  // How this record came to exist. 'po' / 'receipt' is the historical accident;
+  // 'manual' is a vendor the owner deliberately added — including one he is still
+  // evaluating and has never bought from, which was impossible before.
+  createdVia:   { type: String, default: '' },
+
   // The JOIN to this printer's PRICE BOOK in the Printer catalog (models/Printer,
   // keyed by slug `key`). A real printer is ONE shop but lives in TWO records: this
   // Vendor doc (its money — POs, spend, receipts, keyed by name) and a Printer doc
