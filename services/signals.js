@@ -690,11 +690,60 @@ async function siteEditsWaiting() {
   ];
 }
 
+// ── Browser crashes ──────────────────────────────────────────────────────────
+// A render crash on /approve is being read by a client trying to approve an
+// order, and until reports existed the owner heard about it only by phone. So a
+// CLIENT-FACING crash is critical and everything else is a warning: one is a
+// customer stuck mid-transaction, the other is the owner's own tool misbehaving
+// while he is sitting in front of it.
+//
+// Grouped by fingerprint upstream, so the count is DISTINCT problems and the
+// label carries total occurrences — "3 problems, 41 times" is the shape of the
+// question, and one bug hit forty times is still one thing to fix.
+async function browserCrashes() {
+  const ClientError = require('../models/ClientError');
+  const rows = await ClientError.find({ resolved: false })
+    .select('message route clientFacing count lastSeen').sort({ lastSeen: -1 }).limit(ITEM_CAP).lean();
+  if (!rows.length) return [];
+
+  const out = [];
+  // Same item shape every other group uses — `name` is the line, `metric` the
+  // number on the right — so the hub renders these with no special case.
+  const shape = (r) => ({
+    _id: String(r._id),
+    name: `${r.route || '/'} \u2014 ${r.message}`,
+    metric: `${r.count}\u00d7`,
+    metricLevel: r.clientFacing ? 'danger' : 'warn',
+  });
+
+  const facing = rows.filter((r) => r.clientFacing);
+  if (facing.length) {
+    const hits = facing.reduce((t, r) => t + (r.count || 0), 0);
+    out.push({
+      id: 'crashes_client', severity: 'critical', kind: 'crash',
+      label: `${facing.length} crash${facing.length === 1 ? '' : 'es'} on a page a CLIENT is using`
+        + (hits > facing.length ? ` \u00b7 ${hits} times` : ''),
+      count: facing.length, items: facing.map(shape),
+    });
+  }
+  const own = rows.filter((r) => !r.clientFacing);
+  if (own.length) {
+    const hits = own.reduce((t, r) => t + (r.count || 0), 0);
+    out.push({
+      id: 'crashes_studio', severity: 'warning', kind: 'crash',
+      label: `${own.length} crash${own.length === 1 ? '' : 'es'} in the Studio`
+        + (hits > own.length ? ` \u00b7 ${hits} times` : ''),
+      count: own.length, items: own.map(shape),
+    });
+  }
+  return out;
+}
+
 // buildSignals — compose all sources; a thrown source drops only its group.
 async function buildSignals({ now = new Date() } = {}) {
   const sources = [unhandledInquiries(now), ordersAging(now), followUps(now), quotesAwaiting(now),
     awaitingConfirmation(now), preorderDropsReady(now), invoiceGap(now),
-    siteEditsWaiting(), outreachReplies(now), lookbookFeedback(now)];
+    siteEditsWaiting(), outreachReplies(now), lookbookFeedback(now), browserCrashes()];
   const [settled, pulse] = await Promise.all([
     Promise.allSettled(sources),
     hubPulse(now).catch(() => null), // pulse is garnish — never sinks the feed
@@ -710,6 +759,7 @@ async function buildSignals({ now = new Date() } = {}) {
 
 module.exports = {
   buildSignals,
+  browserCrashes,
   // pure helpers exported for tests
   classifyOrderAge,
   bucketFollowUps,

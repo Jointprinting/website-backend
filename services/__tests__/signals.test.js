@@ -283,3 +283,85 @@ test('bucketSiteEdits totals open (non-done) edits, one item per site with a bac
   assert.equal(items[1].name, 'Main St Deli');              // falls back to companyName
   assert.deepStrictEqual(bucketSiteEdits([]), { total: 0, items: [] }); // clean day
 });
+
+// ---------------------------------------------------------------------------
+// BROWSER CRASHES on the hub.
+//
+// The judgement being pinned: a crash on a CLIENT-facing page is critical and a
+// crash in the Studio is a warning. Those are genuinely different situations —
+// one is a customer stuck mid-approval with no way to reach you, the other is
+// the owner's own tool misbehaving while he is sitting in front of it. Ranking
+// them the same buries the one that costs an order.
+// ---------------------------------------------------------------------------
+const { browserCrashes: _browserCrashes } = require('../signals');
+const ClientError = require('../../models/ClientError');
+
+// Stand in for the query chain without a database.
+function stubClientErrors(t, rows) {
+  t.mock.method(ClientError, 'find', () => ({
+    select: () => ({ sort: () => ({ limit: () => ({ lean: async () => rows }) }) }),
+  }));
+}
+
+test('crashes: a clean week produces no signal at all', async (t) => {
+  stubClientErrors(t, []);
+  assert.deepEqual(await _browserCrashes(), []);
+});
+
+test('crashes: a client-facing crash is CRITICAL', async (t) => {
+  stubClientErrors(t, [
+    { _id: 'a', route: '/approve/:token', message: 'x is not a function', clientFacing: true, count: 3 },
+  ]);
+  const [g] = await _browserCrashes();
+  assert.equal(g.severity, 'critical');
+  assert.match(g.label, /a CLIENT is using/);
+  assert.equal(g.count, 1);
+});
+
+test('crashes: a Studio-only crash is a warning, not a crisis', async (t) => {
+  stubClientErrors(t, [
+    { _id: 'b', route: '/studio', message: 'boom', clientFacing: false, count: 1 },
+  ]);
+  const [g] = await _browserCrashes();
+  assert.equal(g.severity, 'warning');
+  assert.match(g.label, /in the Studio/);
+});
+
+test('crashes: both kinds at once are two separate groups, client first', async (t) => {
+  stubClientErrors(t, [
+    { _id: 'a', route: '/approve/:token', message: 'boom', clientFacing: true, count: 2 },
+    { _id: 'b', route: '/studio', message: 'bang', clientFacing: false, count: 5 },
+  ]);
+  const gs = await _browserCrashes();
+  assert.equal(gs.length, 2);
+  assert.equal(gs[0].severity, 'critical');
+  assert.equal(gs[1].severity, 'warning');
+});
+
+test('crashes: the count is DISTINCT problems, the label carries occurrences', async (t) => {
+  // One bug hit forty times is one thing to fix — the badge must not read 40.
+  stubClientErrors(t, [
+    { _id: 'a', route: '/approve/:token', message: 'boom', clientFacing: true, count: 40 },
+  ]);
+  const [g] = await _browserCrashes();
+  assert.equal(g.count, 1, 'one problem');
+  assert.match(g.label, /40 times/);
+});
+
+test('crashes: a single occurrence does not say "1 times"', async (t) => {
+  stubClientErrors(t, [
+    { _id: 'a', route: '/approve/:token', message: 'boom', clientFacing: true, count: 1 },
+  ]);
+  const [g] = await _browserCrashes();
+  assert.ok(!/times/.test(g.label), g.label);
+});
+
+test('crashes: items carry the page and the message — that IS the diagnosis', async (t) => {
+  stubClientErrors(t, [
+    { _id: 'a', route: '/approve/:token', message: 'Cannot read qty of undefined', clientFacing: true, count: 2 },
+  ]);
+  const [g] = await _browserCrashes();
+  assert.equal(g.items[0].name, '/approve/:token — Cannot read qty of undefined');
+  assert.equal(g.items[0].metric, '2×');
+  assert.equal(g.items[0].metricLevel, 'danger');
+});
