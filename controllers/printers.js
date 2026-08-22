@@ -214,3 +214,56 @@ module.exports = {
   listPrinters, getPrinter, seedPrinters,
   createPrinter, updatePrinter, putCatalogSection, archiveCatalogSection,
 };
+
+// POST /api/printers/:key/catalog/:section/extract — READ a printer's price
+// sheet and PROPOSE a section. Writes nothing.
+//
+// Getting a price book in used to mean emailing the PDF to a Claude session,
+// having it hand-write data/printerCatalog-<key>.json, committing, and waiting
+// for a deploy. That is why 7 of ~16 counterparties have one — not because the
+// others don't send price lists, but because each one cost a code change. A
+// printer with no price book can never be ranked on cost, so "cheapest" quietly
+// degrades to "nearest".
+//
+// This returns a PROPOSAL plus an honest account of what could not be read. The
+// owner reviews it against the real sheet and confirms, which goes through the
+// existing PUT — the same preview-then-confirm shape every other tool that
+// touches live data uses here. Nothing is saved by this endpoint.
+async function extractCatalogSection(req, res) {
+  try {
+    const key = String(req.params.key || '').toLowerCase();
+    const sectionKey = String(req.params.section || '').trim();
+    const p = await Printer.findOne({ key });
+    if (!p) return res.status(404).json({ message: 'Printer not found.' });
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ message: 'Attach the price list (PDF or a photo of the sheet).' });
+    }
+
+    const ingest = require('../services/priceBookIngest');
+    const out = await ingest.extractSection({
+      buffer: req.file.buffer,
+      mime: req.file.mimetype,
+      section: sectionKey,
+      printerName: p.name || key,
+    });
+    if (!out.ok) return res.status(out.status || 400).json({ message: out.message });
+
+    // Whether the PROPOSAL would even be accepted by the save path — checked here
+    // so the owner is never shown something they cannot confirm.
+    const wouldSave = validateSection(sectionKey, out.proposed);
+
+    res.json({
+      section: sectionKey,
+      printer: { key, name: p.name || key },
+      replaces: !!(p.catalog && p.catalog[sectionKey]),
+      proposed: out.proposed,
+      problems: [...out.validation.problems, ...(wouldSave.ok ? [] : [wouldSave.error])],
+      warnings: out.validation.warnings,
+      stats: { prices: out.validation.cells, blanks: out.validation.nulls },
+      model: out.model,
+      usage: out.usage,
+    });
+  } catch (e) { res.status(400).json({ message: e.message }); }
+}
+
+module.exports.extractCatalogSection = extractCatalogSection;
