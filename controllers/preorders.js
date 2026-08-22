@@ -17,6 +17,7 @@ const MAX_ITEMS = 20;
 const MAX_QTY = 10000;
 const DEFAULT_EXPIRES_DAYS = 14;
 
+const MAX_COMMITMENTS = 5000;   // ceiling on a public, unauthenticated $push
 const MAX_VARIANTS = 6;   // owner pitches ~3 brands per design; leave headroom
 const money2 = (v) => Math.max(0, Math.round((Number(v) || 0) * 100) / 100);
 
@@ -269,18 +270,42 @@ async function getPublicPreorder(req, res) {
   }
 }
 
+// PURE — exported for tests. The filter half of the atomic commit. Every clause
+// is load-bearing:
+//   token          — the link being committed to
+//   revokedAt/$or  — open-ness re-checked AT WRITE TIME, closing the gap between
+//                    the isOpen() read above and this write
+//   commitments.N  — a ceiling on a public, unauthenticated $push. Index N-1 not
+//                    existing is how you ask "is this array shorter than N".
+//   $ne on the id  — the replay guard. Mongo evaluates this with the update as
+//                    one operation, so two simultaneous retries of the same
+//                    submission cannot both match.
+function commitFilter(token, submissionId, now) {
+  return {
+    token,
+    revokedAt: null,
+    $or: [{ expiresAt: null }, { expiresAt: { $gt: now } }],
+    [`commitments.${MAX_COMMITMENTS - 1}`]: { $exists: false },
+    'commitments.submissionId': { $ne: submissionId },
+  };
+}
+
 // POST /api/preorder/:token/commit — one person's commitment. Body:
 // { name, contact, note, entries: [{ itemId, size, qty }] }.
 async function commitPreorder(req, res) {
   try {
     const token = String(req.params.token || '').trim();
-    const link = await PreorderLink.findOne({ token });
+    let link = await PreorderLink.findOne({ token });
     if (!link) return res.status(404).json({ message: 'This link is invalid or no longer available.' });
     if (!link.isOpen()) return res.status(410).json({ message: 'This preorder is closed — reach out to your contact if you still need in.' });
 
     const b = req.body || {};
     const name = String(b.name || '').trim().slice(0, 80);
     if (!name) return res.status(400).json({ message: 'Add your name so the order knows who this is for.' });
+    // The browser sends one id per filled-out form. Absent (an older page still
+    // open in someone's tab), a fresh one per request reproduces exactly the old
+    // behaviour — no dedupe, but no regression either.
+    const submissionId = String(b.submissionId || '').trim().slice(0, 64) || crypto.randomBytes(12).toString('hex');
     const contact = String(b.contact || '').trim().slice(0, 120);
     const note = String(b.note || '').trim().slice(0, 300);
     const byId = new Map(link.items.map((it) => [it.id, it]));
@@ -311,10 +336,46 @@ async function commitPreorder(req, res) {
       .slice(0, 40);
     if (!entries.length) return res.status(400).json({ message: 'Pick at least one quantity (and a brand where the item offers a choice).' });
 
-    link.commitments.push(...entries.map((e) => ({ name, contact, note, ...e })));
-    await link.save();
+    // ATOMIC + IDEMPOTENT.
+    //
+    // What this replaces: findOne -> commitments.push -> save(). Two failures,
+    // both reachable from an ordinary phone on the sidewalk outside a dispensary:
+    //
+    //   1. A double-tap (or a retry after a timeout that actually SUCCEEDED)
+    //      appended the same person's quantities twice. Nothing downstream can
+    //      tell the difference from two real commitments, and `rollIn` orders
+    //      that many blanks for real.
+    //   2. save() writes the WHOLE commitments array as it was read, so two
+    //      people committing in the same second meant the second write erased
+    //      the first person's commitment entirely — silently, no error.
+    //
+    // One conditional $push fixes both. Mongo evaluates filter and update as a
+    // single operation, so: the submissionId guard makes a replay a no-op, $push
+    // appends without reading, and folding the open-ness check into the FILTER
+    // closes the last gap (a link revoked between the read above and this write).
+    const upd = await PreorderLink.updateOne(
+      commitFilter(token, submissionId, new Date()),
+      { $push: { commitments: { $each: entries.map((e) => ({ name, contact, note, submissionId, ...e })) } } },
+    );
 
-    // Ecosystem: the linked project hears about it in its activity feed.
+    // Nothing matched. Re-read to say WHICH of the three reasons it was — and in
+    // the replay case answer as if this request were the one that landed, because
+    // from the caller's side it was.
+    const fresh = await PreorderLink.findOne({ token });
+    if (!fresh) return res.status(404).json({ message: 'This link is invalid or no longer available.' });
+    if (!upd.matchedCount) {
+      const replay = (fresh.commitments || []).some((c) => c.submissionId && c.submissionId === submissionId);
+      if (replay) {
+        const p = publicProgress(fresh, tally(fresh.commitments));
+        return res.status(200).json({ ok: true, duplicate: true, moq: p.moq, moqReached: p.moqReached, tally: p.tally });
+      }
+      if (!fresh.isOpen()) return res.status(410).json({ message: 'This preorder just closed — reach out to your contact if you still need in.' });
+      return res.status(409).json({ message: 'This drop has reached the maximum number of commitments.' });
+    }
+    link = fresh;
+
+    // Ecosystem: the linked project hears about it in its activity feed. Inside
+    // the matched branch, so a replay never posts a second activity line either.
     if (link.orderId) {
       const units = entries.reduce((t, e) => t + e.qty, 0);
       await Order.updateOne(
@@ -376,5 +437,6 @@ async function getClientPreorder(req, res) {
 module.exports = {
   createPreorder, listPreorders, updatePreorder, preorderToOrder,
   getPublicPreorder, commitPreorder, getClientPreorder,
-  _tally: tally, _cleanItems, _publicProgress: publicProgress,
+  _tally: tally,
+  _commitFilter: commitFilter, _cleanItems, _publicProgress: publicProgress,
 };

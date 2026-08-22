@@ -128,3 +128,87 @@ test('tally: an un-priced (legacy) drop has revenue 0 — unchanged behavior', (
   assert.equal(t.revenue, 0);
   assert.equal(t.byItem.x.revenue, 0);
 });
+
+// ---------------------------------------------------------------------------
+// THE SCHEMA REGRESSION.
+//
+// Everything above passes `variants` / `byVariant` straight into the pure
+// helpers, so the suite was fully green while the feature was dead: the item
+// sub-schema declared only id/label/sizes, so Mongoose strict threw the whole
+// variants array away on save. The owner could build a priced drop in the
+// Studio, save it, and get back an un-priced one — every commitment booking
+// unitPrice 0 and the per-brand breakdown permanently empty.
+//
+// Cleaning it correctly was never the problem. PERSISTING it was. So this test
+// goes through the real model.
+// ---------------------------------------------------------------------------
+const PreorderLink = require('../../models/PreorderLink');
+
+test('a priced drop SURVIVES the model — variants are not dropped by strict mode', () => {
+  const doc = new PreorderLink({
+    token: 'tok', title: 'Fall drop',
+    items: [{
+      id: 'tee', label: 'Staff tee', sizes: ['S', 'M'],
+      variants: [
+        { id: 'v1', name: 'Bella 3001', price: 22.5, colors: ['Black', 'Navy'] },
+        { id: 'v2', name: 'Gildan 5000', price: 18, colors: ['Black'] },
+      ],
+    }],
+  });
+  const item = doc.toObject().items[0];
+  assert.equal(item.variants.length, 2, 'variants must persist — this is the bug');
+  assert.equal(item.variants[0].name, 'Bella 3001');
+  assert.equal(item.variants[0].price, 22.5);
+  assert.deepEqual(item.variants[0].colors, ['Black', 'Navy']);
+});
+
+test('a legacy drop (no variants) still round-trips as an empty list, not undefined', () => {
+  const doc = new PreorderLink({
+    token: 'tok2', title: 'Old drop',
+    items: [{ id: 'hat', label: 'Hat', sizes: [] }],
+  });
+  assert.deepEqual(doc.toObject().items[0].variants, []);
+});
+
+test('a commitment carries its submissionId — the idempotency key must persist too', () => {
+  const doc = new PreorderLink({
+    token: 'tok3', title: 'D',
+    items: [{ id: 'tee', label: 'Tee' }],
+    commitments: [{ name: 'Dana', itemId: 'tee', qty: 2, submissionId: 'abc-123' }],
+  });
+  assert.equal(doc.toObject().commitments[0].submissionId, 'abc-123');
+});
+
+// ---------------------------------------------------------------------------
+// The atomic commit filter. The endpoint is public and unauthenticated, so each
+// clause is a guard someone can reach from a phone.
+// ---------------------------------------------------------------------------
+const { _commitFilter } = require('../preorders');
+
+test('commitFilter: a replay of the same submissionId cannot match', () => {
+  const now = new Date('2026-08-22T12:00:00Z');
+  const f = _commitFilter('tok', 'sub-1', now);
+  assert.deepEqual(f['commitments.submissionId'], { $ne: 'sub-1' },
+    'without this a double-tap appends the same quantities twice');
+});
+
+test('commitFilter: open-ness is re-checked at WRITE time, not just at read time', () => {
+  const now = new Date('2026-08-22T12:00:00Z');
+  const f = _commitFilter('tok', 'sub-1', now);
+  assert.equal(f.revokedAt, null, 'a revoked link must not accept a commitment');
+  assert.deepEqual(f.$or, [{ expiresAt: null }, { expiresAt: { $gt: now } }],
+    'null expiry = open forever; otherwise it must still be in the future');
+});
+
+test('commitFilter: the commitments array has a ceiling a public caller cannot push past', () => {
+  const f = _commitFilter('tok', 'sub-1', new Date());
+  const ceiling = Object.keys(f).find((k) => /^commitments\.\d+$/.test(k));
+  assert.ok(ceiling, 'there must be an array-length guard');
+  assert.deepEqual(f[ceiling], { $exists: false });
+  // "index N-1 does not exist" IS the "shorter than N" test.
+  assert.ok(Number(ceiling.split('.')[1]) > 0);
+});
+
+test('commitFilter: the token is always scoped — never a bare update', () => {
+  assert.equal(_commitFilter('tok-xyz', 's', new Date()).token, 'tok-xyz');
+});
