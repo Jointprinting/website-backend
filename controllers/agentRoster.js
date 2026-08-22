@@ -91,7 +91,8 @@ async function loadRoster({ includeDeparted = true } = {}) {
       const money = orderMoney(o, ledger[key]);
       const ck = o.companyKey || '';
       const kind = originKind({ sourcedByAgent: true, priorOrdersForCompany: ck ? (seen[ck] || 0) : 0 });
-      const state = earnedState(o);
+      // Same rule as the agent's own statement — see services/commission.
+      const state = earnedState(o, money);
       const calc = commissionForOrder({
         profit: money.profit, kind, lifetimeProfit, selfOrdersCompleted: selfDone, config: cfg, state,
       });
