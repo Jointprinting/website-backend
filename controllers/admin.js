@@ -299,3 +299,41 @@ module.exports = {
   listAgentOrders, listAgentLeads, reassignAgentBook,
   computeAgentStats, publicAgent, currentMonth, // exported for P4 + tests
 };
+
+// GET /api/admin/migrations — the boot-migration ledger.
+//
+// Nine one-time migrations run at boot. Until now the only trace of one was a
+// console line in a rolling buffer nobody reads, so a migration failing on every
+// single deploy looked exactly like a migration that had already succeeded. Now
+// each carries running / done / failed, when it started and finished, how many
+// attempts it took, what it changed, and the error if it broke.
+//
+// Owner-only (the router is behind requireOwner). Read-only — it never runs one.
+const listMigrations = async (req, res) => {
+  try {
+    const mongoose = require('mongoose');
+    const rows = await mongoose.connection.db.collection('migrations')
+      .find({}).sort({ _id: 1 }).toArray();
+    const shaped = rows.map((r) => ({
+      key: r._id,
+      // A marker written before states existed recorded completed work — say so
+      // rather than reporting it as an unknown state.
+      state: r.state || 'done (legacy)',
+      startedAt: r.startedAt || r.at || null,
+      finishedAt: r.finishedAt || r.at || null,
+      attempts: r.attempts || 1,
+      result: r.result || null,
+      error: r.error || '',
+    }));
+    res.json({
+      migrations: shaped,
+      counts: {
+        total: shaped.length,
+        failed: shaped.filter((m) => m.state === 'failed').length,
+        running: shaped.filter((m) => m.state === 'running').length,
+      },
+    });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+module.exports.listMigrations = listMigrations;

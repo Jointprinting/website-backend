@@ -14,10 +14,14 @@ const {
 } = require('../controllers/agentRoster');
 const {
   listAgents, agentCount, createAgent, updateAgent, resetAgentPassword, reassignAgentBook,
-  listAgentOrders, listAgentLeads,
+  listAgentOrders, listAgentLeads, listMigrations,
 } = require('../controllers/admin');
 
 router.use(requireOwner);
+
+// The boot-migration ledger: what has been run against this database, whether it
+// finished, and why it didn't. Read-only.
+router.get('/migrations', listMigrations);
 
 // Fixed paths first, declared BEFORE any '/agents/:id' route so a literal
 // segment can never be swallowed as an id.
