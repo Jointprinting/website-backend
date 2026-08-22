@@ -4,6 +4,7 @@ const router  = express.Router();
 const { requireAdmin } = require('../middleware/auth');
 const poCtl = require('../controllers/purchaseOrders');
 const sourcing = require('../controllers/sourcing');
+const businessStats = require('../controllers/businessStats');
 const {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder, restoreOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
@@ -53,6 +54,10 @@ router.post('/merge-company',             mergeCompany);
 // UPS auto-delivered on demand (STATIC — above '/:id'). 503 until keys are set.
 router.post('/ups-check',                 upsCheck);
 router.get('/dashboard',                  dashboard);
+// Read-only rollups across everything: most-quoted / most-ordered products, win
+// rate per lead source, measured printer performance, reorder rate. Every number
+// comes from data already stored — nothing here collects anything new.
+router.get('/stats/business',             businessStats.businessStats);
 router.get('/attention',                  attention);
 router.get('/analytics',                  analytics);
 router.get('/clients-summary',            clientsSummary);
