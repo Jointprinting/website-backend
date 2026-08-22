@@ -93,7 +93,27 @@ const ContactSubmissionSchema = new mongoose.Schema({
 
   createdAt:    { type: Date, default: Date.now, index: true },
   updatedAt:    { type: Date, default: Date.now },
+
+  // ── Archive, not delete ────────────────────────────────────────────────────
+  // This was the last collection in the system that HARD-deleted, and of all of
+  // them it is the worst candidate: a contact submission is an inbound LEAD —
+  // the top of the funnel, the record that someone asked. Orders, POs, vendors,
+  // clients, deals, transactions, logos and mockups all archive; this one was
+  // dropping the row.
+  //
+  // It also carries data captured nowhere else — the in-hands date the lead
+  // typed, the quantity they asked for, which brand they came through — so
+  // deleting it loses the only structured record of the original ask.
+  archived:       { type: Boolean, default: false, index: true },
+  archivedAt:     { type: Date, default: null },
+  archivedReason: { type: String, default: '' },
 });
+
+// Every read excludes archived automatically, the same guard Transaction and
+// ClientLogo use. There are read sites across submissions, signals and the
+// order bridge, and hand-filtering each is how one missed site resurrects a
+// deleted lead in a hub badge.
+require('../utils/archiveScope').applyLiveScope(ContactSubmissionSchema);
 
 ContactSubmissionSchema.pre('save', function (next) {
   this.updatedAt = new Date();
