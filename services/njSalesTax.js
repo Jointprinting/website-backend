@@ -7,11 +7,18 @@
 // This does NOT file anything — it pulls the orders that charged NJ sales tax
 // in the period and totals them so the owner can double-check against the
 // state portal in seconds. PURE date/tax math here; the DB query lives in the
-// finances controller. Dates are treated in ET (the owner's books) via a
-// fixed −5/−4 offset kept simple: we bucket on calendar month/day, which is
-// unambiguous for quarter boundaries.
+// finances controller.
+//
+// EVERY calendar decision below is made in ET, the owner's books — and it has to
+// be built that way rather than assumed. This file used to say it reasoned in ET
+// while actually calling `date.getMonth()` and `new Date(y, m, d)`, which resolve
+// in the SERVER's zone. Production runs UTC, which is ahead of Eastern, so a sale
+// rung up at 9pm ET on March 31 is an April 1 instant to the server and filed
+// under Q2. The quarter boundary is exactly where a state filing goes wrong, and
+// it's the one moment of the year the shop is most likely to be selling.
 
 const { computeLocationTax, isTaxCustomLine, computeConfirmationTotals, confTaxableSubtotal, customLineValue } = require('../models/Order');
+const { etYmd, etInstant } = require('../utils/time');
 
 const round2 = (v) => Math.round(((Number(v) || 0) + Number.EPSILON) * 100) / 100;
 
@@ -32,12 +39,13 @@ const GRACE_AFTER_DAYS = 5;
 // due date rolls into January of the FOLLOWING year.
 function dueDateFor(spec, salesYear) {
   const dueYear = spec.q === 3 ? salesYear + 1 : salesYear;
-  return new Date(dueYear, spec.dueMonth, spec.dueDay, 0, 0, 0);
+  // ET midnight on the due date — not the server's midnight.
+  return etInstant(dueYear, spec.dueMonth + 1, spec.dueDay);
 }
 
 // The quarter whose sales a given date belongs to.
 function quarterOf(date) {
-  const m = date.getMonth();
+  const m = etYmd(date).m - 1;   // the ET calendar month this sale happened in
   return QUARTERS.find((s) => m >= s.startMonth && m <= s.endMonth);
 }
 
@@ -47,7 +55,7 @@ function quarterOf(date) {
 // candidate and the previous quarter (whose due date can spill into `now`).
 function activeFiling(now = new Date()) {
   const candidates = [];
-  const y = now.getFullYear();
+  const y = etYmd(now).y;
   // This year's four quarters + last year's Q4 (its Jan-20 due date lands early
   // in `now`'s year).
   for (const spec of QUARTERS) candidates.push({ spec, salesYear: y });
@@ -62,8 +70,10 @@ function activeFiling(now = new Date()) {
     }
   }
   if (!best) return null;
-  const start = new Date(best.salesYear, best.spec.startMonth, 1, 0, 0, 0);
-  const end = new Date(best.salesYear, best.spec.endMonth + 1, 1, 0, 0, 0); // exclusive
+  // ET-midnight boundaries. `endMonth + 2` is 1-based "the month after this
+  // quarter"; for Q4 that's month 13, which rolls into January of the next year.
+  const start = etInstant(best.salesYear, best.spec.startMonth + 1, 1);
+  const end = etInstant(best.salesYear, best.spec.endMonth + 2, 1);   // exclusive
   const daysUntilDue = Math.ceil((best.due.getTime() - now.getTime()) / 86400000);
   return {
     label: best.spec.label,

@@ -107,3 +107,61 @@ test('orderSaleDate prefers orderDate, then paid date, then createdAt', () => {
   assert.equal(+orderSaleDate({ createdAt: '2026-05-01' }), +new Date('2026-05-01'));
   assert.equal(orderSaleDate({}), null);
 });
+
+// ---------------------------------------------------------------------------
+// THE QUARTER BOUNDARY.
+//
+// This file's header claimed it reasoned in ET while `quarterOf` called
+// `date.getMonth()` and the period range used `new Date(y, m, d)` — both of which
+// resolve in the SERVER's zone. Production runs UTC, which is ahead of Eastern.
+//
+// So a sale rung up at 9pm ET on the last day of a quarter is already the next
+// day in UTC, and filed under the WRONG QUARTER. That is a misstated state
+// return, at the one moment of the year the shop is most likely to be selling.
+//
+// These run under TZ=UTC (as production does) — that's the whole point.
+// ---------------------------------------------------------------------------
+const { quarterOf: _quarterOf, activeFiling: _activeFiling } = require('../njSalesTax');
+
+test('a sale at 9pm ET on March 31 files under Q1, not Q2', () => {
+  // 2026-03-31 21:00 ET (EDT, −4) === 2026-04-01T01:00Z
+  const sale = new Date('2026-04-01T01:00:00Z');
+  assert.equal(sale.getUTCMonth(), 3, 'sanity: this IS April to a UTC server');
+  assert.equal(_quarterOf(sale).label, 'Q1 (Jan–Mar)');
+});
+
+test('a sale at 7pm ET on December 31 files under Q4 of that year, not Q1 of the next', () => {
+  // 2026-12-31 19:00 ET (EST, −5) === 2027-01-01T00:00Z
+  const sale = new Date('2027-01-01T00:00:00Z');
+  assert.equal(sale.getUTCFullYear(), 2027, 'sanity: this IS next year to a UTC server');
+  assert.equal(_quarterOf(sale).label, 'Q4 (Oct–Dec)');
+});
+
+test('a sale just after ET midnight on April 1 correctly files under Q2', () => {
+  // The other side of the same boundary — the fix must not overcorrect.
+  const sale = new Date('2026-04-01T04:30:00Z');   // 12:30am ET Apr 1
+  assert.equal(_quarterOf(sale).label, 'Q2 (Apr–Jun)');
+});
+
+test('the period window starts and ends at ET midnight, so a 9pm-ET sale is inside it', () => {
+  // Apr 10 2026 — inside Q1's reminder window (due Apr 20).
+  const filing = _activeFiling(new Date('2026-04-10T12:00:00Z'));
+  assert.ok(filing, 'Q1 should be in its reminder window on Apr 10');
+  assert.equal(filing.label, 'Q1 (Jan–Mar)');
+  // Q1 runs [Jan 1 00:00 ET, Apr 1 00:00 ET). A 9pm-ET Mar 31 sale must be inside.
+  const lateSale = new Date('2026-04-01T01:00:00Z');
+  assert.ok(lateSale >= filing.periodStart && lateSale < filing.periodEnd,
+    'the last evening of the quarter must fall inside the quarter being filed');
+  assert.equal(filing.periodStart.toISOString(), '2026-01-01T05:00:00.000Z', 'Jan 1 ET midnight (EST)');
+  assert.equal(filing.periodEnd.toISOString(), '2026-04-01T04:00:00.000Z', 'Apr 1 ET midnight (EDT)');
+});
+
+test('Q4 rolls its exclusive end into January of the FOLLOWING year', () => {
+  // Jan 15 2027 — inside Q4-2026's reminder window (due Jan 20 2027).
+  const filing = _activeFiling(new Date('2027-01-15T12:00:00Z'));
+  assert.ok(filing);
+  assert.equal(filing.label, 'Q4 (Oct–Dec)');
+  assert.equal(filing.salesYear, 2026);
+  assert.equal(filing.periodEnd.toISOString(), '2027-01-01T05:00:00.000Z');
+  assert.equal(filing.dueDate.toISOString(), '2027-01-20T05:00:00.000Z', 'due Jan 20 ET, not UTC');
+});

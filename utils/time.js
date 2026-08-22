@@ -133,6 +133,20 @@ function etEndOfToday(now = new Date()) {
   return new Date(asUtc - off);
 }
 
+// The exact UTC instant of a given ET WALL-CLOCK date/time — the arbitrary-date
+// counterpart to etStartOfToday. Month is 1-BASED, and out-of-range values roll
+// over the way Date.UTC does (month 13 = January of the next year), which is what
+// makes "the first day of the month after this quarter" expressible directly.
+//
+// This is the primitive that quarter boundaries need. `new Date(y, m, d)` builds
+// the instant in the SERVER's zone — UTC in production — so a sale at 9pm ET on
+// March 31 is an April instant and files under the wrong quarter.
+function etInstant(y, m, d, h = 0, mi = 0, sec = 0, ms = 0) {
+  const asUtc = Date.UTC(y, m - 1, d, h, mi, sec, ms);
+  const off = tzOffsetMs(new Date(asUtc), BUSINESS_TZ);
+  return new Date(asUtc - off);
+}
+
 // Start-of-day instant for an arbitrary ET calendar day, N days from today.
 // (etStartOfToday() === etStartOfDay(0).) Used to build the rolling "this week"
 // window on ET-day boundaries.
@@ -157,5 +171,6 @@ module.exports = {
   etStartOfDay,
   // exported for tests / advanced callers
   etYmd,
+  etInstant,
   tzOffsetMs,
 };

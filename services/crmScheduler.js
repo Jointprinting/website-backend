@@ -25,9 +25,15 @@ async function runColdCleanup() {
   }
 }
 
+// Every schedule in this file is pinned to the BUSINESS timezone. Nothing pins
+// TZ on the host, so an unpinned cron runs on whatever zone the platform hands
+// us — UTC today. "3am" then means 11pm ET, i.e. the middle of the owner's
+// evening rather than overnight, and it moves if the platform ever changes.
+const CRON_TZ = { timezone: 'America/New_York' };
+
 function startCrmScheduler() {
   // 04:15 every day — after the JPW rescore (03:00) and stale audit, before the day.
-  cron.schedule('15 4 * * *', () => { runColdCleanup(); });
+  cron.schedule('15 4 * * *', () => { runColdCleanup(); }, CRON_TZ);
   // Also sweep once shortly after boot so a long-running pile clears without waiting
   // for the first nightly tick (deferred a bit so startup isn't slowed).
   setTimeout(() => { runColdCleanup(); }, 60 * 1000);

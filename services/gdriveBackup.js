@@ -15,9 +15,9 @@ const BACKUP_CRON = process.env.GDRIVE_BACKUP_CRON || '30 3 * * *';
 // Human-readable mirror of BACKUP_CRON for the hub (gdrive status reads this so
 // the displayed schedule and the actual cron can never drift apart).
 const SCHEDULE_LABEL = process.env.GDRIVE_BACKUP_LABEL
-  || (BACKUP_CRON === '30 3 * * *' ? 'Nightly · 03:30 (server time)'
-    : BACKUP_CRON === '30 3 * * 0' ? 'Weekly · Sun 03:30 (server time)'
-    : `Custom · ${BACKUP_CRON}`);
+  || (BACKUP_CRON === '30 3 * * *' ? 'Nightly · 03:30 ET'
+    : BACKUP_CRON === '30 3 * * 0' ? 'Weekly · Sun 03:30 ET'
+    : `Custom · ${BACKUP_CRON} (ET)`);
 // Days without a successful push before the hub flags backups as "stale" (i.e.
 // probably silently stopped). Tuned to the NIGHTLY cadence: 2 days = one on-time
 // nightly push plus a day of grace, so a healthy scheduler never trips it but a
@@ -60,8 +60,14 @@ async function runScheduledBackup() {
   }
 }
 
+// Every schedule in this file is pinned to the BUSINESS timezone. Nothing pins
+// TZ on the host, so an unpinned cron runs on whatever zone the platform hands
+// us — UTC today. "3am" then means 11pm ET, i.e. the middle of the owner's
+// evening rather than overnight, and it moves if the platform ever changes.
+const CRON_TZ = { timezone: 'America/New_York' };
+
 function startGoogleDriveBackup() {
-  cron.schedule(BACKUP_CRON, () => { runScheduledBackup().catch((e) => console.error('[gdrive-backup]', e)); });
+  cron.schedule(BACKUP_CRON, () => { runScheduledBackup().catch((e) => console.error('[gdrive-backup]', e)); }, CRON_TZ);
   console.log(`[gdrive-backup] Drive backup scheduled: ${SCHEDULE_LABEL} (cron "${BACKUP_CRON}").`);
 }
 
