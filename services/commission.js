@@ -163,11 +163,54 @@ function rateFor({ kind, lifetimeProfit = 0, selfOrdersCompleted = 0, config } =
 //   'earned'   — delivered AND paid; owed
 // `costIsEstimate` rides alongside: an earned order whose receipts the owner
 // hasn't booked yet still shows a number, flagged as an estimate off the quote.
-function earnedState(order) {
+//
+// A THIRD condition, added because the first two were not enough: the order's
+// COST has to be known at all.
+//
+// An agent logs a sale through the portal with a value and no cost — the portal
+// deliberately never shows or collects cost. `cogs` stays 0, no receipts are
+// booked against it, so orderMoney reads profit = full revenue and the
+// commission is a percentage of the whole sale price. On a brokered job that is
+// never real; the agent's statement was calling a 10% cut of REVENUE an earned
+// balance, roughly triple what is actually owed.
+//
+// `costUnknown` already existed and said exactly this in its own comment — "the
+// job would otherwise read as 100% profit, which is never real for a broker" —
+// but it was only ever rendered as a badge. Nothing consulted it.
+//
+// So an order with no cost stays PENDING. Not zero, not hidden: the row, the
+// origination credit and the forecast are all still there. It simply is not
+// called a balance that is owed, because the profit it would be owed on is not
+// known yet. The moment the owner books a receipt or fills in the quote's cost,
+// it earns at the right number.
+//
+// Erring this way is deliberate. The comment above about New Jersey's sales-rep
+// statute cuts both directions: never imply money is due sooner than the
+// agreement says, and never imply MORE is due than is really owed. Overstating
+// an earned balance sets up a number the owner then has to walk back, which is
+// worse for both sides than a forecast that firms up.
+function earnedState(order, money) {
   const o = order || {};
   const delivered = o.status === 'delivered' || !!o.deliveredDate;
   const paid = !!o.paid;
-  return delivered && paid ? 'earned' : 'pending';
+  if (!(delivered && paid)) return 'pending';
+  // Passing `money` is optional so existing callers keep their exact behaviour;
+  // a caller that has computed the cost is the one that can tell.
+  if (money && money.costUnknown) return 'pending';
+  return 'earned';
+}
+
+// Why an order that is delivered AND paid is still only a forecast. '' when the
+// state needs no explanation. Kept beside earnedState so the reason and the rule
+// can never drift apart.
+function pendingReason(order, money) {
+  const o = order || {};
+  const delivered = o.status === 'delivered' || !!o.deliveredDate;
+  const paid = !!o.paid;
+  if (delivered && paid && money && money.costUnknown) {
+    return 'Waiting on this job\'s cost — commission is a share of profit, and the profit is not known yet.';
+  }
+  return '';
 }
 
 // The whole calculation for ONE order. `profit` is gross profit BEFORE this
@@ -202,5 +245,6 @@ module.exports = {
   originKind,
   rateFor,
   earnedState,
+  pendingReason,
   commissionForOrder,
 };

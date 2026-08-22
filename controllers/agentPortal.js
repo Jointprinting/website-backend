@@ -23,7 +23,7 @@ const { visibleFilter, stampFor, ownershipStamp, canAccessDoc } = require('../mi
 const { computeAgentStats, currentMonth } = require('./admin');
 const { orderRevenueCost, normalizeOrderNumber, signed } = require('./finances');
 const {
-  normalizeConfig, tierFor, nextTierFor, originKind, earnedState, commissionForOrder,
+  normalizeConfig, tierFor, nextTierFor, originKind, earnedState, pendingReason, commissionForOrder,
 } = require('../services/commission');
 
 const CRM_STAGES = Client.CRM_STAGES;
@@ -365,7 +365,9 @@ async function myEarnings(req, res) {
       const sourcedByAgent = String(o.originAgentId || '') === uid;
       const ck = o.companyKey || '';
       const kind = originKind({ sourcedByAgent, priorOrdersForCompany: ck ? (seenByCompany[ck] || 0) : 0 });
-      const state = earnedState(o);
+      // `money` is passed so an order whose cost is unknown stays a forecast
+      // rather than being called an earned balance off 100% margin.
+      const state = earnedState(o, money);
       const calc = commissionForOrder({
         profit: money.profit, kind, lifetimeProfit, selfOrdersCompleted, config, state,
       });
@@ -383,6 +385,7 @@ async function myEarnings(req, res) {
         profit: money.profit,
         costIsEstimate: money.costIsEstimate,
         costUnknown: money.costUnknown,
+        pendingReason: pendingReason(o, money),
         ...calc,
       });
 
