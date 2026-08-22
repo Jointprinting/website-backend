@@ -3,6 +3,7 @@ const multer  = require('multer');
 const router  = express.Router();
 const { requireAdmin } = require('../middleware/auth');
 const poCtl = require('../controllers/purchaseOrders');
+const sourcing = require('../controllers/sourcing');
 const {
   listOrders, listProjects, getOrder, createOrder, updateOrder, deleteOrder, restoreOrder,
   seedHistorical, nextNumbers, uploadFile, deleteFile, serveFile,
@@ -73,6 +74,17 @@ router.get('/vendors/search',             poCtl.searchVendors);
 // One segment, so it cannot shadow the literal '/vendors/merge' and
 // '/vendors/rebuild/*' routes either side of it.
 router.post('/vendors',                   poCtl.createVendor);
+
+// ── Sourcing: the DistributorCentral flow ────────────────────────────────────
+// Research suppliers → collect quotes → pick a winner → remember the winner for
+// the next product like it. Every step except the last used to leave no trace.
+// '/preferred' is registered BEFORE '/:id' so it isn't read as an id.
+router.get('/sourcing',                   sourcing.listSourcing);
+router.get('/sourcing/preferred',         sourcing.preferredSupplier);
+router.post('/sourcing',                  sourcing.createSourcing);
+router.patch('/sourcing/:id',             sourcing.updateSourcing);
+router.post('/sourcing/:id/decide',       sourcing.decideSourcing);
+router.post('/sourcing/:id/archive',      sourcing.archiveSourcing);
 router.post('/vendors/merge',             poCtl.mergeVendors);
 // Owner-triggered "Rebuild printers from Drive" reconcile (preview → confirm;
 // idempotent; reversible; archive-not-delete; preserves the Happy-Leaf in-app PO).
